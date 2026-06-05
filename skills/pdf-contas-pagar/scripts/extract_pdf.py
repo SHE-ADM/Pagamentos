@@ -1,6 +1,6 @@
 """
 extract_pdf.py — Extração de dados financeiros de PDFs para CSV
-Projeto: email-pago | Skill: pdf-contas-pagar | v1.0.0
+Projeto: pagamentos | Skill: pdf-contas-pagar | v1.0.0
 """
 
 import os, re, sys, json, argparse, logging

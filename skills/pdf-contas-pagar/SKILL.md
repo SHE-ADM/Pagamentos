@@ -4,7 +4,7 @@ description: >
   Skill especializada em extração de dados financeiros de PDFs de contas a pagar
   (boletos bancários, notas fiscais NF-e/NFS-e, faturas de cartão/operadoras e
   documentos digitalizados por imagem/scan) e exportação para CSV estruturado,
-  compatível com o pipeline email-pago (n8n + Supabase).
+  compatível com o pipeline pagamentos (n8n + Supabase).
 
   Use esta skill SEMPRE que o usuário mencionar: ler PDF de conta, extrair boleto,
   processar nota fiscal, converter PDF para CSV, importar contas a pagar de arquivo,
@@ -12,7 +12,7 @@ description: >
   recibo digitalizado, ou qualquer variação de leitura/extração de documento
   financeiro em PDF. Acione mesmo que o usuário não diga explicitamente "skill" ou "PDF".
 
-project: email-pago
+project: pagamentos
 version: 1.0.0
 compatibility:
   python: ">=3.10"
@@ -148,7 +148,7 @@ Ver detalhes completos em `references/error_handling.md`
 
 ---
 
-## Integração com email-pago
+## Integração com pagamentos
 
 - **n8n**: chamar via node `Execute Command`
 - **Supabase**: CSV compatível com tabela `financial_emails`

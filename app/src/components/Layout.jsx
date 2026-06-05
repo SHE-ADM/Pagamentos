@@ -9,7 +9,7 @@ export default function Layout({ children }) {
         <div className="px-4 py-4 border-b border-gray-200">
           <div className="flex items-center gap-2">
             <Receipt size={18} className="text-brand" />
-            <span className="font-semibold text-sm text-gray-900">email-pago</span>
+            <span className="font-semibold text-sm text-gray-900">pagamentos</span>
           </div>
           <p className="text-xs text-gray-400 mt-0.5 ml-6">contas a pagar</p>
         </div>

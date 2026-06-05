@@ -46,7 +46,7 @@ Se não definida, o script usa a lista padrão de 12 palavras.
 ```python
 import imaplib, os
 from dotenv import load_dotenv
-load_dotenv(r'C:\Sheild\Projetos\Claude\Pagamentos\email-pago\.env')
+load_dotenv(r'C:\Sheild\Projetos\Claude\Contas a pagar\Pagamentos\.env')
 
 mail = imaplib.IMAP4_SSL(os.getenv('IMAP_HOST'), 993)
 mail.login(os.getenv('IMAP_USER'), os.getenv('IMAP_PASS'))

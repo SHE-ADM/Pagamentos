@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## O que é este projeto
 
-`email-pago` é um **pipeline financeiro de contas a pagar**, não um app CRUD comum.
+`pagamentos` é um **pipeline financeiro de contas a pagar**, não um app CRUD comum.
 O fluxo central é: e-mail (IMAP) → download de PDF → extração via Claude API →
 gravação no Supabase → consulta/exportação pela interface web.
 

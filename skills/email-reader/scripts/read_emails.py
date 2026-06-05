@@ -1,6 +1,6 @@
 """
 read_emails.py — Leitura de e-mails financeiros via IMAP + controle Supabase
-Projeto: email-pago | Skill: email-reader | v2.0.0
+Projeto: pagamentos | Skill: email-reader | v2.0.0
 
 Deduplicação: tabela email_control no Supabase (message_id UNIQUE).
 Nunca reprocessa um e-mail já registrado, independente de onde o script rodar.

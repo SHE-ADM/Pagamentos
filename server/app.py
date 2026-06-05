@@ -1,5 +1,5 @@
 """
-app.py — Backend local do email-pago
+app.py — Backend local do pagamentos
 
 Expõe a leitura de e-mails financeiros (read_emails.run_reader) como API HTTP,
 para que o frontend dispare a busca por um botão em vez de rodar o script no

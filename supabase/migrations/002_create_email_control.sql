@@ -1,7 +1,7 @@
 -- =============================================================
 -- 002_create_email_control.sql
 -- Tabela de controle de e-mails processados (deduplicação)
--- Projeto: email-pago | Data: 2025-06-05
+-- Projeto: pagamentos | Data: 2025-06-05
 -- =============================================================
 
 CREATE TABLE IF NOT EXISTS email_control (

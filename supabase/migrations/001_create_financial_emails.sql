@@ -1,7 +1,7 @@
 -- =============================================================
 -- 001_create_financial_emails.sql
 -- Criação inicial da tabela financial_emails
--- Projeto: email-pago | Data: 2025-06-05
+-- Projeto: pagamentos | Data: 2025-06-05
 -- =============================================================
 
 CREATE TABLE IF NOT EXISTS financial_emails (
