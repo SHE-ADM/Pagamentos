@@ -1,0 +1,49 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  body {
+    @apply bg-gray-50 text-gray-900 antialiased;
+  }
+  * {
+    @apply box-border;
+  }
+}
+
+@layer components {
+  .badge {
+    @apply inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium;
+  }
+  .btn {
+    @apply inline-flex items-center gap-1.5 px-3 py-1.5 text-sm border border-gray-200
+           rounded-lg bg-white hover:bg-gray-50 transition-colors cursor-pointer;
+  }
+  .btn-primary {
+    @apply bg-brand text-white border-brand hover:bg-brand-dark;
+  }
+  .input {
+    @apply w-full px-3 py-1.5 text-sm border border-gray-200 rounded-lg
+           bg-white focus:outline-none focus:ring-2 focus:ring-brand/30 focus:border-brand;
+  }
+  .card {
+    @apply bg-white border border-gray-200 rounded-xl;
+  }
+  .metric-card {
+    @apply bg-gray-50 rounded-lg p-3 border border-gray-100;
+  }
+  .table-header {
+    @apply text-xs font-medium text-gray-500 uppercase tracking-wide
+           bg-gray-50 px-3 py-2 border-b border-gray-200 text-left;
+  }
+  .table-cell {
+    @apply px-3 py-2.5 text-sm text-gray-700 border-b border-gray-100;
+  }
+  .nav-link {
+    @apply flex items-center gap-2 px-3 py-2 text-sm text-gray-600
+           rounded-lg hover:bg-gray-100 hover:text-gray-900 transition-colors;
+  }
+  .nav-link.active {
+    @apply bg-brand-light text-brand-dark font-medium;
+  }
+}

@@ -1,0 +1,15 @@
+# Backend (Flask) — email-pago
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.egg-info/
+
+# Ambientes virtuais
+.venv/
+venv/
+env/
+
+# Variáveis de ambiente (o backend lê o .env da raiz do projeto)
+.env
