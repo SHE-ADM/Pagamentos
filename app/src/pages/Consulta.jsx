@@ -11,7 +11,7 @@ const fmtCnpj  = c => c?.length === 14
   : (c || '—')
 
 function exportCsv(rows) {
-  const cols = ['due_date','supplier_name','supplier_cnpj','document_type','amount',
+  const cols = ['due_date','due_status','supplier_name','supplier_cnpj','document_type','amount',
                 'payment_method','extraction_source','status','invoice_number',
                 'barcode','description','processing_notes']
   const header = cols.join(';')
@@ -28,7 +28,7 @@ export default function Consulta() {
   const [sel,     setSel]     = useState(null)
   const [loading, setLoading] = useState(false)
   const [error,   setError]   = useState(null)
-  const [f, setF_] = useState({ supplier:'', docType:'', status:'', dateFrom:'', dateTo:'' })
+  const [f, setF_] = useState({ supplier:'', docType:'', status:'', dueStatus:'', dateFrom:'', dateTo:'' })
   const sf = (k, v) => setF_(x => ({ ...x, [k]: v }))
 
   const load = useCallback(async () => {
@@ -68,12 +68,13 @@ export default function Consulta() {
           </div>
         )}
 
-        <div className="grid grid-cols-4 gap-3 mb-5">
+        <div className="grid grid-cols-5 gap-3 mb-5">
           {[
             { icon: FileText,    label:'Total de registros',  value: stats.totalRecords ?? 0, fmt: v => v },
             { icon: Clock,       label:'Pendentes',           value: stats.pending      ?? 0, fmt: v => v },
             { icon: DollarSign,  label:'Valor total',         value: stats.totalValue   ?? 0, fmt: fmtMoney },
             { icon: TrendingUp,  label:'A vencer em 7 dias',  value: stats.vencendo     ?? 0, fmt: v => v },
+            { icon: AlertCircle, label:'Vencidas',            value: stats.vencidas     ?? 0, fmt: v => v },
           ].map(({ icon: Icon, label, value, fmt }) => (
             <div key={label} className="metric-card">
               <div className="flex items-center gap-1.5 text-xs text-gray-500 mb-1">
@@ -96,6 +97,10 @@ export default function Consulta() {
             <option value="">Status</option>
             {['pending','paid','cancelled','error'].map(s => <option key={s}>{s}</option>)}
           </select>
+          <select className="input w-32" value={f.dueStatus} onChange={e => sf('dueStatus', e.target.value)}>
+            <option value="">Situação</option>
+            {['A Vencer','Vencido'].map(s => <option key={s}>{s}</option>)}
+          </select>
           <input type="date" className="input w-36" value={f.dateFrom}
             onChange={e => sf('dateFrom', e.target.value)} title="Vencimento de" />
           <input type="date" className="input w-36" value={f.dateTo}
@@ -107,14 +112,14 @@ export default function Consulta() {
           <table className="w-full">
             <thead>
               <tr>
-                {['Vencimento','Fornecedor','CNPJ','Tipo','Valor','Pagamento','Extração','Status'].map(h =>
+                {['Vencimento','Situação','Fornecedor','CNPJ','Tipo','Valor','Pagamento','Extração','Status'].map(h =>
                   <th key={h} className="table-header">{h}</th>
                 )}
               </tr>
             </thead>
             <tbody>
               {rows.length === 0 ? (
-                <tr><td colSpan={8} className="table-cell text-center text-gray-400 py-8">
+                <tr><td colSpan={9} className="table-cell text-center text-gray-400 py-8">
                   {loading ? 'Buscando registros…' : 'Nenhum registro encontrado — ajuste os filtros e clique em Buscar'}
                 </td></tr>
               ) : rows.map(r => (
@@ -122,6 +127,7 @@ export default function Consulta() {
                   className={`cursor-pointer hover:bg-gray-50 ${sel?.id === r.id ? 'bg-brand-light/40' : ''}`}
                   onClick={() => setSel(sel?.id === r.id ? null : r)}>
                   <td className="table-cell text-xs whitespace-nowrap font-mono">{fmtDate(r.due_date)}</td>
+                  <td className="table-cell"><StatusBadge value={r.due_status} /></td>
                   <td className="table-cell text-xs max-w-[150px] truncate" title={r.supplier_name}>{r.supplier_name || '—'}</td>
                   <td className="table-cell text-xs font-mono text-gray-500">{fmtCnpj(r.supplier_cnpj)}</td>
                   <td className="table-cell"><StatusBadge value={r.document_type} /></td>
@@ -148,6 +154,7 @@ export default function Consulta() {
                 ['Competência',   sel.competence_date],
                 ['Emissão',       fmtDate(sel.issue_date)],
                 ['Vencimento',    fmtDate(sel.due_date)],
+                ['Situação',      sel.due_status],
                 ['Valor',         fmtMoney(sel.amount)],
                 ['Forma de pag.', sel.payment_method],
                 ['Código de barras', sel.barcode || '—'],
