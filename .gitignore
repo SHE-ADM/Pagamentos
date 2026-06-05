@@ -1,0 +1,31 @@
+# Arquivos ignorados pelo Git
+
+# Ambiente
+.env
+*.env.local
+
+# Dependências e builds (rede de segurança — cada app tem seu .gitignore)
+node_modules/
+dist/
+build/
+
+# Dados sensíveis e gerados
+data/pdfs_inbox/
+data/csv_output/
+logs/
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+venv/
+*.egg-info/
+
+# Editores
+.vscode/
+.idea/
+*.swp
+*~
+Thumbs.db
+desktop.ini

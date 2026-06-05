@@ -1,0 +1,5 @@
+# Backend local do email-pago (server/app.py)
+# A lógica de leitura vive em skills/email-reader/scripts/read_emails.py,
+# que também depende de python-dotenv (já listado no README do projeto).
+flask>=3.0
+python-dotenv>=1.0
