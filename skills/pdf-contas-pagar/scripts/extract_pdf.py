@@ -360,7 +360,7 @@ def build_record_from_json(pdf_path, data: dict, source: str) -> dict:
     barcode = normalize_barcode(data.get("barcode"))
     rec = {
         "source_file": pdf_path.name,
-        "document_type": data.get("document_type") or "outro",
+        "document_type": (data.get("document_type") or "outro").upper(),
         "extraction_source": source,
         "supplier_name": data.get("supplier_name"),
         "supplier_cnpj": cnpj if len(cnpj) == 14 else None,
@@ -399,7 +399,7 @@ def build_record_regex(pdf_path, raw: str, source: str) -> dict:
     dt  = classify_document(raw)
     notes = ["Extração por regex (fallback) — conferir valores"]
     rec = {
-        "source_file": pdf_path.name, "document_type": dt,
+        "source_file": pdf_path.name, "document_type": dt.upper(),
         "extraction_source": source,
         "supplier_name": extract_supplier_name(raw, dt),
         "supplier_cnpj": extract_cnpj(raw),
@@ -468,7 +468,7 @@ def process_pdf(pdf_path, force_vision=False):
         return build_record(pdf_path, raw, src)
     except Exception as e:
         log.error(f"  ✗ {pdf_path.name}: {e}")
-        return {"source_file": pdf_path.name, "document_type": "erro",
+        return {"source_file": pdf_path.name, "document_type": "ERRO",
                 "extraction_source": "error", "status": "error",
                 "processing_notes": str(e), "extracted_at": datetime.utcnow().isoformat(),
                 **{c: None for c in CSV_COLUMNS if c not in

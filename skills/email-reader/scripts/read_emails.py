@@ -305,7 +305,7 @@ FINANCIAL_VALUE_FIELDS = [
 ]
 
 # Tipos de documento que NAO geram conta a pagar.
-SKIP_ACCOUNT_TYPES = ("nfe", "nfse")
+SKIP_ACCOUNT_TYPES = ("NFE", "NFSE")
 
 
 def _none_if_blank(value):
