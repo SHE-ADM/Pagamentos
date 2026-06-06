@@ -50,10 +50,13 @@ EXTRACTION_PROMPT = (
     "Analise este documento financeiro brasileiro (normalmente um boleto) e "
     "retorne APENAS um JSON valido, sem markdown e sem explicacoes, com "
     "EXATAMENTE estes campos:\n"
-    "- document_type: um de boleto|tributo|CT-e|nfe|nfse|fatura|recibo|contrato|outro "
+    "- document_type: um de boleto|seguro|fechamento|CT-e|NF-e|nfse|recibo|tributo|contrato|outros "
     "(use 'tributo' para DARF, GPS, GARE, DAS (Documento de Arrecadacao do Simples Nacional), "
     "Simples Nacional, SIMEI ou qualquer guia de recolhimento/arrecadacao tributaria; "
-    "use exatamente 'CT-e' para CT-e, DACTE ou Conhecimento de Transporte)\n"
+    "use exatamente 'CT-e' para CT-e, DACTE ou Conhecimento de Transporte; "
+    "use 'seguro' para apolices, premios de seguro e documentos de seguradoras; "
+    "use 'fechamento' para extrato mensal ou fatura de fechamento de cartao/conta; "
+    "use 'boleto' para cobranças bancarias, carnês ou faturas de servico avulso)\n"
     "- supplier_name: nome do BENEFICIARIO/CEDENTE (quem RECEBE o pagamento). "
     "NUNCA use o pagador/sacado.\n"
     "- supplier_cnpj: CNPJ do BENEFICIARIO (apenas digitos, 14 caracteres). "
@@ -87,25 +90,39 @@ EXTRACTION_PROMPT = (
 )
 
 KEYWORDS = {
-    # CT-e antes de nfe: ambos tem "chave de acesso", mas CT-e e mais especifico.
-    "CT-e":    ["dacte","conhecimento de transporte","ct-e","cte-os","modal rodoviario"],
-    "TRIBUTO": ["darf","gps","gare","simples nacional","simei",
-                "das simples","das-simples","documento de arrecadacao do simples",
-                "guia de recolhimento","guia de pagamento","documento de arrecadacao"],
-    "NFE":     ["danfe","nota fiscal eletrônica","nf-e","chave de acesso","emitente"],
-    "NFSE":    ["nota fiscal de serviços","nfs-e","prestador","tomador","iss"],
-    "BOLETO":  ["cedente","beneficiário","linha digitável","nosso número","sacado"],
-    "FATURA":  ["fatura","conta do mês","total da fatura","vencimento da fatura"],
+    # CT-e antes de NF-e: ambos tem "chave de acesso", mas CT-e e mais especifico.
+    "CT-e":       ["dacte","conhecimento de transporte","ct-e","cte-os","modal rodoviario"],
+    "TRIBUTO":    ["darf","gps","gare","simples nacional","simei",
+                   "das simples","das-simples","documento de arrecadacao do simples",
+                   "guia de recolhimento","guia de pagamento","documento de arrecadacao"],
+    "NF-e":       ["danfe","nota fiscal eletrônica","nf-e","chave de acesso","emitente"],
+    "NFSE":       ["nota fiscal de serviços","nfs-e","prestador","tomador","iss"],
+    "SEGURO":     ["apólice","apolice","seguradora","prêmio do seguro","premio do seguro",
+                   "seguro de vida","seguro empresarial","seguro auto"],
+    "FECHAMENTO": ["fechamento da fatura","extrato mensal","fatura do mês","fatura do mes",
+                   "resumo da fatura","extrato de fechamento"],
+    "FATURA":     ["conta do mês","total da fatura","vencimento da fatura"],
+    "BOLETO":     ["cedente","beneficiário","linha digitável","nosso número","sacado"],
 }
 
-# Normalização de casing — .upper() quebra "CT-e" (vira "CT-E").
-# Chaves: valor uppercase; Valores: casing canônico final.
-_DOC_TYPE_CASING = {"CT-E": "CT-e"}
+# Normalização de casing e aliases.
+# .upper() quebra siglas com casing misto (CT-e, NF-e); alguns aliases colapsam em outro tipo.
+# Chaves: valor após .upper(); Valores: casing/nome canônico final gravado no banco.
+_DOC_TYPE_NORM = {
+    "CT-E":       "CT-e",    # ABNT NBR 14724 — sempre CT-e
+    "NF-E":       "NF-e",    # SEFAZ — sempre NF-e
+    "NFE":        "NF-e",    # alias sem hifem
+    "FATURA":     "BOLETO",  # fatura de servico = boleto bancario
+    "FECHAMENTO": "BOLETO",  # extrato de fechamento = boleto
+    "COBRANÇA":   "BOLETO",  # cobrança avulsa = boleto
+    "COBRANCA":   "BOLETO",  # idem sem cedilha
+    "OUTRO":      "OUTROS",  # plural padrao
+}
 
 def _normalize_doc_type(raw: str) -> str:
-    """Normaliza document_type: maiúsculo por padrão, exceto tipos com casing fixo."""
+    """Normaliza document_type: maiúsculo por padrão; aplica aliases e casing fixo."""
     upper = (raw or "OUTRO").strip().upper()
-    return _DOC_TYPE_CASING.get(upper, upper)
+    return _DOC_TYPE_NORM.get(upper, upper)
 
 # --- Classificação ---
 def classify_document(text: str) -> str:

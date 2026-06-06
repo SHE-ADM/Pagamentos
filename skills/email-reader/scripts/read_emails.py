@@ -54,6 +54,10 @@ KEYWORDS_DEFAULT = [
     "guia", "guia de pagamento", "guia de recolhimento",
     # Conhecimento de Transporte Eletronico
     "ct-e", "cte", "dacte",
+    # Fechamento de conta / extrato mensal
+    "fechamento",
+    # Seguro
+    "seguro",
 ]
 
 LOG_COLUMNS = [
@@ -305,7 +309,7 @@ FINANCIAL_VALUE_FIELDS = [
 ]
 
 # Tipos de documento que NAO geram conta a pagar.
-SKIP_ACCOUNT_TYPES = ("NFE", "NFSE")
+SKIP_ACCOUNT_TYPES = ("NF-e", "NFSE")
 
 
 def _none_if_blank(value):
