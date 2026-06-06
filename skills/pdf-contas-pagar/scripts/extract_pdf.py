@@ -50,10 +50,10 @@ EXTRACTION_PROMPT = (
     "Analise este documento financeiro brasileiro (normalmente um boleto) e "
     "retorne APENAS um JSON valido, sem markdown e sem explicacoes, com "
     "EXATAMENTE estes campos:\n"
-    "- document_type: um de boleto|tributo|transporte|nfe|nfse|fatura|recibo|contrato|outro "
+    "- document_type: um de boleto|tributo|CT-e|nfe|nfse|fatura|recibo|contrato|outro "
     "(use 'tributo' para DARF, GPS, GARE, DAS (Documento de Arrecadacao do Simples Nacional), "
     "Simples Nacional, SIMEI ou qualquer guia de recolhimento/arrecadacao tributaria; "
-    "use 'transporte' para CT-e, DACTE ou Conhecimento de Transporte)\n"
+    "use exatamente 'CT-e' para CT-e, DACTE ou Conhecimento de Transporte)\n"
     "- supplier_name: nome do BENEFICIARIO/CEDENTE (quem RECEBE o pagamento). "
     "NUNCA use o pagador/sacado.\n"
     "- supplier_cnpj: CNPJ do BENEFICIARIO (apenas digitos, 14 caracteres). "
@@ -87,16 +87,25 @@ EXTRACTION_PROMPT = (
 )
 
 KEYWORDS = {
-    # transporte antes de nfe: ambos tem "chave de acesso", mas CT-e e mais especifico.
-    "transporte": ["dacte","conhecimento de transporte","ct-e","cte-os","modal rodoviario"],
-    "tributo":    ["darf","gps","gare","simples nacional","simei",
-                   "das simples","das-simples","documento de arrecadacao do simples",
-                   "guia de recolhimento","guia de pagamento","documento de arrecadacao"],
-    "nfe":        ["danfe","nota fiscal eletrônica","nf-e","chave de acesso","emitente"],
-    "nfse":       ["nota fiscal de serviços","nfs-e","prestador","tomador","iss"],
-    "boleto":     ["cedente","beneficiário","linha digitável","nosso número","sacado"],
-    "fatura":     ["fatura","conta do mês","total da fatura","vencimento da fatura"],
+    # CT-e antes de nfe: ambos tem "chave de acesso", mas CT-e e mais especifico.
+    "CT-e":    ["dacte","conhecimento de transporte","ct-e","cte-os","modal rodoviario"],
+    "TRIBUTO": ["darf","gps","gare","simples nacional","simei",
+                "das simples","das-simples","documento de arrecadacao do simples",
+                "guia de recolhimento","guia de pagamento","documento de arrecadacao"],
+    "NFE":     ["danfe","nota fiscal eletrônica","nf-e","chave de acesso","emitente"],
+    "NFSE":    ["nota fiscal de serviços","nfs-e","prestador","tomador","iss"],
+    "BOLETO":  ["cedente","beneficiário","linha digitável","nosso número","sacado"],
+    "FATURA":  ["fatura","conta do mês","total da fatura","vencimento da fatura"],
 }
+
+# Normalização de casing — .upper() quebra "CT-e" (vira "CT-E").
+# Chaves: valor uppercase; Valores: casing canônico final.
+_DOC_TYPE_CASING = {"CT-E": "CT-e"}
+
+def _normalize_doc_type(raw: str) -> str:
+    """Normaliza document_type: maiúsculo por padrão, exceto tipos com casing fixo."""
+    upper = (raw or "OUTRO").strip().upper()
+    return _DOC_TYPE_CASING.get(upper, upper)
 
 # --- Classificação ---
 def classify_document(text: str) -> str:
@@ -362,7 +371,7 @@ def build_record_from_json(pdf_path, data: dict, source: str) -> dict:
     barcode = normalize_barcode(data.get("barcode"))
     rec = {
         "source_file": pdf_path.name,
-        "document_type": (data.get("document_type") or "outro").upper(),
+        "document_type": _normalize_doc_type(data.get("document_type") or "outro"),
         "extraction_source": source,
         "supplier_name": data.get("supplier_name"),
         "supplier_cnpj": cnpj if len(cnpj) == 14 else None,
@@ -401,7 +410,7 @@ def build_record_regex(pdf_path, raw: str, source: str) -> dict:
     dt  = classify_document(raw)
     notes = ["Extração por regex (fallback) — conferir valores"]
     rec = {
-        "source_file": pdf_path.name, "document_type": dt.upper(),
+        "source_file": pdf_path.name, "document_type": _normalize_doc_type(dt),
         "extraction_source": source,
         "supplier_name": extract_supplier_name(raw, dt),
         "supplier_cnpj": extract_cnpj(raw),
