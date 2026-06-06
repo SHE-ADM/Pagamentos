@@ -68,11 +68,10 @@ $trigger = New-ScheduledTaskTrigger `
 # Configurações: segurança e comportamento em caso de sobreposição
 # ---------------------------------------------------------------------------
 $settings = New-ScheduledTaskSettingsSet `
-    -RunOnlyIfNetworkAvailable              `
-    -StartWhenAvailable                     `
-    -ExecutionTimeLimit  (New-TimeSpan -Minutes $TIMEOUT_MIN) `
-    -MultipleInstances   IgnoreNew          `
-    -DisallowDemandStart $false
+    -RunOnlyIfNetworkAvailable `
+    -StartWhenAvailable        `
+    -ExecutionTimeLimit (New-TimeSpan -Minutes $TIMEOUT_MIN) `
+    -MultipleInstances  IgnoreNew
 
 # ---------------------------------------------------------------------------
 # Registro
