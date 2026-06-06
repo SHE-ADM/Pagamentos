@@ -31,7 +31,7 @@
 # ---------------------------------------------------------------------------
 $TASK_NAME    = "Pagamentos - Email Reader"
 $TASK_PATH    = "\Sheild\"                   # pasta no Agendador de Tarefas
-$INTERVAL_H   = 1                            # intervalo em horas
+$INTERVAL_MIN = 5                            # intervalo em minutos
 $TIMEOUT_MIN  = 15                           # tempo máximo de execução por disparo
 
 $PROJECT_ROOT = Split-Path -Parent $PSScriptRoot
@@ -61,7 +61,7 @@ $startAt = (Get-Date -Minute 0 -Second 0 -Millisecond 0).AddHours(1)
 $trigger = New-ScheduledTaskTrigger `
     -Once               `
     -At                 $startAt `
-    -RepetitionInterval (New-TimeSpan -Hours $INTERVAL_H) `
+    -RepetitionInterval (New-TimeSpan -Minutes $INTERVAL_MIN) `
     -RepetitionDuration ([TimeSpan]::MaxValue)
 
 # ---------------------------------------------------------------------------
@@ -83,7 +83,7 @@ Register-ScheduledTask `
     -Action      $action `
     -Trigger     $trigger `
     -Settings    $settings `
-    -Description "Lê e-mails financeiros a cada $INTERVAL_H hora(s) e grava no Supabase. Credenciais: .env na raiz do projeto." `
+    -Description "Lê e-mails financeiros a cada $INTERVAL_MIN minuto(s) e grava no Supabase. Credenciais: .env na raiz do projeto." `
     -RunLevel    Highest `
     -Force | Out-Null
 
@@ -99,7 +99,7 @@ if ($task) {
     Write-Host "  Caminho  : $TASK_PATH$TASK_NAME"
     Write-Host "  Runner   : $RUNNER"
     Write-Host "  Inicio   : $startAt"
-    Write-Host "  Intervalo: a cada $INTERVAL_H hora(s)"
+    Write-Host "  Intervalo: a cada $INTERVAL_MIN minuto(s)"
     Write-Host "  Timeout  : $TIMEOUT_MIN minutos por execucao"
     Write-Host ""
     Write-Host "Para testar agora (sem esperar a proxima hora):" -ForegroundColor Cyan
