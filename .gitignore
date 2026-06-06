@@ -14,6 +14,13 @@ data/pdfs_inbox/
 data/csv_output/
 logs/
 
+# Amostras de validação (boletos reais — CNPJ, valores, linha digitável).
+# Ignora todo o conteúdo, mas preserva a estrutura e o README no git.
+data/samples/**
+!data/samples/**/
+!data/samples/README.md
+!data/samples/**/.gitkeep
+
 # Python
 __pycache__/
 *.py[cod]

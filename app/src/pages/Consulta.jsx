@@ -12,7 +12,8 @@ const fmtCnpj  = c => c?.length === 14
 
 function exportCsv(rows) {
   const cols = ['due_date','due_status','supplier_name','supplier_cnpj','document_type','amount',
-                'payment_method','extraction_source','status','invoice_number',
+                'amount_charged','discount','other_deductions','fine_interest','other_additions',
+                'payment_method','nosso_numero','extraction_source','status','invoice_number',
                 'barcode','description','processing_notes']
   const header = cols.join(';')
   const body   = rows.map(r => cols.map(c => `"${(r[c]??'').toString().replace(/"/g,'""')}"`).join(';'))
@@ -155,7 +156,13 @@ export default function Consulta() {
                 ['Emissão',       fmtDate(sel.issue_date)],
                 ['Vencimento',    fmtDate(sel.due_date)],
                 ['Situação',      sel.due_status],
-                ['Valor',         fmtMoney(sel.amount)],
+                ['Valor do documento', fmtMoney(sel.amount)],
+                ['Valor cobrado', fmtMoney(sel.amount_charged)],
+                ['Desconto / abatimentos', fmtMoney(sel.discount)],
+                ['Outras deduções', fmtMoney(sel.other_deductions)],
+                ['Mora / multa',  fmtMoney(sel.fine_interest)],
+                ['Outros acréscimos', fmtMoney(sel.other_additions)],
+                ['Nosso número',  sel.nosso_numero || '—'],
                 ['Forma de pag.', sel.payment_method],
                 ['Código de barras', sel.barcode || '—'],
                 ['Extração',      sel.extraction_source],

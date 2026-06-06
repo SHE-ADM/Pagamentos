@@ -18,16 +18,73 @@ logging.basicConfig(level=logging.INFO,
     handlers=[logging.StreamHandler(sys.stdout)])
 log = logging.getLogger("pdf-contas-pagar")
 
+# Console do Windows (cp1252) nao encoda os simbolos de log (✓/→/✗).
+try:
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+except Exception:
+    pass
+
 CSV_COLUMNS = [
     "source_file","document_type","extraction_source",
-    "supplier_name","supplier_cnpj","invoice_number",
+    "supplier_name","supplier_cnpj","supplier_cpf","invoice_number",
     "competence_date","due_date","issue_date",
     "amount","currency","payment_method",
     "barcode","description","status",
+    "nosso_numero","discount","other_deductions",
+    "fine_interest","other_additions","amount_charged",
+    "payer_name","payer_cnpj",
     "processing_notes","extracted_at",
 ]
 
+# Modelo Claude usado tanto na extracao por texto quanto na visao.
+CLAUDE_MODEL = "claude-sonnet-4-20250514"
+
+# Campos de valor que, em branco no boleto, sao gravados como 0.
+VALUE_FIELDS_ZERO = [
+    "discount", "other_deductions", "fine_interest",
+    "other_additions", "amount_charged",
+]
+
+# Schema unico de extracao (texto e visao usam o mesmo).
+EXTRACTION_PROMPT = (
+    "Analise este documento financeiro brasileiro (normalmente um boleto) e "
+    "retorne APENAS um JSON valido, sem markdown e sem explicacoes, com "
+    "EXATAMENTE estes campos:\n"
+    "- document_type: um de boleto|cte|nfe|nfse|fatura|recibo|contrato|outro "
+    "(use 'cte' para Conhecimento de Transporte / DACTE)\n"
+    "- supplier_name: nome do BENEFICIARIO/CEDENTE (quem RECEBE o pagamento). "
+    "NUNCA use o pagador/sacado.\n"
+    "- supplier_cnpj: CNPJ do BENEFICIARIO (apenas digitos, 14 caracteres). "
+    "Retorne null se nao houver CNPJ. NUNCA o do pagador.\n"
+    "- supplier_cpf: CPF do BENEFICIARIO (apenas digitos, 11 caracteres), "
+    "somente quando o beneficiario for pessoa fisica e nao houver CNPJ. "
+    "Retorne null se nao houver CPF. NUNCA o do pagador.\n"
+    "- invoice_number: o NUMERO do 'N do Documento' (ex.: 12345). NUNCA "
+    "retorne a Especie do Documento (siglas DM, DMI, DS, NP, RC, LC). Se so "
+    "houver a especie e nao o numero, use null.\n"
+    "- issue_date: Data do Documento, formato YYYY-MM-DD\n"
+    "- due_date: Data de Vencimento, formato YYYY-MM-DD\n"
+    "- amount: Valor do Documento (numero decimal com ponto)\n"
+    "- discount: (-) Desconto / Abatimentos (decimal; 0 se em branco)\n"
+    "- other_deductions: (-) Outras deducoes (decimal; 0 se em branco)\n"
+    "- fine_interest: (+) Mora / Multa (decimal; 0 se em branco)\n"
+    "- other_additions: (+) Outros acrescimos (decimal; 0 se em branco)\n"
+    "- amount_charged: (=) Valor cobrado (decimal; 0 se em branco)\n"
+    "- nosso_numero: Nosso Numero (texto)\n"
+    "- barcode: Linha digitavel completa (apenas digitos)\n"
+    "- payment_method: boleto|pix|ted|cartao|outro\n"
+    "- competence_date: competencia no formato YYYY-MM, ou null\n"
+    "- currency: moeda (BRL por padrao)\n"
+    "- payer_name: nome do SACADO/PAGADOR (quem PAGA o documento). "
+    "NUNCA use o beneficiario/cedente.\n"
+    "- payer_cnpj: CNPJ do SACADO/PAGADOR (apenas digitos). NUNCA o do beneficiario.\n"
+    "- description: texto das Instrucoes/observacoes do beneficiario\n"
+    "Use null para campos de TEXTO ausentes e 0 para os campos de VALOR em branco."
+)
+
 KEYWORDS = {
+    # CT-e antes de NF-e: ambos tem "chave de acesso", mas CT-e e mais especifico.
+    "cte":    ["dacte","conhecimento de transporte","ct-e","cte-os","modal rodoviario"],
     "nfe":    ["danfe","nota fiscal eletrônica","nf-e","chave de acesso","emitente"],
     "nfse":   ["nota fiscal de serviços","nfs-e","prestador","tomador","iss"],
     "boleto": ["cedente","beneficiário","linha digitável","nosso número","sacado"],
@@ -69,6 +126,16 @@ def extract_barcode(text):
         raw = re.sub(r"\D","",m.group())
         return raw if len(raw) in (47,48) else None
     return None
+
+def extract_linha_digitavel(text):
+    """Linha digitavel do boleto (47 digitos em 5 campos com pontos/espacos).
+
+    Extracao deterministica a partir do texto do PDF: e mais confiavel que o
+    LLM para sequencias longas de digitos (campo critico de pagamento).
+    """
+    m = re.search(
+        r"\d{5}\.\d{5}\s+\d{5}\.\d{6}\s+\d{5}\.\d{6}\s+\d\s+\d{14}", text)
+    return re.sub(r"\D", "", m.group()) if m else None
 
 def extract_invoice_number(text, doc_type):
     if doc_type in ("nfe","nfse"):
@@ -135,69 +202,220 @@ def extract_with_vision(pdf_path):
             raise RuntimeError(f"Nenhuma imagem gerada de {pdf_path.name}")
         img_b64 = base64.standard_b64encode(imgs[0].read_bytes()).decode()
 
-    prompt = (
-        "Analise este documento financeiro brasileiro e retorne APENAS um JSON "
-        "(sem markdown, sem explicações) com os campos: "
-        "supplier_name, supplier_cnpj, invoice_number, due_date (YYYY-MM-DD), "
-        "issue_date (YYYY-MM-DD), competence_date (YYYY-MM), amount (decimal ponto), "
-        "currency (BRL), payment_method (boleto/pix/ted/cartao/outro), "
-        "barcode, description, document_type (boleto/nfe/nfse/fatura/recibo/outro). "
-        "Use null para campos ausentes."
-    )
     client = anthropic.Anthropic(api_key=api_key)
     resp = client.messages.create(
-        model="claude-sonnet-4-20250514", max_tokens=1000,
+        model=CLAUDE_MODEL, max_tokens=1200, temperature=0,
         messages=[{"role":"user","content":[
             {"type":"image","source":{"type":"base64",
              "media_type":"image/jpeg","data":img_b64}},
-            {"type":"text","text":prompt}
+            {"type":"text","text":EXTRACTION_PROMPT}
         ]}]
     )
     return resp.content[0].text.strip(), "pdf_vision"
 
-# --- Montar registro ---
-def build_record(pdf_path, raw, source):
-    now = datetime.utcnow().isoformat()
+
+# --- Extração de campos via Claude (texto do PDF) ---
+def extract_fields_with_claude(text: str) -> dict:
+    """Envia o texto do PDF ao Claude e retorna os campos como dict.
+
+    Lanca excecao se a chave nao estiver definida ou o retorno nao for JSON,
+    para que o chamador possa cair no fallback por regex.
+    """
+    import anthropic
+    api_key = os.getenv("ANTHROPIC_API_KEY")
+    if not api_key:
+        raise EnvironmentError("ANTHROPIC_API_KEY não definida no .env")
+
+    client = anthropic.Anthropic(api_key=api_key)
+    resp = client.messages.create(
+        model=CLAUDE_MODEL, max_tokens=1200, temperature=0,
+        messages=[{"role":"user","content":
+            f"{EXTRACTION_PROMPT}\n\nTEXTO DO DOCUMENTO:\n{text[:12000]}"
+        }]
+    )
+    return json.loads(_strip_json_fences(resp.content[0].text))
+
+# --- Helpers de normalizacao ---
+def _strip_json_fences(text: str) -> str:
+    """Remove cercas markdown (```json ... ```) que o modelo possa incluir."""
+    t = text.strip()
+    t = re.sub(r"^```(?:json)?\s*", "", t)
+    t = re.sub(r"\s*```$", "", t)
+    return t.strip()
+
+
+def _to_decimal(value, default=None):
+    """Converte texto/numero em float (2 casas). Aceita formato BR e 'R$'."""
+    if value is None:
+        return default
+    s = str(value).strip().replace("R$", "").replace(" ", "")
+    if s == "" or s.lower() in ("none", "nan", "null"):
+        return default
+    # Formato brasileiro (1.234,56) -> 1234.56
+    if re.search(r",\d{1,2}$", s):
+        s = s.replace(".", "").replace(",", ".")
+    else:
+        s = s.replace(",", "")
+    try:
+        return round(float(s), 2)
+    except ValueError:
+        return default
+
+
+def resolve_amount_charged(rec: dict) -> float:
+    """Valor a pagar (amount_charged).
+
+    Quando o campo "(=) Valor cobrado" vem em branco no boleto (0), calcula a
+    partir do documento: amount - desconto - outras deducoes + mora/multa +
+    outros acrescimos. Em boleto simples (sem deducoes/acrescimos) o resultado
+    e o proprio valor do documento. Se o campo (=) ja veio preenchido, respeita.
+    """
+    ac = rec.get("amount_charged") or 0
+    if ac:
+        return ac
+    base = rec.get("amount")
+    if base is None:
+        return 0
+    computed = (base
+                - (rec.get("discount") or 0)
+                - (rec.get("other_deductions") or 0)
+                + (rec.get("fine_interest") or 0)
+                + (rec.get("other_additions") or 0))
+    return round(computed, 2) if computed > 0 else 0
+
+
+def _due_date_ddmmyyyy(due_date) -> str:
+    """Converte vencimento 'YYYY-MM-DD' em 'DDMMYYYY'.
+
+    Sem vencimento (ou data invalida), usa a data de extracao (hoje) — regra
+    de negocio para o invoice_number sintetico.
+    """
+    if due_date:
+        try:
+            return datetime.strptime(str(due_date)[:10], "%Y-%m-%d").strftime("%d%m%Y")
+        except ValueError:
+            pass
+    return datetime.now().strftime("%d%m%Y")
+
+
+def fallback_invoice_number(pdf_path, due_date) -> str:
+    """invoice_number sintetico quando o documento nao traz N do Documento.
+
+    Regra de negocio: nome do arquivo (sem extensao) + '_' + vencimento em
+    DDMMYYYY. Ex.: 'Fatura_.Locaweb1850038_03062026'.
+    """
+    return f"{pdf_path.stem}_{_due_date_ddmmyyyy(due_date)}"
+
+
+def has_document_number(value) -> bool:
+    """True se ha um N do Documento utilizavel.
+
+    Considera AUSENTE: vazio, ou valores sem nenhum digito — caso tipico do
+    modelo capturar a Especie do Documento (DM, DS, NP) ou 'S/N' no lugar do
+    numero. Um numero de documento valido sempre contem ao menos um digito.
+    """
+    s = (value or "").strip()
+    return bool(s) and any(c.isdigit() for c in s)
+
+
+# --- Montar registro a partir de JSON (Claude texto ou visao) ---
+def build_record_from_json(pdf_path, data: dict, source: str) -> dict:
     notes = []
+    cnpj    = re.sub(r"\D", "", str(data.get("supplier_cnpj") or ""))
+    cpf     = re.sub(r"\D", "", str(data.get("supplier_cpf")  or ""))
+    barcode = re.sub(r"\D", "", str(data.get("barcode") or ""))
+    rec = {
+        "source_file": pdf_path.name,
+        "document_type": data.get("document_type") or "outro",
+        "extraction_source": source,
+        "supplier_name": data.get("supplier_name"),
+        "supplier_cnpj": cnpj if len(cnpj) == 14 else None,
+        "supplier_cpf":  cpf  if len(cpf)  == 11 else None,
+        "invoice_number": data.get("invoice_number"),
+        "competence_date": data.get("competence_date"),
+        "due_date": data.get("due_date"),
+        "issue_date": data.get("issue_date"),
+        "amount": _to_decimal(data.get("amount")),
+        "currency": data.get("currency") or "BRL",
+        "payment_method": data.get("payment_method") or "outro",
+        "barcode": barcode or None,
+        "description": data.get("description"),
+        "status": "pending",
+        "nosso_numero": data.get("nosso_numero"),
+        "payer_name": data.get("payer_name"),
+        "payer_cnpj": re.sub(r"\D", "", str(data.get("payer_cnpj") or "")) or None,
+        "processing_notes": None,
+        "extracted_at": datetime.utcnow().isoformat(),
+    }
+    for vf in VALUE_FIELDS_ZERO:
+        rec[vf] = _to_decimal(data.get(vf), 0)
+    rec["amount_charged"] = resolve_amount_charged(rec)
+    if cnpj and len(cnpj) != 14:
+        notes.append("CNPJ do beneficiario invalido")
+    if not has_document_number(rec["invoice_number"]):
+        rec["invoice_number"] = fallback_invoice_number(pdf_path, rec["due_date"])
+        notes.append("N documento ausente — gerado de arquivo+vencimento")
+    rec["processing_notes"] = " | ".join(notes) if notes else None
+    return rec
+
+
+# --- Montar registro por regex (fallback quando Claude indisponivel) ---
+def build_record_regex(pdf_path, raw: str, source: str) -> dict:
+    now = datetime.utcnow().isoformat()
+    dt  = classify_document(raw)
+    notes = ["Extração por regex (fallback) — conferir valores"]
+    rec = {
+        "source_file": pdf_path.name, "document_type": dt,
+        "extraction_source": source,
+        "supplier_name": extract_supplier_name(raw, dt),
+        "supplier_cnpj": extract_cnpj(raw),
+        "invoice_number": extract_invoice_number(raw, dt),
+        "competence_date": None,
+        "due_date": extract_date(raw), "issue_date": None,
+        "amount": extract_amount(raw), "currency": "BRL",
+        "payment_method": extract_payment_method(raw, dt),
+        "barcode": extract_barcode(raw), "description": None,
+        "status": "pending", "nosso_numero": None,
+        "supplier_cpf": None,
+        "payer_name": None, "payer_cnpj": None,
+        "processing_notes": None, "extracted_at": now,
+    }
+    for vf in VALUE_FIELDS_ZERO:
+        rec[vf] = 0
+    rec["amount_charged"] = resolve_amount_charged(rec)
+    if len(raw) < 80:
+        notes.append("Texto insuficiente — considerar Vision")
+    if not has_document_number(rec["invoice_number"]):
+        rec["invoice_number"] = fallback_invoice_number(pdf_path, rec["due_date"])
+        notes.append("N documento ausente — gerado de arquivo+vencimento")
+    rec["processing_notes"] = " | ".join(notes)
+    return rec
+
+
+# --- Montar registro (dispatcher) ---
+def build_record(pdf_path, raw, source):
     if source == "pdf_vision":
         try:
-            data = json.loads(raw)
+            data = json.loads(_strip_json_fences(raw))
         except json.JSONDecodeError:
-            data = {}
-            notes.append("Vision retornou resposta não-JSON")
-        rec = {
-            "source_file": pdf_path.name, "document_type": data.get("document_type","outro"),
-            "extraction_source": source,
-            "supplier_name": data.get("supplier_name"),
-            "supplier_cnpj": re.sub(r"\D","",data.get("supplier_cnpj") or ""),
-            "invoice_number": data.get("invoice_number"),
-            "competence_date": data.get("competence_date"),
-            "due_date": data.get("due_date"), "issue_date": data.get("issue_date"),
-            "amount": data.get("amount"), "currency": data.get("currency","BRL"),
-            "payment_method": data.get("payment_method","outro"),
-            "barcode": data.get("barcode"), "description": data.get("description"),
-            "status": "pending", "processing_notes": None, "extracted_at": now,
-        }
-    else:
-        dt = classify_document(raw)
-        rec = {
-            "source_file": pdf_path.name, "document_type": dt,
-            "extraction_source": source,
-            "supplier_name": extract_supplier_name(raw, dt),
-            "supplier_cnpj": extract_cnpj(raw),
-            "invoice_number": extract_invoice_number(raw, dt),
-            "competence_date": None,
-            "due_date": extract_date(raw), "issue_date": None,
-            "amount": extract_amount(raw), "currency": "BRL",
-            "payment_method": extract_payment_method(raw, dt),
-            "barcode": extract_barcode(raw), "description": None,
-            "status": "pending", "processing_notes": None, "extracted_at": now,
-        }
-        if len(raw) < 80:
-            notes.append("Texto insuficiente — considerar Vision")
-    if not rec.get("invoice_number"):
-        notes.append("Revisão manual necessária")
-    rec["processing_notes"] = " | ".join(notes) if notes else None
+            rec = build_record_from_json(pdf_path, {}, source)
+            rec["processing_notes"] = "Vision retornou resposta não-JSON"
+            return rec
+        return build_record_from_json(pdf_path, data, source)
+
+    # pdf_text: tenta Claude e cai para regex se falhar (sem chave, erro de API...)
+    try:
+        data = extract_fields_with_claude(raw)
+        rec = build_record_from_json(pdf_path, data, source)
+    except Exception as e:
+        log.warning(f"  Extração via Claude (texto) falhou ({e}) — fallback regex")
+        rec = build_record_regex(pdf_path, raw, source)
+
+    # Linha digitavel: prioriza a extracao deterministica do texto (mais
+    # confiavel que o LLM em sequencias longas de digitos).
+    ld = extract_linha_digitavel(raw)
+    if ld:
+        rec["barcode"] = ld
     return rec
 
 # --- Processar um PDF ---

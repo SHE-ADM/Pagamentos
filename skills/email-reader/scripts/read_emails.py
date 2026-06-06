@@ -27,6 +27,12 @@ logging.basicConfig(
 )
 log = logging.getLogger("email-reader")
 
+# Console do Windows (cp1252) nao encoda os simbolos de log (✓/→/✗).
+try:
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+except Exception:
+    pass
+
 # ---------------------------------------------------------------------------
 # Configurações
 # ---------------------------------------------------------------------------
@@ -245,12 +251,24 @@ def append_log_csv(record: dict):
 # Colunas geradas pelo extract_pdf.py (na mesma ordem do CSV de saida).
 FINANCIAL_FIELDS = [
     "source_file", "document_type", "extraction_source",
-    "supplier_name", "supplier_cnpj", "invoice_number",
+    "supplier_name", "supplier_cnpj", "supplier_cpf", "invoice_number",
     "competence_date", "due_date", "issue_date",
     "amount", "currency", "payment_method",
     "barcode", "description", "status",
+    "nosso_numero", "discount", "other_deductions",
+    "fine_interest", "other_additions", "amount_charged",
+    "payer_name", "payer_cnpj",
     "processing_notes", "extracted_at",
 ]
+
+# Campos de valor do boleto: em branco -> 0 (regra de negocio).
+FINANCIAL_VALUE_FIELDS = [
+    "discount", "other_deductions", "fine_interest",
+    "other_additions", "amount_charged",
+]
+
+# Tipos de documento que NAO geram conta a pagar.
+SKIP_ACCOUNT_TYPES = ("nfe", "nfse")
 
 
 def _none_if_blank(value):
@@ -280,22 +298,41 @@ def build_financial_payload(row: dict, gmail_message_id: str) -> dict:
     """
     payload = {f: _none_if_blank(row.get(f)) for f in FINANCIAL_FIELDS}
 
-    # supplier_cnpj e CHAR(14): so aceita exatamente 14 digitos
+    # CNPJ: CHAR(14) — exatamente 14 digitos
     cnpj = re.sub(r"\D", "", payload.get("supplier_cnpj") or "")
     payload["supplier_cnpj"] = cnpj if len(cnpj) == 14 else None
 
+    pcnpj = re.sub(r"\D", "", payload.get("payer_cnpj") or "")
+    payload["payer_cnpj"] = pcnpj if len(pcnpj) == 14 else None
+
+    # CPF: CHAR(11) — exatamente 11 digitos
+    cpf = re.sub(r"\D", "", payload.get("supplier_cpf") or "")
+    payload["supplier_cpf"] = cpf if len(cpf) == 11 else None
+
     # amount NUMERIC(15,2): garante numero ou None
-    amt = payload.get("amount")
-    if amt is not None:
-        try:
-            payload["amount"] = round(float(str(amt).replace(",", ".")), 2)
-        except ValueError:
-            payload["amount"] = None
+    payload["amount"] = _to_decimal(payload.get("amount"), None)
+
+    # Campos de valor do boleto: em branco -> 0 (NOT NULL DEFAULT 0 no banco)
+    for vf in FINANCIAL_VALUE_FIELDS:
+        payload[vf] = _to_decimal(payload.get(vf), 0)
 
     payload["currency"] = payload.get("currency") or "BRL"
     payload["status"]   = payload.get("status") or "pending"
     payload["gmail_message_id"] = gmail_message_id
     return payload
+
+
+def _to_decimal(value, default):
+    """Converte texto/numero em float (2 casas) ou retorna default."""
+    if value is None:
+        return default
+    s = str(value).strip().replace(",", ".")
+    if s == "" or s.lower() in ("none", "nan", "null"):
+        return default
+    try:
+        return round(float(s), 2)
+    except ValueError:
+        return default
 
 
 # ---------------------------------------------------------------------------
@@ -374,6 +411,10 @@ def extract_and_store_accounts(saved_pdfs: list, message_id: str,
             continue
         csvs_ok.append(csv_path)
         for row in read_extracted_rows(csv_path):
+            dtype = (row.get("document_type") or "").strip().lower()
+            if dtype in SKIP_ACCOUNT_TYPES:
+                log.info(f"    {dtype.upper()} ignorado — nao gera conta a pagar")
+                continue
             gmid = message_id if acc_index == 0 else f"{message_id}#{acc_index}"
             if ctrl.register_financial(build_financial_payload(row, gmid)):
                 accounts_saved += 1
