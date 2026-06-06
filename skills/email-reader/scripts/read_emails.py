@@ -145,6 +145,38 @@ class SupabaseControl:
             log.error(f"Erro ao registrar no Supabase: {e}")
             return False
 
+    def register_error(self, email_rec: dict, error_type: str,
+                       error_message: str, raw_payload: dict = None) -> bool:
+        """Grava falha de processamento em email_processing_errors."""
+        if not self._available:
+            log.warning(f"[ERRO-LOG] {error_type}: {error_message[:120]}")
+            return False
+        payload = {
+            "gmail_message_id": email_rec.get("message_id"),
+            "sender_name":      email_rec.get("sender_name"),
+            "sender_email":     email_rec.get("sender_email"),
+            "subject":          email_rec.get("subject"),
+            "received_at":      email_rec.get("received_at"),
+            "source_file":      email_rec.get("source_file"),
+            "error_type":       error_type,
+            "error_message":    str(error_message)[:500],
+            "raw_payload":      raw_payload,
+        }
+        try:
+            data = json.dumps(payload, default=str).encode()
+            req = urllib.request.Request(
+                f"{self.base}/rest/v1/email_processing_errors",
+                data=data,
+                headers=self.headers,
+                method="POST"
+            )
+            urllib.request.urlopen(req, timeout=10)
+            log.warning(f"  [ERRO-LOG] {error_type}: {error_message[:120]}")
+            return True
+        except Exception as e:
+            log.error(f"Falha ao gravar erro no Supabase: {e}")
+            return False
+
     def register_financial(self, payload: dict) -> bool:
         """UPSERT de uma conta extraida em financial_emails (service_role).
 
@@ -397,28 +429,71 @@ def run_extraction(pdf_path: Path) -> str | None:
 
 
 def extract_and_store_accounts(saved_pdfs: list, message_id: str,
-                               ctrl: "SupabaseControl") -> tuple:
+                               ctrl: "SupabaseControl",
+                               email_rec: dict = None) -> tuple:
     """Extrai cada PDF e grava as contas resultantes em financial_emails.
 
     Liga cada conta ao e-mail por gmail_message_id; multiplos PDFs no mesmo
     e-mail recebem sufixo (#1, #2, ...) para nao colidir na chave unica.
+    Emails defeituosos sao logados em email_processing_errors e pulados.
     Retorna (lista de CSVs gerados, total de contas gravadas).
     """
     csvs_ok, accounts_saved, acc_index = [], 0, 0
+    err_ctx = email_rec or {}
+
     for pdf_path in saved_pdfs:
         csv_path = run_extraction(pdf_path)
         if not csv_path:
+            ctrl.register_error(
+                {**err_ctx, "source_file": pdf_path.name},
+                "extracao_falhou",
+                f"extract_pdf nao gerou CSV para {pdf_path.name}"
+            )
             continue
+
         csvs_ok.append(csv_path)
         for row in read_extracted_rows(csv_path):
             dtype = (row.get("document_type") or "").strip().lower()
             if dtype in SKIP_ACCOUNT_TYPES:
                 log.info(f"    {dtype.upper()} ignorado — nao gera conta a pagar")
                 continue
-            gmid = message_id if acc_index == 0 else f"{message_id}#{acc_index}"
-            if ctrl.register_financial(build_financial_payload(row, gmid)):
+
+            gmid    = message_id if acc_index == 0 else f"{message_id}#{acc_index}"
+            payload = build_financial_payload(row, gmid)
+            ctx     = {**err_ctx, "source_file": row.get("source_file")}
+
+            # Validacao 1: valor ausente ou zero
+            if not payload.get("amount"):
+                ctrl.register_error(
+                    ctx, "sem_valor",
+                    f"Valor ausente ou zero — {row.get('source_file')}",
+                    raw_payload=row
+                )
+                acc_index += 1
+                continue
+
+            # Validacao 2: fornecedor sem nenhum identificador
+            if not any([payload.get("supplier_cnpj"),
+                        payload.get("supplier_cpf"),
+                        payload.get("supplier_name")]):
+                ctrl.register_error(
+                    ctx, "sem_fornecedor",
+                    f"CNPJ, CPF e nome do fornecedor ausentes — {row.get('source_file')}",
+                    raw_payload=row
+                )
+                acc_index += 1
+                continue
+
+            if ctrl.register_financial(payload):
                 accounts_saved += 1
+            else:
+                ctrl.register_error(
+                    ctx, "db_erro",
+                    f"Falha ao gravar em financial_emails — {row.get('source_file')}",
+                    raw_payload=row
+                )
             acc_index += 1
+
     return csvs_ok, accounts_saved
 
 # ---------------------------------------------------------------------------
@@ -476,7 +551,7 @@ def process_message(mail, uid: bytes, keywords: list,
         rec["attachment_saved"] = has_att
 
         csvs_ok, accounts_saved = extract_and_store_accounts(
-            saved_pdfs, message_id, ctrl)
+            saved_pdfs, message_id, ctrl, email_rec=rec)
 
         rec["pdf_extracted"]  = len(csvs_ok) > 0
         rec["extraction_csv"] = " | ".join(csvs_ok) if csvs_ok else None
@@ -492,6 +567,7 @@ def process_message(mail, uid: bytes, keywords: list,
     except Exception as e:
         rec["notes"] = f"Erro: {str(e)[:200]}"
         log.error(f"  Erro UID {uid}: {e}")
+        ctrl.register_error(rec, "processamento_erro", str(e))
 
     # Gravar no Supabase e no CSV local (fallback)
     ctrl.register(rec)
