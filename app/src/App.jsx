@@ -3,6 +3,7 @@ import { Routes, Route, Navigate } from 'react-router-dom'
 import Layout from './components/Layout'
 import Emails   from './pages/Emails'
 import Consulta from './pages/Consulta'
+import Erros    from './pages/Erros'
 
 export default function App() {
   return (
@@ -11,6 +12,7 @@ export default function App() {
         <Route path="/"         element={<Navigate to="/emails" replace />} />
         <Route path="/emails"   element={<Emails />} />
         <Route path="/consulta" element={<Consulta />} />
+        <Route path="/erros"    element={<Erros />} />
       </Routes>
     </Layout>
   )

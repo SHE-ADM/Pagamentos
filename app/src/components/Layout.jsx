@@ -1,6 +1,6 @@
 // src/components/Layout.jsx
 import { NavLink } from 'react-router-dom'
-import { Mail, Search, BarChart2, Edit3, Receipt } from 'lucide-react'
+import { Mail, Search, BarChart2, Edit3, Receipt, AlertTriangle } from 'lucide-react'
 
 export default function Layout({ children }) {
   return (
@@ -23,6 +23,9 @@ export default function Layout({ children }) {
           </NavLink>
           <NavLink to="/consulta" className={({isActive}) => `nav-link ${isActive ? 'active' : ''}`}>
             <Search size={15} /> Consulta
+          </NavLink>
+          <NavLink to="/erros" className={({isActive}) => `nav-link ${isActive ? 'active' : ''}`}>
+            <AlertTriangle size={15} /> Log de Erros
           </NavLink>
 
           <p className="px-2 pt-4 pb-1.5 text-[10px] font-medium text-gray-400 uppercase tracking-widest">

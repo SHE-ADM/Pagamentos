@@ -18,6 +18,13 @@ const cfg = {
   // Situacao de vencimento (due_status — migration 004)
   'A Vencer': 'bg-emerald-100 text-emerald-800',
   'Vencido':  'bg-red-100     text-red-700',
+  // Tipos de erro (email_processing_errors)
+  sem_valor:           'bg-amber-100  text-amber-800',
+  sem_fornecedor:      'bg-orange-100 text-orange-800',
+  extracao_falhou:     'bg-red-100    text-red-700',
+  db_erro:             'bg-red-100    text-red-700',
+  processamento_erro:  'bg-purple-100 text-purple-800',
+  pdf_protegido:       'bg-yellow-100 text-yellow-800',
 }
 
 export default function StatusBadge({ value }) {
