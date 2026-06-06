@@ -23,13 +23,13 @@ $DAYS_BACK    = 1          # janela de busca no IMAP; dedup impede reprocessamen
 $PYTHON = $null
 
 # 1. Python Launcher for Windows (py.exe) — mais confiável no Task Scheduler
-$pyLauncher = (Get-Command py -ErrorAction SilentlyContinue)?.Source
-if ($pyLauncher) { $PYTHON = $pyLauncher; $PYTHON_ARGS = @("-3") }
+$pyCmd = Get-Command py -ErrorAction SilentlyContinue
+if ($pyCmd) { $PYTHON = $pyCmd.Source; $PYTHON_ARGS = @("-3") }
 
 # 2. python no PATH
 if (-not $PYTHON) {
-    $pythonInPath = (Get-Command python -ErrorAction SilentlyContinue)?.Source
-    if ($pythonInPath) { $PYTHON = $pythonInPath; $PYTHON_ARGS = @() }
+    $pyCmd2 = Get-Command python -ErrorAction SilentlyContinue
+    if ($pyCmd2) { $PYTHON = $pyCmd2.Source; $PYTHON_ARGS = @() }
 }
 
 # 3. Localização padrão do instalador Windows (ajuste se necessário)
