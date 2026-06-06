@@ -6,7 +6,7 @@ Deduplicação: tabela email_control no Supabase (message_id UNIQUE).
 Nunca reprocessa um e-mail já registrado, independente de onde o script rodar.
 """
 
-import os, sys, re, imaplib, email, argparse, logging, subprocess, csv, json
+import os, sys, re, imaplib, email, argparse, logging, subprocess, csv, json, tempfile, faulthandler
 import urllib.request, urllib.error
 from email.header import decode_header
 from email.utils import parseaddr, parsedate_to_datetime
@@ -16,6 +16,18 @@ from pathlib import Path
 from dotenv import load_dotenv
 
 load_dotenv(Path(__file__).parents[3] / ".env")
+
+# ---------------------------------------------------------------------------
+# Faulthandler — captura crashes nativos (segfault, stack overflow, etc.)
+# Grava stack trace em arquivo antes do processo morrer.
+# ---------------------------------------------------------------------------
+_CRASH_LOG_DIR = Path(__file__).parents[3] / "logs" / "scheduler"
+_CRASH_LOG_DIR.mkdir(parents=True, exist_ok=True)
+_CRASH_LOG = _CRASH_LOG_DIR / f"crash_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
+_crash_file = open(_CRASH_LOG, "w", encoding="utf-8")
+_crash_file.write(f"faulthandler ativado em {datetime.now().isoformat()}\n")
+_crash_file.flush()
+faulthandler.enable(file=_crash_file, all_threads=True)
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -276,14 +288,17 @@ def match_keyword(subject: str, keywords: list) -> str | None:
 
 
 def append_log_csv(record: dict):
-    """Fallback local: acrescenta registro no CSV."""
-    write_header = not EMAILS_LOG.exists()
-    with open(EMAILS_LOG, "a", newline="", encoding="utf-8-sig") as f:
-        w = csv.DictWriter(f, fieldnames=LOG_COLUMNS, delimiter=";",
-                           extrasaction="ignore")
-        if write_header:
-            w.writeheader()
-        w.writerow(record)
+    """Fallback local: acrescenta registro no CSV. Falhas são logadas e ignoradas."""
+    try:
+        write_header = not EMAILS_LOG.exists()
+        with open(EMAILS_LOG, "a", newline="", encoding="utf-8-sig") as f:
+            w = csv.DictWriter(f, fieldnames=LOG_COLUMNS, delimiter=";",
+                               extrasaction="ignore")
+            if write_header:
+                w.writeheader()
+            w.writerow(record)
+    except Exception as e:
+        log.warning(f"Falha ao gravar log CSV local: {e}")
 
 
 # ---------------------------------------------------------------------------
@@ -309,7 +324,8 @@ FINANCIAL_VALUE_FIELDS = [
 ]
 
 # Tipos de documento que NAO geram conta a pagar.
-SKIP_ACCOUNT_TYPES = ("NF-e", "NFSE")
+# Valores em lowercase — comparados com dtype.lower() em extract_and_store_accounts().
+SKIP_ACCOUNT_TYPES = ("nfe", "nfse")
 
 
 def _none_if_blank(value):
@@ -416,22 +432,34 @@ def save_attachments(msg, sender_email: str, subject: str,
 # Acionar extract_pdf.py
 # ---------------------------------------------------------------------------
 def run_extraction(pdf_path: Path) -> str | None:
+    """Executa extract_pdf.py em subprocesso e retorna o CSV gerado por ESTE run.
+
+    Usa um diretório de saída temporário exclusivo por chamada, evitando que um
+    run com falha retorne um CSV obsoleto de execução anterior.
+    """
     if not EXTRACT_SCRIPT.exists():
         log.warning(f"extract_pdf.py não encontrado: {EXTRACT_SCRIPT}")
         return None
     try:
-        result = subprocess.run(
-            [sys.executable, str(EXTRACT_SCRIPT),
-             "--input", str(pdf_path),
-             "--output", str(CSV_OUTPUT)],
-            capture_output=True, text=True, timeout=120
-        )
-        if result.returncode == 0:
-            csvs = sorted(CSV_OUTPUT.glob("*_extracted.csv"),
+        with tempfile.TemporaryDirectory(dir=CSV_OUTPUT) as tmp_out:
+            result = subprocess.run(
+                [sys.executable, str(EXTRACT_SCRIPT),
+                 "--input", str(pdf_path),
+                 "--output", tmp_out],
+                capture_output=True, text=True, timeout=180
+            )
+            if result.returncode != 0:
+                log.error(f"    Erro extração (rc={result.returncode}): {result.stderr[:300]}")
+                return None
+            csvs = sorted(Path(tmp_out).glob("*_extracted.csv"),
                           key=lambda p: p.stat().st_mtime, reverse=True)
-            return str(csvs[0]) if csvs else None
-        log.error(f"    Erro extração: {result.stderr[:200]}")
-        return None
+            if not csvs:
+                log.warning(f"    extract_pdf concluiu sem CSV: {result.stdout[-200:]}")
+                return None
+            # Move o CSV para o diretório definitivo antes que o tempdir seja removido
+            final = CSV_OUTPUT / csvs[0].name
+            csvs[0].replace(final)
+            return str(final)
     except Exception as e:
         log.error(f"    Falha extract_pdf: {e}")
         return None
@@ -705,6 +733,13 @@ def main():
     try:
         run_reader(days=args.days, all_=args.all,
                    dry_run=args.dry_run, mark_seen=args.mark_seen)
+        # Encerramento normal: remove arquivo de crash vazio para não poluir logs/
+        try:
+            _crash_file.close()
+            if _CRASH_LOG.stat().st_size < 200:
+                _CRASH_LOG.unlink(missing_ok=True)
+        except Exception:
+            pass
     except RuntimeError as e:
         log.error(str(e))
         sys.exit(1)
