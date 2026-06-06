@@ -49,7 +49,7 @@ if (-not (Test-Path $RUNNER)) {
 # Ação: PowerShell executa run_reader.ps1
 # ---------------------------------------------------------------------------
 $action = New-ScheduledTaskAction `
-    -Execute         "powershell.exe" `
+    -Execute         "pwsh.exe" `
     -Argument        "-NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$RUNNER`"" `
     -WorkingDirectory $PROJECT_ROOT
 
