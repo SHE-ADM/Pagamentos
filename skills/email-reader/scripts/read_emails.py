@@ -52,6 +52,8 @@ KEYWORDS_DEFAULT = [
     # Guias de tributos federais/estaduais/municipais
     "simples nacional", "simei", "darf", "gps", "gare",
     "guia", "guia de pagamento", "guia de recolhimento",
+    # Conhecimento de Transporte Eletronico
+    "ct-e", "cte", "dacte",
 ]
 
 LOG_COLUMNS = [
