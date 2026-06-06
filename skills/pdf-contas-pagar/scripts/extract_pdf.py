@@ -3,7 +3,7 @@ extract_pdf.py — Extração de dados financeiros de PDFs para CSV
 Projeto: pagamentos | Skill: pdf-contas-pagar | v1.0.0
 """
 
-import os, re, sys, json, argparse, logging
+import os, re, sys, json, argparse, logging, unicodedata
 from datetime import datetime
 from pathlib import Path
 
@@ -105,24 +105,36 @@ KEYWORDS = {
     "BOLETO":     ["cedente","beneficiário","linha digitável","nosso número","sacado"],
 }
 
-# Normalização de casing e aliases.
-# .upper() quebra siglas com casing misto (CT-e, NF-e); alguns aliases colapsam em outro tipo.
-# Chaves: valor após .upper(); Valores: casing/nome canônico final gravado no banco.
+def _ns(s: str) -> str:
+    """normalize_search equivalente em Python: remove acentos + lowercase."""
+    return unicodedata.normalize('NFKD', s or '').encode('ascii', 'ignore').decode().strip().lower()
+
+# Chaves normalizadas via _ns() para lookup case+accent insensitive.
 _DOC_TYPE_NORM = {
-    "CT-E":       "CT-e",    # ABNT NBR 14724 — sempre CT-e
-    "NF-E":       "NF-e",    # SEFAZ — sempre NF-e
-    "NFE":        "NF-e",    # alias sem hifem
-    "FATURA":     "BOLETO",  # fatura de servico = boleto bancario
-    "FECHAMENTO": "BOLETO",  # extrato de fechamento = boleto
-    "COBRANÇA":   "BOLETO",  # cobrança avulsa = boleto
-    "COBRANCA":   "BOLETO",  # idem sem cedilha
-    "OUTRO":      "OUTROS",  # plural padrao
+    _ns("boleto"):     "boleto",
+    _ns("ct-e"):       "cte",
+    _ns("cte"):        "cte",
+    _ns("nf-e"):       "nfe",
+    _ns("nfe"):        "nfe",
+    _ns("nfse"):       "nfse",
+    _ns("tributo"):    "tributo",
+    _ns("seguro"):     "seguro",
+    _ns("recibo"):     "recibo",
+    _ns("contrato"):   "contrato",
+    _ns("fatura"):     "boleto",   # fatura de servico = boleto bancario
+    _ns("fechamento"): "boleto",   # extrato de fechamento = boleto
+    _ns("cobranca"):   "boleto",
+    _ns("cobrança"):   "boleto",
+    _ns("outros"):     "outro",
+    _ns("outro"):      "outro",
 }
 
 def _normalize_doc_type(raw: str) -> str:
-    """Normaliza document_type: maiúsculo por padrão; aplica aliases e casing fixo."""
-    upper = (raw or "OUTRO").strip().upper()
-    return _DOC_TYPE_NORM.get(upper, upper)
+    """Normaliza document_type para valores aceitos pelo CHECK constraint da tabela.
+
+    Aplica _ns() tanto na chave (field) quanto no valor buscado (value) — case e accent insensitive.
+    """
+    return _DOC_TYPE_NORM.get(_ns(raw or "outro"), "outro")
 
 # --- Classificação ---
 def classify_document(text: str) -> str:

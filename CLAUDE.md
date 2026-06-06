@@ -24,7 +24,13 @@ gravação no Supabase → consulta/exportação pela interface web.
 
 ```
 IMAP (Locaweb SSL)                       Frontend (app/, React+Vite)
-      │                                        │  fetch /api/emails/read
+      │                                        │
+      │                          ┌─────────────┼────────────────────────────┐
+      │                          │ /emails     │ /consulta      /erros       │
+      │                          │ email_control  financial_emails  errors   │
+      │                          │   fetch direto Supabase REST (anon key)  │
+      │                          └─────────────┼────────────────────────────┘
+      │                                        │ POST /api/emails/read
       ▼                                        ▼
 read_emails.run_reader() ◄───────── server/app.py (Flask, porta 8000)
       │                                        ▲
@@ -36,24 +42,10 @@ read_emails.run_reader() ◄───────── server/app.py (Flask, po
       │  5. UPSERT em email_control  +  fallback CSV em data/csv_output/
       ▼
 Supabase (PostgreSQL)  ── financial_emails (dados extraídos)
-                       └─ email_control     (controle/dedup)
+                       ├─ email_control     (controle/dedup)
+                       ├─ email_processing_errors (log de falhas)
+                       └─ supplier          (fornecedores auto-criados)
 ```
-
-Pontos-chave que exigem ler vários arquivos para entender:
-
-- **`run_reader()` é a única fonte de verdade da leitura** (`skills/email-reader/scripts/read_emails.py`).
-  Tanto o CLI (`main()`) quanto a API (`server/app.py`) a chamam. Ao mudar a lógica de
-  leitura, edite só `run_reader` — nunca duplique no Flask.
-- **`read_emails.py` carrega o `.env` da raiz por conta própria** (`load_dotenv(parents[3]/".env")`).
-  O `server/app.py` apenas insere o caminho da skill no `sys.path` e importa o módulo —
-  não recarrega env nem reimplementa nada.
-- **Deduplicação é por `message_id`** (header MIME), gravado em `email_control`. Se o Supabase
-  estiver indisponível, o script cai para dedup/log local em CSV (`SupabaseControl._available`).
-- **Duas chaves Supabase, dois papéis:** o frontend usa a **`anon`** (somente leitura, via
-  policies da migration 003); os scripts Python e o Flask usam a **`service_role`**
-  (`SUPABASE_SERVICE_KEY`), que ignora RLS para escrever.
-- **`extraction_source`** distingue de onde o dado veio: `email_body`, `pdf_text` (PDF com texto)
-  ou `pdf_vision` (PDF escaneado, via Claude Vision — exige poppler no PATH).
 
 ## Comandos
 
@@ -79,10 +71,18 @@ python skills\email-reader\scripts\read_emails.py --dry-run     # lista sem baix
 python skills\email-reader\scripts\read_emails.py --all --mark-seen
 ```
 
+Reprocessar PDFs que falharam na extração (`status=downloaded`, `pdf_extracted=false`):
+
+```powershell
+# Usar py -3, não python — garante sys.executable com pdfplumber disponível
+py -3 scripts\retry_extraction.py
+py -3 scripts\retry_extraction.py --dry-run
+```
+
 Extração de PDF isolada:
 
 ```powershell
-python skills\pdf-contas-pagar\scripts\extract_pdf.py --input data\pdfs_inbox\ --output data\csv_output\ --batch
+py -3 skills\pdf-contas-pagar\scripts\extract_pdf.py --input data\pdfs_inbox\ --output data\csv_output\ --batch
 ```
 
 Dependências:
@@ -92,21 +92,105 @@ pip install pdfplumber pypdf anthropic pandas python-dotenv Pillow flask
 cd app && npm install
 ```
 
-Não há suíte de testes automatizados no projeto. Validação é manual:
+Não há suíte de testes automatizados. Validação é manual:
 use `--dry-run` na CLI ou `{"dry_run": true}` no `POST /api/emails/read`.
+
+## Pontos-chave que exigem ler vários arquivos
+
+### `run_reader()` é a única fonte de verdade da leitura
+
+`skills/email-reader/scripts/read_emails.py` — tanto o CLI (`main()`) quanto a API
+(`server/app.py`) chamam `run_reader()`. Ao mudar a lógica de leitura, edite só
+`run_reader` — nunca duplique no Flask.
+
+`read_emails.py` carrega o `.env` da raiz por conta própria (`load_dotenv(parents[3]/".env")`).
+O `server/app.py` insere o caminho no `sys.path` e importa o módulo — não recarrega env.
+
+### Deduplicação por `message_id`
+
+Gravado em `email_control.message_id` (UNIQUE). `register()` usa `Prefer: resolution=ignore-duplicates` —
+mensagens já processadas são silenciosamente ignoradas, sem atualizar o registro existente.
+Se o Supabase estiver indisponível, o script cai para dedup/log local em CSV (`SupabaseControl._available`).
+
+### Duas chaves Supabase, dois papéis
+
+- **`anon`** (`VITE_SUPABASE_ANON_KEY`): usada pelo frontend para leitura via fetch direto à REST API.
+  Respeita RLS (policies de `SELECT` sem autenticação, definidas na migration 003).
+- **`service_role`** (`SUPABASE_SERVICE_KEY`): usada pelos scripts Python e Flask para escrita.
+  Ignora RLS — por isso os scripts conseguem gravar sem login.
+
+### Normalização de `document_type`
+
+`extract_pdf.py` usa `_ns()` — equivalente Python do `normalize_search()` do PostgreSQL
+(strip de acentos via `unicodedata` + lowercase). Aplicado em ambos os lados (field e value)
+do lookup em `_DOC_TYPE_NORM`, garantindo matching case e accent insensitive.
+
+O CHECK constraint em `financial_emails.document_type` usa `lower(document_type)` (migration 014),
+aceitando qualquer casing na gravação. Tipos aceitos: `boleto`, `cte`, `nfe`, `nfse`,
+`tributo`, `seguro`, `fatura`, `recibo`, `contrato`, `outro`.
+
+Tipos que **não geram conta a pagar** e são ignorados pelo pipeline: `nfe`, `nfse` —
+definidos em `SKIP_ACCOUNT_TYPES` em `read_emails.py` (lowercase, comparados com `.lower()`).
+
+### Auto-resolução de fornecedor
+
+Ao inserir em `financial_emails`, o trigger `trg_fe_supplier_id` (BEFORE INSERT OR UPDATE)
+chama `resolve_supplier_id(cnpj, cpf, name)` que:
+1. Busca por CNPJ ou CPF exato
+2. Fallback: `normalize_search(legal_name) = normalize_search(p_name)` — case e accent insensitive
+3. Se não encontrar: auto-insere na tabela `supplier` e retorna o novo `id`
+
+`normalize_search()` é uma função PostgreSQL SECURITY DEFINER — não exposta via RLS.
+
+### `extraction_source` distingue a origem dos dados
+
+- `email_body` — extraído do corpo do e-mail
+- `pdf_text` — PDF digital com texto legível (pdfplumber)
+- `pdf_vision` — PDF escaneado via Claude Vision (exige poppler no PATH)
+- `error` — falha na extração
+
+### Frontend — rotas e serviços
+
+Três páginas em `app/src/pages/`:
+
+| Rota | Componente | Tabela principal |
+|---|---|---|
+| `/emails` | `Emails.jsx` | `email_control` + detalhes de `financial_emails` por `message_id` |
+| `/consulta` | `Consulta.jsx` | `financial_emails` (paginado, filtros, exportação CSV client-side) |
+| `/erros` | `Erros.jsx` | `email_processing_errors` |
+
+Dois serviços em `app/src/services/`:
+- `supabase.js` — `fetch` direto à REST API do Supabase com PostgREST query params
+  (sem SDK). Usa `Prefer: count=exact` + `Content-Range` para paginação.
+- `emailReader.js` — `POST /api/emails/read` para o Flask local (proxiado pelo Vite em dev).
+  Lança erro descritivo quando o backend não está rodando.
 
 ## Banco de dados (Supabase)
 
 Migrations versionadas em `supabase/migrations/`, aplicadas **manualmente no SQL Editor**
-em ordem (`001` → `002` → `003`). Não há ferramenta de migration automática.
+em ordem (`001` → `014`). Não há ferramenta de migration automática.
 
-- `001_create_financial_emails.sql` — tabela de dados extraídos
-- `002_create_email_control.sql` — tabela de controle/dedup
-- `003_rls_read_policies.sql` — RLS + policies de leitura `anon`
+Tabelas principais:
 
-Ambas as tabelas têm **RLS habilitado**. Ao adicionar autenticação, trocar as policies de
-`TO anon` para `TO authenticated` (ver comentário na migration 003). Toda escrita passa pela
-`service_role`, que ignora RLS — por isso os scripts conseguem gravar mesmo sem login.
+| Tabela | Propósito |
+|---|---|
+| `email_control` | Dedup/controle de cada e-mail. `status` ∈ (received, downloaded, extracted, error, ignored) |
+| `financial_emails` | Dados extraídos dos PDFs. Uma linha por documento financeiro |
+| `email_processing_errors` | Log de falhas com `raw_payload` JSON para diagnóstico |
+| `supplier` | Fornecedores auto-criados pelo trigger `trg_fe_supplier_id` |
+
+RLS habilitado em todas as tabelas. Ao adicionar autenticação, trocar as policies de
+`TO anon` para `TO authenticated` (ver comentário na migration 003).
+
+## Windows Task Scheduler
+
+`scheduler/run_reader.ps1` roda a cada **1 hora** via Task Scheduler. Detecta automaticamente
+o Python com `pdfplumber` importável (ordem: `py -3.12`, `-3.13`, `-3.11`, `-3.10`, `-3`, PATH),
+evitando o build free-threaded `python3.14t.exe`. Logs diários em
+`logs/scheduler/reader_YYYYMMDD.log`, retidos por 30 dias.
+
+Caminho do projeto na máquina de produção: `C:\Sheild\API\Pagamentos`
+(diferente do ambiente de desenvolvimento `C:\Sheild\Projetos\Claude\Contas a pagar\Pagamentos`).
 
 ## Convenções herdadas (do workspace)
 
