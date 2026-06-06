@@ -48,7 +48,16 @@ CSV_OUTPUT.mkdir(parents=True, exist_ok=True)
 KEYWORDS_DEFAULT = [
     "boleto", "nota fiscal", "nf-e", "nfe", "fatura",
     "cobrança", "vencimento", "pagamento", "duplicata",
-    "recibo", "nfs-e", "danfe"
+    "recibo", "nfs-e", "danfe",
+    # Guias de tributos federais/estaduais/municipais
+    "simples nacional", "simei", "darf", "gps", "gare",
+    "guia", "guia de pagamento", "guia de recolhimento",
+    # Conhecimento de Transporte Eletronico
+    "ct-e", "cte", "dacte",
+    # Fechamento de conta / extrato mensal
+    "fechamento",
+    # Seguro
+    "seguro",
 ]
 
 LOG_COLUMNS = [
@@ -300,7 +309,7 @@ FINANCIAL_VALUE_FIELDS = [
 ]
 
 # Tipos de documento que NAO geram conta a pagar.
-SKIP_ACCOUNT_TYPES = ("nfe", "nfse")
+SKIP_ACCOUNT_TYPES = ("NF-e", "NFSE")
 
 
 def _none_if_blank(value):

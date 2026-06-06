@@ -73,6 +73,38 @@ export async function getFinancialEmails({
   return { data, total }
 }
 
+// ── email_processing_errors ───────────────────────────────────────────────
+
+export async function getProcessingErrors({
+  errorType, sender, dateFrom, dateTo,
+  page = 1, pageSize = 25
+} = {}) {
+  const offset = (page - 1) * pageSize
+  const url = new URL(`${BASE_URL}/rest/v1/email_processing_errors`)
+  url.searchParams.set('select', '*')
+  url.searchParams.set('order', 'logged_at.desc')
+  url.searchParams.set('limit', pageSize)
+  url.searchParams.set('offset', offset)
+  if (errorType) url.searchParams.set('error_type',   `eq.${errorType}`)
+  if (sender)    url.searchParams.set('sender_email', `ilike.*${sender}*`)
+  if (dateFrom)  url.searchParams.append('logged_at', `gte.${dateFrom}`)
+  if (dateTo)    url.searchParams.append('logged_at', `lte.${dateTo}T23:59:59`)
+  const reqHeaders = { ...headers, 'Prefer': 'count=exact' }
+  const res = await fetch(url.toString(), { headers: reqHeaders })
+  if (!res.ok) throw new Error(`Supabase ${res.status}: ${await res.text()}`)
+  const data = await res.json()
+  const cr = res.headers.get('Content-Range')
+  const total = cr ? (parseInt(cr.split('/')[1]) || 0) : data.length
+  return { data, total }
+}
+
+export async function getProcessingErrorStats() {
+  const data = await query('email_processing_errors', { select: 'error_type', limit: 5000 })
+  const counts = {}
+  for (const r of data) counts[r.error_type] = (counts[r.error_type] || 0) + 1
+  return { total: data.length, counts }
+}
+
 // Conta(s) extraida(s) ligada(s) a um e-mail, via gmail_message_id.
 // Multiplos PDFs recebem sufixo (#1, #2), por isso o filtro usa LIKE prefixo.
 export async function getAccountsByMessageId(messageId) {
