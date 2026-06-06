@@ -48,7 +48,10 @@ CSV_OUTPUT.mkdir(parents=True, exist_ok=True)
 KEYWORDS_DEFAULT = [
     "boleto", "nota fiscal", "nf-e", "nfe", "fatura",
     "cobrança", "vencimento", "pagamento", "duplicata",
-    "recibo", "nfs-e", "danfe"
+    "recibo", "nfs-e", "danfe",
+    # Guias de tributos federais/estaduais/municipais
+    "simples nacional", "simei", "darf", "gps", "gare",
+    "guia", "guia de pagamento", "guia de recolhimento",
 ]
 
 LOG_COLUMNS = [
