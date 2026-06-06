@@ -62,7 +62,7 @@ $trigger = New-ScheduledTaskTrigger `
     -Once               `
     -At                 $startAt `
     -RepetitionInterval (New-TimeSpan -Minutes $INTERVAL_MIN) `
-    -RepetitionDuration ([TimeSpan]::MaxValue)
+    -RepetitionDuration (New-TimeSpan -Days 3650)
 
 # ---------------------------------------------------------------------------
 # Configurações: segurança e comportamento em caso de sobreposição
