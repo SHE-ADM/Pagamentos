@@ -37,7 +37,7 @@ CSV_COLUMNS = [
 ]
 
 # Modelo Claude usado tanto na extracao por texto quanto na visao.
-CLAUDE_MODEL = "claude-sonnet-4-20250514"
+CLAUDE_MODEL = "claude-sonnet-4-6"
 
 # Campos de valor que, em branco no boleto, sao gravados como 0.
 VALUE_FIELDS_ZERO = [
@@ -71,7 +71,9 @@ EXTRACTION_PROMPT = (
     "- other_additions: (+) Outros acrescimos (decimal; 0 se em branco)\n"
     "- amount_charged: (=) Valor cobrado (decimal; 0 se em branco)\n"
     "- nosso_numero: Nosso Numero (texto)\n"
-    "- barcode: Linha digitavel completa (apenas digitos)\n"
+    "- barcode: codigo de barras de 44 digitos OU linha digitavel de 47 digitos "
+    "(apenas digitos, sem espacos ou pontos). Retorne o valor mais completo visivel "
+    "no documento. null se ausente.\n"
     "- payment_method: boleto|pix|ted|cartao|outro\n"
     "- competence_date: competencia no formato YYYY-MM, ou null\n"
     "- currency: moeda (BRL por padrao)\n"
@@ -120,11 +122,40 @@ def extract_date(text):
     m = re.search(r"(\d{4})-(\d{2})-(\d{2})", text)
     return f"{m.group(1)}-{m.group(2)}-{m.group(3)}" if m else None
 
+def normalize_barcode(raw):
+    """Normaliza barcode ou linha digitavel para 44 digitos.
+
+    - 44 digitos: barcode valido, retorna como esta
+    - 47 digitos: linha digitavel bancaria FEBRABAN -> converte para barcode 44
+    - Outros comprimentos ou None: retorna None
+    """
+    if not raw:
+        return None
+    digits = re.sub(r"\D", "", str(raw))
+    if len(digits) == 44:
+        return digits
+    if len(digits) == 47:
+        # Estrutura linha digitavel: banco(3)+moeda(1)+cl1(5)+dv1+cl2(10)+dv2+cl3(10)+dv3+dg(1)+venc(4)+valor(10)
+        return (
+            digits[0:4]   +   # banco + moeda
+            digits[32:33] +   # digito verificador geral
+            digits[33:47] +   # vencimento (4) + valor (10)
+            digits[4:9]   +   # campo livre 1 (5 digitos, sem DV)
+            digits[10:20] +   # campo livre 2 (10 digitos, sem DV)
+            digits[21:31]     # campo livre 3 (10 digitos, sem DV)
+        )
+    return None
+
+
 def extract_barcode(text):
+    # Prefere o padrao estruturado da linha digitavel (mais preciso)
+    ld = extract_linha_digitavel(text)
+    if ld:
+        return normalize_barcode(ld)
+    # Fallback: qualquer sequencia longa de digitos
     m = re.search(r"[\d\s\.]{47,60}", text)
     if m:
-        raw = re.sub(r"\D","",m.group())
-        return raw if len(raw) in (47,48) else None
+        return normalize_barcode(re.sub(r"\D", "", m.group()))
     return None
 
 def extract_linha_digitavel(text):
@@ -323,7 +354,7 @@ def build_record_from_json(pdf_path, data: dict, source: str) -> dict:
     notes = []
     cnpj    = re.sub(r"\D", "", str(data.get("supplier_cnpj") or ""))
     cpf     = re.sub(r"\D", "", str(data.get("supplier_cpf")  or ""))
-    barcode = re.sub(r"\D", "", str(data.get("barcode") or ""))
+    barcode = normalize_barcode(data.get("barcode"))
     rec = {
         "source_file": pdf_path.name,
         "document_type": data.get("document_type") or "outro",
