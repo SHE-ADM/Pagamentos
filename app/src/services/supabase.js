@@ -49,16 +49,28 @@ export async function getEmailStats() {
 // ── financial_emails ───────────────────────────────────────────────────────
 
 export async function getFinancialEmails({
-  supplier, docType, status, dueStatus, dateFrom, dateTo, limit = 200
+  supplier, docType, status, dueStatus, dateFrom, dateTo,
+  page = 1, pageSize = 20
 } = {}) {
-  const params = { select: '*', order: 'due_date.asc', limit }
-  if (supplier)  params['supplier_name'] = `ilike.*${supplier}*`
-  if (docType)   params['document_type'] = `eq.${docType}`
-  if (status)    params['status']        = `eq.${status}`
-  if (dueStatus) params['due_status']    = `eq.${dueStatus}`
-  if (dateFrom)  params['due_date']      = `gte.${dateFrom}`
-  if (dateTo)    params['due_date']      = (params['due_date'] || '') + `&due_date=lte.${dateTo}`
-  return query('financial_emails', params)
+  const offset = (page - 1) * pageSize
+  const url = new URL(`${BASE_URL}/rest/v1/financial_emails`)
+  url.searchParams.set('select', '*')
+  url.searchParams.set('order', 'due_date.asc')
+  url.searchParams.set('limit', pageSize)
+  url.searchParams.set('offset', offset)
+  if (supplier)  url.searchParams.set('supplier_name', `ilike.*${supplier}*`)
+  if (docType)   url.searchParams.set('document_type', `eq.${docType}`)
+  if (status)    url.searchParams.set('status', `eq.${status}`)
+  if (dueStatus) url.searchParams.set('due_status', `eq.${dueStatus}`)
+  if (dateFrom)  url.searchParams.append('due_date', `gte.${dateFrom}`)
+  if (dateTo)    url.searchParams.append('due_date', `lte.${dateTo}`)
+  const reqHeaders = { ...headers, 'Prefer': 'count=exact' }
+  const res = await fetch(url.toString(), { headers: reqHeaders })
+  if (!res.ok) throw new Error(`Supabase ${res.status}: ${await res.text()}`)
+  const data = await res.json()
+  const cr = res.headers.get('Content-Range')
+  const total = cr ? (parseInt(cr.split('/')[1]) || 0) : data.length
+  return { data, total }
 }
 
 // Conta(s) extraida(s) ligada(s) a um e-mail, via gmail_message_id.

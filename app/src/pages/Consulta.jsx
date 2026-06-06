@@ -10,6 +10,8 @@ const fmtCnpj  = c => c?.length === 14
   ? `${c.slice(0,2)}.${c.slice(2,5)}.${c.slice(5,8)}/${c.slice(8,12)}-${c.slice(12)}`
   : (c || '—')
 
+const PAGE_SIZE = 20
+
 function exportCsv(rows) {
   const cols = ['due_date','due_status','supplier_name','supplier_cnpj','document_type','amount',
                 'amount_charged','discount','other_deductions','fine_interest','other_additions',
@@ -17,7 +19,7 @@ function exportCsv(rows) {
                 'barcode','description','processing_notes']
   const header = cols.join(';')
   const body   = rows.map(r => cols.map(c => `"${(r[c]??'').toString().replace(/"/g,'""')}"`).join(';'))
-  const blob = new Blob(['\uFEFF' + [header, ...body].join('\n')], { type: 'text/csv;charset=utf-8' })
+  const blob = new Blob(['﻿' + [header, ...body].join('\n')], { type: 'text/csv;charset=utf-8' })
   const a = document.createElement('a'); a.href = URL.createObjectURL(blob)
   a.download = `financial_emails_${new Date().toISOString().slice(0,10)}.csv`
   a.click()
@@ -29,19 +31,33 @@ export default function Consulta() {
   const [sel,     setSel]     = useState(null)
   const [loading, setLoading] = useState(false)
   const [error,   setError]   = useState(null)
-  const [f, setF_] = useState({ supplier:'', docType:'', status:'', dueStatus:'', dateFrom:'', dateTo:'' })
+  const [f, setF_]      = useState({ supplier:'', docType:'', status:'', dueStatus:'', dateFrom:'', dateTo:'' })
+  const [applied, setApplied] = useState({ supplier:'', docType:'', status:'', dueStatus:'', dateFrom:'', dateTo:'' })
+  const [page,  setPage]  = useState(1)
+  const [total, setTotal] = useState(0)
   const sf = (k, v) => setF_(x => ({ ...x, [k]: v }))
 
+  // load depends on applied (snapshot do filtro no momento do Buscar) e page.
+  // useEffect dispara automaticamente quando qualquer dos dois muda.
   const load = useCallback(async () => {
     setLoading(true); setError(null)
     try {
-      const [data, st] = await Promise.all([getFinancialEmails(f), getFinancialStats()])
-      setRows(data); setStats(st)
+      const [result, st] = await Promise.all([
+        getFinancialEmails({ ...applied, page, pageSize: PAGE_SIZE }),
+        getFinancialStats()
+      ])
+      setRows(result.data); setTotal(result.total); setStats(st)
     } catch(e) { setError(e.message) }
     finally { setLoading(false) }
-  }, [f])
+  }, [applied, page])
 
-  useEffect(() => { load() }, [])
+  useEffect(() => { load() }, [load])
+
+  // Buscar: congela filtro atual em applied e volta para pagina 1.
+  // React 18 faz batch dos dois setState — gera um unico load novo.
+  const handleSearch = () => { setApplied({ ...f }); setPage(1) }
+  const goPage = (n) => setPage(n)
+  const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE))
 
   return (
     <div className="flex flex-col h-full">
@@ -52,7 +68,7 @@ export default function Consulta() {
         </div>
         <div className="flex gap-2">
           <button onClick={() => exportCsv(rows)} className="btn" disabled={!rows.length}>
-            <Download size={14} /> Exportar CSV ({rows.length})
+            <Download size={14} /> Exportar página ({rows.length})
           </button>
           <button onClick={load} className="btn" disabled={loading}>
             <RefreshCw size={14} className={loading ? 'animate-spin' : ''} />
@@ -89,7 +105,7 @@ export default function Consulta() {
         <div className="flex gap-2 mb-4 flex-wrap">
           <input className="input w-44" placeholder="Fornecedor ou CNPJ…"
             value={f.supplier} onChange={e => sf('supplier', e.target.value)}
-            onKeyDown={e => e.key === 'Enter' && load()} />
+            onKeyDown={e => e.key === 'Enter' && handleSearch()} />
           <select className="input w-32" value={f.docType} onChange={e => sf('docType', e.target.value)}>
             <option value="">Tipo</option>
             {['boleto','nfe','nfse','fatura','recibo','outro'].map(t => <option key={t}>{t}</option>)}
@@ -106,10 +122,10 @@ export default function Consulta() {
             onChange={e => sf('dateFrom', e.target.value)} title="Vencimento de" />
           <input type="date" className="input w-36" value={f.dateTo}
             onChange={e => sf('dateTo', e.target.value)} title="Vencimento até" />
-          <button onClick={load} className="btn btn-primary">Buscar</button>
+          <button onClick={handleSearch} className="btn btn-primary">Buscar</button>
         </div>
 
-        <div className="card overflow-hidden mb-4">
+        <div className="card overflow-hidden mb-2">
           <table className="w-full">
             <thead>
               <tr>
@@ -140,6 +156,28 @@ export default function Consulta() {
               ))}
             </tbody>
           </table>
+        </div>
+
+        <div className="flex items-center justify-between py-2 px-1 mb-4">
+          <span className="text-xs text-gray-500">
+            {total} registros · Página {page} de {totalPages}
+          </span>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => goPage(page - 1)}
+              disabled={page <= 1 || loading}
+              className="btn"
+            >
+              ← Anterior
+            </button>
+            <button
+              onClick={() => goPage(page + 1)}
+              disabled={page >= totalPages || loading}
+              className="btn"
+            >
+              Próxima →
+            </button>
+          </div>
         </div>
 
         {sel && (
