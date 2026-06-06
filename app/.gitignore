@@ -1,0 +1,20 @@
+# Frontend (React + Vite) — pagamentos
+
+# Dependências
+node_modules/
+
+# Build
+dist/
+dist-ssr/
+
+# Cache do Vite
+.vite/
+
+# Variáveis de ambiente (contêm a chave anon do Supabase)
+.env
+.env.local
+.env.*.local
+
+# Logs
+*.log
+npm-debug.log*
