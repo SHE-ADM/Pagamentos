@@ -1,4 +1,4 @@
-# email-pago
+# pagamentos
 
 Pipeline financeiro automatizado para gestão de contas a pagar.
 
@@ -15,7 +15,7 @@ Pipeline financeiro automatizado para gestão de contas a pagar.
 ## Estrutura do Projeto
 
 ```
-email-pago/
+pagamentos/
 ├── .env.example              ← Modelo de variáveis de ambiente
 ├── .env                      ← Variáveis reais (NÃO commitar)
 ├── .gitignore

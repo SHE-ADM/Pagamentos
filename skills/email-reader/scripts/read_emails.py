@@ -1,6 +1,6 @@
 """
 read_emails.py — Leitura de e-mails financeiros via IMAP + controle Supabase
-Projeto: email-pago | Skill: email-reader | v2.0.0
+Projeto: pagamentos | Skill: email-reader | v2.0.0
 
 Deduplicação: tabela email_control no Supabase (message_id UNIQUE).
 Nunca reprocessa um e-mail já registrado, independente de onde o script rodar.
@@ -26,6 +26,12 @@ logging.basicConfig(
     handlers=[logging.StreamHandler(sys.stdout)]
 )
 log = logging.getLogger("email-reader")
+
+# Console do Windows (cp1252) nao encoda os simbolos de log (✓/→/✗).
+try:
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+except Exception:
+    pass
 
 # ---------------------------------------------------------------------------
 # Configurações
@@ -139,6 +145,33 @@ class SupabaseControl:
             log.error(f"Erro ao registrar no Supabase: {e}")
             return False
 
+    def register_financial(self, payload: dict) -> bool:
+        """UPSERT de uma conta extraida em financial_emails (service_role).
+
+        Deduplica/atualiza por gmail_message_id. O campo due_status NAO e
+        enviado: a trigger trg_fe_due_status o calcula no banco a partir de
+        due_date x extracted_at (migration 004).
+        """
+        if not self._available:
+            return False
+        try:
+            data = json.dumps(payload).encode()
+            req = urllib.request.Request(
+                f"{self.base}/rest/v1/financial_emails?on_conflict=gmail_message_id",
+                data=data,
+                headers={**self.headers, "Prefer": "resolution=merge-duplicates"},
+                method="POST"
+            )
+            urllib.request.urlopen(req, timeout=10)
+            return True
+        except urllib.error.HTTPError as e:
+            body = e.read().decode()
+            log.error(f"Erro ao gravar conta no Supabase: {e.code} {body[:200]}")
+            return False
+        except Exception as e:
+            log.error(f"Erro ao gravar conta no Supabase: {e}")
+            return False
+
     @staticmethod
     def _derive_status(rec: dict) -> str:
         if rec.get("pdf_extracted"):   return "extracted"
@@ -213,6 +246,96 @@ def append_log_csv(record: dict):
 
 
 # ---------------------------------------------------------------------------
+# Gravacao da conta extraida em financial_emails
+# ---------------------------------------------------------------------------
+# Colunas geradas pelo extract_pdf.py (na mesma ordem do CSV de saida).
+FINANCIAL_FIELDS = [
+    "source_file", "document_type", "extraction_source",
+    "supplier_name", "supplier_cnpj", "supplier_cpf", "invoice_number",
+    "competence_date", "due_date", "issue_date",
+    "amount", "currency", "payment_method",
+    "barcode", "description", "status",
+    "nosso_numero", "discount", "other_deductions",
+    "fine_interest", "other_additions", "amount_charged",
+    "payer_name", "payer_cnpj",
+    "processing_notes", "extracted_at",
+]
+
+# Campos de valor do boleto: em branco -> 0 (regra de negocio).
+FINANCIAL_VALUE_FIELDS = [
+    "discount", "other_deductions", "fine_interest",
+    "other_additions", "amount_charged",
+]
+
+# Tipos de documento que NAO geram conta a pagar.
+SKIP_ACCOUNT_TYPES = ("nfe", "nfse")
+
+
+def _none_if_blank(value):
+    """Normaliza vazios do CSV ('', 'None', 'nan') para None."""
+    if value is None:
+        return None
+    s = str(value).strip()
+    return None if s == "" or s.lower() in ("none", "nan", "null") else s
+
+
+def read_extracted_rows(csv_path: str) -> list:
+    """Le as linhas de um CSV gerado pelo extract_pdf.py (utf-8-sig, sep ';')."""
+    try:
+        with open(csv_path, encoding="utf-8-sig", newline="") as f:
+            return list(csv.DictReader(f, delimiter=";"))
+    except Exception as e:
+        log.warning(f"Falha ao ler CSV de extracao {csv_path}: {e}")
+        return []
+
+
+def build_financial_payload(row: dict, gmail_message_id: str) -> dict:
+    """Converte uma linha do CSV de extracao em payload para financial_emails.
+
+    Sanitiza os campos com restricao no schema (CHAR(14) do CNPJ e
+    NUMERIC do amount) para evitar rejeicao do INSERT. O due_status NAO
+    e calculado aqui — fica por conta da trigger no banco.
+    """
+    payload = {f: _none_if_blank(row.get(f)) for f in FINANCIAL_FIELDS}
+
+    # CNPJ: CHAR(14) — exatamente 14 digitos
+    cnpj = re.sub(r"\D", "", payload.get("supplier_cnpj") or "")
+    payload["supplier_cnpj"] = cnpj if len(cnpj) == 14 else None
+
+    pcnpj = re.sub(r"\D", "", payload.get("payer_cnpj") or "")
+    payload["payer_cnpj"] = pcnpj if len(pcnpj) == 14 else None
+
+    # CPF: CHAR(11) — exatamente 11 digitos
+    cpf = re.sub(r"\D", "", payload.get("supplier_cpf") or "")
+    payload["supplier_cpf"] = cpf if len(cpf) == 11 else None
+
+    # amount NUMERIC(15,2): garante numero ou None
+    payload["amount"] = _to_decimal(payload.get("amount"), None)
+
+    # Campos de valor do boleto: em branco -> 0 (NOT NULL DEFAULT 0 no banco)
+    for vf in FINANCIAL_VALUE_FIELDS:
+        payload[vf] = _to_decimal(payload.get(vf), 0)
+
+    payload["currency"] = payload.get("currency") or "BRL"
+    payload["status"]   = payload.get("status") or "pending"
+    payload["gmail_message_id"] = gmail_message_id
+    return payload
+
+
+def _to_decimal(value, default):
+    """Converte texto/numero em float (2 casas) ou retorna default."""
+    if value is None:
+        return default
+    s = str(value).strip().replace(",", ".")
+    if s == "" or s.lower() in ("none", "nan", "null"):
+        return default
+    try:
+        return round(float(s), 2)
+    except ValueError:
+        return default
+
+
+# ---------------------------------------------------------------------------
 # Download de anexos PDF
 # ---------------------------------------------------------------------------
 def save_attachments(msg, sender_email: str, subject: str,
@@ -272,6 +395,32 @@ def run_extraction(pdf_path: Path) -> str | None:
         log.error(f"    Falha extract_pdf: {e}")
         return None
 
+
+def extract_and_store_accounts(saved_pdfs: list, message_id: str,
+                               ctrl: "SupabaseControl") -> tuple:
+    """Extrai cada PDF e grava as contas resultantes em financial_emails.
+
+    Liga cada conta ao e-mail por gmail_message_id; multiplos PDFs no mesmo
+    e-mail recebem sufixo (#1, #2, ...) para nao colidir na chave unica.
+    Retorna (lista de CSVs gerados, total de contas gravadas).
+    """
+    csvs_ok, accounts_saved, acc_index = [], 0, 0
+    for pdf_path in saved_pdfs:
+        csv_path = run_extraction(pdf_path)
+        if not csv_path:
+            continue
+        csvs_ok.append(csv_path)
+        for row in read_extracted_rows(csv_path):
+            dtype = (row.get("document_type") or "").strip().lower()
+            if dtype in SKIP_ACCOUNT_TYPES:
+                log.info(f"    {dtype.upper()} ignorado — nao gera conta a pagar")
+                continue
+            gmid = message_id if acc_index == 0 else f"{message_id}#{acc_index}"
+            if ctrl.register_financial(build_financial_payload(row, gmid)):
+                accounts_saved += 1
+            acc_index += 1
+    return csvs_ok, accounts_saved
+
 # ---------------------------------------------------------------------------
 # Processar um e-mail
 # ---------------------------------------------------------------------------
@@ -326,14 +475,13 @@ def process_message(mail, uid: bytes, keywords: list,
         rec["attachment_names"] = " | ".join(att_names) if att_names else None
         rec["attachment_saved"] = has_att
 
-        csvs_ok = []
-        for pdf_path in saved_pdfs:
-            csv_path = run_extraction(pdf_path)
-            if csv_path:
-                csvs_ok.append(csv_path)
+        csvs_ok, accounts_saved = extract_and_store_accounts(
+            saved_pdfs, message_id, ctrl)
 
         rec["pdf_extracted"]  = len(csvs_ok) > 0
         rec["extraction_csv"] = " | ".join(csvs_ok) if csvs_ok else None
+        if accounts_saved:
+            log.info(f"    {accounts_saved} conta(s) gravada(s) em financial_emails")
 
         if not has_att:
             rec["notes"] = "Sem anexo PDF — registrado para revisão"

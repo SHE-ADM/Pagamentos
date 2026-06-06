@@ -14,9 +14,9 @@ Email IMAP ──► n8n
 
 ```
 Command:  python
-Args:     C:\Sheild\Projetos\Claude\Pagamentos\email-pago\skills\pdf-contas-pagar\scripts\extract_pdf.py
+Args:     C:\Sheild\Projetos\Claude\Contas a pagar\Pagamentos\skills\pdf-contas-pagar\scripts\extract_pdf.py
           --input {{ $json.attachment_path }}
-          --output C:\Sheild\Projetos\Claude\Pagamentos\email-pago\data\csv_output\
+          --output C:\Sheild\Projetos\Claude\Contas a pagar\Pagamentos\data\csv_output\
 ```
 
 ## n8n — UPSERT no Supabase (HTTP Request)

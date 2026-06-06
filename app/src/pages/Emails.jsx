@@ -1,7 +1,7 @@
 // src/pages/Emails.jsx
 import { useState, useEffect, useCallback } from 'react'
 import { RefreshCw, Mail, FileCheck, AlertCircle, CopyMinus, Inbox, CheckCircle2 } from 'lucide-react'
-import { getEmailControl, getEmailStats } from '../services/supabase'
+import { getEmailControl, getEmailStats, getAccountsByMessageId } from '../services/supabase'
 import { triggerEmailRead } from '../services/emailReader'
 import StatusBadge from '../components/StatusBadge'
 
@@ -9,6 +9,8 @@ const fmt = (iso) => iso ? new Date(iso).toLocaleString('pt-BR', {
   day:'2-digit', month:'2-digit', year:'numeric',
   hour:'2-digit', minute:'2-digit'
 }) : '—'
+const fmtDate  = d => d ? new Date(d + 'T00:00:00').toLocaleDateString('pt-BR') : '—'
+const fmtMoney = v => v != null ? Number(v).toLocaleString('pt-BR', { style:'currency', currency:'BRL' }) : '—'
 
 export default function Emails() {
   const [rows,    setRows]    = useState([])
@@ -18,6 +20,7 @@ export default function Emails() {
   const [error,   setError]   = useState(null)
   const [reading, setReading] = useState(false)
   const [readMsg, setReadMsg] = useState(null)
+  const [accounts, setAccounts] = useState([])
   const [filters, setFilters] = useState({ status: '', sender: '', days: 30 })
 
   const load = useCallback(async () => {
@@ -36,6 +39,14 @@ export default function Emails() {
   }, [filters])
 
   useEffect(() => { load() }, [load])
+
+  // Carrega a(s) conta(s) registrada(s) ligada(s) ao e-mail selecionado.
+  useEffect(() => {
+    if (!sel?.message_id) { setAccounts([]); return }
+    getAccountsByMessageId(sel.message_id)
+      .then(setAccounts)
+      .catch(() => setAccounts([]))
+  }, [sel])
 
   // Dispara a leitura IMAP no backend e recarrega a tabela ao concluir.
   const handleRead = async () => {
@@ -182,6 +193,32 @@ export default function Emails() {
                 </div>
               ))}
             </dl>
+
+            <div className="mt-4">
+              <p className="text-[10px] text-gray-400 mb-2 uppercase tracking-wide">
+                Conta(s) registrada(s) — financial_emails
+              </p>
+              {accounts.length === 0 ? (
+                <p className="text-xs text-gray-400">
+                  Nenhuma conta gerada a partir deste e-mail.
+                </p>
+              ) : (
+                <div className="space-y-1.5">
+                  {accounts.map(a => (
+                    <div key={a.id}
+                      className="flex items-center justify-between gap-3 p-2 bg-gray-50 rounded-lg text-xs">
+                      <span className="truncate text-gray-700 flex-1" title={a.supplier_name}>
+                        {a.supplier_name || '—'}
+                      </span>
+                      <span className="font-mono text-gray-500 whitespace-nowrap">{fmtDate(a.due_date)}</span>
+                      <span className="font-mono font-medium text-gray-700 whitespace-nowrap">{fmtMoney(a.amount)}</span>
+                      <StatusBadge value={a.due_status} />
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+
             {sel.body_preview && (
               <div className="mt-3 p-3 bg-gray-50 rounded-lg">
                 <p className="text-[10px] text-gray-400 mb-1 uppercase tracking-wide">Preview do corpo</p>

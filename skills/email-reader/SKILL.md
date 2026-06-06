@@ -12,7 +12,7 @@ description: >
   variação de leitura e processamento de e-mail financeiro. Acione mesmo que o usuário
   não diga explicitamente "skill" ou "IMAP".
 
-project: email-pago
+project: pagamentos
 version: 1.0.0
 compatibility:
   python: ">=3.10"

@@ -1,7 +1,7 @@
 -- =============================================================
 -- 003_rls_read_policies.sql
 -- Habilita RLS em email_control e cria policies de leitura (anon)
--- Projeto: email-pago | Data: 2026-06-05
+-- Projeto: pagamentos | Data: 2026-06-05
 --
 -- Contexto: o frontend (app/) usa a chave anon e na fase 1 e
 -- somente-leitura (paginas E-mails e Consulta). A escrita e feita
