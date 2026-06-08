@@ -1,8 +1,11 @@
 // src/components/Layout.jsx
 import { NavLink } from 'react-router-dom'
-import { Mail, Search, BarChart2, Edit3, Receipt, AlertTriangle } from 'lucide-react'
+import { Mail, Search, BarChart2, Edit3, Receipt, AlertTriangle, LogOut } from 'lucide-react'
+import { useAuth } from '../contexts/AuthContext'
 
 export default function Layout({ children }) {
+  const { user, signOut } = useAuth()
+
   return (
     <div className="flex h-screen bg-gray-50">
       <aside className="w-52 flex-shrink-0 bg-white border-r border-gray-200 flex flex-col">
@@ -39,7 +42,22 @@ export default function Layout({ children }) {
           </span>
         </nav>
 
-        <div className="px-4 py-3 border-t border-gray-200">
+        <div className="px-4 py-3 border-t border-gray-200 space-y-2">
+          {user && (
+            <div className="flex items-center justify-between gap-2">
+              <span className="text-xs text-gray-600 truncate" title={user.email}>
+                {user.email}
+              </span>
+              <button
+                type="button"
+                onClick={signOut}
+                className="flex items-center gap-1 text-xs text-gray-400 hover:text-red-600 transition-colors"
+                title="Sair"
+              >
+                <LogOut size={14} /> Sair
+              </button>
+            </div>
+          )}
           <div className="text-[10px] text-gray-400">v1.0.0 — fase 1</div>
         </div>
       </aside>
