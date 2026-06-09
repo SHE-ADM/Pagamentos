@@ -1,9 +1,14 @@
-// src/components/molecules/AuthHeroHeader.jsx
+// src/components/molecules/AuthHeroHeader.tsx
 // Molecule — cabecalho decorativo das telas de autenticacao: gradiente
 // `auth` com circulos sobrepostos, recriando em CSS a composicao da
 // referencia visual (Login Page.png), com o titulo da tela por cima.
 
-export default function AuthHeroHeader({ title, subtitle }) {
+interface AuthHeroHeaderProps {
+  title: string;
+  subtitle?: string;
+}
+
+export default function AuthHeroHeader({ title, subtitle }: AuthHeroHeaderProps) {
   return (
     <div className="relative h-40 overflow-hidden rounded-t-2xl bg-gradient-auth">
       <div className="absolute -left-10 -top-16 h-44 w-44 rounded-full bg-white/10" />
@@ -15,5 +20,5 @@ export default function AuthHeroHeader({ title, subtitle }) {
         {subtitle && <p className="mt-1 text-xs text-white/80">{subtitle}</p>}
       </div>
     </div>
-  )
+  );
 }

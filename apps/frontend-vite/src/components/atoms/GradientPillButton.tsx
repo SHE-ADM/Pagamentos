@@ -1,8 +1,20 @@
-// src/components/atoms/GradientPillButton.jsx
+import type { ButtonHTMLAttributes, ReactNode } from 'react';
+
+interface GradientPillButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
+  loading?: boolean;
+  loadingLabel?: string;
+  children: ReactNode;
+}
+
 // Atom — botao em formato pill com gradiente da paleta `auth`, com estado
 // de carregamento. Usado nas acoes principais das telas de autenticacao.
-
-export default function GradientPillButton({ loading, loadingLabel, children, className = '', ...buttonProps }) {
+export default function GradientPillButton({
+  loading,
+  loadingLabel,
+  children,
+  className = '',
+  ...buttonProps
+}: GradientPillButtonProps) {
   return (
     <button
       className={`w-full rounded-full bg-gradient-auth text-white font-semibold text-sm
@@ -13,5 +25,5 @@ export default function GradientPillButton({ loading, loadingLabel, children, cl
     >
       {loading ? (loadingLabel ?? 'Aguarde…') : children}
     </button>
-  )
+  );
 }

@@ -1,44 +1,39 @@
-import { useState } from 'react'
-import { Link, useNavigate } from 'react-router-dom'
-import { Eye, EyeOff } from 'lucide-react'
-import { supabase } from '../../lib/supabaseClient'
-import FilledTextField from '../atoms/FilledTextField'
-import AccentPillButton from '../atoms/AccentPillButton'
-import SocialLinksBar from '../molecules/SocialLinksBar'
+import { useState, type FormEvent } from 'react';
+import { Link, useNavigate } from 'react-router-dom';
+import { Eye, EyeOff } from 'lucide-react';
+import { supabase } from '../../lib/supabaseClient';
+import FilledTextField from '../atoms/FilledTextField';
+import AccentPillButton from '../atoms/AccentPillButton';
+import SocialLinksBar from '../molecules/SocialLinksBar';
 
 export default function LoginForm() {
-  const navigate = useNavigate()
-  const [email, setEmail]               = useState('')
-  const [password, setPassword]         = useState('')
-  const [showPassword, setShowPassword] = useState(false)
-  const [remember, setRemember]         = useState(true)
-  const [error, setError]               = useState(null)
-  const [loading, setLoading]           = useState(false)
+  const navigate = useNavigate();
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [showPassword, setShowPassword] = useState(false);
+  const [remember, setRemember] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false);
 
-  const handleSubmit = async (e) => {
-    e.preventDefault()
-    setError(null)
-    setLoading(true)
-    const { error } = await supabase.auth.signInWithPassword({ email, password })
-    setLoading(false)
+  const handleSubmit = async (e: FormEvent<HTMLFormElement>) => {
+    e.preventDefault();
+    setError(null);
+    setLoading(true);
+    const { error } = await supabase.auth.signInWithPassword({ email, password });
+    setLoading(false);
     if (error) {
-      setError('E-mail ou senha incorretos.')
-      return
+      setError('E-mail ou senha incorretos.');
+      return;
     }
-    navigate('/emails')
-  }
+    navigate('/emails');
+  };
 
   return (
     <form onSubmit={handleSubmit} className="flex flex-col gap-5 w-full">
-
       {/* Cabeçalho */}
       <div className="flex flex-col gap-1.5">
-        <h1 className="text-4xl font-extrabold text-loginGreen-ink tracking-tight leading-none">
-          Login
-        </h1>
-        <p className="text-lg font-medium text-loginGreen-accent">
-          Boas-vindas! Faça seu login.
-        </p>
+        <h1 className="text-4xl font-extrabold text-loginGreen-ink tracking-tight leading-none">Login</h1>
+        <p className="text-lg font-medium text-loginGreen-accent">Boas-vindas! Faça seu login.</p>
       </div>
 
       {/* Campo e-mail */}
@@ -93,11 +88,7 @@ export default function LoginForm() {
       </div>
 
       {/* Mensagem de erro */}
-      {error && (
-        <p className="bg-red-50 text-red-700 rounded-lg px-3.5 py-2.5 text-sm">
-          {error}
-        </p>
-      )}
+      {error && <p className="bg-red-50 text-red-700 rounded-lg px-3.5 py-2.5 text-sm">{error}</p>}
 
       {/* Botão Login */}
       <AccentPillButton type="submit" loading={loading} loadingLabel="Entrando…">
@@ -106,7 +97,6 @@ export default function LoginForm() {
 
       {/* Logos sociais */}
       <SocialLinksBar />
-
     </form>
-  )
+  );
 }

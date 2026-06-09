@@ -1,12 +1,19 @@
+// src/components/molecules/SocialLinksBar.tsx
 // TODO: preencher com o numero da empresa em formato internacional
 // quando definido (ex.: '5511999999999') para o link do WhatsApp funcionar.
-const WHATSAPP_NUMBER = ''
+const WHATSAPP_NUMBER = '';
 
-const links = [
-  { name: 'Otimotex', href: 'https://www.otimotex.com.br/',     logo: '/logos/otimotex.png' },
-  { name: 'Lebianco', href: 'https://www.lebianco.com.br/',     logo: '/logos/Lebianco-vermelho.png' },
+interface SocialLink {
+  name: string;
+  href: string;
+  logo: string;
+}
+
+const links: SocialLink[] = [
+  { name: 'Otimotex', href: 'https://www.otimotex.com.br/', logo: '/logos/otimotex.png' },
+  { name: 'Lebianco', href: 'https://www.lebianco.com.br/', logo: '/logos/Lebianco-vermelho.png' },
   { name: 'WhatsApp', href: `https://wa.me/${WHATSAPP_NUMBER}`, logo: '/logos/whatsapp.png' },
-]
+];
 
 // Molecule — fileira de logos clicáveis com rótulo abaixo de cada círculo.
 export default function SocialLinksBar() {
@@ -35,5 +42,5 @@ export default function SocialLinksBar() {
         ))}
       </div>
     </div>
-  )
+  );
 }

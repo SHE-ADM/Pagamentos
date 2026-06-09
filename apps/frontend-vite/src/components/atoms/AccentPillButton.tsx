@@ -1,8 +1,15 @@
-import { ArrowRight } from 'lucide-react'
+import { ArrowRight } from 'lucide-react';
+import type { ButtonHTMLAttributes, ReactNode } from 'react';
+
+interface AccentPillButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
+  loading?: boolean;
+  loadingLabel?: string;
+  children: ReactNode;
+}
 
 // Atom — botão de ação primária com ícone de avanço.
 // Estados: default (verde), hover (verde escuro), disabled/loading (verde atenuado).
-export default function AccentPillButton({ loading, loadingLabel, children, ...buttonProps }) {
+export default function AccentPillButton({ loading, loadingLabel, children, ...buttonProps }: AccentPillButtonProps) {
   return (
     <button
       {...buttonProps}
@@ -12,12 +19,14 @@ export default function AccentPillButton({ loading, loadingLabel, children, ...b
         bg-loginGreen-accent hover:bg-loginGreen-accentHover
         disabled:bg-loginGreen-accentMuted disabled:cursor-not-allowed"
     >
-      {loading ? (loadingLabel ?? 'Aguarde…') : (
+      {loading ? (
+        (loadingLabel ?? 'Aguarde…')
+      ) : (
         <>
           {children}
           <ArrowRight size={20} strokeWidth={2.5} />
         </>
       )}
     </button>
-  )
+  );
 }

@@ -1,10 +1,11 @@
-// src/components/Layout.jsx
-import { NavLink } from 'react-router-dom'
-import { Mail, Search, BarChart2, Edit3, Receipt, AlertTriangle, LogOut } from 'lucide-react'
-import { useAuth } from '../contexts/AuthContext'
+// src/components/Layout.tsx
+import type { ReactNode } from 'react';
+import { NavLink } from 'react-router-dom';
+import { Mail, Search, BarChart2, Edit3, Receipt, AlertTriangle, LogOut } from 'lucide-react';
+import { useAuth } from '../contexts/AuthContext';
 
-export default function Layout({ children }) {
-  const { user, signOut } = useAuth()
+export default function Layout({ children }: { children: ReactNode }) {
+  const { user, signOut } = useAuth();
 
   return (
     <div className="flex h-screen bg-gray-50">
@@ -21,13 +22,13 @@ export default function Layout({ children }) {
           <p className="px-2 pt-1 pb-1.5 text-[10px] font-medium text-gray-400 uppercase tracking-widest">
             Ativo
           </p>
-          <NavLink to="/emails"   className={({isActive}) => `nav-link ${isActive ? 'active' : ''}`}>
+          <NavLink to="/emails" className={({ isActive }) => `nav-link ${isActive ? 'active' : ''}`}>
             <Mail size={15} /> E-mails
           </NavLink>
-          <NavLink to="/consulta" className={({isActive}) => `nav-link ${isActive ? 'active' : ''}`}>
+          <NavLink to="/consulta" className={({ isActive }) => `nav-link ${isActive ? 'active' : ''}`}>
             <Search size={15} /> Consulta
           </NavLink>
-          <NavLink to="/erros" className={({isActive}) => `nav-link ${isActive ? 'active' : ''}`}>
+          <NavLink to="/erros" className={({ isActive }) => `nav-link ${isActive ? 'active' : ''}`}>
             <AlertTriangle size={15} /> Log de Erros
           </NavLink>
 
@@ -62,9 +63,7 @@ export default function Layout({ children }) {
         </div>
       </aside>
 
-      <main className="flex-1 overflow-hidden flex flex-col">
-        {children}
-      </main>
+      <main className="flex-1 overflow-hidden flex flex-col">{children}</main>
     </div>
-  )
+  );
 }

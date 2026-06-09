@@ -1,44 +1,44 @@
-// src/components/organisms/ForgotPasswordForm.jsx
+// src/components/organisms/ForgotPasswordForm.tsx
 // Organism — solicita o link de redefinicao de senha por e-mail via
 // supabase.auth.resetPasswordForEmail. Mostra sempre uma mensagem de
 // sucesso generica (nao revela se o e-mail existe — regra de seguranca).
 
-import { useState } from 'react'
-import { Link } from 'react-router-dom'
-import { supabase } from '../../lib/supabaseClient'
-import AuthInput from '../atoms/AuthInput'
-import GradientPillButton from '../atoms/GradientPillButton'
-import InlineMessage from '../molecules/InlineMessage'
+import { useState, type FormEvent } from 'react';
+import { Link } from 'react-router-dom';
+import { supabase } from '../../lib/supabaseClient';
+import AuthInput from '../atoms/AuthInput';
+import GradientPillButton from '../atoms/GradientPillButton';
+import InlineMessage from '../molecules/InlineMessage';
 
 export default function ForgotPasswordForm() {
-  const [email, setEmail]     = useState('')
-  const [sent, setSent]       = useState(false)
-  const [loading, setLoading] = useState(false)
+  const [email, setEmail] = useState('');
+  const [sent, setSent] = useState(false);
+  const [loading, setLoading] = useState(false);
 
-  const handleSubmit = async (e) => {
-    e.preventDefault()
-    setLoading(true)
+  const handleSubmit = async (e: FormEvent<HTMLFormElement>) => {
+    e.preventDefault();
+    setLoading(true);
 
     await supabase.auth.resetPasswordForEmail(email, {
       redirectTo: `${window.location.origin}/auth/reset-password`,
-    })
+    });
 
-    setLoading(false)
-    setSent(true)
-  }
+    setLoading(false);
+    setSent(true);
+  };
 
   if (sent) {
     return (
       <div className="space-y-4">
         <InlineMessage type="success">
-          Se este e-mail estiver cadastrado, você receberá um link em instantes.
-          Verifique também sua caixa de spam.
+          Se este e-mail estiver cadastrado, você receberá um link em instantes. Verifique também sua caixa de
+          spam.
         </InlineMessage>
         <Link to="/auth/login" className="block text-center text-xs text-auth-navy hover:underline">
           ← Voltar ao login
         </Link>
       </div>
-    )
+    );
   }
 
   return (
@@ -65,5 +65,5 @@ export default function ForgotPasswordForm() {
         ← Voltar ao login
       </Link>
     </form>
-  )
+  );
 }
