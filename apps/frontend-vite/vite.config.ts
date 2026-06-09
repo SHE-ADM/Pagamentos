@@ -4,7 +4,9 @@ import react from '@vitejs/plugin-react';
 import tsconfigPaths from 'vite-tsconfig-paths';
 
 // Proxy /api → backend Flask local (server/app.py). Evita CORS no dev.
-// (Fase 6 repontará para a camada Next.js api-backend na porta 3001.)
+// A leitura de e-mails (POST /api/emails/read) é servida diretamente pelo
+// Flask. A Next API (apps/api-backend, porta 3000) é camada de CRUD/dados
+// independente e não intercepta este caminho.
 export default defineConfig({
   plugins: [react(), tsconfigPaths()],
   server: {
