@@ -48,16 +48,4 @@ data/samples/**
 
 # Python
 __pycache__/
-*.py[cod]
-*.pyo
-.venv/
-venv/
-*.egg-info/
-
-# Editores
-.vscode/
-.idea/
-*.swp
-*~
-Thumbs.db
-desktop.ini
+*.pyc
