@@ -182,22 +182,29 @@ cd app && npm install
 
 ### Estrutura Atomic Design
 
+**Dois estilos visuais de auth coexistem** — não misturar componentes entre eles:
+
+| Estilo | Páginas | Tokens | Componentes-chave |
+|---|---|---|---|
+| **v2 loginGreen** | `LoginPage` | `loginGreen-*`, `font-jakarta`, `border-8` frame | `FilledTextField`, `AccentPillButton`, `SocialLinksBar` |
+| **auth gradient** | `ForgotPasswordPage`, `ResetPasswordPage` | `bg-gradient-auth`, `auth-navy` | `AuthLayout`, `AuthInput`, `GradientPillButton`, `InlineMessage` |
+
 ```
 app/src/components/
 ├── atoms/
-│   ├── FilledTextField.jsx    # campo com label, fundo verde, foco via useState
-│   ├── AccentPillButton.jsx   # botão primário verde + ArrowRight
-│   ├── AuthInput.jsx          # input das páginas Esqueci/Redefinir senha
-│   └── GradientPillButton.jsx
+│   ├── FilledTextField.jsx    # (v2) campo label + fundo verde + foco via useState
+│   ├── AccentPillButton.jsx   # (v2) botão primário verde + ArrowRight
+│   ├── AuthInput.jsx          # (gradient) campo label + input + erro inline
+│   └── GradientPillButton.jsx # (gradient) botão pill com bg-gradient-auth
 ├── molecules/
-│   ├── SocialLinksBar.jsx     # círculos Otimotex/Lebianco/WhatsApp + "fale com a gente"
-│   ├── AuthHeroHeader.jsx
-│   └── InlineMessage.jsx
+│   ├── SocialLinksBar.jsx     # (v2) círculos Otimotex/Lebianco/WhatsApp
+│   ├── AuthHeroHeader.jsx     # (gradient) header decorativo com círculos sobrepostos
+│   └── InlineMessage.jsx      # (gradient) banner sucesso/erro — nunca alert()
 ├── organisms/
-│   ├── LoginForm.jsx          # estado + validação + Supabase
-│   ├── ForgotPasswordForm.jsx
-│   └── ResetPasswordForm.jsx
-├── AuthLayout.jsx
+│   ├── LoginForm.jsx          # (v2) estado + validação + supabase.auth.signInWithPassword
+│   ├── ForgotPasswordForm.jsx # (gradient) resetPasswordForEmail + mensagem genérica
+│   └── ResetPasswordForm.jsx  # (gradient) updateUser + signOut + redirect
+├── AuthLayout.jsx             # (gradient) wrapper full-page para Forgot/Reset
 ├── Layout.jsx
 ├── ProtectedRoute.jsx
 ├── StatusBadge.jsx
@@ -242,15 +249,6 @@ Usar o token mais próximo; valor arbitrário só como exceção documentada.
 | `text-lg` | 18px | subtítulo do login |
 | `text-xl` | 20px | texto do botão primário |
 | `text-4xl` | 36px | h1 do login (design original: 42px — token mais próximo) |
-
-**Pesos:**
-
-| Classe | Peso | Uso |
-|---|---|---|
-| `font-medium` | 500 | subtítulo, input, meta row, labels sociais |
-| `font-semibold` | 600 | link "Esqueci a senha" |
-| `font-bold` | 700 | label de campo, botão |
-| `font-extrabold` | 800 | h1 do login |
 
 **Espaçamento e dimensões recorrentes:**
 
@@ -365,8 +363,3 @@ Toda nova tabela deve seguir o mesmo padrão.
 
 Produção: `C:\Sheild\API\Pagamentos` (dev: `C:\Sheild\Projetos\Claude\Contas a pagar\Pagamentos`).
 
-## Convenções herdadas (do workspace)
-
-Respostas em pt-BR formal, código/identificadores em inglês, `NUMERIC(15,2)` para
-valores monetários, nunca commitar `.env`.
-Veja `C:\Sheild\Projetos\Claude\CLAUDE.md` — ignorar as partes sobre monorepo TS/Express/shadcn.
