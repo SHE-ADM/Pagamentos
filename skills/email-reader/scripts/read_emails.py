@@ -59,7 +59,8 @@ CSV_OUTPUT.mkdir(parents=True, exist_ok=True)
 
 KEYWORDS_DEFAULT = [
     "boleto", "nota fiscal", "nf-e", "nfe", "fatura",
-    "cobrança", "vencimento", "pagamento", "duplicata",
+    "cobrança", "vencimento", "pagamento", "pagamentos",
+    "pagamento fornecedor", "pagamentos fornecedores", "duplicata",
     "recibo", "nfs-e", "danfe",
     # Guias de tributos federais/estaduais/municipais
     "simples nacional", "simei", "darf", "gps", "gare",
@@ -393,6 +394,141 @@ def _to_decimal(value, default):
 
 
 # ---------------------------------------------------------------------------
+# Extracao a partir do corpo do e-mail (sem anexo valido)
+# ---------------------------------------------------------------------------
+# Pedido informal de pagamento a fornecedor — nome, valor e dados bancarios no
+# proprio corpo da mensagem (geralmente PIX), sem PDF anexado. O schema ja
+# reserva extraction_source='email_body' para esse caso (migration 001).
+#
+# Termos podem aparecer em qualquer caixa/acentuacao ("Pix"/"PIX"/"pix",
+# "Responsável"/"responsavel") — os regex abaixo sao case-insensitive e
+# cobrem a unica variacao de acento relevante ("respons[aá]vel").
+_BODY_NAME_RE   = re.compile(r"(?im)^[ \t]*(?:nome|respons[aá]vel)[ \t]*[:\-]?[ \t]*(.+?)[ \t]*$")
+_BODY_AMOUNT_RE = re.compile(r"R\$\s*([\d.,]+)")
+_BODY_PIX_RE    = re.compile(r"\bpix\b", re.IGNORECASE)
+_BODY_DUE_RE    = re.compile(r"(?i)venc(?:imento|to)?\D{0,15}?(\d{2}/\d{2}/\d{4})")
+
+
+def _brl_to_decimal(raw: str | None):
+    """Converte valor em formato BR ('8.650,00' ou '8650,00') para float.
+
+    O _to_decimal acima nao trata separador de milhar — necessario aqui pois
+    o valor vem direto do texto do e-mail, nao normalizado pelo extract_pdf.
+    """
+    if not raw:
+        return None
+    s = re.sub(r"[^\d,.]", "", raw)
+    if re.search(r",\d{1,2}$", s):
+        s = s.replace(".", "").replace(",", ".")
+    else:
+        s = s.replace(",", "")
+    try:
+        return round(float(s), 2)
+    except ValueError:
+        return None
+
+
+def _br_date_to_iso(raw: str | None) -> str | None:
+    """Converte data 'dd/mm/aaaa' do corpo do e-mail para 'aaaa-mm-dd'."""
+    if not raw:
+        return None
+    try:
+        return datetime.strptime(raw, "%d/%m/%Y").strftime("%Y-%m-%d")
+    except ValueError:
+        return None
+
+
+def _iso_date_to_ddmmyy(iso_date: str | None) -> str | None:
+    """Converte data 'aaaa-mm-dd' para 'ddmmaa' — usado para compor invoice_number."""
+    if not iso_date:
+        return None
+    try:
+        return datetime.strptime(iso_date[:10], "%Y-%m-%d").strftime("%d%m%y")
+    except ValueError:
+        return None
+
+
+def extract_from_email_body(body_text: str, received_at: str, message_id: str) -> dict | None:
+    """Monta um payload de financial_emails a partir do corpo do e-mail.
+
+    Cobre o pedido informal de pagamento (sem PDF valido ou anexo que nao e
+    documento financeiro): nome do fornecedor e valor sao obrigatorios — sem
+    nenhum dos dois a mensagem nao segue o padrao esperado e a funcao
+    retorna None (o chamador registra o e-mail em email_processing_errors).
+
+    Regra de tipo de pagamento / vencimento:
+      - "pix" no corpo define payment_method='pix'; sem data de vencimento
+        explicita, o vencimento e a propria data de envio do e-mail
+        (pagamento a vista — mesma regra usada para boletos sem vencimento)
+      - "vencimento"/"vencto"/"venc" seguido de uma data prevalece sobre a
+        data implicita do PIX, mesmo com o termo "pix" presente
+      - sem nenhum dos dois termos, payment_method='outro' — valor aceito
+        pelo CHECK constraint da coluna (equivalente ao 'outros' da regra de
+        negocio; gravar 'outros' violaria o constraint, como 'outro' ja e
+        usado de forma consistente em document_type)
+
+    Sem anexo nao ha data de emissao nem numero de documento no PDF — por isso:
+      - issue_date  = data de envio do e-mail (received_at)
+      - invoice_number = "{document_type}_{ddmmaa}", ddmmaa derivado de issue_date
+        (ex.: 'outro_080626'), mantendo o registro identificavel
+    """
+    if not body_text:
+        return None
+
+    name_match    = _BODY_NAME_RE.search(body_text)
+    supplier_name = name_match.group(1).strip() if name_match else None
+
+    amount_match = _BODY_AMOUNT_RE.search(body_text)
+    amount       = _brl_to_decimal(amount_match.group(1)) if amount_match else None
+
+    if not supplier_name and not amount:
+        return None
+
+    has_pix   = bool(_BODY_PIX_RE.search(body_text))
+    due_match = _BODY_DUE_RE.search(body_text)
+    due_date  = _br_date_to_iso(due_match.group(1)) if due_match else None
+
+    if has_pix:
+        payment_method = "pix"
+        if not due_date:
+            due_date = (received_at or "")[:10] or None
+    else:
+        payment_method = "outro"
+
+    document_type = "outro"
+
+    # Sem documento anexado nao ha data de emissao nem numero de documento —
+    # emissao usa a data de envio do e-mail, e o numero e composto a partir
+    # do tipo + data de emissao (ddmmaa), para manter o registro identificavel
+    issue_date     = (received_at or "")[:10] or None
+    invoice_number = None
+    ddmmyy         = _iso_date_to_ddmmyy(issue_date)
+    if ddmmyy:
+        invoice_number = f"{document_type}_{ddmmyy}"
+
+    payload = {f: None for f in FINANCIAL_FIELDS}
+    payload.update({
+        "document_type":     document_type,
+        "extraction_source": "email_body",
+        "supplier_name":     supplier_name,
+        "amount":            amount,
+        "currency":          "BRL",
+        "payment_method":    payment_method,
+        "due_date":          due_date,
+        "issue_date":        issue_date,
+        "invoice_number":    invoice_number,
+        "status":            "pending",
+        "extracted_at":      datetime.now(timezone.utc).isoformat(),
+    })
+    for vf in FINANCIAL_VALUE_FIELDS:
+        payload[vf] = 0
+    payload["amount_charged"]     = amount or 0
+    payload["gmail_message_id"]   = message_id
+    payload["email_body_excerpt"] = body_text.strip()
+    return payload
+
+
+# ---------------------------------------------------------------------------
 # Download de anexos PDF
 # ---------------------------------------------------------------------------
 def save_attachments(msg, sender_email: str, subject: str,
@@ -533,6 +669,49 @@ def extract_and_store_accounts(saved_pdfs: list, message_id: str,
 
     return csvs_ok, accounts_saved
 
+
+def try_extract_from_body(email_rec: dict, body_text: str, received_at: str,
+                          message_id: str, ctrl: "SupabaseControl") -> bool:
+    """Tenta gravar uma conta extraida do corpo do e-mail (sem PDF valido).
+
+    Acionado quando o e-mail nao tem anexo PDF, ou o anexo existente nao
+    corresponde as regras de negocio (extracao falhou ou nao gerou conta
+    valida). Aplica as mesmas validacoes de negocio do fluxo de PDF — valor
+    e identificacao do fornecedor obrigatorios — antes de gravar. Retorna
+    True se uma conta foi gravada com sucesso.
+    """
+    payload = extract_from_email_body(body_text, received_at, message_id)
+    if payload is None:
+        ctrl.register_error(
+            email_rec, "sem_fornecedor",
+            "Corpo do e-mail sem nome/responsavel e sem valor — sem PDF valido"
+        )
+        return False
+
+    if not payload.get("amount"):
+        ctrl.register_error(
+            email_rec, "sem_valor",
+            "Valor ausente no corpo do e-mail — sem PDF valido", raw_payload=payload
+        )
+        return False
+
+    if not payload.get("supplier_name"):
+        ctrl.register_error(
+            email_rec, "sem_fornecedor",
+            "Nome do fornecedor ausente no corpo do e-mail — sem PDF valido", raw_payload=payload
+        )
+        return False
+
+    if ctrl.register_financial(payload):
+        log.info("    Conta extraída do corpo do e-mail e gravada em financial_emails")
+        return True
+
+    ctrl.register_error(
+        email_rec, "db_erro",
+        "Falha ao gravar conta extraida do corpo do e-mail", raw_payload=payload
+    )
+    return False
+
 # ---------------------------------------------------------------------------
 # Processar um e-mail
 # ---------------------------------------------------------------------------
@@ -597,6 +776,14 @@ def process_message(mail, uid: bytes, keywords: list,
 
         if not has_att:
             rec["notes"] = "Sem anexo PDF — registrado para revisão"
+
+        # Sem anexo, ou anexo existente nao gerou conta valida — tenta
+        # extrair os dados de pagamento do corpo do e-mail (pedido informal
+        # de pagamento a fornecedor: nome, valor e dados bancarios no texto)
+        if not has_att or accounts_saved == 0:
+            if try_extract_from_body(rec, body_text, received_at, message_id, ctrl):
+                rec["pdf_extracted"] = True
+                rec["notes"]         = "Conta extraída do corpo do e-mail"
 
         if mark_seen:
             mail.uid("store", uid, "+FLAGS", "\\Seen")

@@ -3,6 +3,7 @@ import { useState, useEffect, useCallback } from 'react'
 import { RefreshCw, Download, AlertCircle, TrendingUp, Clock, DollarSign, FileText } from 'lucide-react'
 import { getFinancialEmails, getFinancialStats } from '../services/supabase'
 import StatusBadge from '../components/StatusBadge'
+import ExpandableText from '../components/ExpandableText'
 
 const fmtDate  = d => d ? new Date(d + 'T00:00:00').toLocaleDateString('pt-BR') : '—'
 const fmtMoney = v => v != null ? Number(v).toLocaleString('pt-BR', { style:'currency', currency:'BRL' }) : '—'
@@ -16,7 +17,7 @@ function exportCsv(rows) {
   const cols = ['due_date','due_status','supplier_name','supplier_cnpj','document_type','amount',
                 'amount_charged','discount','other_deductions','fine_interest','other_additions',
                 'payment_method','nosso_numero','extraction_source','status','invoice_number',
-                'barcode','description','processing_notes']
+                'barcode','description','email_body_excerpt','processing_notes']
   const header = cols.join(';')
   const body   = rows.map(r => cols.map(c => `"${(r[c]??'').toString().replace(/"/g,'""')}"`).join(';'))
   const blob = new Blob(['﻿' + [header, ...body].join('\n')], { type: 'text/csv;charset=utf-8' })
@@ -130,7 +131,7 @@ export default function Consulta() {
             <thead>
               <tr>
                 {['Vencimento','Situação','Fornecedor','CNPJ','Tipo','Valor','Pagamento','Extração','Status'].map(h =>
-                  <th key={h} className="table-header">{h}</th>
+                  <th key={h} className={`table-header ${h === 'Valor' ? 'text-right' : ''}`}>{h}</th>
                 )}
               </tr>
             </thead>
@@ -148,7 +149,7 @@ export default function Consulta() {
                   <td className="table-cell text-xs max-w-[150px] truncate" title={r.supplier_name}>{r.supplier_name || '—'}</td>
                   <td className="table-cell text-xs font-mono text-gray-500">{fmtCnpj(r.supplier_cnpj)}</td>
                   <td className="table-cell"><StatusBadge value={r.document_type} /></td>
-                  <td className="table-cell text-xs font-mono font-medium">{fmtMoney(r.amount)}</td>
+                  <td className="table-cell text-xs font-mono font-medium text-right">{fmtMoney(r.amount)}</td>
                   <td className="table-cell"><StatusBadge value={r.payment_method} /></td>
                   <td className="table-cell"><StatusBadge value={r.extraction_source} /></td>
                   <td className="table-cell"><StatusBadge value={r.status} /></td>
@@ -217,6 +218,12 @@ export default function Consulta() {
               <div className="mt-3 p-3 bg-gray-50 rounded-lg">
                 <p className="text-[10px] text-gray-400 mb-1 uppercase tracking-wide">Descrição</p>
                 <p className="text-xs text-gray-600">{sel.description}</p>
+              </div>
+            )}
+            {sel.email_body_excerpt && (
+              <div className="mt-3 p-3 bg-gray-50 rounded-lg">
+                <p className="text-[10px] text-gray-400 mb-1 uppercase tracking-wide">Mensagem do e-mail</p>
+                <ExpandableText text={sel.email_body_excerpt} />
               </div>
             )}
           </div>

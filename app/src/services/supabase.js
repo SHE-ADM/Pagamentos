@@ -1,19 +1,34 @@
 // src/services/supabase.js
 // Acesso direto à REST API do Supabase — sem dependência do cliente oficial
+// para leitura de dados (o cliente oficial em lib/supabaseClient.js cuida
+// apenas da sessão de autenticação).
+//
+// As policies de RLS exigem o papel `authenticated` (migration 015) — por
+// isso o header Authorization carrega o token da sessão do usuário logado,
+// não a anon key. O `apikey` continua sendo a anon key: ela só identifica o
+// projeto perante o Supabase, quem define o papel para o RLS é o JWT do
+// Authorization.
+
+import { supabase } from '../lib/supabaseClient'
 
 const BASE_URL = import.meta.env.VITE_SUPABASE_URL
 const ANON_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY
 
-const headers = {
-  'apikey':        ANON_KEY,
-  'Authorization': `Bearer ${ANON_KEY}`,
-  'Content-Type':  'application/json',
+async function authHeaders(extra = {}) {
+  const { data } = await supabase.auth.getSession()
+  const token = data.session?.access_token ?? ANON_KEY
+  return {
+    'apikey':        ANON_KEY,
+    'Authorization': `Bearer ${token}`,
+    'Content-Type':  'application/json',
+    ...extra,
+  }
 }
 
 async function query(table, params = {}) {
   const url = new URL(`${BASE_URL}/rest/v1/${table}`)
   Object.entries(params).forEach(([k, v]) => v !== undefined && url.searchParams.set(k, v))
-  const res = await fetch(url.toString(), { headers })
+  const res = await fetch(url.toString(), { headers: await authHeaders() })
   if (!res.ok) throw new Error(`Supabase ${res.status}: ${await res.text()}`)
   return res.json()
 }
@@ -64,7 +79,7 @@ export async function getFinancialEmails({
   if (dueStatus) url.searchParams.set('due_status', `eq.${dueStatus}`)
   if (dateFrom)  url.searchParams.append('due_date', `gte.${dateFrom}`)
   if (dateTo)    url.searchParams.append('due_date', `lte.${dateTo}`)
-  const reqHeaders = { ...headers, 'Prefer': 'count=exact' }
+  const reqHeaders = await authHeaders({ 'Prefer': 'count=exact' })
   const res = await fetch(url.toString(), { headers: reqHeaders })
   if (!res.ok) throw new Error(`Supabase ${res.status}: ${await res.text()}`)
   const data = await res.json()
@@ -89,7 +104,7 @@ export async function getProcessingErrors({
   if (sender)    url.searchParams.set('sender_email', `ilike.*${sender}*`)
   if (dateFrom)  url.searchParams.append('logged_at', `gte.${dateFrom}`)
   if (dateTo)    url.searchParams.append('logged_at', `lte.${dateTo}T23:59:59`)
-  const reqHeaders = { ...headers, 'Prefer': 'count=exact' }
+  const reqHeaders = await authHeaders({ 'Prefer': 'count=exact' })
   const res = await fetch(url.toString(), { headers: reqHeaders })
   if (!res.ok) throw new Error(`Supabase ${res.status}: ${await res.text()}`)
   const data = await res.json()
