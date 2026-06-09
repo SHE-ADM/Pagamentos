@@ -8,21 +8,31 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 O fluxo central é: e-mail (IMAP) → download de PDF → extração via Claude API →
 gravação no Supabase → consulta/exportação pela interface web.
 
-> **Atenção — diverge do padrão Sheild do workspace.** Os `CLAUDE.md` e `rules/` em
-> `C:\Sheild\Projetos\Claude\` assumem o monorepo `client/server/shared`, Supabase Auth,
-> shadcn/ui e TypeScript. Este projeto **não segue** isso:
-> - Backend é **Python (Flask)** em `server/`, não Express/TS.
-> - Frontend é **React + Vite + Tailwind em JavaScript puro** (`app/`), **sem shadcn/ui**,
->   **sem TypeScript**.
-> - A lógica de negócio vive em **Claude Skills** (`skills/`), não em rotas Express.
-> - Acesso de leitura ao Supabase é via **REST direto com `fetch`**
->   (`app/src/services/supabase.js`), sem o SDK `@supabase/supabase-js` — apenas a
->   sessão de autenticação usa o cliente oficial (`app/src/lib/supabaseClient.js`).
+> **Arquitetura: monorepo Sheild com backend híbrido.** Desde a reestruturação de
+> 2026-06-09, o projeto adota o monorepo `apps/* + packages/shared` (npm workspaces),
+> mas o backend é **híbrido** — pontos onde ainda diverge do padrão genérico:
+> - **Pipeline Python permanece** (`server/` Flask + `skills/`): IMAP, extração de PDF
+>   (Claude Vision + pdfplumber + Poppler). Não há equivalente TS viável; é o coração
+>   do sistema e não foi reescrito.
+> - **`apps/api-backend`** (Next.js 16 + TypeScript, porta 3000) é a camada nova de
+>   dados/CRUD. Aciona o pipeline Python via **ponte HTTP** (`lib/python-bridge.ts` →
+>   Flask), não por subprocess.
+> - **`apps/frontend-vite`** (React 18 + Vite, porta 5173) é o app interno, agora
+>   **100% TypeScript** (`.tsx/.ts`), **sem shadcn/ui**. Continua lendo o Supabase via
+>   **REST direto com `fetch`** (`src/services/supabase.ts`); só a sessão de auth usa o
+>   SDK oficial (`src/lib/supabaseClient.ts`).
+> - **`apps/portal-next`** (Next.js 16 + Tailwind v4, porta 3002) é o portal público
+>   (scaffold).
+> - **`packages/shared`** (`@sheild/shared`) — schemas Zod, fonte de verdade de tipos
+>   entre frontends e API.
 >
-> Não aplique os templates Sheild Canvas, shadcn ou os componentes de exemplo do
-> `auth-specs.md` aqui — mas o **fluxo de autenticação em 3 etapas** e a **regra de
-> não-autorregistro** definidos em `auth-specs.md` foram seguidos, adaptados para `.jsx`
-> puro com Tailwind. Mantenha o estilo existente do restante do projeto.
+> Não aplique os templates Sheild Canvas nem shadcn aqui. O **fluxo de autenticação em
+> 3 etapas** e a **regra de não-autorregistro** (`auth-specs.md`) foram seguidos,
+> adaptados para `.tsx` com Tailwind. Mantenha o estilo existente do restante do projeto.
+>
+> **Desvio justificado:** migrations ficam em `supabase/migrations/` (não
+> `server/db/migrations/`) — preserva a convenção numérica 001+ e o fluxo manual de
+> aplicação no SQL Editor.
 
 ---
 
@@ -53,25 +63,36 @@ Estas regras se aplicam a **todo** código novo ou alterado neste projeto, sem e
 
 - **Todo componente novo ou alterado de forma relevante deve ter ao menos um teste**
   cobrindo renderização e a interação principal (ex.: submit, expand/collapse, validação).
-- O projeto **ainda não tem suíte configurada** — ao criar o primeiro teste, configurar
-  **Vitest + Testing Library** e adicionar o script `"test": "vitest"` no
-  `app/package.json`. Não postergar: o teste vai junto com o componente no mesmo commit.
-- Referência de granularidade: `ExpandableText.jsx`, `StatusBadge.jsx`, `FilledTextField.jsx`.
+- **Suíte configurada (Vitest):** `apps/frontend-vite` (jsdom + Testing Library) e
+  `apps/api-backend` (env node). Rode `npm test` na raiz (roda todos os workspaces) ou
+  `npm run test --workspace=apps/<app>`.
+- Referência de granularidade: `frontend-vite/src/components/StatusBadge.test.tsx`,
+  `ExpandableText.test.tsx`, `organisms/LoginForm.test.tsx`.
+- **Follow-up:** `apps/portal-next` ainda sem testes — bloqueado pelo conflito de duas
+  versões do React no monorepo (18 em frontend-vite hoisted vs 19 nos apps Next).
+  Resolver alinhando versões ou com setup de teste dedicado.
 
 ### 3 — REST no backend
 
-Toda rota nova em `server/app.py` deve seguir:
+Duas camadas, dois envelopes — **não misturar**:
+
+| Camada | Onde | Envelope |
+|---|---|---|
+| Flask (Python) | `server/app.py` | `{"ok": bool, ...}` — legado, manter |
+| Next API (TS) | `apps/api-backend/app/api/**/route.ts` | `{ success, data?, error?, meta? }` (`lib/response.ts`) |
+
+Regras comuns a toda rota nova:
 
 | Decisão | Regra |
 |---|---|
 | URL | Substantivo no plural (`/api/contas`, `/api/contas/:id`) |
 | Verbos | `GET` leitura · `POST` criação/ação · `PUT`/`PATCH` atualização · `DELETE` remoção |
-| Status codes | `200`/`201` sucesso · `400` validação · `401`/`403` auth · `404` não encontrado · `5xx` servidor |
-| Envelope | `{"ok": bool, ...}` — não introduzir formatos novos |
+| Status codes | `200`/`201` sucesso · `400`/`422` validação · `401`/`403` auth · `404` não encontrado · `5xx` servidor |
 | Sessão | Stateless — autenticação via `Authorization: Bearer <token>` no header |
 
-A exceção aceita: `POST /api/emails/read` usa POST + corpo de parâmetros porque é
-uma **ação de disparo**, não um recurso CRUD.
+Rotas novas de CRUD/dados vão na **Next API** (envelope `{ success, ... }`, Repository →
+Service → Route, conforme `monorepo-crud-spec.md`). A exceção aceita: `POST /api/emails/read`
+usa POST + corpo de parâmetros porque é uma **ação de disparo**, não um recurso CRUD.
 
 ### 4 — Conventional Commits (todo o projeto)
 
@@ -101,18 +122,22 @@ O acesso às rotas internas (`/emails`, `/consulta`, `/erros`) exige login.
 - **Sem auto-cadastro**: usuários criados apenas pelo admin no Supabase Dashboard
   (`Authentication → Users → Add user`, com "Auto Confirm User" marcado).
   `supabase.auth.signUp()` nunca é chamado pelo frontend.
-- **Três fluxos** (`app/src/pages/auth/`): `LoginPage` → `signInWithPassword`,
+- **Três fluxos** (`apps/frontend-vite/src/pages/auth/`): `LoginPage` → `signInWithPassword`,
   `ForgotPasswordPage` → `resetPasswordForEmail`, `ResetPasswordPage` → `updateUser`.
-- Estado de sessão: `AuthContext`/`useAuth` (`app/src/contexts/AuthContext.jsx`),
+- Estado de sessão: `AuthContext`/`useAuth` (`apps/frontend-vite/src/contexts/AuthContext.tsx`),
   via `supabase.auth.getSession()` + `onAuthStateChange`.
-- Rotas protegidas: `ProtectedRoute.jsx` redireciona para `/auth/login` sem sessão.
+- Rotas protegidas: `ProtectedRoute.tsx` redireciona para `/auth/login` sem sessão.
 - RLS: migration `015` trocou policies de leitura de `TO anon` para `TO authenticated` —
-  `services/supabase.js` envia `access_token` no header `Authorization` (além do `apikey`).
+  `services/supabase.ts` envia `access_token` no header `Authorization` (além do `apikey`).
 
 ## Arquitetura e fluxo de dados
 
+Monorepo (npm workspaces): `apps/frontend-vite` (SPA interno, React 18/TS, :5173),
+`apps/api-backend` (Next 16/TS, camada de dados, :3000), `apps/portal-next` (portal
+público, Next 16, :3002), `packages/shared` (Zod) + camada Python (`server/`, `skills/`).
+
 ```
-IMAP (Locaweb SSL)                       Frontend (app/, React+Vite)
+IMAP (Locaweb SSL)                  apps/frontend-vite (React+Vite TS, :5173)
       │                                        │
       │                          ┌─────────────┼────────────────────────────┐
       │                          │ /emails     │ /consulta      /erros       │
@@ -121,13 +146,13 @@ IMAP (Locaweb SSL)                       Frontend (app/, React+Vite)
       │                          │   (apikey: anon + Authorization: token)   │
       │                          └─────────────┼────────────────────────────┘
       │                                        │ POST /api/emails/read
-      ▼                                        ▼
+      │                                        ▼  (proxy /api → Flask :8000)
 read_emails.run_reader() ◄───────── server/app.py (Flask, porta 8000)
       │                                        ▲
-      │ por e-mail:                            │ proxy /api (vite.config.js)
-      │  1. filtra por palavra-chave no assunto
+      │ por e-mail:                            │ ponte HTTP (lib/python-bridge.ts)
+      │  1. filtra por palavra-chave no assunto│
       │  2. deduplica via email_control.message_id (UNIQUE)
-      │  3. salva PDF em data/pdfs_inbox/
+      │  3. salva PDF em data/pdfs_inbox/   apps/api-backend (Next API, :3000)
       │  4. subprocess → extract_pdf.py (Claude API: pdf_text ou pdf_vision)
       │  5. UPSERT em email_control  +  fallback CSV em data/csv_output/
       ▼
@@ -137,18 +162,32 @@ Supabase (PostgreSQL)  ── financial_emails (dados extraídos)
                        └─ supplier          (fornecedores auto-criados)
 ```
 
+> **Topologia de portas (dev):** o frontend (`:5173`) chama o Flask (`:8000`) **direto**
+> via proxy `/api` para a leitura de e-mails. A Next API (`:3000`) é camada de dados
+> independente (CRUD futuro) e expõe a mesma ponte ao Flask; não intercepta o caminho
+> atual do frontend.
+
 ## Comandos
 
+Dependências dos apps: `npm install` na **raiz** (workspaces — lockfile único).
+
 ```powershell
-# Terminal 1 — backend Flask (porta 8000)
+# Terminal 1 — backend Flask (porta 8000) — necessário para leitura de e-mails
 python server\app.py
 
-# Terminal 2 — frontend Vite (porta 5173; proxy /api → 127.0.0.1:8000)
-cd app
-npm run dev
-npm run build
-npm run preview
+# Terminal 2 — frontend Vite interno (porta 5173; proxy /api → Flask :8000)
+npm run dev:vite
+
+# Terminal 3 — Next API de dados (porta 3000) — opcional p/ o fluxo atual
+npm run dev:api
+
+# Terminal 4 — portal público (porta 3002) — opcional
+npm run dev:portal
 ```
+
+Scripts da raiz: `npm test` · `npm run typecheck` · `npm run lint` (rodam em todos os
+workspaces via `--workspaces --if-present`). Builds: `npm run build:vite|build:api|build:portal`.
+Ordem de startup quando se testa o fluxo de e-mail ponta a ponta: **Flask antes** da Next API.
 
 Leitura de e-mails:
 
@@ -175,36 +214,48 @@ Dependências:
 
 ```powershell
 pip install pdfplumber pypdf anthropic pandas python-dotenv Pillow flask
-cd app && npm install
+npm install   # na raiz do monorepo — instala todos os workspaces
 ```
 
 ## Frontend — componentes e design system
 
 ### Estrutura Atomic Design
 
+**Dois estilos visuais de auth coexistem** — não misturar componentes entre eles:
+
+| Estilo | Páginas | Tokens | Componentes-chave |
+|---|---|---|---|
+| **v2 loginGreen** | `LoginPage` | `loginGreen-*`, `font-jakarta`, `border-8` frame | `FilledTextField`, `AccentPillButton`, `SocialLinksBar` |
+| **auth gradient** | `ForgotPasswordPage`, `ResetPasswordPage` | `bg-gradient-auth`, `auth-navy` | `AuthLayout`, `AuthInput`, `GradientPillButton`, `InlineMessage` |
+
+Tudo em TypeScript (`.tsx/.ts`) sob `apps/frontend-vite/src/`:
+
 ```
-app/src/components/
+apps/frontend-vite/src/components/
 ├── atoms/
-│   ├── FilledTextField.jsx    # campo com label, fundo verde, foco via useState
-│   ├── AccentPillButton.jsx   # botão primário verde + ArrowRight
-│   ├── AuthInput.jsx          # input das páginas Esqueci/Redefinir senha
-│   └── GradientPillButton.jsx
+│   ├── FilledTextField.tsx    # (v2) campo label + fundo verde + foco via useState
+│   ├── AccentPillButton.tsx   # (v2) botão primário verde + ArrowRight
+│   ├── AuthInput.tsx          # (gradient) campo label + input + erro inline
+│   └── GradientPillButton.tsx # (gradient) botão pill com bg-gradient-auth
 ├── molecules/
-│   ├── SocialLinksBar.jsx     # círculos Otimotex/Lebianco/WhatsApp + "fale com a gente"
-│   ├── AuthHeroHeader.jsx
-│   └── InlineMessage.jsx
+│   ├── SocialLinksBar.tsx     # (v2) círculos Otimotex/Lebianco/WhatsApp
+│   ├── AuthHeroHeader.tsx     # (gradient) header decorativo com círculos sobrepostos
+│   └── InlineMessage.tsx      # (gradient) banner sucesso/erro — nunca alert()
 ├── organisms/
-│   ├── LoginForm.jsx          # estado + validação + Supabase
-│   ├── ForgotPasswordForm.jsx
-│   └── ResetPasswordForm.jsx
-├── AuthLayout.jsx
-├── Layout.jsx
-├── ProtectedRoute.jsx
-├── StatusBadge.jsx
-└── ExpandableText.jsx         # expansível "ver mais/ver menos" (whitespace-pre-wrap)
+│   ├── LoginForm.tsx          # (v2) estado + validação + supabase.auth.signInWithPassword
+│   ├── ForgotPasswordForm.tsx # (gradient) resetPasswordForEmail + mensagem genérica
+│   └── ResetPasswordForm.tsx  # (gradient) updateUser + signOut + redirect
+├── AuthLayout.tsx             # (gradient) wrapper full-page para Forgot/Reset
+├── Layout.tsx
+├── ProtectedRoute.tsx
+├── StatusBadge.tsx (+ StatusBadge.test.tsx)
+└── ExpandableText.tsx         # expansível "ver mais/ver menos" (+ ExpandableText.test.tsx)
 ```
 
-### Guia de cores — paleta `loginGreen` (`app/tailwind.config.js`)
+Tipos compartilhados vêm de `@sheild/shared` (ex.: `FinancialEmail`, `EmailControl`).
+Helper de erro em strict mode: `src/lib/getErrorMessage.ts`.
+
+### Guia de cores — paleta `loginGreen` (`apps/frontend-vite/tailwind.config.ts`)
 
 Telas de auth usam **exclusivamente** estes tokens:
 
@@ -243,15 +294,6 @@ Usar o token mais próximo; valor arbitrário só como exceção documentada.
 | `text-xl` | 20px | texto do botão primário |
 | `text-4xl` | 36px | h1 do login (design original: 42px — token mais próximo) |
 
-**Pesos:**
-
-| Classe | Peso | Uso |
-|---|---|---|
-| `font-medium` | 500 | subtítulo, input, meta row, labels sociais |
-| `font-semibold` | 600 | link "Esqueci a senha" |
-| `font-bold` | 700 | label de campo, botão |
-| `font-extrabold` | 800 | h1 do login |
-
 **Espaçamento e dimensões recorrentes:**
 
 | Classe | px | Uso |
@@ -272,7 +314,7 @@ Usar o token mais próximo; valor arbitrário só como exceção documentada.
 **Fonte customizada:**
 
 `font-jakarta` → `Plus Jakarta Sans` (Google Fonts, carregada em `app/index.html`).
-Aplicada no div raiz de `LoginPage.jsx`; herda por cascata para todos os filhos.
+Aplicada no div raiz de `LoginPage.tsx`; herda por cascata para todos os filhos.
 
 ## Pontos-chave que exigem ler vários arquivos
 
@@ -335,12 +377,12 @@ Comparação case-insensitive contra o assunto do e-mail.
 
 | Rota | Componente | Tabela |
 |---|---|---|
-| `/emails` | `Emails.jsx` | `email_control` + `financial_emails` por `message_id` |
-| `/consulta` | `Consulta.jsx` | `financial_emails` (paginado, filtros, CSV client-side) |
-| `/erros` | `Erros.jsx` | `email_processing_errors` |
+| `/emails` | `Emails.tsx` | `email_control` + `financial_emails` por `message_id` |
+| `/consulta` | `Consulta.tsx` | `financial_emails` (paginado, filtros, CSV client-side) |
+| `/erros` | `Erros.tsx` | `email_processing_errors` |
 
-- `supabase.js` — fetch direto REST, `Prefer: count=exact` + `Content-Range` para paginação.
-- `emailReader.js` — `POST /api/emails/read` proxiado pelo Vite para Flask.
+- `services/supabase.ts` — fetch direto REST, `Prefer: count=exact` + `Content-Range` para paginação.
+- `services/emailReader.ts` — `POST /api/emails/read` proxiado pelo Vite para Flask.
 
 ## Banco de dados (Supabase)
 
@@ -365,8 +407,3 @@ Toda nova tabela deve seguir o mesmo padrão.
 
 Produção: `C:\Sheild\API\Pagamentos` (dev: `C:\Sheild\Projetos\Claude\Contas a pagar\Pagamentos`).
 
-## Convenções herdadas (do workspace)
-
-Respostas em pt-BR formal, código/identificadores em inglês, `NUMERIC(15,2)` para
-valores monetários, nunca commitar `.env`.
-Veja `C:\Sheild\Projetos\Claude\CLAUDE.md` — ignorar as partes sobre monorepo TS/Express/shadcn.

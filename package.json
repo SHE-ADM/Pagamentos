@@ -1,0 +1,21 @@
+{
+  "name": "pagamentos",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Pipeline financeiro de contas a pagar — monorepo (Vite SPA + Next portal + Next API + skills Python)",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "dev:vite": "npm run dev --workspace=apps/frontend-vite",
+    "dev:api": "npm run dev --workspace=apps/api-backend",
+    "dev:portal": "npm run dev --workspace=apps/portal-next",
+    "build:vite": "npm run build --workspace=apps/frontend-vite",
+    "build:api": "npm run build --workspace=apps/api-backend",
+    "build:portal": "npm run build --workspace=apps/portal-next",
+    "test": "npm run test --workspaces --if-present",
+    "lint": "npm run lint --workspaces --if-present",
+    "typecheck": "npm run typecheck --workspaces --if-present"
+  }
+}

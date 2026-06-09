@@ -10,7 +10,10 @@ Pipeline financeiro automatizado para gestão de contas a pagar.
 - **Locaweb IMAP** — fonte de e-mails (SSL, porta 993)
 - **Python 3.10+** — scripts de extração e processamento
 - **Flask** — backend local que expõe a leitura de e-mails como API (`server/`)
-- **React + Vite + Tailwind** — interface web (`app/`)
+- **Monorepo npm workspaces** — `apps/*` + `packages/shared`
+- **React 18 + Vite + Tailwind (TypeScript)** — app interno (`apps/frontend-vite`, :5173)
+- **Next.js 16 + TypeScript** — API de dados (`apps/api-backend`, :3000) e portal público (`apps/portal-next`, :3002)
+- **Zod** — schemas compartilhados (`packages/shared`, `@sheild/shared`)
 
 ## Estrutura do Projeto
 
@@ -44,17 +47,22 @@ pagamentos/
 ├── supabase/
 │   └── migrations/           ← Scripts DDL versionados (001, 002, 003…)
 │
-├── server/                   ← Backend local (Flask)
+├── server/                   ← Backend local (Flask) — pipeline Python
 │   ├── app.py                ←   API: POST /api/emails/read, GET /api/health
 │   └── requirements.txt
 │
-├── app/                      ← Frontend (React + Vite + Tailwind)
-│   ├── src/
-│   │   ├── pages/            ←   Emails.jsx, Consulta.jsx
-│   │   ├── components/       ←   Layout.jsx, StatusBadge.jsx
-│   │   └── services/         ←   supabase.js, emailReader.js
-│   ├── vite.config.js        ←   proxy /api → backend Flask
-│   └── package.json
+├── package.json              ← Raiz do monorepo (npm workspaces, lockfile único)
+│
+├── apps/
+│   ├── frontend-vite/        ← App interno (React 18 + Vite + Tailwind, TS) :5173
+│   │   └── src/{pages,components,contexts,services,lib}/  ← tudo .tsx/.ts
+│   ├── api-backend/          ← Next.js 16 + TS — camada de dados/CRUD :3000
+│   │   ├── app/api/{health,emails/read}/route.ts
+│   │   └── lib/{response,supabase-admin,python-bridge}.ts
+│   └── portal-next/          ← Next.js 16 + Tailwind v4 — portal público :3002
+│
+├── packages/
+│   └── shared/               ← @sheild/shared — schemas Zod (fonte de tipos)
 │
 └── logs/                     ← Logs de execução
 ```
@@ -82,11 +90,11 @@ pip install pdfplumber pypdf anthropic pandas python-dotenv Pillow flask
 
 # 3. Configurar variáveis de ambiente
 copy .env.example .env
-# Editar .env com os valores reais
-# O frontend usa app\.env (VITE_SUPABASE_URL e VITE_SUPABASE_ANON_KEY)
+# Editar .env com os valores reais (pipeline Python: IMAP, Supabase service_role, Claude)
+# O frontend usa apps\frontend-vite\.env.local (VITE_SUPABASE_URL e VITE_SUPABASE_ANON_KEY)
 
-# 4. Instalar dependências do frontend
-cd app && npm install && cd ..
+# 4. Instalar dependências de todos os apps (na raiz — npm workspaces)
+npm install
 
 # 5. Testar extração
 python skills\pdf-contas-pagar\scripts\extract_pdf.py ^
@@ -97,24 +105,36 @@ python skills\pdf-contas-pagar\scripts\extract_pdf.py ^
 
 ## Executar o app
 
-O sistema roda em **dois processos** — abra dois terminais a partir da raiz do projeto:
+Para o fluxo principal (app interno + leitura de e-mails), bastam **dois processos** —
+abra dois terminais a partir da raiz do projeto:
 
 ```powershell
 # Terminal 1 — backend Flask (porta 8000)
 python server\app.py
 
-# Terminal 2 — frontend Vite (porta 5173)
-cd app
-npm run dev
+# Terminal 2 — frontend Vite interno (porta 5173)
+npm run dev:vite
 ```
+
+Opcionais (monorepo): `npm run dev:api` (Next API, :3000) e `npm run dev:portal`
+(portal público, :3002).
 
 Acesse a URL exibida pelo Vite (ex.: `http://localhost:5173/`). Na página
 **E-mails**, o botão **"Buscar e-mails novos"** dispara a leitura IMAP no backend:
 baixa os PDFs, aciona a extração, grava em `email_control`/`financial_emails` e
 recarrega a tabela com o resumo.
 
-> O Vite faz proxy de `/api` → `http://127.0.0.1:8000`, então não há configuração
-> de CORS. O frontend só funciona com o backend Flask ativo.
+> O Vite faz proxy de `/api` → `http://127.0.0.1:8000` (Flask), então não há
+> configuração de CORS. O frontend interno só funciona com o backend Flask ativo.
+> A Next API (`apps/api-backend`) é camada de dados independente e expõe a mesma
+> ponte ao Flask para CRUD futuro.
+
+### Verificação e testes
+
+```powershell
+npm test          # Vitest em todos os workspaces (frontend-vite + api-backend)
+npm run typecheck # tsc --noEmit em todos os workspaces
+```
 
 ### API do backend (`server/app.py`)
 

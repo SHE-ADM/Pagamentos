@@ -1,2 +1,51 @@
+# Arquivos ignorados pelo Git
+
+# Ambiente
+.env
+*.env.local
+.env.local
+.env.*.local
+apps/*/.env
+apps/*/.env.local
+apps/*/.env.*.local
+packages/*/.env
+packages/*/.env.local
+
+# Dependências e builds (monorepo — rede de segurança ampla)
+node_modules/
+apps/*/node_modules/
+packages/*/node_modules/
+dist/
+build/
+apps/*/dist/
+apps/*/build/
+
+# Next.js
+.next/
+apps/*/.next/
+next-env.d.ts
+apps/*/next-env.d.ts
+
+# Lockfiles dos workspaces (lockfile único fica na raiz)
+apps/*/package-lock.json
+packages/*/package-lock.json
+
+# Dados sensíveis e gerados
+data/pdfs_inbox/
+data/csv_output/
+logs/
+
+# Logs
+*.log
+dev-server.log
+
+# Amostras de validação (boletos reais — CNPJ, valores, linha digitável).
+# Ignora todo o conteúdo, mas preserva a estrutura e o README no git.
+data/samples/**
+!data/samples/**/
+!data/samples/README.md
+!data/samples/**/.gitkeep
+
+# Python
 __pycache__/
 *.pyc
