@@ -82,6 +82,7 @@ interface MetricCard {
   label: string;
   value: number;
   fmt: (v: number) => string | number;
+  valueClass?: string;
 }
 
 export default function Consulta() {
@@ -135,7 +136,7 @@ export default function Consulta() {
     { icon: Clock, label: 'Pendentes', value: stats.pending ?? 0, fmt: (v) => v },
     { icon: DollarSign, label: 'Valor total', value: stats.totalValue ?? 0, fmt: fmtMoney },
     { icon: TrendingUp, label: 'A vencer em 7 dias', value: stats.vencendo ?? 0, fmt: (v) => v },
-    { icon: AlertCircle, label: 'Vencidas', value: stats.vencidas ?? 0, fmt: (v) => v },
+    { icon: AlertCircle, label: 'Vencidas', value: stats.vencidas ?? 0, fmt: (v) => v, valueClass: (stats.vencidas ?? 0) > 0 ? 'text-red-600' : undefined },
   ];
 
   return (
@@ -167,13 +168,13 @@ export default function Consulta() {
         )}
 
         <div className="grid grid-cols-5 gap-3 mb-5">
-          {cards.map(({ icon: Icon, label, value, fmt }) => (
+          {cards.map(({ icon: Icon, label, value, fmt, valueClass }) => (
             <div key={label} className="metric-card">
               <div className="flex items-center gap-1.5 text-xs text-gray-500 mb-1">
                 <Icon size={13} />
                 {label}
               </div>
-              <div className="text-xl font-semibold text-gray-900">{fmt(value)}</div>
+              <div className={`text-xl font-semibold ${valueClass ?? 'text-gray-900'}`}>{fmt(value)}</div>
             </div>
           ))}
         </div>
@@ -188,7 +189,7 @@ export default function Consulta() {
           />
           <select className="input w-32" value={f.docType} onChange={(e) => sf('docType', e.target.value)}>
             <option value="">Tipo</option>
-            {['boleto', 'nfe', 'nfse', 'fatura', 'recibo', 'outro'].map((t) => (
+            {['DARF','DAS','DAE','DAM / DUAM','GARE','GNRE','GPS','GRU','ISS','IPTU','IPVA','ITBI','PIX','tributo','boleto','cte','nfe','nfse','recibo','seguro','outro'].map((t) => (
               <option key={t}>{t}</option>
             ))}
           </select>
@@ -227,7 +228,7 @@ export default function Consulta() {
           <table className="w-full">
             <thead>
               <tr>
-                {['Vencimento', 'Situação', 'Fornecedor', 'CNPJ', 'Tipo', 'Valor', 'Pagamento', 'Extração', 'Status'].map(
+                {['N° Doc', 'Vencimento', 'Situação', 'Fornecedor', 'CNPJ', 'Tipo Documento', 'Tipo Pagamento', 'Valor', 'Extração'].map(
                   (h) => (
                     <th key={h} className={`table-header ${h === 'Valor' ? 'text-right' : ''}`}>
                       {h}
@@ -250,6 +251,7 @@ export default function Consulta() {
                     className={`cursor-pointer hover:bg-gray-50 ${sel?.id === r.id ? 'bg-brand-light/40' : ''}`}
                     onClick={() => setSel(sel?.id === r.id ? null : r)}
                   >
+                    <td className="table-cell text-xs font-mono text-gray-500">{r.invoice_number || '—'}</td>
                     <td className="table-cell text-xs whitespace-nowrap font-mono">{fmtDate(r.due_date)}</td>
                     <td className="table-cell">
                       <StatusBadge value={r.due_status} />
@@ -261,15 +263,12 @@ export default function Consulta() {
                     <td className="table-cell">
                       <StatusBadge value={r.document_type} />
                     </td>
-                    <td className="table-cell text-xs font-mono font-medium text-right">{fmtMoney(r.amount)}</td>
                     <td className="table-cell">
                       <StatusBadge value={r.payment_method} />
                     </td>
+                    <td className="table-cell text-xs font-mono font-medium text-right">{fmtMoney(r.amount)}</td>
                     <td className="table-cell">
                       <StatusBadge value={r.extraction_source} />
-                    </td>
-                    <td className="table-cell">
-                      <StatusBadge value={r.status} />
                     </td>
                   </tr>
                 ))

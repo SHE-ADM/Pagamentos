@@ -6,7 +6,7 @@ Deduplicação: tabela email_control no Supabase (message_id UNIQUE).
 Nunca reprocessa um e-mail já registrado, independente de onde o script rodar.
 """
 
-import os, sys, re, imaplib, email, argparse, logging, subprocess, csv, json, tempfile, faulthandler
+import os, sys, re, imaplib, email, argparse, logging, subprocess, csv, json, tempfile, faulthandler, unicodedata
 import urllib.request, urllib.error
 from email.header import decode_header
 from email.utils import parseaddr, parsedate_to_datetime
@@ -66,7 +66,7 @@ KEYWORDS_DEFAULT = [
     "simples nacional", "simei", "darf", "gps", "gare",
     "guia", "guia de pagamento", "guia de recolhimento",
     # Conhecimento de Transporte Eletronico
-    "ct-e", "cte", "dacte",
+    "ct-e", "cte", "dacte", "transporte", "transportadora", "conhecimento de transporte",
     # Fechamento de conta / extrato mensal
     "fechamento",
     # Seguro
@@ -225,6 +225,36 @@ class SupabaseControl:
         except Exception as e:
             log.error(f"Erro ao gravar conta no Supabase: {e}")
             return False
+
+    def unique_invoice_number(self, base: str) -> str:
+        """Retorna o proximo invoice_number unico baseado em base.
+
+        Se base nao existe na tabela, retorna base.
+        Se existe, retorna base(2), base(3), etc., ate encontrar um livre.
+        Em caso de falha na consulta, retorna base (nao bloqueia a insercao).
+        """
+        if not self._available:
+            return base
+        try:
+            pattern = urllib.parse.quote(base + '%', safe='')
+            req = urllib.request.Request(
+                f"{self.base}/rest/v1/financial_emails"
+                f"?select=invoice_number&invoice_number=like.{pattern}&limit=50",
+                headers=self.headers
+            )
+            with urllib.request.urlopen(req, timeout=5) as r:
+                existing = {row["invoice_number"] for row in json.loads(r.read())}
+        except Exception as e:
+            log.warning(f"Nao foi possivel verificar invoice_number no banco: {e}")
+            return base
+
+        if base not in existing:
+            return base
+
+        n = 2
+        while f"{base}({n})" in existing:
+            n += 1
+        return f"{base}({n})"
 
     @staticmethod
     def _derive_status(rec: dict) -> str:
@@ -408,6 +438,46 @@ _BODY_AMOUNT_RE = re.compile(r"R\$\s*([\d.,]+)")
 _BODY_PIX_RE    = re.compile(r"\bpix\b", re.IGNORECASE)
 _BODY_DUE_RE    = re.compile(r"(?i)venc(?:imento|to)?\D{0,15}?(\d{2}/\d{2}/\d{4})")
 
+# Tabela de keywords por tipo de documento — verificada contra o corpo do e-mail.
+# Ordem importa: termos mais específicos antes dos fallbacks genéricos.
+_BODY_DOC_KEYWORDS: list[tuple[str, list[str]]] = [
+    ("DARF",       ["darf"]),
+    ("GPS",        ["guia da previdencia social", "guia previdencia social", "gps"]),
+    ("DAS",        ["simples nacional", "das-simples", "das simples",
+                    "documento de arrecadacao do simples", "simei"]),
+    ("GRU",        ["guia de recolhimento da uniao", "gru"]),
+    ("DAE",        ["documento de arrecadacao do esocial",
+                    "documento de arrecadacao de receitas estaduais", "dare", "dae"]),
+    ("GNRE",       ["guia nacional de recolhimento", "gnre"]),
+    ("IPVA",       ["guia de ipva", "ipva"]),
+    ("IPTU",       ["guia de iptu", "iptu"]),
+    ("DAM / DUAM", ["documento de arrecadacao municipal", "duam"]),
+    ("ISS",        ["recolhimento de iss", "guia de iss", "guia iss", "iss a recolher"]),
+    ("ITBI",       ["imposto de transmissao", "guia de itbi", "itbi"]),
+    ("GARE",       ["gare"]),
+    ("tributo",    ["guia de recolhimento", "guia de pagamento",
+                    "documento de arrecadacao"]),
+]
+
+
+def _ns_body(s: str) -> str:
+    """Strip accents + lowercase — para busca de keywords no corpo do e-mail."""
+    return unicodedata.normalize("NFD", s).encode("ascii", "ignore").decode().lower()
+
+
+def _classify_body_doc_type(body_text: str) -> str:
+    """Detecta o tipo de documento tributário a partir do corpo do e-mail.
+
+    Retorna o primeiro tipo cujo algum termo for encontrado (case-insensitive,
+    sem acentos). Retorna 'outro' se nenhum termo corresponder.
+    PIX sobrescreve este resultado — tratar no chamador.
+    """
+    text = _ns_body(body_text)
+    for doc_type, terms in _BODY_DOC_KEYWORDS:
+        if any(term in text for term in terms):
+            return doc_type
+    return "outro"
+
 
 def _brl_to_decimal(raw: str | None):
     """Converte valor em formato BR ('8.650,00' ou '8650,00') para float.
@@ -495,7 +565,9 @@ def extract_from_email_body(body_text: str, received_at: str, message_id: str) -
     else:
         payment_method = "outro"
 
-    document_type = "outro"
+    # PIX sobrescreve qualquer tipo de documento (regra de negócio).
+    # Caso contrário, tenta detectar subtipos de tributo via keywords do corpo.
+    document_type = "PIX" if has_pix else _classify_body_doc_type(body_text)
 
     # Sem documento anexado nao ha data de emissao nem numero de documento —
     # emissao usa a data de envio do e-mail, e o numero e composto a partir
@@ -657,6 +729,9 @@ def extract_and_store_accounts(saved_pdfs: list, message_id: str,
                 acc_index += 1
                 continue
 
+            if payload.get("invoice_number"):
+                payload["invoice_number"] = ctrl.unique_invoice_number(payload["invoice_number"])
+
             if ctrl.register_financial(payload):
                 accounts_saved += 1
             else:
@@ -701,6 +776,9 @@ def try_extract_from_body(email_rec: dict, body_text: str, received_at: str,
             "Nome do fornecedor ausente no corpo do e-mail — sem PDF valido", raw_payload=payload
         )
         return False
+
+    if payload.get("invoice_number"):
+        payload["invoice_number"] = ctrl.unique_invoice_number(payload["invoice_number"])
 
     if ctrl.register_financial(payload):
         log.info("    Conta extraída do corpo do e-mail e gravada em financial_emails")

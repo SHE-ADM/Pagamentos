@@ -50,13 +50,24 @@ EXTRACTION_PROMPT = (
     "Analise este documento financeiro brasileiro (normalmente um boleto) e "
     "retorne APENAS um JSON valido, sem markdown e sem explicacoes, com "
     "EXATAMENTE estes campos:\n"
-    "- document_type: um de boleto|seguro|fechamento|CT-e|NF-e|nfse|recibo|tributo|contrato|outros "
-    "(use 'tributo' para DARF, GPS, GARE, DAS (Documento de Arrecadacao do Simples Nacional), "
-    "Simples Nacional, SIMEI ou qualquer guia de recolhimento/arrecadacao tributaria; "
-    "use exatamente 'CT-e' para CT-e, DACTE ou Conhecimento de Transporte; "
-    "use 'seguro' para apolices, premios de seguro e documentos de seguradoras; "
-    "use 'fechamento' para extrato mensal ou fatura de fechamento de cartao/conta; "
-    "use 'boleto' para cobranças bancarias, carnês ou faturas de servico avulso)\n"
+    "- document_type: identifique o tipo EXATO do documento. Use um dos valores abaixo.\n"
+    "  Tipos gerais: boleto (cobrancas bancarias, carnes, faturas de servico avulso) | "
+    "seguro (apolices, premios de seguro) | fechamento (extrato mensal, fatura de fechamento) | "
+    "CT-e (Conhecimento de Transporte, DACTE) | NF-e (DANFE, Nota Fiscal Eletronica) | "
+    "nfse (Nota Fiscal de Servicos Eletronica) | recibo | contrato | outro\n"
+    "  Tributos — use o subtipo especifico quando identificado:\n"
+    "  DARF (Documento de Arrecadacao de Receitas Federais) | "
+    "GPS (Guia da Previdencia Social) | "
+    "DAS (Simples Nacional, SIMEI, Documento de Arrecadacao do Simples) | "
+    "GRU (Guia de Recolhimento da Uniao) | "
+    "DAE (Documento de Arrecadacao do eSocial ou DARE - Receitas Estaduais) | "
+    "GNRE (Guia Nacional de Recolhimento de Tributos Estaduais) | "
+    "IPVA (Guia de IPVA) | IPTU (Guia de IPTU) | "
+    "DAM / DUAM (Documento de Arrecadacao Municipal) | "
+    "ISS (Guia de ISS, Imposto Sobre Servicos) | "
+    "ITBI (Guia de ITBI, Imposto de Transmissao de Bens Imoveis) | "
+    "GARE (Guia de Arrecadacao de Receitas Estaduais) | "
+    "tributo (qualquer outro documento de arrecadacao tributaria nao identificado acima)\n"
     "- supplier_name: nome do BENEFICIARIO/CEDENTE (quem RECEBE o pagamento). "
     "NUNCA use o pagador/sacado.\n"
     "- supplier_cnpj: CNPJ do BENEFICIARIO (apenas digitos, 14 caracteres). "
@@ -89,14 +100,31 @@ EXTRACTION_PROMPT = (
     "Use null para campos de TEXTO ausentes e 0 para os campos de VALOR em branco."
 )
 
+_DAM_DUAM = "DAM / DUAM"
+
 KEYWORDS = {
     # CT-e antes de NF-e: ambos tem "chave de acesso", mas CT-e e mais especifico.
     "CT-e":       ["dacte","conhecimento de transporte","ct-e","cte-os","modal rodoviario"],
-    "TRIBUTO":    ["darf","gps","gare","simples nacional","simei",
-                   "das simples","das-simples","documento de arrecadacao do simples",
-                   "guia de recolhimento","guia de pagamento","documento de arrecadacao"],
+    # NF-e e NFS-e antes dos tributos: NFS-e inclui o termo "iss" como imposto associado.
     "NF-e":       ["danfe","nota fiscal eletrônica","nf-e","chave de acesso","emitente"],
-    "NFSE":       ["nota fiscal de serviços","nfs-e","prestador","tomador","iss"],
+    "NFSE":       ["nota fiscal de serviços","nfs-e","prestador","tomador"],
+    # Tributos especificos — verificados antes do fallback generico 'TRIBUTO'.
+    "DARF":       ["darf"],
+    "GPS":        ["gps","guia da previdencia social","guia previdencia social"],
+    "DAS":        ["das simples","das-simples","documento de arrecadacao do simples",
+                   "simples nacional","simei"],
+    "GRU":        ["gru","guia de recolhimento da uniao"],
+    "DAE":        ["dae","documento de arrecadacao do esocial",
+                   "dare","documento de arrecadacao de receitas estaduais"],
+    "GNRE":       ["gnre","guia nacional de recolhimento"],
+    "IPVA":       ["ipva","guia de ipva"],
+    "IPTU":       ["iptu","guia de iptu"],
+    _DAM_DUAM:    ["duam","documento de arrecadacao municipal"],
+    "ISS":        ["guia de iss","guia iss","recolhimento de iss","iss a recolher"],
+    "ITBI":       ["itbi","guia de itbi","imposto de transmissao"],
+    "GARE":       ["gare"],
+    # Tributo generico: fallback para guias de arrecadacao nao identificadas acima.
+    "TRIBUTO":    ["guia de recolhimento","guia de pagamento","documento de arrecadacao"],
     "SEGURO":     ["apólice","apolice","seguradora","prêmio do seguro","premio do seguro",
                    "seguro de vida","seguro empresarial","seguro auto"],
     "FECHAMENTO": ["fechamento da fatura","extrato mensal","fatura do mês","fatura do mes",
@@ -127,6 +155,24 @@ _DOC_TYPE_NORM = {
     _ns("cobrança"):   "boleto",
     _ns("outros"):     "outro",
     _ns("outro"):      "outro",
+    # Subtipos de tributo
+    _ns("darf"):            "DARF",
+    _ns("gps"):             "GPS",
+    _ns("das"):             "DAS",
+    _ns("simples nacional"): "DAS",
+    _ns("simei"):           "DAS",
+    _ns("gru"):             "GRU",
+    _ns("dae"):             "DAE",
+    _ns("dare"):            "DAE",
+    _ns("gnre"):            "GNRE",
+    _ns("ipva"):            "IPVA",
+    _ns("iptu"):            "IPTU",
+    _ns("dam"):             _DAM_DUAM,
+    _ns("duam"):            _DAM_DUAM,
+    _ns("dam / duam"):      _DAM_DUAM,
+    _ns("iss"):             "ISS",
+    _ns("itbi"):            "ITBI",
+    _ns("gare"):            "GARE",
 }
 
 def _normalize_doc_type(raw: str) -> str:
@@ -358,27 +404,35 @@ def resolve_amount_charged(rec: dict) -> float:
     return round(computed, 2) if computed > 0 else 0
 
 
-def _due_date_ddmmyyyy(due_date) -> str:
-    """Converte vencimento 'YYYY-MM-DD' em 'DDMMYYYY'.
+def _due_date_ddmmyy(due_date) -> str:
+    """Converte vencimento 'YYYY-MM-DD' em 'DDMMYY' (ano com 2 digitos).
 
-    Sem vencimento (ou data invalida), usa a data de extracao (hoje) — regra
-    de negocio para o invoice_number sintetico.
+    Sem vencimento (ou data invalida), usa a data de extracao (hoje).
     """
     if due_date:
         try:
-            return datetime.strptime(str(due_date)[:10], "%Y-%m-%d").strftime("%d%m%Y")
+            return datetime.strptime(str(due_date)[:10], "%Y-%m-%d").strftime("%d%m%y")
         except ValueError:
             pass
-    return datetime.now().strftime("%d%m%Y")
+    return datetime.now().strftime("%d%m%y")
 
 
-def fallback_invoice_number(pdf_path, due_date) -> str:
+def fallback_invoice_number(doc_type: str, due_date) -> str:
     """invoice_number sintetico quando o documento nao traz N do Documento.
 
-    Regra de negocio: nome do arquivo (sem extensao) + '_' + vencimento em
-    DDMMYYYY. Ex.: 'Fatura_.Locaweb1850038_03062026'.
+    Regra de negocio: tipo_documento + '_' + vencimento em DDMMYY.
+    Ex.: 'tributo_030626', 'boleto_100726'.
+    A deduplicacao de sufixos '(2)', '(3)'... e feita no momento da gravacao
+    no banco (read_emails.py — SupabaseControl.unique_invoice_number).
     """
-    return f"{pdf_path.stem}_{_due_date_ddmmyyyy(due_date)}"
+    return f"{doc_type}_{_due_date_ddmmyy(due_date)}"
+
+
+def apply_pix_override(rec: dict) -> dict:
+    """Sobrescreve document_type para 'PIX' quando payment_method for 'pix'."""
+    if (rec.get("payment_method") or "").lower() == "pix":
+        rec["document_type"] = "PIX"
+    return rec
 
 
 def has_document_number(value) -> bool:
@@ -426,9 +480,10 @@ def build_record_from_json(pdf_path, data: dict, source: str) -> dict:
     rec["amount_charged"] = resolve_amount_charged(rec)
     if cnpj and len(cnpj) != 14:
         notes.append("CNPJ do beneficiario invalido")
+    apply_pix_override(rec)
     if not has_document_number(rec["invoice_number"]):
-        rec["invoice_number"] = fallback_invoice_number(pdf_path, rec["due_date"])
-        notes.append("N documento ausente — gerado de arquivo+vencimento")
+        rec["invoice_number"] = fallback_invoice_number(rec["document_type"], rec["due_date"])
+        notes.append("N documento ausente — gerado de tipo+vencimento")
     rec["processing_notes"] = " | ".join(notes) if notes else None
     return rec
 
@@ -459,9 +514,10 @@ def build_record_regex(pdf_path, raw: str, source: str) -> dict:
     rec["amount_charged"] = resolve_amount_charged(rec)
     if len(raw) < 80:
         notes.append("Texto insuficiente — considerar Vision")
+    apply_pix_override(rec)
     if not has_document_number(rec["invoice_number"]):
-        rec["invoice_number"] = fallback_invoice_number(pdf_path, rec["due_date"])
-        notes.append("N documento ausente — gerado de arquivo+vencimento")
+        rec["invoice_number"] = fallback_invoice_number(rec["document_type"], rec["due_date"])
+        notes.append("N documento ausente — gerado de tipo+vencimento")
     rec["processing_notes"] = " | ".join(notes)
     return rec
 
