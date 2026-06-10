@@ -1,5 +1,5 @@
 // src/pages/Consulta.tsx
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, Fragment } from 'react';
 import {
   RefreshCw,
   Download,
@@ -246,31 +246,86 @@ export default function Consulta() {
                 </tr>
               ) : (
                 rows.map((r) => (
-                  <tr
-                    key={r.id}
-                    className={`cursor-pointer hover:bg-gray-50 ${sel?.id === r.id ? 'bg-brand-light/40' : ''}`}
-                    onClick={() => setSel(sel?.id === r.id ? null : r)}
-                  >
-                    <td className="table-cell text-xs font-mono text-gray-500">{r.invoice_number || '—'}</td>
-                    <td className="table-cell text-xs whitespace-nowrap font-mono">{fmtDate(r.due_date)}</td>
-                    <td className="table-cell">
-                      <StatusBadge value={r.due_status} />
-                    </td>
-                    <td className="table-cell text-xs max-w-[150px] truncate" title={r.supplier_name ?? ''}>
-                      {r.supplier_name || '—'}
-                    </td>
-                    <td className="table-cell text-xs font-mono text-gray-500">{fmtCnpj(r.supplier_cnpj)}</td>
-                    <td className="table-cell">
-                      <StatusBadge value={r.document_type} />
-                    </td>
-                    <td className="table-cell">
-                      <StatusBadge value={r.payment_method} />
-                    </td>
-                    <td className="table-cell text-xs font-mono font-medium text-right">{fmtMoney(r.amount)}</td>
-                    <td className="table-cell">
-                      <StatusBadge value={r.extraction_source} />
-                    </td>
-                  </tr>
+                  <Fragment key={r.id}>
+                    <tr
+                      className={`cursor-pointer hover:bg-gray-50 ${sel?.id === r.id ? 'bg-brand-light/40' : ''}`}
+                      onClick={() => setSel(sel?.id === r.id ? null : r)}
+                    >
+                      <td className="table-cell text-xs font-mono text-gray-500">{r.invoice_number || '—'}</td>
+                      <td className="table-cell text-xs whitespace-nowrap font-mono">{fmtDate(r.due_date)}</td>
+                      <td className="table-cell">
+                        <StatusBadge value={r.due_status} />
+                      </td>
+                      <td className="table-cell text-xs max-w-[150px] truncate" title={r.supplier_name ?? ''}>
+                        {r.supplier_name || '—'}
+                      </td>
+                      <td className="table-cell text-xs font-mono text-gray-500">{fmtCnpj(r.supplier_cnpj)}</td>
+                      <td className="table-cell">
+                        <StatusBadge value={r.document_type} />
+                      </td>
+                      <td className="table-cell">
+                        <StatusBadge value={r.payment_method} />
+                      </td>
+                      <td className="table-cell text-xs font-mono font-medium text-right">{fmtMoney(r.amount)}</td>
+                      <td className="table-cell">
+                        <StatusBadge value={r.extraction_source} />
+                      </td>
+                    </tr>
+
+                    {sel?.id === r.id && (
+                      <tr>
+                        <td colSpan={9} className="p-0 border-b border-gray-100 bg-gray-50/60">
+                          <div className="p-4 border-l-2 border-brand">
+                            <p className="text-xs font-semibold text-gray-500 mb-3 uppercase tracking-wide">
+                              Detalhes — {r.supplier_name || 'registro'} · {fmtDate(r.due_date)}
+                            </p>
+                            <dl className="grid grid-cols-2 gap-x-8 gap-y-2">
+                              {(
+                                [
+                                  ['Fornecedor', r.supplier_name],
+                                  ['CNPJ', fmtCnpj(r.supplier_cnpj)],
+                                  ['N° Documento', r.invoice_number],
+                                  ['Competência', r.competence_date],
+                                  ['Emissão', fmtDate(r.issue_date)],
+                                  ['Vencimento', fmtDate(r.due_date)],
+                                  ['Situação', r.due_status],
+                                  ['Valor do documento', fmtMoney(r.amount)],
+                                  ['Valor cobrado', fmtMoney(r.amount_charged)],
+                                  ['Desconto / abatimentos', fmtMoney(r.discount)],
+                                  ['Outras deduções', fmtMoney(r.other_deductions)],
+                                  ['Mora / multa', fmtMoney(r.fine_interest)],
+                                  ['Outros acréscimos', fmtMoney(r.other_additions)],
+                                  ['Nosso número', r.nosso_numero || '—'],
+                                  ['Forma de pag.', r.payment_method],
+                                  ['Código de barras', r.barcode || '—'],
+                                  ['Extração', r.extraction_source],
+                                  ['Origem', r.source_file],
+                                  ['Observações', r.processing_notes || '—'],
+                                ] as [string, string | null][]
+                              ).map(([k, v]) => (
+                                <div key={k} className="flex gap-3">
+                                  <dt className="w-36 flex-shrink-0 text-gray-400 text-xs">{k}</dt>
+                                  <dd className="text-gray-700 text-xs break-all">{v ?? '—'}</dd>
+                                </div>
+                              ))}
+                            </dl>
+                            {r.description && (
+                              <div className="mt-3 p-3 bg-gray-50 rounded-lg">
+                                <p className="text-[10px] text-gray-400 mb-1 uppercase tracking-wide">Descrição</p>
+                                <p className="text-xs text-gray-600">{r.description}</p>
+                              </div>
+                            )}
+                            {r.email_body_excerpt && (
+                              <div className="mt-3 p-3 bg-gray-50 rounded-lg">
+                                <p className="text-[10px] text-gray-400 mb-1 uppercase tracking-wide">Mensagem do e-mail</p>
+                                <ExpandableText text={r.email_body_excerpt} />
+                              </div>
+                            )}
+                          </div>
+                        </td>
+                      </tr>
+                    )}
+                  </Fragment>
                 ))
               )}
             </tbody>
@@ -290,56 +345,6 @@ export default function Consulta() {
             </button>
           </div>
         </div>
-
-        {sel && (
-          <div className="card p-4">
-            <p className="text-xs font-semibold text-gray-500 mb-3 uppercase tracking-wide">
-              Detalhes — {sel.supplier_name || 'registro'} · {fmtDate(sel.due_date)}
-            </p>
-            <dl className="grid grid-cols-2 gap-x-8 gap-y-2">
-              {(
-                [
-                  ['Fornecedor', sel.supplier_name],
-                  ['CNPJ', fmtCnpj(sel.supplier_cnpj)],
-                  ['N° Documento', sel.invoice_number],
-                  ['Competência', sel.competence_date],
-                  ['Emissão', fmtDate(sel.issue_date)],
-                  ['Vencimento', fmtDate(sel.due_date)],
-                  ['Situação', sel.due_status],
-                  ['Valor do documento', fmtMoney(sel.amount)],
-                  ['Valor cobrado', fmtMoney(sel.amount_charged)],
-                  ['Desconto / abatimentos', fmtMoney(sel.discount)],
-                  ['Outras deduções', fmtMoney(sel.other_deductions)],
-                  ['Mora / multa', fmtMoney(sel.fine_interest)],
-                  ['Outros acréscimos', fmtMoney(sel.other_additions)],
-                  ['Nosso número', sel.nosso_numero || '—'],
-                  ['Forma de pag.', sel.payment_method],
-                  ['Código de barras', sel.barcode || '—'],
-                  ['Extração', sel.extraction_source],
-                  ['Origem', sel.source_file],
-                  ['Observações', sel.processing_notes || '—'],
-                ] as [string, string | null][]
-              ).map(([k, v]) => (
-                <div key={k} className="flex gap-3">
-                  <dt className="w-36 flex-shrink-0 text-gray-400 text-xs">{k}</dt>
-                  <dd className="text-gray-700 text-xs break-all">{v ?? '—'}</dd>
-                </div>
-              ))}
-            </dl>
-            {sel.description && (
-              <div className="mt-3 p-3 bg-gray-50 rounded-lg">
-                <p className="text-[10px] text-gray-400 mb-1 uppercase tracking-wide">Descrição</p>
-                <p className="text-xs text-gray-600">{sel.description}</p>
-              </div>
-            )}
-            {sel.email_body_excerpt && (
-              <div className="mt-3 p-3 bg-gray-50 rounded-lg">
-                <p className="text-[10px] text-gray-400 mb-1 uppercase tracking-wide">Mensagem do e-mail</p>
-                <ExpandableText text={sel.email_body_excerpt} />
-              </div>
-            )}
-          </div>
-        )}
       </div>
     </div>
   );
