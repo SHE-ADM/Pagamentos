@@ -497,6 +497,12 @@ _BODY_INVOICE_RE = re.compile(r"(?i)\b(?:nf(?:[- ]?e)?|nota\s+fiscal|fatura\s+n[
 # Tabela de keywords por tipo de documento — verificada contra o corpo do e-mail.
 # Ordem importa: termos mais específicos antes dos fallbacks genéricos.
 _BODY_DOC_KEYWORDS: list[tuple[str, list[str]]] = [
+    # Notas fiscais (NF-e / NFS-e) — NAO geram conta a pagar (ver SKIP_ACCOUNT_TYPES).
+    # Tipos em lowercase para casar com o CHECK de financial_emails e o skip.
+    # Mais específico primeiro: NFS-e (serviço) antes de NF-e (mercadoria).
+    ("nfse",       ["nota fiscal de servico", "nota fiscal eletronica de servico",
+                    "nota fiscal de servicos eletronica", "nfs-e", "nfse"]),
+    ("nfe",        ["nota fiscal eletronica", "danfe", "nf-e", "nfe"]),
     ("DARF",       ["darf"]),
     ("GPS",        ["guia da previdencia social", "guia previdencia social", "gps"]),
     ("DAS",        ["simples nacional", "das-simples", "das simples",
@@ -962,6 +968,23 @@ def try_extract_from_body(email_rec: dict, body_text: str, received_at: str,
     payload = extract_from_email_body(body_text, received_at, message_id, sender_email)
     if payload is None:
         return False  # Sem sinal financeiro — ignorar silenciosamente
+
+    # Mesma trava do caminho de PDF: NF-e/NFS-e nao geram conta a pagar.
+    # Sem isso, notificacoes de nota fiscal (ex.: NFe da Editora Globo) vazavam
+    # para financial_emails como document_type='outro'.
+    dtype = (payload.get("document_type") or "").strip().lower()
+    if dtype in SKIP_ACCOUNT_TYPES:
+        log.info(f"    {dtype.upper()} (corpo do e-mail) ignorado — nao gera conta a pagar")
+        return False
+
+    # Mesma validacao de valor do caminho de PDF (extract_and_store_accounts):
+    # sem valor nao ha conta a pagar — registra erro e nao grava.
+    if not payload.get("amount"):
+        ctrl.register_error(
+            email_rec, "sem_valor",
+            "Valor ausente ou zero no corpo do e-mail", raw_payload=payload
+        )
+        return False
 
     if payload.get("invoice_number"):
         payload["invoice_number"] = ctrl.unique_invoice_number(payload["invoice_number"])
