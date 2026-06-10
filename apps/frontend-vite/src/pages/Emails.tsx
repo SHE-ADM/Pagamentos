@@ -78,11 +78,11 @@ export default function Emails() {
         `Busca concluída — ${s.found} e-mail(s) no servidor, ` +
           `${s.processed} novo(s) processado(s), ${s.skipped_dup} duplicado(s).`,
       );
-      await load();
     } catch (e) {
       setError(getErrorMessage(e));
     } finally {
       setReading(false);
+      await load();
     }
   };
 

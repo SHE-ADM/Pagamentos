@@ -276,7 +276,11 @@ def decode_str(value: str) -> str:
     result = []
     for part, enc in parts:
         if isinstance(part, bytes):
-            result.append(part.decode(enc or "utf-8", errors="replace"))
+            try:
+                result.append(part.decode(enc or "utf-8", errors="replace"))
+            except LookupError:
+                # Charset desconhecido (ex: "unknown-8bit") — fallback para latin-1
+                result.append(part.decode("latin-1", errors="replace"))
         else:
             result.append(str(part))
     return " ".join(result).strip()
@@ -433,10 +437,12 @@ def _to_decimal(value, default):
 # Termos podem aparecer em qualquer caixa/acentuacao ("Pix"/"PIX"/"pix",
 # "Responsável"/"responsavel") — os regex abaixo sao case-insensitive e
 # cobrem a unica variacao de acento relevante ("respons[aá]vel").
-_BODY_NAME_RE   = re.compile(r"(?im)^[ \t]*(?:nome|respons[aá]vel)[ \t]*[:\-]?[ \t]*(.+?)[ \t]*$")
-_BODY_AMOUNT_RE = re.compile(r"R\$\s*([\d.,]+)")
-_BODY_PIX_RE    = re.compile(r"\bpix\b", re.IGNORECASE)
-_BODY_DUE_RE    = re.compile(r"(?i)venc(?:imento|to)?\D{0,15}?(\d{2}/\d{2}/\d{4})")
+_BODY_NAME_RE    = re.compile(r"(?im)^[ \t]*(?:nome|respons[aá]vel)[ \t]*[:\-]?[ \t]*(.+?)[ \t]*$")
+_BODY_AMOUNT_RE  = re.compile(r"R\$\s*([\d.,]+)")
+_BODY_PIX_RE     = re.compile(r"\bpix\b", re.IGNORECASE)
+_BODY_DUE_RE     = re.compile(r"(?i)venc(?:imento|to)?\D{0,15}?(\d{2}/\d{2}/\d{2,4})")
+_BODY_ISSUE_RE   = re.compile(r"(?i)emiss[aã]o\D{0,10}?(\d{2}/\d{2}/\d{2,4})")
+_BODY_INVOICE_RE = re.compile(r"(?i)\b(?:nf(?:[- ]?e)?|nota\s+fiscal|fatura\s+n[º°.]?)\s*[n°.:]?\s*(\d{3,})")
 
 # Tabela de keywords por tipo de documento — verificada contra o corpo do e-mail.
 # Ordem importa: termos mais específicos antes dos fallbacks genéricos.
@@ -499,13 +505,15 @@ def _brl_to_decimal(raw: str | None):
 
 
 def _br_date_to_iso(raw: str | None) -> str | None:
-    """Converte data 'dd/mm/aaaa' do corpo do e-mail para 'aaaa-mm-dd'."""
+    """Converte data 'dd/mm/aaaa' ou 'dd/mm/aa' do corpo do e-mail para 'aaaa-mm-dd'."""
     if not raw:
         return None
-    try:
-        return datetime.strptime(raw, "%d/%m/%Y").strftime("%Y-%m-%d")
-    except ValueError:
-        return None
+    for fmt in ("%d/%m/%Y", "%d/%m/%y"):
+        try:
+            return datetime.strptime(raw, fmt).strftime("%Y-%m-%d")
+        except ValueError:
+            continue
+    return None
 
 
 def _iso_date_to_ddmmyy(iso_date: str | None) -> str | None:
@@ -518,65 +526,69 @@ def _iso_date_to_ddmmyy(iso_date: str | None) -> str | None:
         return None
 
 
-def extract_from_email_body(body_text: str, received_at: str, message_id: str) -> dict | None:
+def extract_from_email_body(body_text: str, received_at: str, message_id: str,
+                            sender_email: str | None = None) -> dict | None:
     """Monta um payload de financial_emails a partir do corpo do e-mail.
 
-    Cobre o pedido informal de pagamento (sem PDF valido ou anexo que nao e
-    documento financeiro): nome do fornecedor e valor sao obrigatorios — sem
-    nenhum dos dois a mensagem nao segue o padrao esperado e a funcao
-    retorna None (o chamador registra o e-mail em email_processing_errors).
+    Retorna None (sem log de erro) quando nenhum sinal financeiro e encontrado
+    (sem valor R$ nem numero de documento). O chamador deve ignorar silenciosamente.
 
-    Regra de tipo de pagamento / vencimento:
-      - "pix" no corpo define payment_method='pix'; sem data de vencimento
-        explicita, o vencimento e a propria data de envio do e-mail
-        (pagamento a vista — mesma regra usada para boletos sem vencimento)
-      - "vencimento"/"vencto"/"venc" seguido de uma data prevalece sobre a
-        data implicita do PIX, mesmo com o termo "pix" presente
-      - sem nenhum dos dois termos, payment_method='outro' — valor aceito
-        pelo CHECK constraint da coluna (equivalente ao 'outros' da regra de
-        negocio; gravar 'outros' violaria o constraint, como 'outro' ja e
-        usado de forma consistente em document_type)
-
-    Sem anexo nao ha data de emissao nem numero de documento no PDF — por isso:
-      - issue_date  = data de envio do e-mail (received_at)
-      - invoice_number = "{document_type}_{ddmmaa}", ddmmaa derivado de issue_date
-        (ex.: 'outro_080626'), mantendo o registro identificavel
+    Regras de extracao:
+      - amount      : primeiro 'R$ X.XXX,XX' encontrado
+      - invoice_number: 'NF XXXX', 'NFe XXXX', 'nota fiscal XXXX', 'fatura N° XXXX'
+      - issue_date  : 'emissao DD/MM/AA(AA)'; fallback = data de envio do e-mail
+      - due_date    : 'vencimento/vencto DD/MM/AA(AA)'; fallback = issue_date
+      - supplier_name: 'Nome:' / 'Responsavel:' no corpo; fallback = sender_email
+      - payment_method: 'pix' no corpo → 'pix'; caso contrario → 'outro'
+      - document_type: 'PIX' quando PIX; senao keywords de tributo; fallback 'outro'
+      - invoice_number fallback: '{document_type}_{ddmmyy}' quando nao encontrado
     """
     if not body_text:
         return None
 
+    # Campos extraidos do corpo
     name_match    = _BODY_NAME_RE.search(body_text)
     supplier_name = name_match.group(1).strip() if name_match else None
 
-    amount_match = _BODY_AMOUNT_RE.search(body_text)
-    amount       = _brl_to_decimal(amount_match.group(1)) if amount_match else None
+    amount_match   = _BODY_AMOUNT_RE.search(body_text)
+    amount         = _brl_to_decimal(amount_match.group(1)) if amount_match else None
 
-    if not supplier_name and not amount:
+    inv_match      = _BODY_INVOICE_RE.search(body_text)
+    invoice_number = inv_match.group(1).strip() if inv_match else None
+
+    # Sem sinal financeiro (valor ou numero de documento) — ignorar silenciosamente
+    if not amount and not invoice_number:
         return None
 
-    has_pix   = bool(_BODY_PIX_RE.search(body_text))
+    # Fornecedor: label no corpo ou email do remetente como fallback
+    if not supplier_name:
+        supplier_name = sender_email or "desconhecido"
+
+    has_pix = bool(_BODY_PIX_RE.search(body_text))
+
+    issue_match = _BODY_ISSUE_RE.search(body_text)
+    issue_date  = _br_date_to_iso(issue_match.group(1)) if issue_match else None
+    if not issue_date:
+        issue_date = (received_at or "")[:10] or None
+
     due_match = _BODY_DUE_RE.search(body_text)
     due_date  = _br_date_to_iso(due_match.group(1)) if due_match else None
+    if not due_date:
+        due_date = issue_date  # sem vencimento explicito, usa data de emissao
 
     if has_pix:
         payment_method = "pix"
-        if not due_date:
-            due_date = (received_at or "")[:10] or None
     else:
         payment_method = "outro"
 
-    # PIX sobrescreve qualquer tipo de documento (regra de negócio).
-    # Caso contrário, tenta detectar subtipos de tributo via keywords do corpo.
+    # PIX sobrescreve qualquer tipo; senao detecta subtipos de tributo via keywords
     document_type = "PIX" if has_pix else _classify_body_doc_type(body_text)
 
-    # Sem documento anexado nao ha data de emissao nem numero de documento —
-    # emissao usa a data de envio do e-mail, e o numero e composto a partir
-    # do tipo + data de emissao (ddmmaa), para manter o registro identificavel
-    issue_date     = (received_at or "")[:10] or None
-    invoice_number = None
-    ddmmyy         = _iso_date_to_ddmmyy(issue_date)
-    if ddmmyy:
-        invoice_number = f"{document_type}_{ddmmyy}"
+    # Numero de documento: valor encontrado no corpo ou fallback tipo+ddmmyy
+    if not invoice_number:
+        ddmmyy = _iso_date_to_ddmmyy(due_date or issue_date)
+        if ddmmyy:
+            invoice_number = f"{document_type}_{ddmmyy}"
 
     payload = {f: None for f in FINANCIAL_FIELDS}
     payload.update({
@@ -746,36 +758,17 @@ def extract_and_store_accounts(saved_pdfs: list, message_id: str,
 
 
 def try_extract_from_body(email_rec: dict, body_text: str, received_at: str,
-                          message_id: str, ctrl: "SupabaseControl") -> bool:
+                          message_id: str, ctrl: "SupabaseControl",
+                          sender_email: str | None = None) -> bool:
     """Tenta gravar uma conta extraida do corpo do e-mail (sem PDF valido).
 
-    Acionado quando o e-mail nao tem anexo PDF, ou o anexo existente nao
-    corresponde as regras de negocio (extracao falhou ou nao gerou conta
-    valida). Aplica as mesmas validacoes de negocio do fluxo de PDF — valor
-    e identificacao do fornecedor obrigatorios — antes de gravar. Retorna
-    True se uma conta foi gravada com sucesso.
+    Retorna True se uma conta foi gravada.
+    Retorna False silenciosamente quando o corpo nao contem sinal financeiro
+    (sem valor R$ nem numero de documento) — nao gera entrada em errors.
     """
-    payload = extract_from_email_body(body_text, received_at, message_id)
+    payload = extract_from_email_body(body_text, received_at, message_id, sender_email)
     if payload is None:
-        ctrl.register_error(
-            email_rec, "sem_fornecedor",
-            "Corpo do e-mail sem nome/responsavel e sem valor — sem PDF valido"
-        )
-        return False
-
-    if not payload.get("amount"):
-        ctrl.register_error(
-            email_rec, "sem_valor",
-            "Valor ausente no corpo do e-mail — sem PDF valido", raw_payload=payload
-        )
-        return False
-
-    if not payload.get("supplier_name"):
-        ctrl.register_error(
-            email_rec, "sem_fornecedor",
-            "Nome do fornecedor ausente no corpo do e-mail — sem PDF valido", raw_payload=payload
-        )
-        return False
+        return False  # Sem sinal financeiro — ignorar silenciosamente
 
     if payload.get("invoice_number"):
         payload["invoice_number"] = ctrl.unique_invoice_number(payload["invoice_number"])
@@ -855,11 +848,10 @@ def process_message(mail, uid: bytes, keywords: list,
         if not has_att:
             rec["notes"] = "Sem anexo PDF — registrado para revisão"
 
-        # Sem anexo, ou anexo existente nao gerou conta valida — tenta
-        # extrair os dados de pagamento do corpo do e-mail (pedido informal
-        # de pagamento a fornecedor: nome, valor e dados bancarios no texto)
+        # Sem anexo, ou com anexo mas sem conta extraída — tenta corpo do e-mail
         if not has_att or accounts_saved == 0:
-            if try_extract_from_body(rec, body_text, received_at, message_id, ctrl):
+            if try_extract_from_body(rec, body_text, received_at, message_id, ctrl,
+                                     sender_email=sender_email):
                 rec["pdf_extracted"] = True
                 rec["notes"]         = "Conta extraída do corpo do e-mail"
 
@@ -933,12 +925,17 @@ def run_reader(days: int = 0, all_: bool = False,
     new_subjects = []
 
     for uid in uids:
-        # Buscar só o header para filtrar rapidamente
-        _, hdr = mail.uid("fetch", uid,
-                          "(BODY.PEEK[HEADER.FIELDS (SUBJECT MESSAGE-ID)])")
-        hdr_msg = email.message_from_bytes(hdr[0][1])
-        subject = decode_str(hdr_msg.get("Subject", ""))
-        msg_id  = hdr_msg.get("Message-ID", "").strip()
+        try:
+            # Buscar só o header para filtrar rapidamente
+            _, hdr = mail.uid("fetch", uid,
+                              "(BODY.PEEK[HEADER.FIELDS (SUBJECT MESSAGE-ID)])")
+            hdr_msg = email.message_from_bytes(hdr[0][1])
+            subject = decode_str(hdr_msg.get("Subject", ""))
+            msg_id  = hdr_msg.get("Message-ID", "").strip()
+        except Exception as e:
+            log.warning(f"  [SKIP] UID {uid} — erro ao ler header: {e}")
+            skipped_kw += 1
+            continue
 
         # Filtro por palavra-chave
         if not match_keyword(subject, keywords):

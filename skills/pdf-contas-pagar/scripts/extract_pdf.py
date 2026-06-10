@@ -199,7 +199,7 @@ def extract_amount(text):
     m = re.search(r"(?:R\$\s*)?(\d{1,3}(?:\.\d{3})*(?:,\d{2})?|\d+,\d{2})", text)
     if m:
         try:
-            return str(round(float(m.group(1).replace(".","").replace(",",".")),2))
+            return round(float(m.group(1).replace(".","").replace(",",".")), 2)
         except ValueError:
             return None
     return None
@@ -560,7 +560,10 @@ def process_pdf(pdf_path, force_vision=False):
             raw, src = extract_with_pdfplumber(pdf_path)
             if len(raw) < 80:
                 log.warning(f"  → Texto curto ({len(raw)} chars) — fallback Vision")
-                raw, src = extract_with_vision(pdf_path)
+                try:
+                    raw, src = extract_with_vision(pdf_path)
+                except FileNotFoundError:
+                    log.warning("  → pdftoppm não encontrado — prosseguindo com texto pdfplumber")
         return build_record(pdf_path, raw, src)
     except Exception as e:
         log.error(f"  ✗ {pdf_path.name}: {e}")
