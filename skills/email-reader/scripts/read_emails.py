@@ -256,6 +256,33 @@ class SupabaseControl:
             n += 1
         return f"{base}({n})"
 
+    def load_known_ids(self) -> set:
+        """Carrega todos os message_id de email_control em um set local.
+
+        Substitui N chamadas individuais is_processed() por uma única consulta,
+        eliminando a latência por e-mail no loop principal de deduplicação.
+        """
+        if not self._available:
+            return set()
+        all_ids, offset, chunk = set(), 0, 1000
+        try:
+            while True:
+                req = urllib.request.Request(
+                    f"{self.base}/rest/v1/email_control"
+                    f"?select=message_id&limit={chunk}&offset={offset}",
+                    headers=self.headers,
+                )
+                with urllib.request.urlopen(req, timeout=15) as r:
+                    rows = json.loads(r.read())
+                all_ids.update(row["message_id"] for row in rows if row.get("message_id"))
+                if len(rows) < chunk:
+                    break
+                offset += chunk
+            return all_ids
+        except Exception as e:
+            log.warning(f"Falha ao carregar IDs em lote: {e}")
+            return set()
+
     @staticmethod
     def _derive_status(rec: dict) -> str:
         if rec.get("pdf_extracted"):   return "extracted"
@@ -276,7 +303,11 @@ def decode_str(value: str) -> str:
     result = []
     for part, enc in parts:
         if isinstance(part, bytes):
-            result.append(part.decode(enc or "utf-8", errors="replace"))
+            try:
+                result.append(part.decode(enc or "utf-8", errors="replace"))
+            except LookupError:
+                # Charset desconhecido (ex: "unknown-8bit") — fallback para latin-1
+                result.append(part.decode("latin-1", errors="replace"))
         else:
             result.append(str(part))
     return " ".join(result).strip()
@@ -302,6 +333,29 @@ def get_body_text(msg) -> str:
             except Exception:
                 pass
     return body.strip()
+
+
+def get_body_html(msg) -> str:
+    """Extrai a parte HTML do e-mail para busca de links."""
+    html = ""
+    if msg.is_multipart():
+        for part in msg.walk():
+            ct = part.get_content_type()
+            cd = str(part.get("Content-Disposition", ""))
+            if ct == "text/html" and "attachment" not in cd:
+                charset = part.get_content_charset() or "utf-8"
+                try:
+                    html += part.get_payload(decode=True).decode(charset, errors="replace")
+                except Exception:
+                    pass
+    else:
+        if msg.get_content_type() == "text/html":
+            charset = msg.get_content_charset() or "utf-8"
+            try:
+                html = msg.get_payload(decode=True).decode(charset, errors="replace")
+            except Exception:
+                pass
+    return html
 
 
 def safe_filename(text: str, max_len: int = 40) -> str:
@@ -433,10 +487,12 @@ def _to_decimal(value, default):
 # Termos podem aparecer em qualquer caixa/acentuacao ("Pix"/"PIX"/"pix",
 # "Responsável"/"responsavel") — os regex abaixo sao case-insensitive e
 # cobrem a unica variacao de acento relevante ("respons[aá]vel").
-_BODY_NAME_RE   = re.compile(r"(?im)^[ \t]*(?:nome|respons[aá]vel)[ \t]*[:\-]?[ \t]*(.+?)[ \t]*$")
-_BODY_AMOUNT_RE = re.compile(r"R\$\s*([\d.,]+)")
-_BODY_PIX_RE    = re.compile(r"\bpix\b", re.IGNORECASE)
-_BODY_DUE_RE    = re.compile(r"(?i)venc(?:imento|to)?\D{0,15}?(\d{2}/\d{2}/\d{4})")
+_BODY_NAME_RE    = re.compile(r"(?im)^[ \t]*(?:nome|respons[aá]vel)[ \t]*[:\-]?[ \t]*(.+?)[ \t]*$")
+_BODY_AMOUNT_RE  = re.compile(r"R\$\s*([\d.,]+)")
+_BODY_PIX_RE     = re.compile(r"\bpix\b", re.IGNORECASE)
+_BODY_DUE_RE     = re.compile(r"(?i)venc(?:imento|to)?\D{0,15}?(\d{2}/\d{2}/\d{2,4})")
+_BODY_ISSUE_RE   = re.compile(r"(?i)emiss[aã]o\D{0,10}?(\d{2}/\d{2}/\d{2,4})")
+_BODY_INVOICE_RE = re.compile(r"(?i)\b(?:nf(?:[- ]?e)?|nota\s+fiscal|fatura\s+n[º°.]?)\s*[n°.:]?\s*(\d{3,})")
 
 # Tabela de keywords por tipo de documento — verificada contra o corpo do e-mail.
 # Ordem importa: termos mais específicos antes dos fallbacks genéricos.
@@ -499,13 +555,15 @@ def _brl_to_decimal(raw: str | None):
 
 
 def _br_date_to_iso(raw: str | None) -> str | None:
-    """Converte data 'dd/mm/aaaa' do corpo do e-mail para 'aaaa-mm-dd'."""
+    """Converte data 'dd/mm/aaaa' ou 'dd/mm/aa' do corpo do e-mail para 'aaaa-mm-dd'."""
     if not raw:
         return None
-    try:
-        return datetime.strptime(raw, "%d/%m/%Y").strftime("%Y-%m-%d")
-    except ValueError:
-        return None
+    for fmt in ("%d/%m/%Y", "%d/%m/%y"):
+        try:
+            return datetime.strptime(raw, fmt).strftime("%Y-%m-%d")
+        except ValueError:
+            continue
+    return None
 
 
 def _iso_date_to_ddmmyy(iso_date: str | None) -> str | None:
@@ -518,65 +576,69 @@ def _iso_date_to_ddmmyy(iso_date: str | None) -> str | None:
         return None
 
 
-def extract_from_email_body(body_text: str, received_at: str, message_id: str) -> dict | None:
+def extract_from_email_body(body_text: str, received_at: str, message_id: str,
+                            sender_email: str | None = None) -> dict | None:
     """Monta um payload de financial_emails a partir do corpo do e-mail.
 
-    Cobre o pedido informal de pagamento (sem PDF valido ou anexo que nao e
-    documento financeiro): nome do fornecedor e valor sao obrigatorios — sem
-    nenhum dos dois a mensagem nao segue o padrao esperado e a funcao
-    retorna None (o chamador registra o e-mail em email_processing_errors).
+    Retorna None (sem log de erro) quando nenhum sinal financeiro e encontrado
+    (sem valor R$ nem numero de documento). O chamador deve ignorar silenciosamente.
 
-    Regra de tipo de pagamento / vencimento:
-      - "pix" no corpo define payment_method='pix'; sem data de vencimento
-        explicita, o vencimento e a propria data de envio do e-mail
-        (pagamento a vista — mesma regra usada para boletos sem vencimento)
-      - "vencimento"/"vencto"/"venc" seguido de uma data prevalece sobre a
-        data implicita do PIX, mesmo com o termo "pix" presente
-      - sem nenhum dos dois termos, payment_method='outro' — valor aceito
-        pelo CHECK constraint da coluna (equivalente ao 'outros' da regra de
-        negocio; gravar 'outros' violaria o constraint, como 'outro' ja e
-        usado de forma consistente em document_type)
-
-    Sem anexo nao ha data de emissao nem numero de documento no PDF — por isso:
-      - issue_date  = data de envio do e-mail (received_at)
-      - invoice_number = "{document_type}_{ddmmaa}", ddmmaa derivado de issue_date
-        (ex.: 'outro_080626'), mantendo o registro identificavel
+    Regras de extracao:
+      - amount      : primeiro 'R$ X.XXX,XX' encontrado
+      - invoice_number: 'NF XXXX', 'NFe XXXX', 'nota fiscal XXXX', 'fatura N° XXXX'
+      - issue_date  : 'emissao DD/MM/AA(AA)'; fallback = data de envio do e-mail
+      - due_date    : 'vencimento/vencto DD/MM/AA(AA)'; fallback = issue_date
+      - supplier_name: 'Nome:' / 'Responsavel:' no corpo; fallback = sender_email
+      - payment_method: 'pix' no corpo → 'pix'; caso contrario → 'outro'
+      - document_type: 'PIX' quando PIX; senao keywords de tributo; fallback 'outro'
+      - invoice_number fallback: '{document_type}_{ddmmyy}' quando nao encontrado
     """
     if not body_text:
         return None
 
+    # Campos extraidos do corpo
     name_match    = _BODY_NAME_RE.search(body_text)
     supplier_name = name_match.group(1).strip() if name_match else None
 
-    amount_match = _BODY_AMOUNT_RE.search(body_text)
-    amount       = _brl_to_decimal(amount_match.group(1)) if amount_match else None
+    amount_match   = _BODY_AMOUNT_RE.search(body_text)
+    amount         = _brl_to_decimal(amount_match.group(1)) if amount_match else None
 
-    if not supplier_name and not amount:
+    inv_match      = _BODY_INVOICE_RE.search(body_text)
+    invoice_number = inv_match.group(1).strip() if inv_match else None
+
+    # Sem sinal financeiro (valor ou numero de documento) — ignorar silenciosamente
+    if not amount and not invoice_number:
         return None
 
-    has_pix   = bool(_BODY_PIX_RE.search(body_text))
+    # Fornecedor: label no corpo ou email do remetente como fallback
+    if not supplier_name:
+        supplier_name = sender_email or "desconhecido"
+
+    has_pix = bool(_BODY_PIX_RE.search(body_text))
+
+    issue_match = _BODY_ISSUE_RE.search(body_text)
+    issue_date  = _br_date_to_iso(issue_match.group(1)) if issue_match else None
+    if not issue_date:
+        issue_date = (received_at or "")[:10] or None
+
     due_match = _BODY_DUE_RE.search(body_text)
     due_date  = _br_date_to_iso(due_match.group(1)) if due_match else None
+    if not due_date:
+        due_date = issue_date  # sem vencimento explicito, usa data de emissao
 
     if has_pix:
         payment_method = "pix"
-        if not due_date:
-            due_date = (received_at or "")[:10] or None
     else:
         payment_method = "outro"
 
-    # PIX sobrescreve qualquer tipo de documento (regra de negócio).
-    # Caso contrário, tenta detectar subtipos de tributo via keywords do corpo.
+    # PIX sobrescreve qualquer tipo; senao detecta subtipos de tributo via keywords
     document_type = "PIX" if has_pix else _classify_body_doc_type(body_text)
 
-    # Sem documento anexado nao ha data de emissao nem numero de documento —
-    # emissao usa a data de envio do e-mail, e o numero e composto a partir
-    # do tipo + data de emissao (ddmmaa), para manter o registro identificavel
-    issue_date     = (received_at or "")[:10] or None
-    invoice_number = None
-    ddmmyy         = _iso_date_to_ddmmyy(issue_date)
-    if ddmmyy:
-        invoice_number = f"{document_type}_{ddmmyy}"
+    # Numero de documento: valor encontrado no corpo ou fallback tipo+ddmmyy
+    if not invoice_number:
+        ddmmyy = _iso_date_to_ddmmyy(due_date or issue_date)
+        if ddmmyy:
+            invoice_number = f"{document_type}_{ddmmyy}"
 
     payload = {f: None for f in FINANCIAL_FIELDS}
     payload.update({
@@ -634,6 +696,149 @@ def save_attachments(msg, sender_email: str, subject: str,
             saved.append(dest_path)
             log.info(f"    PDF salvo: {dest_path.name}")
     return saved
+
+
+# ---------------------------------------------------------------------------
+# Download de PDFs a partir de links no corpo do e-mail
+# ---------------------------------------------------------------------------
+# Texto âncora que sugere um documento de cobrança
+_LINK_TEXT_RE = re.compile(
+    r"boleto|fatura|segunda\s*via|download|baixar|pagar|pagamento|"
+    r"clique\s*aqui|acesse|emitir|emiss[aã]o|vencimento|cobran[cç]a|slip",
+    re.IGNORECASE,
+)
+# Segmento de URL que sugere boleto/PDF
+_LINK_URL_RE = re.compile(
+    r"boleto|fatura|invoice|bill|download|pdf|pagamento|documento|cobranca",
+    re.IGNORECASE,
+)
+_LINK_HREF_RE = re.compile(
+    r'<a[^>]+href=["\']([^"\']{10,})["\'][^>]*>(.*?)</a>',
+    re.IGNORECASE | re.DOTALL,
+)
+_LINK_IN_TEXT_RE = re.compile(r"https?://[^\s\"'<>]{15,}")
+_MAX_PDF_LINK_BYTES = 50 * 1024 * 1024  # 50 MB
+_LINK_UA = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) "
+    "Chrome/124.0.0.0 Safari/537.36"
+)
+
+
+def extract_pdf_links(text: str, html: str) -> list[str]:
+    """Extrai URLs candidatas a PDF do texto simples e HTML do e-mail.
+
+    Inclui links HTML cujo texto-âncora ou caminho da URL sugira boleto/fatura.
+    Limita a 10 candidatas por e-mail para evitar downloads em massa.
+    """
+    candidates, seen = [], set()
+
+    def _add(url: str):
+        u = url.strip().rstrip(".,;)>\"'")
+        if u and u not in seen and u.startswith("http"):
+            seen.add(u)
+            candidates.append(u)
+
+    for m in _LINK_HREF_RE.finditer(html or ""):
+        url         = m.group(1).strip()
+        anchor_text = re.sub(r"<[^>]+>", "", m.group(2)).strip()
+        if not url.startswith("http"):
+            continue
+        url_path = url.lower().split("?")[0]
+        if (_LINK_TEXT_RE.search(anchor_text)
+                or url_path.endswith(".pdf")
+                or _LINK_URL_RE.search(url)):
+            _add(url)
+
+    for url in _LINK_IN_TEXT_RE.findall(text or ""):
+        url_path = url.lower().split("?")[0]
+        if url_path.endswith(".pdf") or _LINK_URL_RE.search(url):
+            _add(url)
+
+    return candidates[:10]
+
+
+def _fetch_url(url: str, timeout: int = 30) -> "tuple[bytes, str, str] | None":
+    """GET em url; retorna (conteúdo, content_type, url_final) ou None."""
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": _LINK_UA})
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            return (
+                resp.read(_MAX_PDF_LINK_BYTES),
+                resp.headers.get("Content-Type", "").lower(),
+                resp.geturl(),
+            )
+    except urllib.error.HTTPError as e:
+        log.info(f"    HTTP {e.code}: {url[:70]}")
+        return None
+    except Exception as e:
+        log.info(f"    Falha ao acessar link ({type(e).__name__}): {url[:70]}")
+        return None
+
+
+def _save_pdf_data(data: bytes, sender_email: str, subject: str,
+                   received_at: str) -> Path:
+    date_tag    = received_at[:10].replace("-", "")
+    sender_tag  = safe_filename((sender_email or "").split("@")[0], 20)
+    subject_tag = safe_filename(subject, 30)
+    dest_name   = f"{sender_tag}_{subject_tag}_{date_tag}_link.pdf"
+    dest_path   = PDF_INBOX / dest_name
+    counter = 1
+    while dest_path.exists():
+        dest_path = PDF_INBOX / f"{dest_name[:-4]}_{counter}.pdf"
+        counter += 1
+    dest_path.write_bytes(data)
+    log.info(f"    PDF via link salvo: {dest_path.name} ({len(data) // 1024} KB)")
+    return dest_path
+
+
+def download_pdf_from_url(url: str, sender_email: str, subject: str,
+                           received_at: str) -> Path | None:
+    """Baixa um PDF de uma URL, seguindo até um nível de página HTML intermediária.
+
+    Fluxo:
+      1. Faz GET na URL (segue redirects automaticamente via urllib).
+      2. Se a resposta contiver bytes PDF (%PDF), salva e retorna.
+      3. Se a resposta for HTML (landing page / tracking redirect),
+         varre os links da página em busca de um link PDF e tenta baixá-lo.
+      4. Qualquer outro conteúdo é ignorado.
+    """
+    result = _fetch_url(url)
+    if not result:
+        return None
+    data, content_type, final_url = result
+
+    if final_url != url:
+        log.info(f"    Redirecionou para: {final_url[:80]}")
+
+    # Caso 1: PDF direto (checa assinatura %PDF independente do Content-Type)
+    if b"%PDF" in data[:32]:
+        return _save_pdf_data(data, sender_email, subject, received_at)
+
+    # Caso 2: página HTML intermediária — busca link PDF na página
+    is_html = "text/html" in content_type or b"<html" in data[:200].lower()
+    if not is_html:
+        log.info(f"    Conteúdo não reconhecido (tipo: {content_type[:40]})")
+        return None
+
+    log.info(f"    Página HTML recebida — buscando link PDF interno")
+    html_text = data.decode("utf-8", errors="replace")
+    for m in _LINK_HREF_RE.finditer(html_text):
+        inner_url   = m.group(1).strip()
+        anchor_text = re.sub(r"<[^>]+>", "", m.group(2)).strip()
+        if not inner_url.startswith("http"):
+            continue
+        url_path = inner_url.lower().split("?")[0]
+        if (url_path.endswith(".pdf")
+                or _LINK_URL_RE.search(inner_url)
+                or _LINK_TEXT_RE.search(anchor_text)):
+            log.info(f"    Candidato na página: {inner_url[:70]}")
+            inner = _fetch_url(inner_url)
+            if inner and b"%PDF" in inner[0][:32]:
+                return _save_pdf_data(inner[0], sender_email, subject, received_at)
+
+    log.info(f"    Nenhum PDF encontrado na página HTML")
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -746,36 +951,17 @@ def extract_and_store_accounts(saved_pdfs: list, message_id: str,
 
 
 def try_extract_from_body(email_rec: dict, body_text: str, received_at: str,
-                          message_id: str, ctrl: "SupabaseControl") -> bool:
+                          message_id: str, ctrl: "SupabaseControl",
+                          sender_email: str | None = None) -> bool:
     """Tenta gravar uma conta extraida do corpo do e-mail (sem PDF valido).
 
-    Acionado quando o e-mail nao tem anexo PDF, ou o anexo existente nao
-    corresponde as regras de negocio (extracao falhou ou nao gerou conta
-    valida). Aplica as mesmas validacoes de negocio do fluxo de PDF — valor
-    e identificacao do fornecedor obrigatorios — antes de gravar. Retorna
-    True se uma conta foi gravada com sucesso.
+    Retorna True se uma conta foi gravada.
+    Retorna False silenciosamente quando o corpo nao contem sinal financeiro
+    (sem valor R$ nem numero de documento) — nao gera entrada em errors.
     """
-    payload = extract_from_email_body(body_text, received_at, message_id)
+    payload = extract_from_email_body(body_text, received_at, message_id, sender_email)
     if payload is None:
-        ctrl.register_error(
-            email_rec, "sem_fornecedor",
-            "Corpo do e-mail sem nome/responsavel e sem valor — sem PDF valido"
-        )
-        return False
-
-    if not payload.get("amount"):
-        ctrl.register_error(
-            email_rec, "sem_valor",
-            "Valor ausente no corpo do e-mail — sem PDF valido", raw_payload=payload
-        )
-        return False
-
-    if not payload.get("supplier_name"):
-        ctrl.register_error(
-            email_rec, "sem_fornecedor",
-            "Nome do fornecedor ausente no corpo do e-mail — sem PDF valido", raw_payload=payload
-        )
-        return False
+        return False  # Sem sinal financeiro — ignorar silenciosamente
 
     if payload.get("invoice_number"):
         payload["invoice_number"] = ctrl.unique_invoice_number(payload["invoice_number"])
@@ -836,13 +1022,32 @@ def process_message(mail, uid: bytes, keywords: list,
             return rec
 
         # Baixar PDFs e acionar extração
-        saved_pdfs  = save_attachments(msg, sender_email, subject, received_at)
-        att_names   = [p.name for p in saved_pdfs]
-        has_att     = len(saved_pdfs) > 0
+        saved_pdfs = save_attachments(msg, sender_email, subject, received_at)
+
+        # Sem anexo direto: tentar baixar PDF de links no corpo do e-mail
+        link_downloaded = False
+        if not saved_pdfs:
+            body_html = get_body_html(msg)
+            pdf_links = extract_pdf_links(body_text, body_html)
+            if pdf_links:
+                log.info(f"    {len(pdf_links)} link(s) candidato(s) encontrado(s) no corpo")
+            else:
+                log.info(f"    Sem links candidatos no corpo do e-mail")
+            for url in pdf_links:
+                log.info(f"    Tentando link: {url[:80]}")
+                pdf_path = download_pdf_from_url(url, sender_email, subject, received_at)
+                if pdf_path:
+                    saved_pdfs.append(pdf_path)
+                    link_downloaded = True
+
+        att_names = [p.name for p in saved_pdfs]
+        has_att   = len(saved_pdfs) > 0
 
         rec["has_attachment"]   = has_att
         rec["attachment_names"] = " | ".join(att_names) if att_names else None
         rec["attachment_saved"] = has_att
+        if link_downloaded:
+            rec["notes"] = "PDF baixado de link no corpo do e-mail"
 
         csvs_ok, accounts_saved = extract_and_store_accounts(
             saved_pdfs, message_id, ctrl, email_rec=rec)
@@ -855,11 +1060,11 @@ def process_message(mail, uid: bytes, keywords: list,
         if not has_att:
             rec["notes"] = "Sem anexo PDF — registrado para revisão"
 
-        # Sem anexo, ou anexo existente nao gerou conta valida — tenta
-        # extrair os dados de pagamento do corpo do e-mail (pedido informal
-        # de pagamento a fornecedor: nome, valor e dados bancarios no texto)
+        # Extração do corpo quando: sem PDF | extração falhou | resultado em branco
+        # | nenhuma conta atendeu os dados mínimos (sem valor ou sem fornecedor)
         if not has_att or accounts_saved == 0:
-            if try_extract_from_body(rec, body_text, received_at, message_id, ctrl):
+            if try_extract_from_body(rec, body_text, received_at, message_id, ctrl,
+                                     sender_email=sender_email):
                 rec["pdf_extracted"] = True
                 rec["notes"]         = "Conta extraída do corpo do e-mail"
 
@@ -896,10 +1101,16 @@ def run_reader(days: int = 0, all_: bool = False,
     ctrl = SupabaseControl()
     supabase_ok = ctrl._available
 
+    # Dedup em lote: carrega todos os IDs já processados em um set local.
+    # Substitui N chamadas HTTP individuais por uma única consulta — elimina
+    # a latência por e-mail no loop de deduplicação.
+    known_ids = ctrl.load_known_ids()
+
     log.info("=" * 58)
     log.info("  email-reader v2.0 — iniciando")
     log.info(f"  Conta    : {os.getenv('IMAP_USER')}")
     log.info(f"  Controle : {'✓ Supabase' if supabase_ok else '✗ Supabase (fallback CSV)'}")
+    log.info(f"  Dedup    : {len(known_ids)} IDs em cache")
     log.info(f"  Keywords : {len(keywords)} configuradas")
     log.info(f"  Modo     : {'dry-run' if dry_run else 'processamento completo'}")
     log.info("=" * 58)
@@ -933,20 +1144,27 @@ def run_reader(days: int = 0, all_: bool = False,
     new_subjects = []
 
     for uid in uids:
-        # Buscar só o header para filtrar rapidamente
-        _, hdr = mail.uid("fetch", uid,
-                          "(BODY.PEEK[HEADER.FIELDS (SUBJECT MESSAGE-ID)])")
-        hdr_msg = email.message_from_bytes(hdr[0][1])
-        subject = decode_str(hdr_msg.get("Subject", ""))
-        msg_id  = hdr_msg.get("Message-ID", "").strip()
+        try:
+            # Buscar só o header para filtrar rapidamente
+            _, hdr = mail.uid("fetch", uid,
+                              "(BODY.PEEK[HEADER.FIELDS (SUBJECT MESSAGE-ID)])")
+            hdr_msg = email.message_from_bytes(hdr[0][1])
+            subject = decode_str(hdr_msg.get("Subject", ""))
+            msg_id  = hdr_msg.get("Message-ID", "").strip()
+        except Exception as e:
+            log.warning(f"  [SKIP] UID {uid} — erro ao ler header: {e}")
+            skipped_kw += 1
+            continue
 
         # Filtro por palavra-chave
         if not match_keyword(subject, keywords):
             skipped_kw += 1
             continue
 
-        # Deduplicação via Supabase (ou CSV fallback)
-        if msg_id and ctrl.is_processed(msg_id):
+        # Deduplicação: set em memória (O(1)); fallback para consulta individual
+        # se o lote não foi carregado (Supabase indisponível na inicialização).
+        is_dup = (msg_id in known_ids) if known_ids else (msg_id and ctrl.is_processed(msg_id))
+        if is_dup:
             log.info(f"  [DUP] {subject[:65]}")
             skipped_dup += 1
             continue
