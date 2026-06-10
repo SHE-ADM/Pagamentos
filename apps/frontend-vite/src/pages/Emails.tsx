@@ -1,5 +1,5 @@
 // src/pages/Emails.tsx
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { RefreshCw, Mail, FileCheck, AlertCircle, CopyMinus, Inbox, CheckCircle2 } from 'lucide-react';
 import type { EmailControl, FinancialEmail } from '@sheild/shared';
 import { getEmailControl, getEmailStats, getAccountsByMessageId, type EmailStats } from '../services/supabase';
@@ -35,7 +35,9 @@ export default function Emails() {
   const [error, setError] = useState<string | null>(null);
   const [reading, setReading] = useState(false);
   const [readMsg, setReadMsg] = useState<string | null>(null);
+  const [readElapsed, setReadElapsed] = useState(0);
   const [accounts, setAccounts] = useState<FinancialEmail[]>([]);
+  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const [filters, setFilters] = useState<EmailFilters>({ status: '', sender: '', days: 30 });
 
   const load = useCallback(async () => {
@@ -67,13 +69,27 @@ export default function Emails() {
       .catch(() => setAccounts([]));
   }, [sel]);
 
-  // Dispara a leitura IMAP no backend e recarrega a tabela ao concluir.
+  // Dispara a leitura IMAP no backend.
+  // Como o processamento pode levar vários minutos, faz polling automático
+  // da tabela a cada 20 s enquanto aguarda a resposta do Flask.
   const handleRead = async () => {
     setReading(true);
     setError(null);
     setReadMsg(null);
+    setReadElapsed(0);
+
+    const start = Date.now();
+
+    // Atualiza o contador de tempo e recarrega a tabela a cada 20 s
+    pollRef.current = setInterval(() => {
+      setReadElapsed(Math.floor((Date.now() - start) / 1000));
+      load();
+    }, 20_000);
+
     try {
-      const s = await triggerEmailRead({ days: filters.days });
+      // days: 0 → critério IMAP "UNSEEN" (apenas não lidos).
+      // filters.days controla só o período exibido na tabela — não o IMAP.
+      const s = await triggerEmailRead({ days: 0 });
       setReadMsg(
         `Busca concluída — ${s.found} e-mail(s) no servidor, ` +
           `${s.processed} novo(s) processado(s), ${s.skipped_dup} duplicado(s).`,
@@ -81,7 +97,9 @@ export default function Emails() {
     } catch (e) {
       setError(getErrorMessage(e));
     } finally {
+      if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; }
       setReading(false);
+      setReadElapsed(0);
       await load();
     }
   };
@@ -101,9 +119,11 @@ export default function Emails() {
         <div className="flex gap-2">
           <button onClick={handleRead} className="btn btn-primary" disabled={reading || loading}>
             <Inbox size={14} className={reading ? 'animate-pulse' : ''} />
-            {reading ? 'Buscando e-mails…' : 'Buscar e-mails novos'}
+            {reading
+              ? `Processando${readElapsed > 0 ? ` (${readElapsed}s)` : '…'}`
+              : 'Buscar e-mails novos'}
           </button>
-          <button onClick={load} className="btn" disabled={loading || reading}>
+          <button onClick={load} className="btn" disabled={loading}>
             <RefreshCw size={14} className={loading ? 'animate-spin' : ''} />
             {loading ? 'Carregando…' : 'Atualizar'}
           </button>

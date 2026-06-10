@@ -256,6 +256,33 @@ class SupabaseControl:
             n += 1
         return f"{base}({n})"
 
+    def load_known_ids(self) -> set:
+        """Carrega todos os message_id de email_control em um set local.
+
+        Substitui N chamadas individuais is_processed() por uma única consulta,
+        eliminando a latência por e-mail no loop principal de deduplicação.
+        """
+        if not self._available:
+            return set()
+        all_ids, offset, chunk = set(), 0, 1000
+        try:
+            while True:
+                req = urllib.request.Request(
+                    f"{self.base}/rest/v1/email_control"
+                    f"?select=message_id&limit={chunk}&offset={offset}",
+                    headers=self.headers,
+                )
+                with urllib.request.urlopen(req, timeout=15) as r:
+                    rows = json.loads(r.read())
+                all_ids.update(row["message_id"] for row in rows if row.get("message_id"))
+                if len(rows) < chunk:
+                    break
+                offset += chunk
+            return all_ids
+        except Exception as e:
+            log.warning(f"Falha ao carregar IDs em lote: {e}")
+            return set()
+
     @staticmethod
     def _derive_status(rec: dict) -> str:
         if rec.get("pdf_extracted"):   return "extracted"
@@ -306,6 +333,29 @@ def get_body_text(msg) -> str:
             except Exception:
                 pass
     return body.strip()
+
+
+def get_body_html(msg) -> str:
+    """Extrai a parte HTML do e-mail para busca de links."""
+    html = ""
+    if msg.is_multipart():
+        for part in msg.walk():
+            ct = part.get_content_type()
+            cd = str(part.get("Content-Disposition", ""))
+            if ct == "text/html" and "attachment" not in cd:
+                charset = part.get_content_charset() or "utf-8"
+                try:
+                    html += part.get_payload(decode=True).decode(charset, errors="replace")
+                except Exception:
+                    pass
+    else:
+        if msg.get_content_type() == "text/html":
+            charset = msg.get_content_charset() or "utf-8"
+            try:
+                html = msg.get_payload(decode=True).decode(charset, errors="replace")
+            except Exception:
+                pass
+    return html
 
 
 def safe_filename(text: str, max_len: int = 40) -> str:
@@ -649,6 +699,149 @@ def save_attachments(msg, sender_email: str, subject: str,
 
 
 # ---------------------------------------------------------------------------
+# Download de PDFs a partir de links no corpo do e-mail
+# ---------------------------------------------------------------------------
+# Texto âncora que sugere um documento de cobrança
+_LINK_TEXT_RE = re.compile(
+    r"boleto|fatura|segunda\s*via|download|baixar|pagar|pagamento|"
+    r"clique\s*aqui|acesse|emitir|emiss[aã]o|vencimento|cobran[cç]a|slip",
+    re.IGNORECASE,
+)
+# Segmento de URL que sugere boleto/PDF
+_LINK_URL_RE = re.compile(
+    r"boleto|fatura|invoice|bill|download|pdf|pagamento|documento|cobranca",
+    re.IGNORECASE,
+)
+_LINK_HREF_RE = re.compile(
+    r'<a[^>]+href=["\']([^"\']{10,})["\'][^>]*>(.*?)</a>',
+    re.IGNORECASE | re.DOTALL,
+)
+_LINK_IN_TEXT_RE = re.compile(r"https?://[^\s\"'<>]{15,}")
+_MAX_PDF_LINK_BYTES = 50 * 1024 * 1024  # 50 MB
+_LINK_UA = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) "
+    "Chrome/124.0.0.0 Safari/537.36"
+)
+
+
+def extract_pdf_links(text: str, html: str) -> list[str]:
+    """Extrai URLs candidatas a PDF do texto simples e HTML do e-mail.
+
+    Inclui links HTML cujo texto-âncora ou caminho da URL sugira boleto/fatura.
+    Limita a 10 candidatas por e-mail para evitar downloads em massa.
+    """
+    candidates, seen = [], set()
+
+    def _add(url: str):
+        u = url.strip().rstrip(".,;)>\"'")
+        if u and u not in seen and u.startswith("http"):
+            seen.add(u)
+            candidates.append(u)
+
+    for m in _LINK_HREF_RE.finditer(html or ""):
+        url         = m.group(1).strip()
+        anchor_text = re.sub(r"<[^>]+>", "", m.group(2)).strip()
+        if not url.startswith("http"):
+            continue
+        url_path = url.lower().split("?")[0]
+        if (_LINK_TEXT_RE.search(anchor_text)
+                or url_path.endswith(".pdf")
+                or _LINK_URL_RE.search(url)):
+            _add(url)
+
+    for url in _LINK_IN_TEXT_RE.findall(text or ""):
+        url_path = url.lower().split("?")[0]
+        if url_path.endswith(".pdf") or _LINK_URL_RE.search(url):
+            _add(url)
+
+    return candidates[:10]
+
+
+def _fetch_url(url: str, timeout: int = 30) -> "tuple[bytes, str, str] | None":
+    """GET em url; retorna (conteúdo, content_type, url_final) ou None."""
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": _LINK_UA})
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            return (
+                resp.read(_MAX_PDF_LINK_BYTES),
+                resp.headers.get("Content-Type", "").lower(),
+                resp.geturl(),
+            )
+    except urllib.error.HTTPError as e:
+        log.info(f"    HTTP {e.code}: {url[:70]}")
+        return None
+    except Exception as e:
+        log.info(f"    Falha ao acessar link ({type(e).__name__}): {url[:70]}")
+        return None
+
+
+def _save_pdf_data(data: bytes, sender_email: str, subject: str,
+                   received_at: str) -> Path:
+    date_tag    = received_at[:10].replace("-", "")
+    sender_tag  = safe_filename((sender_email or "").split("@")[0], 20)
+    subject_tag = safe_filename(subject, 30)
+    dest_name   = f"{sender_tag}_{subject_tag}_{date_tag}_link.pdf"
+    dest_path   = PDF_INBOX / dest_name
+    counter = 1
+    while dest_path.exists():
+        dest_path = PDF_INBOX / f"{dest_name[:-4]}_{counter}.pdf"
+        counter += 1
+    dest_path.write_bytes(data)
+    log.info(f"    PDF via link salvo: {dest_path.name} ({len(data) // 1024} KB)")
+    return dest_path
+
+
+def download_pdf_from_url(url: str, sender_email: str, subject: str,
+                           received_at: str) -> Path | None:
+    """Baixa um PDF de uma URL, seguindo até um nível de página HTML intermediária.
+
+    Fluxo:
+      1. Faz GET na URL (segue redirects automaticamente via urllib).
+      2. Se a resposta contiver bytes PDF (%PDF), salva e retorna.
+      3. Se a resposta for HTML (landing page / tracking redirect),
+         varre os links da página em busca de um link PDF e tenta baixá-lo.
+      4. Qualquer outro conteúdo é ignorado.
+    """
+    result = _fetch_url(url)
+    if not result:
+        return None
+    data, content_type, final_url = result
+
+    if final_url != url:
+        log.info(f"    Redirecionou para: {final_url[:80]}")
+
+    # Caso 1: PDF direto (checa assinatura %PDF independente do Content-Type)
+    if b"%PDF" in data[:32]:
+        return _save_pdf_data(data, sender_email, subject, received_at)
+
+    # Caso 2: página HTML intermediária — busca link PDF na página
+    is_html = "text/html" in content_type or b"<html" in data[:200].lower()
+    if not is_html:
+        log.info(f"    Conteúdo não reconhecido (tipo: {content_type[:40]})")
+        return None
+
+    log.info(f"    Página HTML recebida — buscando link PDF interno")
+    html_text = data.decode("utf-8", errors="replace")
+    for m in _LINK_HREF_RE.finditer(html_text):
+        inner_url   = m.group(1).strip()
+        anchor_text = re.sub(r"<[^>]+>", "", m.group(2)).strip()
+        if not inner_url.startswith("http"):
+            continue
+        url_path = inner_url.lower().split("?")[0]
+        if (url_path.endswith(".pdf")
+                or _LINK_URL_RE.search(inner_url)
+                or _LINK_TEXT_RE.search(anchor_text)):
+            log.info(f"    Candidato na página: {inner_url[:70]}")
+            inner = _fetch_url(inner_url)
+            if inner and b"%PDF" in inner[0][:32]:
+                return _save_pdf_data(inner[0], sender_email, subject, received_at)
+
+    log.info(f"    Nenhum PDF encontrado na página HTML")
+    return None
+
+
+# ---------------------------------------------------------------------------
 # Acionar extract_pdf.py
 # ---------------------------------------------------------------------------
 def run_extraction(pdf_path: Path) -> str | None:
@@ -829,13 +1022,32 @@ def process_message(mail, uid: bytes, keywords: list,
             return rec
 
         # Baixar PDFs e acionar extração
-        saved_pdfs  = save_attachments(msg, sender_email, subject, received_at)
-        att_names   = [p.name for p in saved_pdfs]
-        has_att     = len(saved_pdfs) > 0
+        saved_pdfs = save_attachments(msg, sender_email, subject, received_at)
+
+        # Sem anexo direto: tentar baixar PDF de links no corpo do e-mail
+        link_downloaded = False
+        if not saved_pdfs:
+            body_html = get_body_html(msg)
+            pdf_links = extract_pdf_links(body_text, body_html)
+            if pdf_links:
+                log.info(f"    {len(pdf_links)} link(s) candidato(s) encontrado(s) no corpo")
+            else:
+                log.info(f"    Sem links candidatos no corpo do e-mail")
+            for url in pdf_links:
+                log.info(f"    Tentando link: {url[:80]}")
+                pdf_path = download_pdf_from_url(url, sender_email, subject, received_at)
+                if pdf_path:
+                    saved_pdfs.append(pdf_path)
+                    link_downloaded = True
+
+        att_names = [p.name for p in saved_pdfs]
+        has_att   = len(saved_pdfs) > 0
 
         rec["has_attachment"]   = has_att
         rec["attachment_names"] = " | ".join(att_names) if att_names else None
         rec["attachment_saved"] = has_att
+        if link_downloaded:
+            rec["notes"] = "PDF baixado de link no corpo do e-mail"
 
         csvs_ok, accounts_saved = extract_and_store_accounts(
             saved_pdfs, message_id, ctrl, email_rec=rec)
@@ -848,7 +1060,8 @@ def process_message(mail, uid: bytes, keywords: list,
         if not has_att:
             rec["notes"] = "Sem anexo PDF — registrado para revisão"
 
-        # Sem anexo, ou com anexo mas sem conta extraída — tenta corpo do e-mail
+        # Extração do corpo quando: sem PDF | extração falhou | resultado em branco
+        # | nenhuma conta atendeu os dados mínimos (sem valor ou sem fornecedor)
         if not has_att or accounts_saved == 0:
             if try_extract_from_body(rec, body_text, received_at, message_id, ctrl,
                                      sender_email=sender_email):
@@ -888,10 +1101,16 @@ def run_reader(days: int = 0, all_: bool = False,
     ctrl = SupabaseControl()
     supabase_ok = ctrl._available
 
+    # Dedup em lote: carrega todos os IDs já processados em um set local.
+    # Substitui N chamadas HTTP individuais por uma única consulta — elimina
+    # a latência por e-mail no loop de deduplicação.
+    known_ids = ctrl.load_known_ids()
+
     log.info("=" * 58)
     log.info("  email-reader v2.0 — iniciando")
     log.info(f"  Conta    : {os.getenv('IMAP_USER')}")
     log.info(f"  Controle : {'✓ Supabase' if supabase_ok else '✗ Supabase (fallback CSV)'}")
+    log.info(f"  Dedup    : {len(known_ids)} IDs em cache")
     log.info(f"  Keywords : {len(keywords)} configuradas")
     log.info(f"  Modo     : {'dry-run' if dry_run else 'processamento completo'}")
     log.info("=" * 58)
@@ -942,8 +1161,10 @@ def run_reader(days: int = 0, all_: bool = False,
             skipped_kw += 1
             continue
 
-        # Deduplicação via Supabase (ou CSV fallback)
-        if msg_id and ctrl.is_processed(msg_id):
+        # Deduplicação: set em memória (O(1)); fallback para consulta individual
+        # se o lote não foi carregado (Supabase indisponível na inicialização).
+        is_dup = (msg_id in known_ids) if known_ids else (msg_id and ctrl.is_processed(msg_id))
+        if is_dup:
             log.info(f"  [DUP] {subject[:65]}")
             skipped_dup += 1
             continue
