@@ -68,18 +68,31 @@ EXTRACTION_PROMPT = (
     "ITBI (Guia de ITBI, Imposto de Transmissao de Bens Imoveis) | "
     "GARE (Guia de Arrecadacao de Receitas Estaduais) | "
     "tributo (qualquer outro documento de arrecadacao tributaria nao identificado acima)\n"
-    "- supplier_name: nome do BENEFICIARIO/CEDENTE (quem RECEBE o pagamento). "
+    "- supplier_name: nome do BENEFICIARIO/CEDENTE/FORNECEDOR (quem RECEBE). "
+    "Preferencia: label 'fornecedor' > 'beneficiario' > 'cedente' > 'remetente'. "
     "NUNCA use o pagador/sacado.\n"
     "- supplier_cnpj: CNPJ do BENEFICIARIO (apenas digitos, 14 caracteres). "
-    "Retorne null se nao houver CNPJ. NUNCA o do pagador.\n"
-    "- supplier_cpf: CPF do BENEFICIARIO (apenas digitos, 11 caracteres), "
-    "somente quando o beneficiario for pessoa fisica e nao houver CNPJ. "
-    "Retorne null se nao houver CPF. NUNCA o do pagador.\n"
-    "- invoice_number: o NUMERO do 'N do Documento' (ex.: 12345). NUNCA "
-    "retorne a Especie do Documento (siglas DM, DMI, DS, NP, RC, LC). Se so "
-    "houver a especie e nao o numero, use null.\n"
-    "- issue_date: Data do Documento, formato YYYY-MM-DD\n"
-    "- due_date: Data de Vencimento, formato YYYY-MM-DD\n"
+    "Prefira identificar o CNPJ no formato mascarado com 18 caracteres (XX.XXX.XXX/XXXX-XX). "
+    "Em boletos, procure o campo 'CNPJ Beneficiario' ou 'CNPJ/CPF' do beneficiario/cedente. "
+    "O texto pode conter anotacoes '[RTL: XX.XXX.XXX/XXXX-XX]' que indicam o valor corrigido. "
+    "Retorne null se nao houver. NUNCA use o CNPJ do pagador/sacado.\n"
+    "- supplier_cpf: CPF do BENEFICIARIO (apenas digitos, 11 caracteres). "
+    "Prefira o formato mascarado com 14 caracteres (XXX.XXX.XXX-XX). "
+    "Somente quando beneficiario for pessoa fisica sem CNPJ. NUNCA o do pagador.\n"
+    "- invoice_number: identificador principal do documento. "
+    "Para boletos bancarios (boleto, seguro, fatura): use o 'Nosso Numero' — "
+    "formato tipico: XXX/XXXXXXXX-D, ex: '109/26505819-5'. "
+    "Para NF-e/NFS-e: numero da nota fiscal. "
+    "Para outros: qualquer campo rotulado 'n documento', 'numero documento', "
+    "'documento', 'fatura', 'numero da fatura', 'n fatura' ou 'n do documento'. "
+    "NUNCA use um CNPJ (XX.XXX.XXX/XXXX-XX) como invoice_number. "
+    "NUNCA retorne a Especie do Documento (siglas DM, DMI, DS, NP, RC, LC). "
+    "Use null se ausente.\n"
+    "- issue_date: data de emissao do documento. Labels: 'Data do Documento', "
+    "'Data de Emissao', 'Emissao', 'Data Emissao'. Formato YYYY-MM-DD.\n"
+    "- due_date: data de vencimento. Labels: 'Vencimento', 'Data de Vencimento', "
+    "'Data Vencimento'. NAO confundir com 'Data do Documento' (issue_date) "
+    "nem com 'Data do Processamento'. Formato YYYY-MM-DD.\n"
     "- amount: Valor do Documento (numero decimal com ponto)\n"
     "- discount: (-) Desconto / Abatimentos (decimal; 0 se em branco)\n"
     "- other_deductions: (-) Outras deducoes (decimal; 0 se em branco)\n"
@@ -87,9 +100,11 @@ EXTRACTION_PROMPT = (
     "- other_additions: (+) Outros acrescimos (decimal; 0 se em branco)\n"
     "- amount_charged: (=) Valor cobrado (decimal; 0 se em branco)\n"
     "- nosso_numero: Nosso Numero (texto)\n"
-    "- barcode: codigo de barras de 44 digitos OU linha digitavel de 47 digitos "
-    "(apenas digitos, sem espacos ou pontos). Retorne o valor mais completo visivel "
-    "no documento. null se ausente.\n"
+    "- barcode: linha digitavel de 47 digitos OU codigo de barras de 44 digitos. "
+    "Em boletos bancarios, a linha digitavel aparece logo abaixo do codigo de barras "
+    "impresso, no formato XXXXX.XXXXX XXXXX.XXXXXX XXXXX.XXXXXX X XXXXXXXXXXXXXX. "
+    "Retorne apenas os digitos (sem pontos, espacos ou separadores). "
+    "Retorne o valor mais completo visivel no documento. null se ausente.\n"
     "- payment_method: boleto|pix|ted|cartao|outro\n"
     "- competence_date: competencia no formato YYYY-MM, ou null\n"
     "- currency: moeda (BRL por padrao)\n"
@@ -248,14 +263,88 @@ def extract_barcode(text):
     return None
 
 def extract_linha_digitavel(text):
-    """Linha digitavel do boleto (47 digitos em 5 campos com pontos/espacos).
+    """Linha digitavel do boleto (47 digitos em 5 campos).
 
     Extracao deterministica a partir do texto do PDF: e mais confiavel que o
     LLM para sequencias longas de digitos (campo critico de pagamento).
+    Tenta 3 padroes para tolerar variações de extração do pdfplumber:
+      1. Formato canonico: XXXXX.XXXXX XXXXX.XXXXXX XXXXX.XXXXXX X XXXXXXXXXXXXXX
+      2. Sem pontos nos campos: XXXXX XXXXX XXXXX XXXXXX XXXXX XXXXXX X XXXXXXXXXXXXXX
+      3. Separadores mistos (espaco ou ponto dentro dos grupos)
     """
+    # Padrao 1: formato canonico com pontos — mais comum em PDFs digitais
     m = re.search(
-        r"\d{5}\.\d{5}\s+\d{5}\.\d{6}\s+\d{5}\.\d{6}\s+\d\s+\d{14}", text)
-    return re.sub(r"\D", "", m.group()) if m else None
+        r"\d{5}\.\d{5}\s+\d{5}\.\d{6}\s+\d{5}\.\d{6}\s+\d\s+\d{14}",
+        text)
+    if m:
+        return re.sub(r"\D", "", m.group())
+
+    # Padrao 2: sem pontos, apenas espacos entre os subcampos
+    m = re.search(
+        r"\d{5} \d{5}\s+\d{5} \d{6}\s+\d{5} \d{6}\s+\d\s+\d{14}",
+        text)
+    if m:
+        return re.sub(r"\D", "", m.group())
+
+    # Padrao 3: separador flexivel (ponto OU espaco simples) dentro dos campos
+    m = re.search(
+        r"\d{5}[. ]\d{5}\s+\d{5}[. ]\d{6}\s+\d{5}[. ]\d{6}\s+\d\s+\d{14}",
+        text)
+    if m:
+        return re.sub(r"\D", "", m.group())
+
+    return None
+
+
+# Prompt mínimo usado apenas para recuperar o barcode via Vision.
+_BARCODE_ONLY_PROMPT = (
+    "Este é um boleto bancário brasileiro. "
+    "Encontre a linha digitável — sequência de 47 dígitos no formato "
+    "XXXXX.XXXXX XXXXX.XXXXXX XXXXX.XXXXXX X XXXXXXXXXXXXXX, "
+    "normalmente impressa ao lado do logotipo do banco. "
+    "Retorne SOMENTE os dígitos, sem pontos, espaços ou outros caracteres. "
+    "Se não encontrar, retorne null."
+)
+
+
+def _try_barcode_vision(pdf_path: Path) -> str | None:
+    """Extrai linha digitável via Claude PDF API quando pdf_text não a encontra.
+
+    Envia o PDF diretamente para o Claude (sem pdftoppm/poppler).
+    Claude renderiza internamente e lê fontes OCR-B ilegíveis pelo pdfplumber.
+    Retorna 47 ou 44 dígitos, ou None se não encontrada.
+    """
+    import base64, anthropic
+    api_key = os.getenv("ANTHROPIC_API_KEY")
+    if not api_key:
+        return None
+    try:
+        pdf_b64 = base64.standard_b64encode(pdf_path.read_bytes()).decode()
+        client = anthropic.Anthropic(api_key=api_key)
+        resp = client.messages.create(
+            model=CLAUDE_MODEL, max_tokens=100, temperature=0,
+            messages=[{"role": "user", "content": [
+                {"type": "document",
+                 "source": {"type": "base64",
+                            "media_type": "application/pdf",
+                            "data": pdf_b64}},
+                {"type": "text", "text": _BARCODE_ONLY_PROMPT},
+            ]}],
+        )
+        raw_resp = resp.content[0].text.strip().lower()
+        if raw_resp in ("null", "", "none"):
+            return None
+        # Extrai a primeira sequência isolada de 47 dígitos (linha digitável)
+        # ou 44 dígitos (código de barras). Evita concatenar múltiplas
+        # ocorrências caso o modelo responda de forma verbosa.
+        m = re.search(r"(?<!\d)(\d{47})(?!\d)", raw_resp)
+        if not m:
+            m = re.search(r"(?<!\d)(\d{44})(?!\d)", raw_resp)
+        return m.group(1) if m else None
+    except Exception as e:
+        log.warning(f"  Vision barcode fallback: {e}")
+        return None
+
 
 def extract_invoice_number(text, doc_type):
     if doc_type in ("nfe","nfse"):
@@ -298,13 +387,49 @@ def is_scanned_pdf(pdf_path):
         log.warning("pdffonts não encontrado — assumindo PDF digital")
         return False
 
+# --- Pré-processamento: corrige linhas invertidas (boletos RTL) ---
+_REV_CNPJ_RE   = re.compile(r'^\d{2}\.\d{3}\.\d{3}/\d{4}-\d{2}')
+_REV_CPF_RE    = re.compile(r'^\d{3}\.\d{3}\.\d{3}-\d{2}$')
+_REV_DATE_RE   = re.compile(r'^\d{2}/\d{2}/(\d{4})$')
+_REV_AMOUNT_RE = re.compile(r'^R\$\s[\d.,]+$')
+# Valor monetário sem R$: ex. "133,94" (2 casas decimais exatas)
+_REV_VALUE_RE  = re.compile(r'^\d{1,8},\d{2}$')
+_REV_NN_RE     = re.compile(r'^\d{2,4}/\d{5,}-?\d?$')   # Nosso Número: XXX/XXXXXXXXX-D
+
+def fix_reversed_lines(text: str) -> str:
+    """Alguns boletos (ex: Itaú) têm a coluna de campos extraída pelo pdfplumber
+    em ordem invertida (RTL). Esta função detecta padrões conhecidos e os adiciona
+    ao texto com a label [RTL:] para que Claude os identifique corretamente.
+    Os valores não reconhecidos como padrão são mantidos sem alteração.
+    """
+    out = []
+    for line in text.splitlines():
+        out.append(line)
+        s = line.strip()
+        if len(s) < 4:
+            continue
+        rev = s[::-1]
+        m_date = _REV_DATE_RE.match(rev)
+        is_reversed = (
+            _REV_CNPJ_RE.match(rev)
+            or _REV_CPF_RE.match(rev)
+            or (m_date and int(m_date.group(1)) >= 1990)
+            or _REV_AMOUNT_RE.match(rev)
+            or _REV_VALUE_RE.match(rev)
+            or _REV_NN_RE.match(rev)
+        )
+        if is_reversed:
+            out.append(f"[RTL: {rev}]")
+    return "\n".join(out)
+
+
 # --- Extração via pdfplumber ---
 def extract_with_pdfplumber(pdf_path):
     full_text = ""
     with pdfplumber.open(str(pdf_path)) as pdf:
         for page in pdf.pages:
             full_text += (page.extract_text() or "") + "\n"
-    return full_text.strip(), "pdf_text"
+    return fix_reversed_lines(full_text.strip()), "pdf_text"
 
 # --- Extração via Claude Vision ---
 def extract_with_vision(pdf_path):
@@ -541,11 +666,15 @@ def build_record(pdf_path, raw, source):
         log.warning(f"  Extração via Claude (texto) falhou ({e}) — fallback regex")
         rec = build_record_regex(pdf_path, raw, source)
 
-    # Linha digitavel: prioriza a extracao deterministica do texto (mais
-    # confiavel que o LLM em sequencias longas de digitos).
+    # Barcode: regex deterministica tem prioridade sobre o LLM.
+    # Se nao encontrar no texto (ex: fonte OCR-B ilegivel), tenta Vision.
     ld = extract_linha_digitavel(raw)
-    if ld:
-        rec["barcode"] = ld
+    if ld is None:
+        log.info("  → linha digitável não encontrada no texto — tentando Vision barcode")
+        ld = _try_barcode_vision(pdf_path)
+        if ld:
+            log.info(f"  → barcode recuperado via Vision ({len(ld)} dígitos)")
+    rec["barcode"] = ld
     return rec
 
 # --- Processar um PDF ---
