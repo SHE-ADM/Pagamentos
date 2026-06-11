@@ -2,7 +2,7 @@
 Testes de regressao para a extracao pelo corpo do e-mail (read_emails.py).
 
 Cobre o bug em que notificacoes de NF-e/NFS-e (ex.: NFe da Editora Globo)
-vazavam para financial_emails como document_type='outro', porque o caminho de
+vazavam para financial_account_control como document_type='outro', porque o caminho de
 corpo nao aplicava SKIP_ACCOUNT_TYPES nem a validacao de valor do caminho de PDF.
 """
 
@@ -24,6 +24,7 @@ class FakeControl:
     def __init__(self):
         self.financial_calls = []
         self.error_calls = []
+        self.duplicate = False  # simula documento ja existente em financial_account_control
 
     def register_financial(self, payload):
         self.financial_calls.append(payload)
@@ -36,10 +37,13 @@ class FakeControl:
     def unique_invoice_number(self, base):
         return base
 
+    def financial_duplicate_exists(self, payload):
+        return self.duplicate
+
 
 # Corpo real (resumido) da notificacao de NF-e da Editora Globo S.A.
 # Inclui a chave de acesso de 44 digitos — o que tornava o payload nao-nulo e
-# fazia o registro vazar para financial_emails antes da correcao.
+# fazia o registro vazar para financial_account_control antes da correcao.
 NFE_BODY = (
     "A/C\nCHANG WON AHN,\n\n"
     "Voce esta recebendo, anexada a esta mensagem, a Nota Fiscal Eletronica "
@@ -88,7 +92,7 @@ class ExtractFromEmailBodyTest(unittest.TestCase):
 
 class TryExtractFromBodyTest(unittest.TestCase):
     def test_nfe_nao_gera_conta_a_pagar(self):
-        """Regressao do bug: NF-e nao pode ser gravada em financial_emails."""
+        """Regressao do bug: NF-e nao pode ser gravada em financial_account_control."""
         ctrl = FakeControl()
         gravou = read_emails.try_extract_from_body(
             {"message_id": "<msg-nfe>"}, NFE_BODY,
@@ -123,6 +127,18 @@ class TryExtractFromBodyTest(unittest.TestCase):
         self.assertEqual(len(ctrl.financial_calls), 1)
         self.assertEqual(ctrl.financial_calls[0]["payment_method"], "pix")
         self.assertEqual(ctrl.error_calls, [])
+
+    def test_documento_duplicado_e_ignorado(self):
+        """Conteudo ja existente no banco (remetente reenviou) nao grava de novo."""
+        ctrl = FakeControl()
+        ctrl.duplicate = True  # financial_duplicate_exists -> True
+        gravou = read_emails.try_extract_from_body(
+            {"message_id": "<msg-pix-2>"}, PIX_BODY,
+            "2026-06-10T00:00:00+00:00", "<msg-pix-2>", ctrl,
+        )
+        self.assertFalse(gravou)
+        self.assertEqual(ctrl.financial_calls, [])  # nada gravado
+        self.assertEqual(ctrl.error_calls, [])      # duplicata e skip, nao erro
 
 
 if __name__ == "__main__":

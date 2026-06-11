@@ -43,7 +43,7 @@ IMAP Locaweb (SSL 993)
        │       └── NÃO → registra metadados apenas (revisão manual)
        │
        └─► Grava tudo em data\csv_output\emails_log.csv
-               + UPSERT na tabela financial_emails (Supabase)
+               + UPSERT na tabela financial_account_control (Supabase)
 ```
 
 ---

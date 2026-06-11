@@ -39,6 +39,14 @@ logging.basicConfig(
 )
 log = logging.getLogger("email-reader")
 
+
+# Falha de API na extracao (creditos/auth/rate-limit). Interrompe o run com
+# seguranca: o e-mail NAO e marcado como processado, sendo reprocessado quando
+# a API voltar. Evita gravar dados incompletos (fornecedor vazio, valor errado).
+class ApiUnavailableError(RuntimeError):
+    """API Anthropic indisponivel durante a extracao — para o pipeline."""
+
+
 # Console do Windows (cp1252) nao encoda os simbolos de log (✓/→/✗).
 try:
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -56,6 +64,10 @@ EMAILS_LOG     = CSV_OUTPUT / "emails_log.csv"
 
 PDF_INBOX.mkdir(parents=True, exist_ok=True)
 CSV_OUTPUT.mkdir(parents=True, exist_ok=True)
+
+# Bucket de Storage onde os PDFs anexados sao publicados (migration 021).
+# O frontend gera URL assinada a partir do source_file = nome do arquivo.
+STORAGE_BUCKET = os.getenv("SUPABASE_STORAGE_BUCKET", "attachments")
 
 KEYWORDS_DEFAULT = [
     "boleto", "nota fiscal", "nf-e", "nfe", "fatura",
@@ -200,18 +212,18 @@ class SupabaseControl:
             return False
 
     def register_financial(self, payload: dict) -> bool:
-        """UPSERT de uma conta extraida em financial_emails (service_role).
+        """UPSERT de uma conta extraida em financial_account_control (service_role).
 
         Deduplica/atualiza por gmail_message_id. O campo due_status NAO e
         enviado: a trigger trg_fe_due_status o calcula no banco a partir de
-        due_date x extracted_at (migration 004).
+        due_date x extracted_at (migration 004/018).
         """
         if not self._available:
             return False
         try:
             data = json.dumps(payload).encode()
             req = urllib.request.Request(
-                f"{self.base}/rest/v1/financial_emails?on_conflict=gmail_message_id",
+                f"{self.base}/rest/v1/financial_account_control?on_conflict=gmail_message_id",
                 data=data,
                 headers={**self.headers, "Prefer": "resolution=merge-duplicates"},
                 method="POST"
@@ -238,7 +250,7 @@ class SupabaseControl:
         try:
             pattern = urllib.parse.quote(base + '%', safe='')
             req = urllib.request.Request(
-                f"{self.base}/rest/v1/financial_emails"
+                f"{self.base}/rest/v1/financial_account_control"
                 f"?select=invoice_number&invoice_number=like.{pattern}&limit=50",
                 headers=self.headers
             )
@@ -255,6 +267,94 @@ class SupabaseControl:
         while f"{base}({n})" in existing:
             n += 1
         return f"{base}({n})"
+
+    def upload_attachment(self, pdf_path) -> bool:
+        """Publica o PDF no bucket de Storage (service_role, ignora RLS).
+
+        A chave do objeto e o proprio nome do arquivo (= source_file gravado em
+        financial_account_control), para o frontend gerar a URL assinada direto.
+        Idempotente (x-upsert). Falha de upload e NAO-fatal: a conta ja foi
+        gravada; o anexo pode ser re-publicado depois. Retorna True em sucesso.
+        """
+        if not self._available:
+            return False
+        try:
+            data = pdf_path.read_bytes()
+        except Exception as e:
+            log.warning(f"Falha ao ler PDF p/ upload {pdf_path.name}: {e}")
+            return False
+        key = urllib.parse.quote(pdf_path.name, safe="")
+        try:
+            req = urllib.request.Request(
+                f"{self.base}/storage/v1/object/{STORAGE_BUCKET}/{key}",
+                data=data,
+                headers={
+                    "apikey":        self.key,
+                    "Authorization": f"Bearer {self.key}",
+                    "Content-Type":  "application/pdf",
+                    "x-upsert":      "true",
+                },
+                method="POST",
+            )
+            urllib.request.urlopen(req, timeout=30)
+            return True
+        except urllib.error.HTTPError as e:
+            body = e.read().decode(errors="replace")
+            log.warning(f"Falha ao subir anexo {pdf_path.name}: {e.code} {body[:150]}")
+            return False
+        except Exception as e:
+            log.warning(f"Falha ao subir anexo {pdf_path.name}: {e}")
+            return False
+
+    def financial_duplicate_exists(self, payload: dict) -> bool:
+        """True se ja existe um documento equivalente em financial_account_control.
+
+        Cobre a duplicidade real que a dedup por message_id NAO pega: o mesmo
+        remetente envia o MESMO documento em dois e-mails diferentes (Message-ID
+        distintos). Impressao digital do documento, por ordem de forca:
+          1. barcode (linha digitavel / codigo de barras / chave) — definitivo;
+          2. fornecedor (cnpj > cpf > nome) + valor + vencimento + tipo de documento.
+
+        Conservador: so deduplica com um identificador de fornecedor presente.
+        Em caso de erro de consulta, retorna False (nao bloqueia a insercao).
+        """
+        if not self._available:
+            return False
+
+        barcode = (payload.get("barcode") or "").strip()
+        if barcode:
+            filters = f"barcode=eq.{urllib.parse.quote(barcode, safe='')}"
+        else:
+            # Identificador do fornecedor: o primeiro disponivel.
+            supplier_col = supplier_val = None
+            for col in ("supplier_cnpj", "supplier_cpf", "supplier_name"):
+                if payload.get(col):
+                    supplier_col, supplier_val = col, payload[col]
+                    break
+            if not supplier_col:
+                return False  # sem fornecedor identificavel — nao deduplica
+
+            clauses = [f"{supplier_col}=eq.{urllib.parse.quote(str(supplier_val), safe='')}"]
+            for col in ("amount", "due_date", "document_type"):
+                v = payload.get(col)
+                if v in (None, ""):
+                    clauses.append(f"{col}=is.null")
+                else:
+                    # amount: 2 casas para casar com NUMERIC(15,2) gravado.
+                    sval = f"{float(v):.2f}" if col == "amount" else str(v)
+                    clauses.append(f"{col}=eq.{urllib.parse.quote(sval, safe='')}")
+            filters = "&".join(clauses)
+
+        try:
+            req = urllib.request.Request(
+                f"{self.base}/rest/v1/financial_account_control?{filters}&select=id&limit=1",
+                headers=self.headers,
+            )
+            with urllib.request.urlopen(req, timeout=5) as r:
+                return len(json.loads(r.read())) > 0
+        except Exception as e:
+            log.warning(f"Falha na checagem de duplicidade de conteudo: {e}")
+            return False
 
     def load_known_ids(self) -> set:
         """Carrega todos os message_id de email_control em um set local.
@@ -285,11 +385,12 @@ class SupabaseControl:
 
     @staticmethod
     def _derive_status(rec: dict) -> str:
-        if rec.get("pdf_extracted"):   return "extracted"
-        if rec.get("attachment_saved"):return "downloaded"
+        # email_control.status em pt-BR (CHECK da migration 019)
+        if rec.get("pdf_extracted"):   return "extraído"
+        if rec.get("attachment_saved"):return "baixado"
         if rec.get("notes") and "erro" in str(rec.get("notes","")).lower():
-            return "error"
-        return "received"
+            return "falha"
+        return "recebido"
 
 
 import urllib.parse  # necessário para quote no is_processed
@@ -387,7 +488,7 @@ def append_log_csv(record: dict):
 
 
 # ---------------------------------------------------------------------------
-# Gravacao da conta extraida em financial_emails
+# Gravacao da conta extraida em financial_account_control
 # ---------------------------------------------------------------------------
 # Colunas geradas pelo extract_pdf.py (na mesma ordem do CSV de saida).
 FINANCIAL_FIELDS = [
@@ -432,7 +533,7 @@ def read_extracted_rows(csv_path: str) -> list:
 
 
 def build_financial_payload(row: dict, gmail_message_id: str) -> dict:
-    """Converte uma linha do CSV de extracao em payload para financial_emails.
+    """Converte uma linha do CSV de extracao em payload para financial_account_control.
 
     Sanitiza os campos com restricao no schema (CHAR(14) do CNPJ e
     NUMERIC do amount) para evitar rejeicao do INSERT. O due_status NAO
@@ -459,7 +560,7 @@ def build_financial_payload(row: dict, gmail_message_id: str) -> dict:
         payload[vf] = _to_decimal(payload.get(vf), 0)
 
     payload["currency"] = payload.get("currency") or "BRL"
-    payload["status"]   = payload.get("status") or "pending"
+    payload["status"]   = payload.get("status") or "pendente"
     payload["gmail_message_id"] = gmail_message_id
     return payload
 
@@ -498,7 +599,7 @@ _BODY_INVOICE_RE = re.compile(r"(?i)\b(?:nf(?:[- ]?e)?|nota\s+fiscal|fatura\s+n[
 # Ordem importa: termos mais específicos antes dos fallbacks genéricos.
 _BODY_DOC_KEYWORDS: list[tuple[str, list[str]]] = [
     # Notas fiscais (NF-e / NFS-e) — NAO geram conta a pagar (ver SKIP_ACCOUNT_TYPES).
-    # Tipos em lowercase para casar com o CHECK de financial_emails e o skip.
+    # Tipos em lowercase para casar com o CHECK de financial_account_control e o skip.
     # Mais específico primeiro: NFS-e (serviço) antes de NF-e (mercadoria).
     ("nfse",       ["nota fiscal de servico", "nota fiscal eletronica de servico",
                     "nota fiscal de servicos eletronica", "nfs-e", "nfse"]),
@@ -584,7 +685,7 @@ def _iso_date_to_ddmmyy(iso_date: str | None) -> str | None:
 
 def extract_from_email_body(body_text: str, received_at: str, message_id: str,
                             sender_email: str | None = None) -> dict | None:
-    """Monta um payload de financial_emails a partir do corpo do e-mail.
+    """Monta um payload de financial_account_control a partir do corpo do e-mail.
 
     Retorna None (sem log de erro) quando nenhum sinal financeiro e encontrado
     (sem valor R$ nem numero de documento). O chamador deve ignorar silenciosamente.
@@ -631,6 +732,9 @@ def extract_from_email_body(body_text: str, received_at: str, message_id: str,
     due_date  = _br_date_to_iso(due_match.group(1)) if due_match else None
     if not due_date:
         due_date = issue_date  # sem vencimento explicito, usa data de emissao
+    if not due_date:
+        # Regra de negocio: sem nenhuma data, usa a data da extracao (hoje).
+        due_date = datetime.now().strftime("%Y-%m-%d")
 
     if has_pix:
         payment_method = "pix"
@@ -657,7 +761,7 @@ def extract_from_email_body(body_text: str, received_at: str, message_id: str,
         "due_date":          due_date,
         "issue_date":        issue_date,
         "invoice_number":    invoice_number,
-        "status":            "pending",
+        "status":            "pendente",
         "extracted_at":      datetime.now(timezone.utc).isoformat(),
     })
     for vf in FINANCIAL_VALUE_FIELDS:
@@ -887,7 +991,7 @@ def run_extraction(pdf_path: Path) -> str | None:
 def extract_and_store_accounts(saved_pdfs: list, message_id: str,
                                ctrl: "SupabaseControl",
                                email_rec: dict = None) -> tuple:
-    """Extrai cada PDF e grava as contas resultantes em financial_emails.
+    """Extrai cada PDF e grava as contas resultantes em financial_account_control.
 
     Liga cada conta ao e-mail por gmail_message_id; multiplos PDFs no mesmo
     e-mail recebem sufixo (#1, #2, ...) para nao colidir na chave unica.
@@ -908,7 +1012,24 @@ def extract_and_store_accounts(saved_pdfs: list, message_id: str,
             continue
 
         csvs_ok.append(csv_path)
+        # Publica o PDF no Storage para visualizacao de qualquer computador.
+        # Nao-fatal: se falhar, a conta ainda e gravada (anexo re-publicavel depois).
+        ctrl.upload_attachment(pdf_path)
         for row in read_extracted_rows(csv_path):
+            # Falha de API na extracao: registra erro_api e interrompe o run com
+            # seguranca (sem gravar conta, sem fallback regex silencioso).
+            if (row.get("extraction_source") or "").strip().lower() == "erro_api":
+                ctrl.register_error(
+                    {**err_ctx, "source_file": row.get("source_file")},
+                    "erro_api",
+                    row.get("processing_notes")
+                    or "API Anthropic indisponível (crédito/auth/limite)",
+                    raw_payload=row,
+                )
+                raise ApiUnavailableError(
+                    row.get("processing_notes") or "API Anthropic indisponível"
+                )
+
             dtype = (row.get("document_type") or "").strip().lower()
             if dtype in SKIP_ACCOUNT_TYPES:
                 log.info(f"    {dtype.upper()} ignorado — nao gera conta a pagar")
@@ -940,6 +1061,17 @@ def extract_and_store_accounts(saved_pdfs: list, message_id: str,
                 acc_index += 1
                 continue
 
+            # Dedup de conteudo: ignora documento ja gravado por outro e-mail
+            # (remetente que reenvia o mesmo boleto/CT-e, com Message-ID diferente).
+            # Roda ANTES da uniquificacao do invoice_number para nao gravar duplicata.
+            if ctrl.financial_duplicate_exists(payload):
+                log.info(
+                    f"    [DUP-DOC] documento já existe em financial_account_control "
+                    f"— ignorado ({row.get('source_file')})"
+                )
+                acc_index += 1
+                continue
+
             if payload.get("invoice_number"):
                 payload["invoice_number"] = ctrl.unique_invoice_number(payload["invoice_number"])
 
@@ -948,7 +1080,7 @@ def extract_and_store_accounts(saved_pdfs: list, message_id: str,
             else:
                 ctrl.register_error(
                     ctx, "db_erro",
-                    f"Falha ao gravar em financial_emails — {row.get('source_file')}",
+                    f"Falha ao gravar em financial_account_control — {row.get('source_file')}",
                     raw_payload=row
                 )
             acc_index += 1
@@ -971,7 +1103,7 @@ def try_extract_from_body(email_rec: dict, body_text: str, received_at: str,
 
     # Mesma trava do caminho de PDF: NF-e/NFS-e nao geram conta a pagar.
     # Sem isso, notificacoes de nota fiscal (ex.: NFe da Editora Globo) vazavam
-    # para financial_emails como document_type='outro'.
+    # para financial_account_control como document_type='outro'.
     dtype = (payload.get("document_type") or "").strip().lower()
     if dtype in SKIP_ACCOUNT_TYPES:
         log.info(f"    {dtype.upper()} (corpo do e-mail) ignorado — nao gera conta a pagar")
@@ -986,11 +1118,16 @@ def try_extract_from_body(email_rec: dict, body_text: str, received_at: str,
         )
         return False
 
+    # Dedup de conteudo: mesmo pedido de pagamento reenviado em outro e-mail.
+    if ctrl.financial_duplicate_exists(payload):
+        log.info("    [DUP-DOC] conta do corpo do e-mail já existe — ignorada")
+        return False
+
     if payload.get("invoice_number"):
         payload["invoice_number"] = ctrl.unique_invoice_number(payload["invoice_number"])
 
     if ctrl.register_financial(payload):
-        log.info("    Conta extraída do corpo do e-mail e gravada em financial_emails")
+        log.info("    Conta extraída do corpo do e-mail e gravada em financial_account_control")
         return True
 
     ctrl.register_error(
@@ -1078,7 +1215,7 @@ def process_message(mail, uid: bytes, keywords: list,
         rec["pdf_extracted"]  = len(csvs_ok) > 0
         rec["extraction_csv"] = " | ".join(csvs_ok) if csvs_ok else None
         if accounts_saved:
-            log.info(f"    {accounts_saved} conta(s) gravada(s) em financial_emails")
+            log.info(f"    {accounts_saved} conta(s) gravada(s) em financial_account_control")
 
         if not has_att:
             rec["notes"] = "Sem anexo PDF — registrado para revisão"
@@ -1094,6 +1231,11 @@ def process_message(mail, uid: bytes, keywords: list,
         if mark_seen:
             mail.uid("store", uid, "+FLAGS", "\\Seen")
 
+    except ApiUnavailableError:
+        # Erro de API ja registrado em email_processing_errors. Propaga para
+        # interromper o run com seguranca: NAO grava em email_control nem no CSV,
+        # entao o e-mail sera reprocessado quando a API voltar.
+        raise
     except Exception as e:
         rec["notes"] = f"Erro: {str(e)[:200]}"
         log.error(f"  Erro UID {uid}: {e}")
@@ -1165,6 +1307,7 @@ def run_reader(days: int = 0, all_: bool = False,
 
     processed = skipped_kw = skipped_dup = 0
     new_subjects = []
+    api_aborted = False
 
     for uid in uids:
         try:
@@ -1193,7 +1336,17 @@ def run_reader(days: int = 0, all_: bool = False,
             continue
 
         log.info(f"  [NEW] {subject[:65]}")
-        process_message(mail, uid, keywords, dry_run, mark_seen, ctrl)
+        try:
+            process_message(mail, uid, keywords, dry_run, mark_seen, ctrl)
+        except ApiUnavailableError as e:
+            log.error("=" * 58)
+            log.error("  PIPELINE INTERROMPIDO — API Anthropic indisponível.")
+            log.error(f"  Motivo: {str(e)[:160]}")
+            log.error("  Nenhum dado adicional gravado. Recarregue os créditos "
+                      "e rode novamente.")
+            log.error("=" * 58)
+            api_aborted = True
+            break
         processed += 1
         new_subjects.append(subject[:120])
 
@@ -1203,6 +1356,8 @@ def run_reader(days: int = 0, all_: bool = False,
     log.info(f"  Novos processados : {processed}")
     log.info(f"  Sem palavra-chave : {skipped_kw}")
     log.info(f"  Duplicados (skip) : {skipped_dup}")
+    if api_aborted:
+        log.info(f"  Interrompido      : API Anthropic indisponível")
     log.info(f"  Log local         : {EMAILS_LOG}")
     log.info("=" * 58)
 
@@ -1216,6 +1371,7 @@ def run_reader(days: int = 0, all_: bool = False,
         "skipped_dup":     skipped_dup,
         "new_subjects":    new_subjects,
         "dry_run":         dry_run,
+        "api_aborted":     api_aborted,
     }
 
 
