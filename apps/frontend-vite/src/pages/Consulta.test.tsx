@@ -3,11 +3,11 @@ import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 
 // Mocka o serviço de dados — o teste cobre o layout/interação, não a rede.
-const getFinancialEmails = vi.fn();
+const getFinancialAccountControl = vi.fn();
 const getFinancialStats = vi.fn();
 
 vi.mock('../services/supabase', () => ({
-  getFinancialEmails: (...args: unknown[]) => getFinancialEmails(...args),
+  getFinancialAccountControl: (...args: unknown[]) => getFinancialAccountControl(...args),
   getFinancialStats: (...args: unknown[]) => getFinancialStats(...args),
 }));
 
@@ -15,7 +15,7 @@ import Consulta from './Consulta';
 
 describe('Consulta', () => {
   beforeEach(() => {
-    getFinancialEmails.mockResolvedValue({ data: [], total: 0 });
+    getFinancialAccountControl.mockResolvedValue({ data: [], total: 0 });
     getFinancialStats.mockResolvedValue({
       totalRecords: 0,
       pending: 0,

@@ -4,8 +4,8 @@ import StatusBadge from './StatusBadge';
 
 describe('StatusBadge', () => {
   it('renderiza o valor recebido', () => {
-    render(<StatusBadge value="extracted" />);
-    expect(screen.getByText('extracted')).toBeInTheDocument();
+    render(<StatusBadge value="extraído" />);
+    expect(screen.getByText('extraído')).toBeInTheDocument();
   });
 
   it('exibe travessão quando o valor é nulo', () => {
@@ -22,8 +22,8 @@ describe('StatusBadge', () => {
   });
 
   it('status recebe ponto colorido à esquerda (sem ícone)', () => {
-    const { container } = render(<StatusBadge value="pending" />);
-    expect(screen.getByText('pending')).toBeInTheDocument();
+    const { container } = render(<StatusBadge value="pendente" />);
+    expect(screen.getByText('pendente')).toBeInTheDocument();
     // ponto = span arredondado com bg-current; nenhum ícone svg
     expect(container.querySelector('span.rounded-full')).not.toBeNull();
     expect(container.querySelector('svg')).toBeNull();
@@ -43,8 +43,28 @@ describe('StatusBadge', () => {
     expect(container.querySelector('svg')).not.toBeNull();
   });
 
-  it('mapeia "Vencido" para a variante vermelha', () => {
-    render(<StatusBadge value="Vencido" />);
-    expect(screen.getByText('Vencido').className).toContain('text-red-600');
+  it('mapeia "vencido" para a variante vermelha', () => {
+    render(<StatusBadge value="vencido" />);
+    expect(screen.getByText('vencido').className).toContain('text-red-600');
+  });
+
+  it('mapeia "pago" para a variante esmeralda', () => {
+    render(<StatusBadge value="pago" />);
+    expect(screen.getByText('pago').className).toContain('text-emerald-700');
+  });
+
+  it('mapeia "erro_api" para vermelho sólido (distinto do erro comum)', () => {
+    render(<StatusBadge value="erro_api" />);
+    const badge = screen.getByText('erro_api');
+    // vermelho sólido: fundo cheio + texto branco — destaca de extracao_falhou (red suave)
+    expect(badge.className).toContain('bg-red-600');
+    expect(badge.className).toContain('text-white');
+  });
+
+  it('"extracao_falhou" usa vermelho suave — diferente do erro_api sólido', () => {
+    render(<StatusBadge value="extracao_falhou" />);
+    const badge = screen.getByText('extracao_falhou');
+    expect(badge.className).toContain('text-red-600');
+    expect(badge.className).not.toContain('bg-red-600');
   });
 });

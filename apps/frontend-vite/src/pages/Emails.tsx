@@ -1,7 +1,7 @@
 // src/pages/Emails.tsx
 import { useState, useEffect, useCallback, useRef } from 'react';
-import { RefreshCw, Mail, FileCheck, AlertCircle, CopyMinus, Inbox, CheckCircle2 } from 'lucide-react';
-import type { EmailControl, FinancialEmail } from '@sheild/shared';
+import { RefreshCw, Mail, FileCheck, AlertCircle, CopyMinus, Inbox, CheckCircle2, CalendarDays } from 'lucide-react';
+import type { EmailControl, FinancialAccountControl } from '@sheild/shared';
 import { getEmailControl, getEmailStats, getAccountsByMessageId, type EmailStats } from '../services/supabase';
 import { triggerEmailRead } from '../services/emailReader';
 import { getErrorMessage } from '../lib/getErrorMessage';
@@ -34,11 +34,12 @@ export default function Emails() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [reading, setReading] = useState(false);
+  const [readMode, setReadMode] = useState<'novos' | 'geral' | null>(null);
   const [readMsg, setReadMsg] = useState<string | null>(null);
   const [readElapsed, setReadElapsed] = useState(0);
-  const [accounts, setAccounts] = useState<FinancialEmail[]>([]);
+  const [accounts, setAccounts] = useState<FinancialAccountControl[]>([]);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const [filters, setFilters] = useState<EmailFilters>({ status: '', sender: '', days: 30 });
+  const [filters, setFilters] = useState<EmailFilters>({ status: '', sender: '', days: 7 });
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -72,26 +73,28 @@ export default function Emails() {
   // Dispara a leitura IMAP no backend.
   // Como o processamento pode levar vários minutos, faz polling automático
   // da tabela a cada 20 s enquanto aguarda a resposta do Flask.
-  const handleRead = async () => {
+  // mode='novos' → IMAP UNSEEN (apenas não lidos)
+  // mode='geral' → IMAP SINCE N dias (usa o filtro de período da tabela)
+  const handleRead = async (mode: 'novos' | 'geral') => {
     setReading(true);
+    setReadMode(mode);
     setError(null);
     setReadMsg(null);
     setReadElapsed(0);
 
     const start = Date.now();
-
-    // Atualiza o contador de tempo e recarrega a tabela a cada 20 s
     pollRef.current = setInterval(() => {
       setReadElapsed(Math.floor((Date.now() - start) / 1000));
       void load();
     }, 20_000);
 
     try {
-      // days: 0 → critério IMAP "UNSEEN" (apenas não lidos).
-      // filters.days controla só o período exibido na tabela — não o IMAP.
-      const s = await triggerEmailRead({ days: 0 });
+      const periodDays = filters.days > 0 ? filters.days : 30;
+      const days = mode === 'novos' ? 0 : periodDays;
+      const s = await triggerEmailRead({ days });
+      const criterio = mode === 'novos' ? 'não lidos' : `últimos ${days} dias`;
       setReadMsg(
-        `Busca concluída — ${s.found} e-mail(s) no servidor, ` +
+        `Busca concluída (${criterio}) — ${s.found} e-mail(s) no servidor, ` +
           `${s.processed} novo(s) processado(s), ${s.skipped_dup} duplicado(s).`,
       );
     } catch (e) {
@@ -99,6 +102,7 @@ export default function Emails() {
     } finally {
       if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; }
       setReading(false);
+      setReadMode(null);
       setReadElapsed(0);
       await load();
     }
@@ -107,9 +111,11 @@ export default function Emails() {
   const setF = <K extends keyof EmailFilters>(k: K, v: EmailFilters[K]) =>
     setFilters((f) => ({ ...f, [k]: v }));
 
-  // Rótulo do botão durante o processamento — extraído para evitar ternário
-  // e template literal aninhados no JSX (SonarLint S3358/S4624).
-  const readingLabel = readElapsed > 0 ? `Processando (${readElapsed}s)` : 'Processando…';
+  // Rótulos extraídos para evitar ternários aninhados no JSX (SonarLint S3358/S4624).
+  const processingLabel = readElapsed > 0 ? `Processando (${readElapsed}s)` : 'Processando…';
+  const labelNovos = readMode === 'novos' ? processingLabel : 'Busca Novos';
+  const geralDays = filters.days > 0 ? filters.days : 30;
+  const labelGeral = readMode === 'geral' ? processingLabel : `Busca Geral (${geralDays}d)`;
 
   return (
     <div className="flex flex-col h-full">
@@ -121,9 +127,13 @@ export default function Emails() {
           </p>
         </div>
         <div className="flex gap-2">
-          <button onClick={handleRead} className="btn btn-primary" disabled={reading || loading}>
-            <Inbox size={14} className={reading ? 'animate-pulse' : ''} />
-            {reading ? readingLabel : 'Buscar e-mails novos'}
+          <button onClick={() => handleRead('novos')} className="btn btn-primary" disabled={reading || loading}>
+            <Inbox size={14} className={readMode === 'novos' ? 'animate-pulse' : ''} />
+            {labelNovos}
+          </button>
+          <button onClick={() => handleRead('geral')} className="btn" disabled={reading || loading}>
+            <CalendarDays size={14} className={readMode === 'geral' ? 'animate-pulse' : ''} />
+            {labelGeral}
           </button>
           <button onClick={load} className="btn" disabled={loading}>
             <RefreshCw size={14} className={loading ? 'animate-spin' : ''} />
@@ -182,7 +192,7 @@ export default function Emails() {
           />
           <select className="input w-40" value={filters.status} onChange={(e) => setF('status', e.target.value)}>
             <option value="">Todos os status</option>
-            {['extracted', 'downloaded', 'received', 'error', 'ignored'].map((s) => (
+            {['extraído', 'baixado', 'recebido', 'falha', 'ignorado'].map((s) => (
               <option key={s} value={s}>
                 {s}
               </option>
@@ -285,7 +295,7 @@ export default function Emails() {
 
             <div className="mt-4">
               <p className="text-[10px] text-gray-400 mb-2 uppercase tracking-wide">
-                Conta(s) registrada(s) — financial_emails
+                Conta(s) registrada(s) — financial_account_control
               </p>
               {accounts.length === 0 ? (
                 <p className="text-xs text-gray-400">Nenhuma conta gerada a partir deste e-mail.</p>

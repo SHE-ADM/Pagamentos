@@ -9,7 +9,7 @@
 // projeto perante o Supabase, quem define o papel para o RLS é o JWT do
 // Authorization.
 
-import type { EmailControl, FinancialEmail, ProcessingError } from '@sheild/shared';
+import type { EmailControl, FinancialAccountControl, ProcessingError } from '@sheild/shared';
 import { supabase } from '../lib/supabaseClient';
 
 const BASE_URL = import.meta.env.VITE_SUPABASE_URL;
@@ -82,13 +82,13 @@ export async function getEmailStats(): Promise<EmailStats> {
   };
 }
 
-// ── financial_emails ───────────────────────────────────────────────────────
+// ── financial_account_control ───────────────────────────────────────────────
 
-export interface FinancialEmailFilters {
+export interface FinancialAccountControlFilters {
   supplier?: string;
   docType?: string;
   status?: string;
-  dueStatus?: string;
+  paymentMethod?: string;
   dateFrom?: string;
   dateTo?: string;
   page?: number;
@@ -100,18 +100,18 @@ export interface Paginated<T> {
   total: number;
 }
 
-export async function getFinancialEmails({
+export async function getFinancialAccountControl({
   supplier,
   docType,
   status,
-  dueStatus,
+  paymentMethod,
   dateFrom,
   dateTo,
   page = 1,
   pageSize = 20,
-}: FinancialEmailFilters = {}): Promise<Paginated<FinancialEmail>> {
+}: FinancialAccountControlFilters = {}): Promise<Paginated<FinancialAccountControl>> {
   const offset = (page - 1) * pageSize;
-  const url = new URL(`${BASE_URL}/rest/v1/financial_emails`);
+  const url = new URL(`${BASE_URL}/rest/v1/financial_account_control`);
   url.searchParams.set('select', '*');
   url.searchParams.set('order', 'due_date.asc');
   url.searchParams.set('limit', String(pageSize));
@@ -119,13 +119,13 @@ export async function getFinancialEmails({
   if (supplier) url.searchParams.set('supplier_name', `ilike.*${supplier}*`);
   if (docType) url.searchParams.set('document_type', `eq.${docType}`);
   if (status) url.searchParams.set('status', `eq.${status}`);
-  if (dueStatus) url.searchParams.set('due_status', `eq.${dueStatus}`);
+  if (paymentMethod) url.searchParams.set('payment_method', `eq.${paymentMethod}`);
   if (dateFrom) url.searchParams.append('due_date', `gte.${dateFrom}`);
   if (dateTo) url.searchParams.append('due_date', `lte.${dateTo}`);
   const reqHeaders = await authHeaders({ Prefer: 'count=exact' });
   const res = await fetch(url.toString(), { headers: reqHeaders });
   if (!res.ok) throw new Error(`Supabase ${res.status}: ${await res.text()}`);
-  const data = (await res.json()) as FinancialEmail[];
+  const data = (await res.json()) as FinancialAccountControl[];
   const cr = res.headers.get('Content-Range');
   const total = cr ? parseInt(cr.split('/')[1]) || 0 : data.length;
   return { data, total };
@@ -186,9 +186,9 @@ export async function getProcessingErrorStats(): Promise<ProcessingErrorStats> {
 
 // Conta(s) extraida(s) ligada(s) a um e-mail, via gmail_message_id.
 // Multiplos PDFs recebem sufixo (#1, #2), por isso o filtro usa LIKE prefixo.
-export async function getAccountsByMessageId(messageId: string | null): Promise<FinancialEmail[]> {
+export async function getAccountsByMessageId(messageId: string | null): Promise<FinancialAccountControl[]> {
   if (!messageId) return [];
-  return query<FinancialEmail[]>('financial_emails', {
+  return query<FinancialAccountControl[]>('financial_account_control', {
     select: '*',
     gmail_message_id: `like.${messageId}*`,
     order: 'due_date.asc',
@@ -205,16 +205,16 @@ export interface FinancialStats {
 
 export async function getFinancialStats(): Promise<FinancialStats> {
   const [all, pending] = await Promise.all([
-    query<Pick<FinancialEmail, 'amount' | 'status' | 'due_date' | 'due_status'>[]>('financial_emails', {
+    query<Pick<FinancialAccountControl, 'amount' | 'status' | 'due_date' | 'due_status'>[]>('financial_account_control', {
       select: 'amount,status,due_date,due_status',
       limit: 1000,
     }),
-    query<{ id: number }[]>('financial_emails', { select: 'id', status: 'eq.pending', limit: 1000 }),
+    query<{ id: number }[]>('financial_account_control', { select: 'id', status: 'eq.pendente', limit: 1000 }),
   ]);
   const total = all.reduce((s, r) => s + (Number(r.amount) || 0), 0);
   const today = new Date();
   const in7 = new Date(today.getTime() + 7 * 86400000).toISOString().slice(0, 10);
-  const vencendo = all.filter((r) => r.status === 'pending' && r.due_date && r.due_date <= in7).length;
-  const vencidas = all.filter((r) => r.due_status === 'Vencido').length;
+  const vencendo = all.filter((r) => r.status === 'pendente' && r.due_date && r.due_date <= in7).length;
+  const vencidas = all.filter((r) => r.due_status === 'vencido').length;
   return { totalRecords: all.length, pending: pending.length, totalValue: total, vencendo, vencidas };
 }

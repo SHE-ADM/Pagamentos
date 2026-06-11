@@ -10,14 +10,16 @@ import {
   FileText,
   Search,
   X,
+  Eye,
   Inbox,
   type LucideIcon,
 } from 'lucide-react';
-import type { FinancialEmail } from '@sheild/shared';
-import { getFinancialEmails, getFinancialStats, type FinancialStats } from '../services/supabase';
+import type { FinancialAccountControl } from '@sheild/shared';
+import { getFinancialAccountControl, getFinancialStats, type FinancialStats } from '../services/supabase';
 import { getErrorMessage } from '../lib/getErrorMessage';
 import StatusBadge from '../components/StatusBadge';
 import ExpandableText from '../components/ExpandableText';
+import AttachmentViewer from '../components/AttachmentViewer';
 
 const fmtDate = (d: string | null): string => (d ? new Date(d + 'T00:00:00').toLocaleDateString('pt-BR') : '—');
 const fmtMoney = (v: number | null): string =>
@@ -27,7 +29,7 @@ const fmtCnpj = (c: string | null): string =>
 
 const PAGE_SIZE = 20;
 
-const CSV_COLS: (keyof FinancialEmail)[] = [
+const CSV_COLS: (keyof FinancialAccountControl)[] = [
   'due_date',
   'due_status',
   'supplier_name',
@@ -50,7 +52,7 @@ const CSV_COLS: (keyof FinancialEmail)[] = [
   'processing_notes',
 ];
 
-function exportCsv(rows: FinancialEmail[]) {
+function exportCsv(rows: FinancialAccountControl[]) {
   const header = CSV_COLS.join(';');
   const body = rows.map((r) =>
     CSV_COLS.map((c) => `"${(r[c] ?? '').toString().replace(/"/g, '""')}"`).join(';'),
@@ -58,7 +60,7 @@ function exportCsv(rows: FinancialEmail[]) {
   const blob = new Blob(['﻿' + [header, ...body].join('\n')], { type: 'text/csv;charset=utf-8' });
   const a = document.createElement('a');
   a.href = URL.createObjectURL(blob);
-  a.download = `financial_emails_${new Date().toISOString().slice(0, 10)}.csv`;
+  a.download = `financial_account_control_${new Date().toISOString().slice(0, 10)}.csv`;
   a.click();
 }
 
@@ -66,7 +68,7 @@ interface ConsultaFilters {
   supplier: string;
   docType: string;
   status: string;
-  dueStatus: string;
+  paymentMethod: string;
   dateFrom: string;
   dateTo: string;
 }
@@ -75,7 +77,7 @@ const EMPTY_FILTERS: ConsultaFilters = {
   supplier: '',
   docType: '',
   status: '',
-  dueStatus: '',
+  paymentMethod: '',
   dateFrom: '',
   dateTo: '',
 };
@@ -89,9 +91,10 @@ interface MetricCard {
 }
 
 export default function Consulta() {
-  const [rows, setRows] = useState<FinancialEmail[]>([]);
+  const [rows, setRows] = useState<FinancialAccountControl[]>([]);
   const [stats, setStats] = useState<Partial<FinancialStats>>({});
-  const [sel, setSel] = useState<FinancialEmail | null>(null);
+  const [sel, setSel] = useState<FinancialAccountControl | null>(null);
+  const [viewing, setViewing] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [f, setF] = useState<ConsultaFilters>({ ...EMPTY_FILTERS });
@@ -108,7 +111,7 @@ export default function Consulta() {
     setError(null);
     try {
       const [result, st] = await Promise.all([
-        getFinancialEmails({ ...applied, page, pageSize: PAGE_SIZE }),
+        getFinancialAccountControl({ ...applied, page, pageSize: PAGE_SIZE }),
         getFinancialStats(),
       ]);
       setRows(result.data);
@@ -156,7 +159,7 @@ export default function Consulta() {
       <div className="px-6 py-4 border-b border-slate-200 bg-white flex items-center justify-between">
         <div>
           <h1 className="text-base font-semibold text-slate-800">Consulta de movimentações</h1>
-          <p className="text-xs text-slate-400 mt-0.5">Registros extraídos — tabela financial_emails</p>
+          <p className="text-xs text-slate-400 mt-0.5">Contas a pagar — tabela financial_account_control</p>
         </div>
         <div className="flex gap-2">
           <button onClick={() => exportCsv(rows)} className="btn" disabled={!rows.length}>
@@ -213,24 +216,31 @@ export default function Consulta() {
               className="input w-44"
               placeholder="Fornecedor ou CNPJ…"
               value={f.supplier}
-              onChange={(e) => sf('supplier', e.target.value)}
+              onChange={(e) => {
+                const val = e.target.value;
+                sf('supplier', val);
+                if (val === '') {
+                  setApplied((prev) => ({ ...prev, supplier: '' }));
+                  setPage(1);
+                }
+              }}
               onKeyDown={(e) => e.key === 'Enter' && handleSearch()}
             />
-            <select className="input w-32" value={f.docType} onChange={(e) => sf('docType', e.target.value)}>
-              <option value="">Tipo</option>
-              {['DARF','DAS','DAE','DAM / DUAM','GARE','GNRE','GPS','GRU','ISS','IPTU','IPVA','ITBI','PIX','tributo','boleto','cte','nfe','nfse','recibo','seguro','outro'].map((t) => (
+            <select className="input w-40" value={f.docType} onChange={(e) => sf('docType', e.target.value)}>
+              <option value="">Tipo Documento</option>
+              {['darf','das','dae','dam / duam','gare','gnre','gps','gru','iss','iptu','ipva','itbi','pix','tributo','boleto','cte','nfe','nfse','recibo','seguro','outro'].map((t) => (
                 <option key={t}>{t}</option>
               ))}
             </select>
-            <select className="input w-32" value={f.status} onChange={(e) => sf('status', e.target.value)}>
-              <option value="">Status</option>
-              {['pending', 'paid', 'cancelled', 'error'].map((s) => (
-                <option key={s}>{s}</option>
+            <select className="input w-36" value={f.paymentMethod} onChange={(e) => sf('paymentMethod', e.target.value)}>
+              <option value="">Tipo Pagamento</option>
+              {['boleto','pix','ted','cartão','depósito','duplicata','bancário','carteira','vale','crédito','débito','dinheiro','transferência','cheque','outro'].map((m) => (
+                <option key={m}>{m}</option>
               ))}
             </select>
-            <select className="input w-32" value={f.dueStatus} onChange={(e) => sf('dueStatus', e.target.value)}>
+            <select className="input w-32" value={f.status} onChange={(e) => sf('status', e.target.value)}>
               <option value="">Situação</option>
-              {['A Vencer', 'Vencido'].map((s) => (
+              {['pendente', 'a vencer', 'vencido', 'prorrogado', 'baixado', 'protestado', 'cartório', 'pago', 'pago protesto', 'pago cartório', 'não pago', 'cancelado', 'falha'].map((s) => (
                 <option key={s}>{s}</option>
               ))}
             </select>
@@ -333,6 +343,20 @@ export default function Consulta() {
                             <p className="text-xs font-semibold text-slate-500 mb-3 uppercase tracking-wide pr-8">
                               Detalhes — {r.supplier_name || 'registro'} · {fmtDate(r.due_date)}
                             </p>
+                            {r.source_file && (
+                              <div className="mb-3">
+                                <button
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    setViewing(r.source_file);
+                                  }}
+                                  className="btn btn-primary"
+                                  title="Ver o PDF anexado"
+                                >
+                                  <Eye size={14} /> Ver anexo
+                                </button>
+                              </div>
+                            )}
                             <dl className="grid grid-cols-2 rounded-lg overflow-hidden border border-slate-100">
                               {(
                                 [
@@ -414,6 +438,8 @@ export default function Consulta() {
           </div>
         </div>
       </div>
+
+      {viewing && <AttachmentViewer sourceFile={viewing} onClose={() => setViewing(null)} />}
     </div>
   );
 }

@@ -121,7 +121,7 @@ Opcionais (monorepo): `npm run dev:api` (Next API, :3000) e `npm run dev:portal`
 
 Acesse a URL exibida pelo Vite (ex.: `http://localhost:5173/`). Na página
 **E-mails**, o botão **"Buscar e-mails novos"** dispara a leitura IMAP no backend:
-baixa os PDFs, aciona a extração, grava em `email_control`/`financial_emails` e
+baixa os PDFs, aciona a extração, grava em `email_control`/`financial_account_control` e
 recarrega a tabela com o resumo.
 
 > O Vite faz proxy de `/api` → `http://127.0.0.1:8000` (Flask), então não há
@@ -164,22 +164,25 @@ Migrations versionadas em `supabase/migrations/` — execute em ordem no SQL Edi
 
 | Migration | Conteúdo |
 |---|---|
-| `001_create_financial_emails.sql` | Tabela `financial_emails` (dados extraídos) |
 | `002_create_email_control.sql` | Tabela `email_control` (controle/deduplicação) |
-| `003_rls_read_policies.sql` | RLS + policies de leitura `anon` nas duas tabelas |
+| `003_rls_read_policies.sql` | RLS + policies de leitura nas tabelas |
+| `018_create_financial_account_control.sql` | Tabela principal `financial_account_control` (domínios pt-BR, triggers, RLS) |
+| `019_email_control_pt_status.sql` | Status de `email_control` em pt-BR + policy de leitura |
+| `020_drop_financial_emails.sql` | Remove a antiga `financial_emails` (substituída) |
 
-### `financial_emails` — campos principais
-- `gmail_message_id` (UNIQUE) — identificador de deduplicação
+### `financial_account_control` — campos principais
+- `gmail_message_id` (UNIQUE) — identificador de deduplicação do pipeline de e-mail
 - `due_date`, `amount` (NUMERIC 15,2), `currency` (BRL)
-- `status` (pending/paid/cancelled/error)
-- `extraction_source` (email_body/pdf_text/pdf_vision)
+- `status` (pendente/vencido/a vencer/prorrogado/baixado/protestado/cartório/pago/pago protesto/pago cartório/não pago/cancelado/falha — default `pendente`)
+- `due_status` (a vencer/vencido — calculado pela trigger)
+- `payment_method` (boleto/pix/ted/cartão/depósito/duplicata/bancário/carteira/vale/crédito/débito/dinheiro/transferência/cheque/outro)
+- `extraction_source` (email_body/pdf_text/pdf_vision/falha)
 
 ### `email_control` — controle de processamento
 - `message_id` (UNIQUE) — deduplicação por Message-ID do header MIME
-- `has_attachment`, `pdf_extracted`, `status` (received/downloaded/extracted/error/ignored)
+- `has_attachment`, `pdf_extracted`, `status` (recebido/baixado/extraído/falha/ignorado)
 
-> **RLS:** as duas tabelas têm Row Level Security habilitado. As policies da
-> migration 003 liberam **leitura** para a chave `anon` (frontend). A **escrita**
-> é exclusiva da `service_role` (usada pelos scripts Python e pelo backend), que
-> ignora RLS. Ao adicionar Supabase Auth, restringir as policies para
-> `authenticated` (ver comentário no arquivo da migration).
+> **RLS:** todas as tabelas têm Row Level Security habilitado. As policies de
+> **leitura** liberam o papel `authenticated` (frontend logado via Supabase Auth).
+> A **escrita** em `financial_account_control` é exclusiva da `service_role` (scripts
+> Python e CRUD via Next API), que ignora RLS.

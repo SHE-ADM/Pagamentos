@@ -167,7 +167,7 @@ IMAP (Locaweb SSL)                  apps/frontend-vite (React+Vite TS, :5173)
       │                                        │
       │                          ┌─────────────┼────────────────────────────┐
       │                          │ /emails     │ /consulta      /erros       │
-      │                          │ email_control  financial_emails  errors   │
+      │                          │ email_control  financial_account_control  errors   │
       │                          │   fetch direto Supabase REST              │
       │                          │   (apikey: anon + Authorization: token)   │
       │                          └─────────────┼────────────────────────────┘
@@ -182,7 +182,7 @@ read_emails.run_reader() ◄───────── server/app.py (Flask, po
       │  4. subprocess → extract_pdf.py (Claude API: pdf_text ou pdf_vision)
       │  5. UPSERT em email_control  +  fallback CSV em data/csv_output/
       ▼
-Supabase (PostgreSQL)  ── financial_emails (dados extraídos)
+Supabase (PostgreSQL)  ── financial_account_control (dados extraídos)
                        ├─ email_control     (controle/dedup)
                        ├─ email_processing_errors (log de falhas)
                        └─ supplier          (fornecedores auto-criados)
@@ -370,13 +370,13 @@ atualizar o registro existente. Fallback local em CSV quando Supabase indisponí
 ### Normalização de `document_type`
 
 `extract_pdf.py` usa `_ns()` (strip de acentos + lowercase) para lookup em `_DOC_TYPE_NORM`.
-CHECK constraint em `financial_emails.document_type` usa `lower()` (migration 014).
+CHECK constraint em `financial_account_control.document_type` usa `lower()` (migration 014).
 Tipos aceitos: `boleto`, `cte`, `nfe`, `nfse`, `tributo`, `seguro`, `fatura`, `recibo`, `contrato`, `outro`.
 `SKIP_ACCOUNT_TYPES = ['nfe', 'nfse']` — não geram conta a pagar.
 
 ### Auto-resolução de fornecedor
 
-Trigger `trg_fe_supplier_id` (BEFORE INSERT OR UPDATE em `financial_emails`) chama
+Trigger `trg_fe_supplier_id` (BEFORE INSERT OR UPDATE em `financial_account_control`) chama
 `resolve_supplier_id(cnpj, cpf, name)`: busca exata por CNPJ/CPF → fallback por nome
 normalizado → auto-insert em `supplier`. Função `normalize_search()` é SECURITY DEFINER.
 
@@ -387,7 +387,7 @@ normalizado → auto-insert em `supplier`. Função `normalize_search()` é SECU
 | `pdf_text` | PDF digital (pdfplumber) |
 | `pdf_vision` | PDF escaneado (Claude Vision, exige poppler) |
 | `email_body` | Corpo do e-mail (sem PDF válido) |
-| `error` | Falha na extração |
+| `falha` | Falha na extração |
 
 ### Caminho `email_body`
 
@@ -406,8 +406,8 @@ Comparação case-insensitive contra o assunto do e-mail.
 
 | Rota | Componente | Tabela |
 |---|---|---|
-| `/emails` | `Emails.tsx` | `email_control` + `financial_emails` por `message_id` |
-| `/consulta` | `Consulta.tsx` | `financial_emails` (paginado, filtros, CSV client-side) |
+| `/emails` | `Emails.tsx` | `email_control` + `financial_account_control` por `message_id` |
+| `/consulta` | `Consulta.tsx` | `financial_account_control` (paginado, filtros, CSV client-side) |
 | `/erros` | `Erros.tsx` | `email_processing_errors` |
 
 - `services/supabase.ts` — fetch direto REST, `Prefer: count=exact` + `Content-Range` para paginação.
@@ -416,17 +416,26 @@ Comparação case-insensitive contra o assunto do e-mail.
 ## Banco de dados (Supabase)
 
 Migrations em `supabase/migrations/`, aplicadas **manualmente no SQL Editor** em ordem
-numérica (`001` → `016`). Não há migration automática.
+numérica (`001` → `020`). Não há migration automática.
 
 | Tabela | Propósito |
 |---|---|
-| `email_control` | Dedup/controle. `status` ∈ (received, downloaded, extracted, error, ignored) |
-| `financial_emails` | Dados extraídos — uma linha por documento financeiro |
+| `email_control` | Dedup/controle. `status` ∈ (recebido, baixado, extraído, falha, ignorado) — migration 019 |
+| `financial_account_control` | Tabela principal de contas a pagar — uma linha por documento; alimentada pelo pipeline de e-mail **e** por CRUD manual (baixas, consolidações, dashboards). Substitui a antiga `financial_emails` (dropada na migration 020) |
 | `email_processing_errors` | Log de falhas com `raw_payload` JSON |
 | `supplier` | Fornecedores auto-criados pelo trigger |
 
-RLS habilitado em todas as tabelas. Policies de leitura são `TO authenticated` (migration 015).
-Toda nova tabela deve seguir o mesmo padrão.
+`financial_account_control.status` (ciclo de vida do pagamento, default `pendente`) e
+`due_status` (situação de vencimento, gravada pela trigger) compartilham o mesmo domínio
+pt-BR de 13 valores: `pendente, vencido, a vencer, prorrogado, baixado, protestado,
+cartório, pago, pago protesto, pago cartório, não pago, cancelado, falha` (migration 018).
+`payment_method` aceita `boleto, pix, ted, cartão, depósito, duplicata, bancário, carteira,
+vale, crédito, débito, dinheiro, transferência, cheque, outro`; `extraction_source` ∈
+(`email_body, pdf_text, pdf_vision, falha`).
+
+RLS habilitado em todas as tabelas. Policies de leitura são `TO authenticated`
+(migrations 015/018/019); escrita em `financial_account_control` é `TO service_role`
+(CRUD via Next API). Toda nova tabela deve seguir o mesmo padrão.
 
 ## Windows Task Scheduler
 

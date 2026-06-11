@@ -1,14 +1,14 @@
 import { z } from 'zod';
 
 // Schema da tabela `email_control` — controle/deduplicação de e-mails lidos
-// via IMAP. Reflete a migration 002.
+// via IMAP. Reflete as migrations 002 e 019 (status em pt-BR).
 
 export const EMAIL_CONTROL_STATUSES = [
-  'received', // e-mail lido, sem PDF
-  'downloaded', // PDF salvo em pdfs_inbox
-  'extracted', // extract_pdf.py executado com sucesso
-  'error', // falha em alguma etapa
-  'ignored', // filtrado mas descartado manualmente
+  'recebido', // e-mail lido, sem PDF
+  'baixado', // PDF salvo em pdfs_inbox
+  'extraído', // extract_pdf.py executado com sucesso
+  'falha', // falha em alguma etapa
+  'ignorado', // filtrado mas descartado manualmente
 ] as const;
 
 export const emailControlStatusSchema = z.enum(EMAIL_CONTROL_STATUSES);
@@ -38,7 +38,7 @@ export const emailControlSchema = z.object({
   extraction_csv: z.string().nullable(),
 
   // Status
-  status: emailControlStatusSchema.default('received'),
+  status: emailControlStatusSchema.default('recebido'),
 
   // Auditoria
   notes: z.string().nullable(),

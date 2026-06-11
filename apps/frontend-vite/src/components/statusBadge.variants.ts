@@ -12,6 +12,7 @@ export const badgeVariants = cva(BASE, {
       amber: 'bg-amber-50 text-amber-700 border border-amber-200', // pendente / atenção
       emerald: 'bg-emerald-50 text-emerald-700 border border-emerald-200', // sucesso / pago
       red: 'bg-red-50 text-red-600 border border-red-200', // erro / vencido
+      redSolid: 'bg-red-600 text-white border border-red-700', // erro crítico (API indisponível)
       slate: 'bg-slate-100 text-slate-500 border border-slate-200', // neutro / cancelado
       blue: 'bg-blue-50 text-blue-600 border border-blue-200', // informativo / a vencer
       document: 'bg-slate-50 text-slate-600 border border-slate-200', // tipos de documento
@@ -27,19 +28,24 @@ export type BadgeVariant = NonNullable<VariantProps<typeof badgeVariants>['varia
 
 // Valores de status/situação — recebem ponto colorido à esquerda.
 const STATUS_VARIANT: Record<string, BadgeVariant> = {
-  // financial_emails.status
-  pending: 'amber',
-  paid: 'emerald',
-  error: 'red',
-  cancelled: 'slate',
-  // due_status (migration 004)
-  'A Vencer': 'blue',
-  Vencido: 'red',
-  // email_control.status
-  extracted: 'emerald',
-  downloaded: 'blue',
-  received: 'slate',
-  ignored: 'slate',
+  // financial_account_control.status (ciclo de vida do pagamento — migration 018)
+  pendente: 'amber',
+  'a vencer': 'blue',
+  vencido: 'red',
+  prorrogado: 'blue',
+  baixado: 'blue',
+  protestado: 'red',
+  cartório: 'amber',
+  pago: 'emerald',
+  'pago protesto': 'emerald',
+  'pago cartório': 'emerald',
+  'não pago': 'red',
+  cancelado: 'slate',
+  falha: 'red',
+  // email_control.status (migration 019) — 'baixado' e 'falha' já mapeados acima
+  recebido: 'slate',
+  extraído: 'emerald',
+  ignorado: 'slate',
   // email_processing_errors.error_type
   sem_valor: 'amber',
   sem_fornecedor: 'amber',
@@ -47,6 +53,9 @@ const STATUS_VARIANT: Record<string, BadgeVariant> = {
   extracao_falhou: 'red',
   db_erro: 'red',
   processamento_erro: 'red',
+  // erro_api: falha de API (crédito/auth/limite) — vermelho sólido para
+  // destacar de uma falha de extração comum (vermelho suave).
+  erro_api: 'redSolid',
 };
 
 // Tipos de documento (document_type / payment_method) — slate + ícone de documento.
