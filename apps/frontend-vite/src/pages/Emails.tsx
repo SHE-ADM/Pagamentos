@@ -19,7 +19,7 @@ const fmt = (iso: string | null): string =>
     : '—';
 const fmtDate = (d: string | null): string => (d ? new Date(d + 'T00:00:00').toLocaleDateString('pt-BR') : '—');
 const fmtMoney = (v: number | null): string =>
-  v != null ? Number(v).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' }) : '—';
+  v == null ? '—' : Number(v).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
 
 interface EmailFilters {
   status: string;
@@ -55,7 +55,7 @@ export default function Emails() {
   }, [filters]);
 
   useEffect(() => {
-    load();
+    void load();
   }, [load]);
 
   // Carrega a(s) conta(s) registrada(s) ligada(s) ao e-mail selecionado.
@@ -83,7 +83,7 @@ export default function Emails() {
     // Atualiza o contador de tempo e recarrega a tabela a cada 20 s
     pollRef.current = setInterval(() => {
       setReadElapsed(Math.floor((Date.now() - start) / 1000));
-      load();
+      void load();
     }, 20_000);
 
     try {
@@ -107,6 +107,10 @@ export default function Emails() {
   const setF = <K extends keyof EmailFilters>(k: K, v: EmailFilters[K]) =>
     setFilters((f) => ({ ...f, [k]: v }));
 
+  // Rótulo do botão durante o processamento — extraído para evitar ternário
+  // e template literal aninhados no JSX (SonarLint S3358/S4624).
+  const readingLabel = readElapsed > 0 ? `Processando (${readElapsed}s)` : 'Processando…';
+
   return (
     <div className="flex flex-col h-full">
       <div className="px-6 py-4 border-b border-gray-200 bg-white flex items-center justify-between">
@@ -119,9 +123,7 @@ export default function Emails() {
         <div className="flex gap-2">
           <button onClick={handleRead} className="btn btn-primary" disabled={reading || loading}>
             <Inbox size={14} className={reading ? 'animate-pulse' : ''} />
-            {reading
-              ? `Processando${readElapsed > 0 ? ` (${readElapsed}s)` : '…'}`
-              : 'Buscar e-mails novos'}
+            {reading ? readingLabel : 'Buscar e-mails novos'}
           </button>
           <button onClick={load} className="btn" disabled={loading}>
             <RefreshCw size={14} className={loading ? 'animate-spin' : ''} />

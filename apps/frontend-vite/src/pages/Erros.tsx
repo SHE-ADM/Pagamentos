@@ -34,11 +34,11 @@ export default function Erros() {
   const [sel, setSel] = useState<ProcessingError | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [f, setF_] = useState<ErrosFilters>({ ...EMPTY_FILTERS });
+  const [f, setF] = useState<ErrosFilters>({ ...EMPTY_FILTERS });
   const [applied, setApplied] = useState<ErrosFilters>({ ...EMPTY_FILTERS });
   const [page, setPage] = useState(1);
   const [total, setTotal] = useState(0);
-  const sf = <K extends keyof ErrosFilters>(k: K, v: ErrosFilters[K]) => setF_((x) => ({ ...x, [k]: v }));
+  const sf = <K extends keyof ErrosFilters>(k: K, v: ErrosFilters[K]) => setF((x) => ({ ...x, [k]: v }));
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -59,7 +59,7 @@ export default function Erros() {
   }, [applied, page]);
 
   useEffect(() => {
-    load();
+    void load();
   }, [load]);
 
   const handleSearch = () => {
