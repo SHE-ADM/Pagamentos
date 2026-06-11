@@ -58,6 +58,14 @@ Estas regras se aplicam a **todo** código novo ou alterado neste projeto, sem e
   Nunca concatenar partes de nome de classe (`bg-loginGreen-${variavel}`) — o JIT
   não gera CSS para nomes computados.
 - Preferir modificadores `hover:`, `disabled:`, `placeholder:`, `focus:` a handlers JS.
+- **CVA para variantes**: componente com variação visual (variante, estado booleano)
+  centraliza as classes em `cva()` (`class-variance-authority`) e aplica com o helper
+  `cn()` (`src/lib/cn.ts` — `clsx` + `tailwind-merge`): `cn(badgeVariants({ variant }), className)`.
+  Cada valor de variante continua sendo uma **string literal completa** (compatível com o
+  JIT). Componentes-referência: `StatusBadge` (mapa em `statusBadge.variants.ts`),
+  `InlineMessage`, `AuthInput`, `FilledTextField`, `AccentPillButton`, `GradientPillButton`.
+  Mantenha as definições `cva` que não são componentes em arquivo separado (`*.variants.ts`)
+  para não disparar `react-refresh/only-export-components`.
 
 ### 2 — Todo componente tem teste
 
@@ -112,6 +120,24 @@ tipo(escopo): mensagem em português ou inglês
 | `refactor` | refatoração sem mudança de comportamento |
 
 Escopo = área afetada: `login`, `email-reader`, `consulta`, `scheduler`, `migrations`, etc.
+
+### 5 — Lint limpo e análise estática
+
+- **`npm run lint` na raiz deve passar com 0 erros e 0 warnings** em todos os workspaces
+  (cobre `frontend-vite`, `api-backend`, `portal-next` — cada um com seu `eslint.config.mjs`).
+- **`frontend-vite`** usa flat config type-aware (`typescript-eslint` + `react-hooks` +
+  `react-refresh`). Ajustes deliberados, **manter**: `no-misused-promises` com
+  `checksVoidReturn: { attributes: false }` (handlers async em `onClick`/`onSubmit` são
+  idiomáticos); regras `no-unsafe-*` desligadas só em `*.test.tsx` (mocks tipados `any`).
+  Promessas fire-and-forget (`load()` em `useEffect`) levam `void` explícito.
+- **`tsconfigRootDir`**: todo `eslint.config.mjs` ancora `parserOptions.tsconfigRootDir:
+  import.meta.dirname` — não remover, é o que evita o erro "No tsconfigRootDir was set" no
+  editor. Nos apps Next, **não** habilitar `projectService: true` (quebra o parsing dos
+  `*.config.mjs`); apenas `tsconfigRootDir`.
+- **SonarLint** (engine da IDE, sem CLI): manter o código livre dos achados recorrentes —
+  condições positivas em vez de negadas com `else` (S7735: `v == null ? '—' : …`), par
+  `[x, setX]` no `useState` (S6754), sem ternário/template literal aninhado no JSX (S3358/
+  S4624 — extrair para uma const antes do `return`).
 
 ---
 
@@ -175,19 +201,20 @@ Dependências dos apps: `npm install` na **raiz** (workspaces — lockfile únic
 # Terminal 1 — backend Flask (porta 8000) — necessário para leitura de e-mails
 python server\app.py
 
-# Terminal 2 — frontend Vite interno (porta 5173; proxy /api → Flask :8000)
-npm run dev:vite
+# Terminal 2 — os 3 apps Node de uma vez (vite :5173, api :3000, portal :3002)
+npm run dev            # via concurrently — substitui os 3 comandos abaixo
 
-# Terminal 3 — Next API de dados (porta 3000) — opcional p/ o fluxo atual
-npm run dev:api
-
-# Terminal 4 — portal público (porta 3002) — opcional
-npm run dev:portal
+# …ou individualmente, em terminais separados:
+npm run dev:vite       # frontend Vite interno (proxy /api → Flask :8000)
+npm run dev:api        # Next API de dados — opcional p/ o fluxo atual
+npm run dev:portal     # portal público — opcional
 ```
 
-Scripts da raiz: `npm test` · `npm run typecheck` · `npm run lint` (rodam em todos os
-workspaces via `--workspaces --if-present`). Builds: `npm run build:vite|build:api|build:portal`.
-Ordem de startup quando se testa o fluxo de e-mail ponta a ponta: **Flask antes** da Next API.
+Scripts da raiz: `npm run dev` (sobe vite+api+portal em paralelo via `concurrently`) ·
+`npm test` · `npm run typecheck` · `npm run lint` (rodam em todos os workspaces via
+`--workspaces --if-present`). Builds: `npm run build:vite|build:api|build:portal`.
+Ordem de startup quando se testa o fluxo de e-mail ponta a ponta: **Flask antes** da Next API
+(o `dev` raiz não inclui o Flask/Python — inicie-o à parte).
 
 Leitura de e-mails:
 
@@ -246,14 +273,16 @@ apps/frontend-vite/src/components/
 │   ├── ForgotPasswordForm.tsx # (gradient) resetPasswordForEmail + mensagem genérica
 │   └── ResetPasswordForm.tsx  # (gradient) updateUser + signOut + redirect
 ├── AuthLayout.tsx             # (gradient) wrapper full-page para Forgot/Reset
-├── Layout.tsx
+├── Layout.tsx (+ Layout.test.tsx)
 ├── ProtectedRoute.tsx
-├── StatusBadge.tsx (+ StatusBadge.test.tsx)
+├── StatusBadge.tsx (+ StatusBadge.test.tsx)   # componente; variantes em statusBadge.variants.ts
+├── statusBadge.variants.ts    # cva(badgeVariants) + resolveBadge + mapas de tipo/status
 └── ExpandableText.tsx         # expansível "ver mais/ver menos" (+ ExpandableText.test.tsx)
 ```
 
 Tipos compartilhados vêm de `@sheild/shared` (ex.: `FinancialEmail`, `EmailControl`).
-Helper de erro em strict mode: `src/lib/getErrorMessage.ts`.
+Helpers em `src/lib/`: `getErrorMessage.ts` (erro em strict mode) e `cn.ts` (merge de
+classes Tailwind — `clsx` + `tailwind-merge`, base do padrão CVA).
 
 ### Guia de cores — paleta `loginGreen` (`apps/frontend-vite/tailwind.config.ts`)
 
