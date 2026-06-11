@@ -8,6 +8,9 @@ import {
   Clock,
   DollarSign,
   FileText,
+  Search,
+  X,
+  Inbox,
   type LucideIcon,
 } from 'lucide-react';
 import type { FinancialEmail } from '@sheild/shared';
@@ -18,7 +21,7 @@ import ExpandableText from '../components/ExpandableText';
 
 const fmtDate = (d: string | null): string => (d ? new Date(d + 'T00:00:00').toLocaleDateString('pt-BR') : '—');
 const fmtMoney = (v: number | null): string =>
-  v != null ? Number(v).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' }) : '—';
+  v == null ? '—' : Number(v).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
 const fmtCnpj = (c: string | null): string =>
   c?.length === 14 ? `${c.slice(0, 2)}.${c.slice(2, 5)}.${c.slice(5, 8)}/${c.slice(8, 12)}-${c.slice(12)}` : c || '—';
 
@@ -82,7 +85,7 @@ interface MetricCard {
   label: string;
   value: number;
   fmt: (v: number) => string | number;
-  valueClass?: string;
+  danger?: boolean;
 }
 
 export default function Consulta() {
@@ -91,12 +94,12 @@ export default function Consulta() {
   const [sel, setSel] = useState<FinancialEmail | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [f, setF_] = useState<ConsultaFilters>({ ...EMPTY_FILTERS });
+  const [f, setF] = useState<ConsultaFilters>({ ...EMPTY_FILTERS });
   const [applied, setApplied] = useState<ConsultaFilters>({ ...EMPTY_FILTERS });
   const [page, setPage] = useState(1);
   const [total, setTotal] = useState(0);
   const sf = <K extends keyof ConsultaFilters>(k: K, v: ConsultaFilters[K]) =>
-    setF_((x) => ({ ...x, [k]: v }));
+    setF((x) => ({ ...x, [k]: v }));
 
   // load depends on applied (snapshot do filtro no momento do Buscar) e page.
   // useEffect dispara automaticamente quando qualquer dos dois muda.
@@ -119,7 +122,7 @@ export default function Consulta() {
   }, [applied, page]);
 
   useEffect(() => {
-    load();
+    void load();
   }, [load]);
 
   // Buscar: congela filtro atual em applied e volta para pagina 1.
@@ -128,23 +131,32 @@ export default function Consulta() {
     setApplied({ ...f });
     setPage(1);
   };
+  // Limpar: reseta filtros do form e a busca aplicada, voltando para pagina 1.
+  const handleClear = () => {
+    setF({ ...EMPTY_FILTERS });
+    setApplied({ ...EMPTY_FILTERS });
+    setPage(1);
+  };
   const goPage = (n: number) => setPage(n);
   const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
 
+  const vencidasCount = stats.vencidas ?? 0;
   const cards: MetricCard[] = [
     { icon: FileText, label: 'Total de registros', value: stats.totalRecords ?? 0, fmt: (v) => v },
     { icon: Clock, label: 'Pendentes', value: stats.pending ?? 0, fmt: (v) => v },
     { icon: DollarSign, label: 'Valor total', value: stats.totalValue ?? 0, fmt: fmtMoney },
     { icon: TrendingUp, label: 'A vencer em 7 dias', value: stats.vencendo ?? 0, fmt: (v) => v },
-    { icon: AlertCircle, label: 'Vencidas', value: stats.vencidas ?? 0, fmt: (v) => v, valueClass: (stats.vencidas ?? 0) > 0 ? 'text-red-600' : undefined },
+    { icon: AlertCircle, label: 'Vencidas', value: vencidasCount, fmt: (v) => v, danger: vencidasCount > 0 },
   ];
 
   return (
     <div className="flex flex-col h-full">
-      <div className="px-6 py-4 border-b border-gray-200 bg-white flex items-center justify-between">
+      {/* Barra superior em gradiente (2px) — acento de marca */}
+      <div className="h-0.5 bg-gradient-to-r from-brand to-brand-dark" />
+      <div className="px-6 py-4 border-b border-slate-200 bg-white flex items-center justify-between">
         <div>
-          <h1 className="text-base font-semibold text-gray-900">Consulta de movimentações</h1>
-          <p className="text-xs text-gray-500 mt-0.5">Registros extraídos — tabela financial_emails</p>
+          <h1 className="text-base font-semibold text-slate-800">Consulta de movimentações</h1>
+          <p className="text-xs text-slate-400 mt-0.5">Registros extraídos — tabela financial_emails</p>
         </div>
         <div className="flex gap-2">
           <button onClick={() => exportCsv(rows)} className="btn" disabled={!rows.length}>
@@ -167,70 +179,91 @@ export default function Consulta() {
           </div>
         )}
 
-        <div className="grid grid-cols-5 gap-3 mb-5">
-          {cards.map(({ icon: Icon, label, value, fmt, valueClass }) => (
-            <div key={label} className="metric-card">
-              <div className="flex items-center gap-1.5 text-xs text-gray-500 mb-1">
-                <Icon size={13} />
-                {label}
+        <div className="flex gap-3 mb-5 flex-wrap">
+          {cards.map(({ icon: Icon, label, value, fmt, danger }) => (
+            <div
+              key={label}
+              className={`flex-1 min-w-[160px] flex items-center gap-3 bg-white rounded-xl shadow-sm border border-slate-100 border-l-4 px-4 py-3 animate-fade-in-up ${
+                danger ? 'border-l-red-500' : 'border-l-brand'
+              }`}
+            >
+              <div
+                className={`flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-full ${
+                  danger ? 'bg-red-500/10 text-red-600' : 'bg-brand/10 text-brand'
+                }`}
+              >
+                <Icon size={18} />
               </div>
-              <div className={`text-xl font-semibold ${valueClass ?? 'text-gray-900'}`}>{fmt(value)}</div>
+              <div className="min-w-0">
+                <div className={`text-2xl font-bold leading-tight ${danger ? 'text-red-600' : 'text-slate-800'}`}>
+                  {fmt(value)}
+                </div>
+                <div className="text-xs text-slate-500 truncate">{label}</div>
+              </div>
             </div>
           ))}
         </div>
 
-        <div className="flex gap-2 mb-4 flex-wrap">
-          <input
-            className="input w-44"
-            placeholder="Fornecedor ou CNPJ…"
-            value={f.supplier}
-            onChange={(e) => sf('supplier', e.target.value)}
-            onKeyDown={(e) => e.key === 'Enter' && handleSearch()}
-          />
-          <select className="input w-32" value={f.docType} onChange={(e) => sf('docType', e.target.value)}>
-            <option value="">Tipo</option>
-            {['DARF','DAS','DAE','DAM / DUAM','GARE','GNRE','GPS','GRU','ISS','IPTU','IPVA','ITBI','PIX','tributo','boleto','cte','nfe','nfse','recibo','seguro','outro'].map((t) => (
-              <option key={t}>{t}</option>
-            ))}
-          </select>
-          <select className="input w-32" value={f.status} onChange={(e) => sf('status', e.target.value)}>
-            <option value="">Status</option>
-            {['pending', 'paid', 'cancelled', 'error'].map((s) => (
-              <option key={s}>{s}</option>
-            ))}
-          </select>
-          <select className="input w-32" value={f.dueStatus} onChange={(e) => sf('dueStatus', e.target.value)}>
-            <option value="">Situação</option>
-            {['A Vencer', 'Vencido'].map((s) => (
-              <option key={s}>{s}</option>
-            ))}
-          </select>
-          <input
-            type="date"
-            className="input w-36"
-            value={f.dateFrom}
-            onChange={(e) => sf('dateFrom', e.target.value)}
-            title="Vencimento de"
-          />
-          <input
-            type="date"
-            className="input w-36"
-            value={f.dateTo}
-            onChange={(e) => sf('dateTo', e.target.value)}
-            title="Vencimento até"
-          />
-          <button onClick={handleSearch} className="btn btn-primary">
-            Buscar
-          </button>
+        <div className="relative bg-white rounded-xl shadow-sm border border-slate-100 p-4 mb-4">
+          <span className="absolute left-4 top-2 text-[10px] uppercase tracking-widest text-slate-400">
+            Filtros
+          </span>
+          <div className="flex gap-2 flex-wrap pt-4">
+            <input
+              className="input w-44"
+              placeholder="Fornecedor ou CNPJ…"
+              value={f.supplier}
+              onChange={(e) => sf('supplier', e.target.value)}
+              onKeyDown={(e) => e.key === 'Enter' && handleSearch()}
+            />
+            <select className="input w-32" value={f.docType} onChange={(e) => sf('docType', e.target.value)}>
+              <option value="">Tipo</option>
+              {['DARF','DAS','DAE','DAM / DUAM','GARE','GNRE','GPS','GRU','ISS','IPTU','IPVA','ITBI','PIX','tributo','boleto','cte','nfe','nfse','recibo','seguro','outro'].map((t) => (
+                <option key={t}>{t}</option>
+              ))}
+            </select>
+            <select className="input w-32" value={f.status} onChange={(e) => sf('status', e.target.value)}>
+              <option value="">Status</option>
+              {['pending', 'paid', 'cancelled', 'error'].map((s) => (
+                <option key={s}>{s}</option>
+              ))}
+            </select>
+            <select className="input w-32" value={f.dueStatus} onChange={(e) => sf('dueStatus', e.target.value)}>
+              <option value="">Situação</option>
+              {['A Vencer', 'Vencido'].map((s) => (
+                <option key={s}>{s}</option>
+              ))}
+            </select>
+            <input
+              type="date"
+              className="input w-36"
+              value={f.dateFrom}
+              onChange={(e) => sf('dateFrom', e.target.value)}
+              title="Vencimento de"
+            />
+            <input
+              type="date"
+              className="input w-36"
+              value={f.dateTo}
+              onChange={(e) => sf('dateTo', e.target.value)}
+              title="Vencimento até"
+            />
+            <button onClick={handleSearch} className="btn btn-primary">
+              <Search size={14} /> Buscar
+            </button>
+            <button onClick={handleClear} className="btn">
+              Limpar
+            </button>
+          </div>
         </div>
 
-        <div className="card overflow-hidden mb-2">
+        <div className="card mb-2">
           <table className="w-full">
             <thead>
               <tr>
                 {['N° Doc', 'Vencimento', 'Situação', 'Fornecedor', 'CNPJ', 'Tipo Documento', 'Tipo Pagamento', 'Valor', 'Extração'].map(
                   (h) => (
-                    <th key={h} className={`table-header ${h === 'Valor' ? 'text-right' : ''}`}>
+                    <th key={h} className={`table-header sticky top-0 z-10 ${h === 'Valor' ? 'text-right' : ''}`}>
                       {h}
                     </th>
                   ),
@@ -240,18 +273,29 @@ export default function Consulta() {
             <tbody>
               {rows.length === 0 ? (
                 <tr>
-                  <td colSpan={9} className="table-cell text-center text-gray-400 py-8">
-                    {loading ? 'Buscando registros…' : 'Nenhum registro encontrado — ajuste os filtros e clique em Buscar'}
+                  <td colSpan={9} className="py-12">
+                    <div className="flex flex-col items-center justify-center text-center gap-3">
+                      <div className="flex h-14 w-14 items-center justify-center rounded-full bg-slate-100 text-slate-300">
+                        <Inbox size={26} />
+                      </div>
+                      <p className="text-sm text-slate-400 max-w-xs">
+                        {loading ? 'Buscando registros…' : 'Nenhum registro encontrado — ajuste os filtros e clique em Buscar'}
+                      </p>
+                    </div>
                   </td>
                 </tr>
               ) : (
                 rows.map((r) => (
                   <Fragment key={r.id}>
                     <tr
-                      className={`cursor-pointer hover:bg-gray-50 ${sel?.id === r.id ? 'bg-brand-light/40' : ''}`}
+                      className={`cursor-pointer transition-colors ${
+                        sel?.id === r.id
+                          ? 'bg-brand/5 border-l-2 border-brand'
+                          : 'hover:bg-slate-50/60'
+                      }`}
                       onClick={() => setSel(sel?.id === r.id ? null : r)}
                     >
-                      <td className="table-cell text-xs font-mono text-gray-500">{r.invoice_number || '—'}</td>
+                      <td className="table-cell text-xs font-mono text-slate-500">{r.invoice_number || '—'}</td>
                       <td className="table-cell text-xs whitespace-nowrap font-mono">{fmtDate(r.due_date)}</td>
                       <td className="table-cell">
                         <StatusBadge value={r.due_status} />
@@ -259,14 +303,14 @@ export default function Consulta() {
                       <td className="table-cell text-xs max-w-[150px] truncate" title={r.supplier_name ?? ''}>
                         {r.supplier_name || '—'}
                       </td>
-                      <td className="table-cell text-xs font-mono text-gray-500">{fmtCnpj(r.supplier_cnpj)}</td>
+                      <td className="table-cell text-xs font-mono text-slate-500">{fmtCnpj(r.supplier_cnpj)}</td>
                       <td className="table-cell">
                         <StatusBadge value={r.document_type} />
                       </td>
                       <td className="table-cell">
                         <StatusBadge value={r.payment_method} />
                       </td>
-                      <td className="table-cell text-xs font-mono font-medium text-right">{fmtMoney(r.amount)}</td>
+                      <td className="table-cell text-xs font-mono font-semibold text-slate-800 text-right">{fmtMoney(r.amount)}</td>
                       <td className="table-cell">
                         <StatusBadge value={r.extraction_source} />
                       </td>
@@ -274,12 +318,22 @@ export default function Consulta() {
 
                     {sel?.id === r.id && (
                       <tr>
-                        <td colSpan={9} className="p-0 border-b border-gray-100 bg-gray-50/60">
-                          <div className="p-4 border-l-2 border-brand">
-                            <p className="text-xs font-semibold text-gray-500 mb-3 uppercase tracking-wide">
+                        <td colSpan={9} className="p-0 border-b border-slate-100">
+                          <div className="relative animate-fade-in-up bg-slate-50/60 border-l-2 border-brand p-4">
+                            <button
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setSel(null);
+                              }}
+                              className="absolute right-3 top-3 flex h-7 w-7 items-center justify-center rounded-full text-slate-400 hover:bg-slate-200/60 hover:text-slate-600 transition-colors"
+                              title="Fechar"
+                            >
+                              <X size={15} />
+                            </button>
+                            <p className="text-xs font-semibold text-slate-500 mb-3 uppercase tracking-wide pr-8">
                               Detalhes — {r.supplier_name || 'registro'} · {fmtDate(r.due_date)}
                             </p>
-                            <dl className="grid grid-cols-2 gap-x-8 gap-y-2">
+                            <dl className="grid grid-cols-2 rounded-lg overflow-hidden border border-slate-100">
                               {(
                                 [
                                   ['Fornecedor', r.supplier_name],
@@ -302,22 +356,27 @@ export default function Consulta() {
                                   ['Origem', r.source_file],
                                   ['Observações', r.processing_notes || '—'],
                                 ] as [string, string | null][]
-                              ).map(([k, v]) => (
-                                <div key={k} className="flex gap-3">
-                                  <dt className="w-36 flex-shrink-0 text-gray-400 text-xs">{k}</dt>
-                                  <dd className="text-gray-700 text-xs break-all">{v ?? '—'}</dd>
+                              ).map(([k, v], i) => (
+                                <div
+                                  key={k}
+                                  className={`flex gap-3 px-3 py-1.5 ${
+                                    Math.floor(i / 2) % 2 === 0 ? 'bg-slate-50/30' : 'bg-white'
+                                  }`}
+                                >
+                                  <dt className="w-36 flex-shrink-0 text-slate-400 text-xs">{k}</dt>
+                                  <dd className="text-slate-700 text-xs break-all">{v ?? '—'}</dd>
                                 </div>
                               ))}
                             </dl>
                             {r.description && (
-                              <div className="mt-3 p-3 bg-gray-50 rounded-lg">
-                                <p className="text-[10px] text-gray-400 mb-1 uppercase tracking-wide">Descrição</p>
-                                <p className="text-xs text-gray-600">{r.description}</p>
+                              <div className="mt-3 p-3 bg-white rounded-lg border border-slate-100">
+                                <span className="badge bg-brand/10 text-brand mb-2">Descrição</span>
+                                <p className="text-xs text-slate-600">{r.description}</p>
                               </div>
                             )}
                             {r.email_body_excerpt && (
-                              <div className="mt-3 p-3 bg-gray-50 rounded-lg">
-                                <p className="text-[10px] text-gray-400 mb-1 uppercase tracking-wide">Mensagem do e-mail</p>
+                              <div className="mt-3 p-3 bg-white rounded-lg border border-slate-100">
+                                <span className="badge bg-brand/10 text-brand mb-2">Mensagem do e-mail</span>
                                 <ExpandableText text={r.email_body_excerpt} />
                               </div>
                             )}
@@ -333,14 +392,23 @@ export default function Consulta() {
         </div>
 
         <div className="flex items-center justify-between py-2 px-1 mb-4">
-          <span className="text-xs text-gray-500">
-            {total} registros · Página {page} de {totalPages}
-          </span>
+          <span className="text-xs text-slate-500">{total} registros</span>
           <div className="flex items-center gap-2">
-            <button onClick={() => goPage(page - 1)} disabled={page <= 1 || loading} className="btn">
+            <button
+              onClick={() => goPage(page - 1)}
+              disabled={page <= 1 || loading}
+              className="btn disabled:opacity-40 disabled:cursor-not-allowed"
+            >
               ← Anterior
             </button>
-            <button onClick={() => goPage(page + 1)} disabled={page >= totalPages || loading} className="btn">
+            <span className="badge bg-slate-100 text-slate-600">
+              Página {page} de {totalPages}
+            </span>
+            <button
+              onClick={() => goPage(page + 1)}
+              disabled={page >= totalPages || loading}
+              className="btn disabled:opacity-40 disabled:cursor-not-allowed"
+            >
               Próxima →
             </button>
           </div>

@@ -3,8 +3,13 @@
 @tailwind utilities;
 
 @layer base {
+  :root {
+    --sidebar-width: 208px; /* 13rem — largura do painel de navegação */
+  }
   body {
-    @apply bg-gray-50 text-gray-900 antialiased;
+    @apply bg-surface-page text-ink-primary antialiased;
+    font-size: 13px;
+    line-height: 1.6;
   }
   * {
     @apply box-border;
@@ -16,34 +21,75 @@
     @apply inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium;
   }
   .btn {
-    @apply inline-flex items-center gap-1.5 px-3 py-1.5 text-sm border border-gray-200
-           rounded-lg bg-white hover:bg-gray-50 transition-colors cursor-pointer;
+    @apply inline-flex items-center gap-1.5 px-3 py-1.5 text-[13px] font-medium
+           border border-slate-200 rounded-lg bg-white shadow-sm
+           hover:bg-slate-50 transition-all duration-150 active:scale-95 cursor-pointer;
   }
   .btn-primary {
-    @apply bg-brand text-white border-brand hover:bg-brand-dark;
+    @apply bg-gradient-to-br from-brand to-brand-dark text-white border-brand
+           shadow-sm hover:shadow-md hover:shadow-brand/25 active:scale-95;
+  }
+  .btn-ghost {
+    /* uso dentro do sidebar escuro */
+    @apply bg-transparent border-transparent shadow-none text-slate-300
+           hover:bg-white/10 hover:text-white;
   }
   .input {
-    @apply w-full px-3 py-1.5 text-sm border border-gray-200 rounded-lg
-           bg-white focus:outline-none focus:ring-2 focus:ring-brand/30 focus:border-brand;
+    @apply w-full px-3 py-1.5 text-sm border border-slate-200 rounded-lg bg-white
+           transition-all focus:outline-none focus:ring-2 focus:ring-brand/20 focus:border-brand;
   }
   .card {
-    @apply bg-white border border-gray-200 rounded-xl;
+    @apply bg-surface border border-slate-200/80 rounded-xl shadow-sm
+           hover:shadow-md transition-shadow;
+    animation: fadeInUp 0.2s ease-out both;
   }
   .metric-card {
-    @apply bg-gray-50 rounded-lg p-3 border border-gray-100;
+    @apply bg-surface rounded-lg p-3 border-l-2 border-brand shadow-sm
+           hover:shadow transition-shadow;
+    animation: fadeInUp 0.2s ease-out both;
   }
   .table-header {
-    @apply text-xs font-medium text-gray-500 uppercase tracking-wide
-           bg-gray-50 px-3 py-2 border-b border-gray-200 text-left;
+    @apply text-[11px] font-medium text-slate-500 uppercase tracking-widest
+           bg-slate-50 px-3 py-2 border-b border-slate-200 text-left;
   }
   .table-cell {
-    @apply px-3 py-2.5 text-sm text-gray-700 border-b border-gray-100;
+    @apply px-3 py-2.5 text-sm text-slate-700 border-b border-slate-100;
+  }
+  .table-row-hover {
+    /* preparada para a futura passada de estilo das páginas */
+    @apply hover:bg-slate-50/80 transition-colors duration-100;
   }
   .nav-link {
-    @apply flex items-center gap-2 px-3 py-2 text-sm text-gray-600
-           rounded-lg hover:bg-gray-100 hover:text-gray-900 transition-colors;
+    @apply flex items-center gap-2 px-3 py-2 text-sm text-slate-400 rounded-lg
+           border-l-2 border-transparent transition-all duration-150
+           hover:bg-white/[0.08] hover:text-white;
+  }
+  .nav-link > svg {
+    @apply opacity-70; /* ícone com leve opacidade no estado default */
   }
   .nav-link.active {
-    @apply bg-brand-light text-brand-dark font-medium;
+    @apply bg-brand/[0.15] text-brand font-medium border-brand;
   }
+  .nav-link.active > svg {
+    @apply opacity-100;
+  }
+  .nav-link.is-disabled {
+    /* itens "Em breve": não clicáveis, sem realce de hover */
+    @apply cursor-not-allowed hover:bg-transparent hover:text-slate-400;
+  }
+}
+
+/* Micro-interações ------------------------------------------------------- */
+@keyframes fadeInUp {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+.animate-fade-in-up {
+  animation: fadeInUp 0.2s ease-out both;
 }
