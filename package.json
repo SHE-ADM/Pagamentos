@@ -8,6 +8,7 @@
     "packages/*"
   ],
   "scripts": {
+    "dev": "concurrently -n vite,api,portal -c green,cyan,magenta \"npm:dev:vite\" \"npm:dev:api\" \"npm:dev:portal\"",
     "dev:vite": "npm run dev --workspace=apps/frontend-vite",
     "dev:api": "npm run dev --workspace=apps/api-backend",
     "dev:portal": "npm run dev --workspace=apps/portal-next",
@@ -17,5 +18,8 @@
     "test": "npm run test --workspaces --if-present",
     "lint": "npm run lint --workspaces --if-present",
     "typecheck": "npm run typecheck --workspaces --if-present"
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.0"
   }
 }

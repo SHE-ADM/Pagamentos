@@ -3,20 +3,27 @@
 // autenticacao. Nunca usar alert() do navegador.
 
 import type { ReactNode } from 'react';
+import { cva } from 'class-variance-authority';
+import { cn } from '../../lib/cn';
 
 type InlineMessageType = 'error' | 'success';
 
-const styles: Record<InlineMessageType, string> = {
-  error: 'bg-red-50 text-red-700',
-  success: 'bg-green-50 text-green-700',
-};
+const messageVariants = cva('rounded-lg px-3 py-2 text-sm', {
+  variants: {
+    type: {
+      error: 'bg-red-50 text-red-700',
+      success: 'bg-green-50 text-green-700',
+    },
+  },
+  defaultVariants: { type: 'error' },
+});
 
 interface InlineMessageProps {
   type?: InlineMessageType;
   children?: ReactNode;
 }
 
-export default function InlineMessage({ type = 'error', children }: InlineMessageProps) {
+export default function InlineMessage({ type = 'error', children }: Readonly<InlineMessageProps>) {
   if (!children) return null;
-  return <p className={`rounded-lg px-3 py-2 text-sm ${styles[type]}`}>{children}</p>;
+  return <p className={cn(messageVariants({ type }))}>{children}</p>;
 }

@@ -58,6 +58,14 @@ Estas regras se aplicam a **todo** código novo ou alterado neste projeto, sem e
   Nunca concatenar partes de nome de classe (`bg-loginGreen-${variavel}`) — o JIT
   não gera CSS para nomes computados.
 - Preferir modificadores `hover:`, `disabled:`, `placeholder:`, `focus:` a handlers JS.
+- **CVA para variantes**: componente com variação visual (variante, estado booleano)
+  centraliza as classes em `cva()` (`class-variance-authority`) e aplica com o helper
+  `cn()` (`src/lib/cn.ts` — `clsx` + `tailwind-merge`): `cn(badgeVariants({ variant }), className)`.
+  Cada valor de variante continua sendo uma **string literal completa** (compatível com o
+  JIT). Componentes-referência: `StatusBadge` (mapa em `statusBadge.variants.ts`),
+  `InlineMessage`, `AuthInput`, `FilledTextField`, `AccentPillButton`, `GradientPillButton`.
+  Mantenha as definições `cva` que não são componentes em arquivo separado (`*.variants.ts`)
+  para não disparar `react-refresh/only-export-components`.
 
 ### 2 — Todo componente tem teste
 
@@ -113,6 +121,24 @@ tipo(escopo): mensagem em português ou inglês
 
 Escopo = área afetada: `login`, `email-reader`, `consulta`, `scheduler`, `migrations`, etc.
 
+### 5 — Lint limpo e análise estática
+
+- **`npm run lint` na raiz deve passar com 0 erros e 0 warnings** em todos os workspaces
+  (cobre `frontend-vite`, `api-backend`, `portal-next` — cada um com seu `eslint.config.mjs`).
+- **`frontend-vite`** usa flat config type-aware (`typescript-eslint` + `react-hooks` +
+  `react-refresh`). Ajustes deliberados, **manter**: `no-misused-promises` com
+  `checksVoidReturn: { attributes: false }` (handlers async em `onClick`/`onSubmit` são
+  idiomáticos); regras `no-unsafe-*` desligadas só em `*.test.tsx` (mocks tipados `any`).
+  Promessas fire-and-forget (`load()` em `useEffect`) levam `void` explícito.
+- **`tsconfigRootDir`**: todo `eslint.config.mjs` ancora `parserOptions.tsconfigRootDir:
+  import.meta.dirname` — não remover, é o que evita o erro "No tsconfigRootDir was set" no
+  editor. Nos apps Next, **não** habilitar `projectService: true` (quebra o parsing dos
+  `*.config.mjs`); apenas `tsconfigRootDir`.
+- **SonarLint** (engine da IDE, sem CLI): manter o código livre dos achados recorrentes —
+  condições positivas em vez de negadas com `else` (S7735: `v == null ? '—' : …`), par
+  `[x, setX]` no `useState` (S6754), sem ternário/template literal aninhado no JSX (S3358/
+  S4624 — extrair para uma const antes do `return`).
+
 ---
 
 ## Autenticação (Supabase Auth)
@@ -141,7 +167,7 @@ IMAP (Locaweb SSL)                  apps/frontend-vite (React+Vite TS, :5173)
       │                                        │
       │                          ┌─────────────┼────────────────────────────┐
       │                          │ /emails     │ /consulta      /erros       │
-      │                          │ email_control  financial_emails  errors   │
+      │                          │ email_control  financial_account_control  errors   │
       │                          │   fetch direto Supabase REST              │
       │                          │   (apikey: anon + Authorization: token)   │
       │                          └─────────────┼────────────────────────────┘
@@ -156,7 +182,7 @@ read_emails.run_reader() ◄───────── server/app.py (Flask, po
       │  4. subprocess → extract_pdf.py (Claude API: pdf_text ou pdf_vision)
       │  5. UPSERT em email_control  +  fallback CSV em data/csv_output/
       ▼
-Supabase (PostgreSQL)  ── financial_emails (dados extraídos)
+Supabase (PostgreSQL)  ── financial_account_control (dados extraídos)
                        ├─ email_control     (controle/dedup)
                        ├─ email_processing_errors (log de falhas)
                        └─ supplier          (fornecedores auto-criados)
@@ -175,19 +201,20 @@ Dependências dos apps: `npm install` na **raiz** (workspaces — lockfile únic
 # Terminal 1 — backend Flask (porta 8000) — necessário para leitura de e-mails
 python server\app.py
 
-# Terminal 2 — frontend Vite interno (porta 5173; proxy /api → Flask :8000)
-npm run dev:vite
+# Terminal 2 — os 3 apps Node de uma vez (vite :5173, api :3000, portal :3002)
+npm run dev            # via concurrently — substitui os 3 comandos abaixo
 
-# Terminal 3 — Next API de dados (porta 3000) — opcional p/ o fluxo atual
-npm run dev:api
-
-# Terminal 4 — portal público (porta 3002) — opcional
-npm run dev:portal
+# …ou individualmente, em terminais separados:
+npm run dev:vite       # frontend Vite interno (proxy /api → Flask :8000)
+npm run dev:api        # Next API de dados — opcional p/ o fluxo atual
+npm run dev:portal     # portal público — opcional
 ```
 
-Scripts da raiz: `npm test` · `npm run typecheck` · `npm run lint` (rodam em todos os
-workspaces via `--workspaces --if-present`). Builds: `npm run build:vite|build:api|build:portal`.
-Ordem de startup quando se testa o fluxo de e-mail ponta a ponta: **Flask antes** da Next API.
+Scripts da raiz: `npm run dev` (sobe vite+api+portal em paralelo via `concurrently`) ·
+`npm test` · `npm run typecheck` · `npm run lint` (rodam em todos os workspaces via
+`--workspaces --if-present`). Builds: `npm run build:vite|build:api|build:portal`.
+Ordem de startup quando se testa o fluxo de e-mail ponta a ponta: **Flask antes** da Next API
+(o `dev` raiz não inclui o Flask/Python — inicie-o à parte).
 
 Leitura de e-mails:
 
@@ -246,14 +273,16 @@ apps/frontend-vite/src/components/
 │   ├── ForgotPasswordForm.tsx # (gradient) resetPasswordForEmail + mensagem genérica
 │   └── ResetPasswordForm.tsx  # (gradient) updateUser + signOut + redirect
 ├── AuthLayout.tsx             # (gradient) wrapper full-page para Forgot/Reset
-├── Layout.tsx
+├── Layout.tsx (+ Layout.test.tsx)
 ├── ProtectedRoute.tsx
-├── StatusBadge.tsx (+ StatusBadge.test.tsx)
+├── StatusBadge.tsx (+ StatusBadge.test.tsx)   # componente; variantes em statusBadge.variants.ts
+├── statusBadge.variants.ts    # cva(badgeVariants) + resolveBadge + mapas de tipo/status
 └── ExpandableText.tsx         # expansível "ver mais/ver menos" (+ ExpandableText.test.tsx)
 ```
 
 Tipos compartilhados vêm de `@sheild/shared` (ex.: `FinancialEmail`, `EmailControl`).
-Helper de erro em strict mode: `src/lib/getErrorMessage.ts`.
+Helpers em `src/lib/`: `getErrorMessage.ts` (erro em strict mode) e `cn.ts` (merge de
+classes Tailwind — `clsx` + `tailwind-merge`, base do padrão CVA).
 
 ### Guia de cores — paleta `loginGreen` (`apps/frontend-vite/tailwind.config.ts`)
 
@@ -341,13 +370,13 @@ atualizar o registro existente. Fallback local em CSV quando Supabase indisponí
 ### Normalização de `document_type`
 
 `extract_pdf.py` usa `_ns()` (strip de acentos + lowercase) para lookup em `_DOC_TYPE_NORM`.
-CHECK constraint em `financial_emails.document_type` usa `lower()` (migration 014).
+CHECK constraint em `financial_account_control.document_type` usa `lower()` (migration 014).
 Tipos aceitos: `boleto`, `cte`, `nfe`, `nfse`, `tributo`, `seguro`, `fatura`, `recibo`, `contrato`, `outro`.
 `SKIP_ACCOUNT_TYPES = ['nfe', 'nfse']` — não geram conta a pagar.
 
 ### Auto-resolução de fornecedor
 
-Trigger `trg_fe_supplier_id` (BEFORE INSERT OR UPDATE em `financial_emails`) chama
+Trigger `trg_fe_supplier_id` (BEFORE INSERT OR UPDATE em `financial_account_control`) chama
 `resolve_supplier_id(cnpj, cpf, name)`: busca exata por CNPJ/CPF → fallback por nome
 normalizado → auto-insert em `supplier`. Função `normalize_search()` é SECURITY DEFINER.
 
@@ -358,7 +387,7 @@ normalizado → auto-insert em `supplier`. Função `normalize_search()` é SECU
 | `pdf_text` | PDF digital (pdfplumber) |
 | `pdf_vision` | PDF escaneado (Claude Vision, exige poppler) |
 | `email_body` | Corpo do e-mail (sem PDF válido) |
-| `error` | Falha na extração |
+| `falha` | Falha na extração |
 
 ### Caminho `email_body`
 
@@ -377,8 +406,8 @@ Comparação case-insensitive contra o assunto do e-mail.
 
 | Rota | Componente | Tabela |
 |---|---|---|
-| `/emails` | `Emails.tsx` | `email_control` + `financial_emails` por `message_id` |
-| `/consulta` | `Consulta.tsx` | `financial_emails` (paginado, filtros, CSV client-side) |
+| `/emails` | `Emails.tsx` | `email_control` + `financial_account_control` por `message_id` |
+| `/consulta` | `Consulta.tsx` | `financial_account_control` (paginado, filtros, CSV client-side) |
 | `/erros` | `Erros.tsx` | `email_processing_errors` |
 
 - `services/supabase.ts` — fetch direto REST, `Prefer: count=exact` + `Content-Range` para paginação.
@@ -387,17 +416,26 @@ Comparação case-insensitive contra o assunto do e-mail.
 ## Banco de dados (Supabase)
 
 Migrations em `supabase/migrations/`, aplicadas **manualmente no SQL Editor** em ordem
-numérica (`001` → `016`). Não há migration automática.
+numérica (`001` → `020`). Não há migration automática.
 
 | Tabela | Propósito |
 |---|---|
-| `email_control` | Dedup/controle. `status` ∈ (received, downloaded, extracted, error, ignored) |
-| `financial_emails` | Dados extraídos — uma linha por documento financeiro |
+| `email_control` | Dedup/controle. `status` ∈ (recebido, baixado, extraído, falha, ignorado) — migration 019 |
+| `financial_account_control` | Tabela principal de contas a pagar — uma linha por documento; alimentada pelo pipeline de e-mail **e** por CRUD manual (baixas, consolidações, dashboards). Substitui a antiga `financial_emails` (dropada na migration 020) |
 | `email_processing_errors` | Log de falhas com `raw_payload` JSON |
 | `supplier` | Fornecedores auto-criados pelo trigger |
 
-RLS habilitado em todas as tabelas. Policies de leitura são `TO authenticated` (migration 015).
-Toda nova tabela deve seguir o mesmo padrão.
+`financial_account_control.status` (ciclo de vida do pagamento, default `pendente`) e
+`due_status` (situação de vencimento, gravada pela trigger) compartilham o mesmo domínio
+pt-BR de 13 valores: `pendente, vencido, a vencer, prorrogado, baixado, protestado,
+cartório, pago, pago protesto, pago cartório, não pago, cancelado, falha` (migration 018).
+`payment_method` aceita `boleto, pix, ted, cartão, depósito, duplicata, bancário, carteira,
+vale, crédito, débito, dinheiro, transferência, cheque, outro`; `extraction_source` ∈
+(`email_body, pdf_text, pdf_vision, falha`).
+
+RLS habilitado em todas as tabelas. Policies de leitura são `TO authenticated`
+(migrations 015/018/019); escrita em `financial_account_control` é `TO service_role`
+(CRUD via Next API). Toda nova tabela deve seguir o mesmo padrão.
 
 ## Windows Task Scheduler
 

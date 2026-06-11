@@ -23,7 +23,7 @@ Args:     C:\Sheild\Projetos\Claude\Contas a pagar\Pagamentos\skills\pdf-contas-
 
 ```
 Method:  POST
-URL:     {{ $env.SUPABASE_URL }}/rest/v1/financial_emails
+URL:     {{ $env.SUPABASE_URL }}/rest/v1/financial_account_control
 Headers:
   apikey:        {{ $env.SUPABASE_SERVICE_KEY }}
   Authorization: Bearer {{ $env.SUPABASE_SERVICE_KEY }}
@@ -44,7 +44,7 @@ Body:
   "payment_method":    "{{ $json.payment_method }}",
   "barcode":           "{{ $json.barcode }}",
   "description":       "{{ $json.description }}",
-  "status":            "pending",
+  "status":            "pendente",
   "processing_notes":  "{{ $json.processing_notes }}",
   "extracted_at":      "{{ $json.extracted_at }}"
 }
@@ -52,7 +52,7 @@ Body:
 
 ## Supabase — Executar migração
 
-Cole o conteúdo de `supabase\migrations\001_create_financial_emails.sql`
+Cole o conteúdo de `supabase\migrations\018_create_financial_account_control.sql`
 no **SQL Editor** do Supabase e execute.
 
 ## Instalação das dependências

@@ -45,6 +45,60 @@ VALUE_FIELDS_ZERO = [
     "other_additions", "amount_charged",
 ]
 
+
+# Erros de nivel de API (credito esgotado, auth invalida, rate-limit, servidor,
+# chave ausente) NAO sao falhas de um documento especifico: a API inteira esta
+# indisponivel. Nesses casos o fallback regex grava dados incorretos (fornecedor
+# vazio, valor errado) como se fosse sucesso. Sinalizamos esse erro a parte para
+# o pipeline parar com seguranca (read_emails) em vez de poluir o banco.
+class ApiUnavailableError(Exception):
+    """API Anthropic indisponivel (credito/auth/rate-limit/servidor/sem chave)."""
+
+
+_API_ERROR_HINTS = (
+    "credit balance", "rate limit", "rate_limit", "authentication",
+    "api key", "api_key", "anthropic_api_key", "overloaded", "quota",
+    "permission", "billing", "insufficient",
+)
+
+
+def _is_api_unavailable(exc: Exception) -> bool:
+    """True quando a excecao indica a API inteira indisponivel (nao um PDF ruim).
+
+    Cobre: ApiUnavailableError ja classificado, qualquer anthropic.APIError
+    (auth, credito, rate-limit, servidor) e heuristica por mensagem como rede
+    de seguranca quando o tipo concreto nao for reconhecido.
+    """
+    if isinstance(exc, ApiUnavailableError):
+        return True
+    try:
+        import anthropic
+        if isinstance(exc, anthropic.APIError):
+            return True
+    except Exception:
+        pass
+    msg = str(exc).lower()
+    return any(h in msg for h in _API_ERROR_HINTS)
+
+
+def _api_error_record(pdf_path, message: str) -> dict:
+    """Registro de falha de API — extraction_source='erro_api'.
+
+    Esse marcador sinaliza ao read_emails para registrar um erro do tipo
+    'erro_api' e NAO gravar conta a pagar (nem cair no fallback regex).
+    """
+    base = ["source_file", "document_type", "extraction_source",
+            "status", "processing_notes", "extracted_at"]
+    return {
+        "source_file": pdf_path.name,
+        "document_type": "ERRO_API",
+        "extraction_source": "erro_api",
+        "status": "falha",
+        "processing_notes": f"ERRO_API: {message}"[:500],
+        "extracted_at": datetime.utcnow().isoformat(),
+        **{c: None for c in CSV_COLUMNS if c not in base},
+    }
+
 # Schema unico de extracao (texto e visao usam o mesmo).
 EXTRACTION_PROMPT = (
     "Analise este documento financeiro brasileiro (normalmente um boleto) e "
@@ -194,8 +248,9 @@ def _normalize_doc_type(raw: str) -> str:
     """Normaliza document_type para valores aceitos pelo CHECK constraint da tabela.
 
     Aplica _ns() tanto na chave (field) quanto no valor buscado (value) — case e accent insensitive.
+    Sempre retorna minúsculo — CHECK constraint e frontend usam lower().
     """
-    return _DOC_TYPE_NORM.get(_ns(raw or "outro"), "outro")
+    return _DOC_TYPE_NORM.get(_ns(raw or "outro"), "outro").lower()
 
 # --- Classificação ---
 def classify_document(text: str) -> str:
@@ -227,16 +282,23 @@ def extract_date(text):
     return f"{m.group(1)}-{m.group(2)}-{m.group(3)}" if m else None
 
 def normalize_barcode(raw):
-    """Normaliza barcode ou linha digitavel para 44 digitos.
+    """Normaliza barcode / linha digitavel / chave de acesso para so digitos.
 
-    - 44 digitos: barcode valido, retorna como esta
+    Aceita os formatos de codigo de pagamento brasileiros (com ou sem mascara —
+    pontos, espacos e hifens sao removidos):
+    - 44 digitos: codigo de barras OU chave de acesso (NF-e/CT-e) — retorna como esta
     - 47 digitos: linha digitavel bancaria FEBRABAN -> converte para barcode 44
+    - 48 digitos: linha digitavel de arrecadacao (concessionaria/tributo) -> mantem
     - Outros comprimentos ou None: retorna None
     """
     if not raw:
         return None
     digits = re.sub(r"\D", "", str(raw))
     if len(digits) == 44:
+        return digits
+    if len(digits) == 48:
+        # Arrecadacao (agua/luz/tributo): 4 blocos de 11+1 DV. Mantida na forma
+        # de linha digitavel — e um codigo de pagamento valido por si so.
         return digits
     if len(digits) == 47:
         # Estrutura linha digitavel: banco(3)+moeda(1)+cl1(5)+dv1+cl2(10)+dv2+cl3(10)+dv3+dg(1)+venc(4)+valor(10)
@@ -297,13 +359,19 @@ def extract_linha_digitavel(text):
 
 
 # Prompt mínimo usado apenas para recuperar o barcode via Vision.
+# Aceita qualquer código de pagamento (linha digitável, código de barras ou
+# chave de acesso) — útil quando o texto vem ilegível ou impresso na vertical.
 _BARCODE_ONLY_PROMPT = (
-    "Este é um boleto bancário brasileiro. "
-    "Encontre a linha digitável — sequência de 47 dígitos no formato "
-    "XXXXX.XXXXX XXXXX.XXXXXX XXXXX.XXXXXX X XXXXXXXXXXXXXX, "
-    "normalmente impressa ao lado do logotipo do banco. "
+    "Este documento brasileiro contém um código de pagamento. "
+    "Encontre UM destes (nesta ordem de preferência): "
+    "(1) linha digitável bancária — 47 dígitos no formato "
+    "XXXXX.XXXXX XXXXX.XXXXXX XXXXX.XXXXXX X XXXXXXXXXXXXXX; "
+    "(2) linha digitável de arrecadação (água/luz/tributo) — 48 dígitos em 4 blocos; "
+    "(3) código de barras — 44 dígitos; "
+    "(4) chave de acesso de NF-e/CT-e — 44 dígitos. "
+    "Pode estar impresso na horizontal OU na vertical, ao lado do código de barras. "
     "Retorne SOMENTE os dígitos, sem pontos, espaços ou outros caracteres. "
-    "Se não encontrar, retorne null."
+    "Se não encontrar nenhum, retorne null."
 )
 
 
@@ -334,13 +402,15 @@ def _try_barcode_vision(pdf_path: Path) -> str | None:
         raw_resp = resp.content[0].text.strip().lower()
         if raw_resp in ("null", "", "none"):
             return None
-        # Extrai a primeira sequência isolada de 47 dígitos (linha digitável)
-        # ou 44 dígitos (código de barras). Evita concatenar múltiplas
-        # ocorrências caso o modelo responda de forma verbosa.
-        m = re.search(r"(?<!\d)(\d{47})(?!\d)", raw_resp)
-        if not m:
-            m = re.search(r"(?<!\d)(\d{44})(?!\d)", raw_resp)
-        return m.group(1) if m else None
+        # Extrai a primeira sequência isolada de 47 (linha digitável bancária),
+        # 48 (arrecadação) ou 44 dígitos (código de barras / chave de acesso).
+        # Evita concatenar múltiplas ocorrências caso o modelo seja verboso.
+        digits = re.sub(r"[ .\-]", "", raw_resp)
+        for n in (47, 48, 44):
+            m = re.search(rf"(?<!\d)(\d{{{n}}})(?!\d)", digits)
+            if m:
+                return m.group(1)
+        return None
     except Exception as e:
         log.warning(f"  Vision barcode fallback: {e}")
         return None
@@ -372,7 +442,7 @@ def extract_payment_method(text, doc_type):
     t = text.lower()
     if "pix" in t: return "pix"
     if "ted" in t or "transferência" in t: return "ted"
-    if "cartão" in t or "cartao" in t: return "cartao"
+    if "cartão" in t or "cartao" in t: return "cartão"
     return "outro"
 
 # --- Verificar se PDF é scan ---
@@ -553,10 +623,21 @@ def fallback_invoice_number(doc_type: str, due_date) -> str:
     return f"{doc_type}_{_due_date_ddmmyy(due_date)}"
 
 
+# Tipos de documento ja identificados (estrutura fiscal propria) que NUNCA
+# devem virar 'pix' so porque o pagamento e por pix. Um CT-e/NF-e/boleto pago
+# via pix continua sendo CT-e/NF-e/boleto — o override so vale para 'outro'.
 def apply_pix_override(rec: dict) -> dict:
-    """Sobrescreve document_type para 'PIX' quando payment_method for 'pix'."""
-    if (rec.get("payment_method") or "").lower() == "pix":
-        rec["document_type"] = "PIX"
+    """Sobrescreve document_type para 'pix' apenas quando o tipo for indefinido.
+
+    O override existe para pedidos de pagamento avulsos sem tipo claro. Aplicar
+    sobre um documento ja classificado (boleto, CT-e, NF-e, tributo...) apagava
+    o tipo real — ex.: um DACTE de transportadora virava 'pix' so porque o texto
+    mencionava pix. So sobrescreve quando document_type e 'outro'/vazio.
+    """
+    if (rec.get("payment_method") or "").lower() != "pix":
+        return rec
+    if (rec.get("document_type") or "outro").lower() == "outro":
+        rec["document_type"] = "pix"
     return rec
 
 
@@ -569,6 +650,18 @@ def has_document_number(value) -> bool:
     """
     s = (value or "").strip()
     return bool(s) and any(c.isdigit() for c in s)
+
+
+def ensure_due_date(rec: dict, notes: list) -> None:
+    """Regra de negocio: vencimento ausente -> usa a data da extracao (hoje).
+
+    Alguns documentos (ex.: CT-e/DACTE) chegam sem 'Vencimento'. Sem isso a conta
+    fica sem data de pagamento. Preenche in-place com a data local do dia e
+    registra a nota de auditoria.
+    """
+    if not rec.get("due_date"):
+        rec["due_date"] = datetime.now().strftime("%Y-%m-%d")
+        notes.append("Vencimento ausente — usando data da extração")
 
 
 # --- Montar registro a partir de JSON (Claude texto ou visao) ---
@@ -593,7 +686,7 @@ def build_record_from_json(pdf_path, data: dict, source: str) -> dict:
         "payment_method": data.get("payment_method") or "outro",
         "barcode": barcode or None,
         "description": data.get("description"),
-        "status": "pending",
+        "status": "pendente",
         "nosso_numero": data.get("nosso_numero"),
         "payer_name": data.get("payer_name"),
         "payer_cnpj": re.sub(r"\D", "", str(data.get("payer_cnpj") or "")) or None,
@@ -606,6 +699,7 @@ def build_record_from_json(pdf_path, data: dict, source: str) -> dict:
     if cnpj and len(cnpj) != 14:
         notes.append("CNPJ do beneficiario invalido")
     apply_pix_override(rec)
+    ensure_due_date(rec, notes)
     if not has_document_number(rec["invoice_number"]):
         rec["invoice_number"] = fallback_invoice_number(rec["document_type"], rec["due_date"])
         notes.append("N documento ausente — gerado de tipo+vencimento")
@@ -629,7 +723,7 @@ def build_record_regex(pdf_path, raw: str, source: str) -> dict:
         "amount": extract_amount(raw), "currency": "BRL",
         "payment_method": extract_payment_method(raw, dt),
         "barcode": extract_barcode(raw), "description": None,
-        "status": "pending", "nosso_numero": None,
+        "status": "pendente", "nosso_numero": None,
         "supplier_cpf": None,
         "payer_name": None, "payer_cnpj": None,
         "processing_notes": None, "extracted_at": now,
@@ -640,6 +734,7 @@ def build_record_regex(pdf_path, raw: str, source: str) -> dict:
     if len(raw) < 80:
         notes.append("Texto insuficiente — considerar Vision")
     apply_pix_override(rec)
+    ensure_due_date(rec, notes)
     if not has_document_number(rec["invoice_number"]):
         rec["invoice_number"] = fallback_invoice_number(rec["document_type"], rec["due_date"])
         notes.append("N documento ausente — gerado de tipo+vencimento")
@@ -658,23 +753,29 @@ def build_record(pdf_path, raw, source):
             return rec
         return build_record_from_json(pdf_path, data, source)
 
-    # pdf_text: tenta Claude e cai para regex se falhar (sem chave, erro de API...)
+    # pdf_text: tenta Claude e cai para regex APENAS em falhas de documento.
+    # Erro de API (credito/auth/rate-limit) propaga como ApiUnavailableError —
+    # o fallback regex gravaria fornecedor vazio e valor errado como sucesso.
     try:
         data = extract_fields_with_claude(raw)
         rec = build_record_from_json(pdf_path, data, source)
     except Exception as e:
+        if _is_api_unavailable(e):
+            raise ApiUnavailableError(str(e)) from e
         log.warning(f"  Extração via Claude (texto) falhou ({e}) — fallback regex")
         rec = build_record_regex(pdf_path, raw, source)
 
     # Barcode: regex deterministica tem prioridade sobre o LLM.
     # Se nao encontrar no texto (ex: fonte OCR-B ilegivel), tenta Vision.
+    # Se nenhum metodo deterministico funcionar, preserva o que Claude extraiu.
     ld = extract_linha_digitavel(raw)
     if ld is None:
         log.info("  → linha digitável não encontrada no texto — tentando Vision barcode")
         ld = _try_barcode_vision(pdf_path)
         if ld:
             log.info(f"  → barcode recuperado via Vision ({len(ld)} dígitos)")
-    rec["barcode"] = ld
+    if ld is not None:
+        rec["barcode"] = normalize_barcode(ld)
     return rec
 
 # --- Processar um PDF ---
@@ -695,9 +796,13 @@ def process_pdf(pdf_path, force_vision=False):
                     log.warning("  → pdftoppm não encontrado — prosseguindo com texto pdfplumber")
         return build_record(pdf_path, raw, src)
     except Exception as e:
+        # Erro de API (credito/auth/rate-limit) — falha dura, sem regex.
+        if _is_api_unavailable(e):
+            log.error(f"  ✗ API Anthropic indisponível ({pdf_path.name}): {e}")
+            return _api_error_record(pdf_path, str(e))
         log.error(f"  ✗ {pdf_path.name}: {e}")
         return {"source_file": pdf_path.name, "document_type": "ERRO",
-                "extraction_source": "error", "status": "error",
+                "extraction_source": "falha", "status": "falha",
                 "processing_notes": str(e), "extracted_at": datetime.utcnow().isoformat(),
                 **{c: None for c in CSV_COLUMNS if c not in
                    ["source_file","document_type","extraction_source",
@@ -725,7 +830,13 @@ def main():
 
     for pdf in pdfs:
         rec = process_pdf(pdf, force_vision=args.force_vision)
-        (errors if rec.get("extraction_source") == "error" else records).append(rec)
+        (errors if rec.get("extraction_source") == "falha" else records).append(rec)
+        # Circuit breaker: API indisponivel interrompe o lote com seguranca —
+        # evita gastar chamadas e gravar registros incompletos para os demais PDFs.
+        if rec.get("extraction_source") == "erro_api":
+            log.error("API Anthropic indisponível — lote interrompido com segurança. "
+                      "Recarregue os créditos e rode novamente.")
+            break
 
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
     if records:

@@ -9,7 +9,7 @@ key  = os.getenv("SUPABASE_SERVICE_KEY", "")
 headers = {"apikey": key, "Authorization": f"Bearer {key}"}
 
 req = urllib.request.Request(
-    f"{base}/rest/v1/financial_emails"
+    f"{base}/rest/v1/financial_account_control"
     "?select=id,gmail_message_id,supplier_name,document_type,amount,due_date,status,extracted_at"
     "&order=extracted_at.desc",
     headers=headers,
@@ -17,7 +17,7 @@ req = urllib.request.Request(
 with urllib.request.urlopen(req, timeout=10) as r:
     data = json.loads(r.read())
 
-print(f"Registros em financial_emails: {len(data)}")
+print(f"Registros em financial_account_control: {len(data)}")
 for row in data:
     print(
         f"  id={row['id']} type={row['document_type']} "

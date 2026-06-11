@@ -11,7 +11,7 @@
 |---|---|---|---|---|
 | `source_file` | string | 255 | — | Nome do .pdf original |
 | `document_type` | enum | — | boleto/nfe/nfse/fatura/recibo/contrato/outro | Auto-classificado |
-| `extraction_source` | enum | — | pdf_text/pdf_vision/error | Path utilizado |
+| `extraction_source` | enum | — | pdf_text/pdf_vision/falha | Path utilizado |
 | `supplier_name` | string | 120 | — | Razão social |
 | `supplier_cnpj` | string | 14 | somente dígitos | Sem formatação |
 | `invoice_number` | string | 30 | — | Null dispara revisão |
@@ -20,10 +20,10 @@
 | `issue_date` | date | — | YYYY-MM-DD | Emissão |
 | `amount` | decimal | — | ponto decimal | Ex: 1234.56 |
 | `currency` | string | 3 | BRL | Sempre BRL |
-| `payment_method` | enum | — | boleto/pix/ted/cartao/outro | — |
+| `payment_method` | enum | — | boleto/pix/ted/cartão/…/outro (migration 018) | — |
 | `barcode` | string | 48 | somente dígitos | Linha digitável |
 | `description` | string | 500 | — | Descrição serviço/produto |
-| `status` | enum | — | pending/paid/cancelled/error | Default: pending |
+| `status` | enum | — | pendente/vencido/a vencer/…/pago/cancelado/falha (migration 018) | Default: pendente |
 | `processing_notes` | string | 500 | — | Alertas de extração |
 | `extracted_at` | datetime | — | ISO 8601 UTC | Timestamp extração |
 

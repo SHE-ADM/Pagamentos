@@ -1,11 +1,11 @@
 """
-retry_extraction.py — Re-executa extração para e-mails com status 'downloaded'.
+retry_extraction.py — Re-executa extração para e-mails com status 'baixado'.
 
 Útil quando extract_pdf.py falhou durante a leitura automática mas os PDFs
 já estão em data/pdfs_inbox/ e os registros estão em email_control.
 
 Uso:
-    py -3 scripts/retry_extraction.py            # todos com status downloaded
+    py -3 scripts/retry_extraction.py            # todos com status baixado
     py -3 scripts/retry_extraction.py --dry-run  # lista sem extrair
 """
 
@@ -140,11 +140,11 @@ def main():
             _patch_email_control(ctrl, rec_id,
                                   pdf_extracted=True,
                                   extraction_csv=extraction_csv,
-                                  status="extracted")
-            log.info(f"  ✓ {accounts_saved} conta(s) gravada(s) — status → extracted")
+                                  status="extraído")
+            log.info(f"  ✓ {accounts_saved} conta(s) gravada(s) — status → extraído")
             ok += 1
         else:
-            log.warning("  ✗ Extração falhou — status mantido como 'downloaded'")
+            log.warning("  ✗ Extração falhou — status mantido como 'baixado'")
             failed += 1
 
     log.info(f"\n{'='*50}")

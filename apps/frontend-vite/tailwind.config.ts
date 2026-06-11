@@ -9,6 +9,25 @@ export default {
           DEFAULT: '#1D9E75',
           dark: '#0F6E56',
           light: '#E1F5EE',
+          glow: 'rgba(29,158,117,0.15)',
+        },
+        sidebar: {
+          DEFAULT: '#0f1623', // fundo do painel de navegação
+          hover: '#1a2333', // hover de itens
+          active: '#ffffff14', // bg de item ativo (~8% branco)
+          border: '#ffffff08', // bordas internas (~3% branco)
+        },
+        surface: {
+          DEFAULT: '#ffffff', // cards
+          page: '#f8fafc', // fundo da página
+        },
+        danger: '#ef4444',
+        warning: '#f59e0b',
+        info: '#3b82f6',
+        ink: {
+          primary: '#0f172a', // texto principal
+          secondary: '#64748b', // texto secundário
+          muted: '#94a3b8', // texto auxiliar
         },
         auth: {
           navy: '#5B5FA8',
@@ -47,6 +66,15 @@ export default {
         sans: ['Inter', 'system-ui', 'sans-serif'],
         mono: ['JetBrains Mono', 'monospace'],
         jakarta: ["'Plus Jakarta Sans'", 'system-ui', 'sans-serif'],
+      },
+      keyframes: {
+        fadeInUp: {
+          from: { opacity: '0', transform: 'translateY(6px)' },
+          to: { opacity: '1', transform: 'translateY(0)' },
+        },
+      },
+      animation: {
+        'fade-in-up': 'fadeInUp 0.2s ease-out both',
       },
     },
   },

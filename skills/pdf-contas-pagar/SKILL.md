@@ -25,7 +25,7 @@ compatibility:
 ## Visão Geral
 
 Esta skill processa PDFs financeiros de **quatro categorias** e gera um CSV padronizado
-para ingestão no Supabase (tabela `financial_emails`) ou importação manual.
+para ingestão no Supabase (tabela `financial_account_control`) ou importação manual.
 
 ```
 PDF (qualquer tipo)
@@ -73,10 +73,10 @@ pdf-contas-pagar/
 | `issue_date` | date | — | Emissão (YYYY-MM-DD) |
 | `amount` | decimal | ✓ | Valor total (ponto como separador) |
 | `currency` | string | ✓ | `BRL` (padrão) |
-| `payment_method` | string | ✓ | `boleto` / `pix` / `ted` / `cartao` / `outro` |
+| `payment_method` | string | ✓ | `boleto` / `pix` / `ted` / `cartão` / `outro` (ver domínio completo na migration 018) |
 | `barcode` | string | — | Linha digitável / código de barras |
 | `description` | string | — | Descrição do serviço/produto |
-| `status` | string | ✓ | `pending` (default na extração) |
+| `status` | string | ✓ | `pendente` (default na extração) |
 | `processing_notes` | string | — | Alertas de extração incompleta |
 | `extracted_at` | datetime | ✓ | Timestamp ISO 8601 da extração |
 
@@ -151,7 +151,7 @@ Ver detalhes completos em `references/error_handling.md`
 ## Integração com pagamentos
 
 - **n8n**: chamar via node `Execute Command`
-- **Supabase**: CSV compatível com tabela `financial_emails`
+- **Supabase**: CSV compatível com tabela `financial_account_control`
 - **Deduplicação**: por `source_file` ou `gmail_message_id`
 
 Ver `references/integration_guide.md`

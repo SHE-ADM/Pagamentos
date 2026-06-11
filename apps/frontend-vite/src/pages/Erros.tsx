@@ -4,11 +4,14 @@ import { RefreshCw, AlertCircle, AlertTriangle, XCircle, Info } from 'lucide-rea
 import type { ProcessingError } from '@sheild/shared';
 import { getProcessingErrors, getProcessingErrorStats, type ProcessingErrorStats } from '../services/supabase';
 import { getErrorMessage } from '../lib/getErrorMessage';
+import { cn } from '../lib/cn';
 import StatusBadge from '../components/StatusBadge';
 
 const fmtDt = (d: string | null): string => (d ? new Date(d).toLocaleString('pt-BR') : '—');
 
+// erro_api primeiro — falha de API (crédito/auth/limite) é o erro mais crítico.
 const ERROR_TYPES = [
+  'erro_api',
   'sem_valor',
   'sem_fornecedor',
   'extracao_falhou',
@@ -16,6 +19,16 @@ const ERROR_TYPES = [
   'processamento_erro',
   'pdf_protegido',
 ];
+
+// Linha inteira destacada em vermelho quando o erro for de API — diferencia
+// visualmente de uma falha de extração comum.
+function rowClass(r: ProcessingError, selectedId: number | undefined): string {
+  const selected = selectedId === r.id;
+  if (r.error_type === 'erro_api') {
+    return cn('cursor-pointer bg-red-50 hover:bg-red-100', selected && 'ring-1 ring-inset ring-red-300');
+  }
+  return cn('cursor-pointer hover:bg-gray-50', selected && 'bg-brand-light/40');
+}
 
 const PAGE_SIZE = 25;
 
@@ -34,11 +47,11 @@ export default function Erros() {
   const [sel, setSel] = useState<ProcessingError | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [f, setF_] = useState<ErrosFilters>({ ...EMPTY_FILTERS });
+  const [f, setF] = useState<ErrosFilters>({ ...EMPTY_FILTERS });
   const [applied, setApplied] = useState<ErrosFilters>({ ...EMPTY_FILTERS });
   const [page, setPage] = useState(1);
   const [total, setTotal] = useState(0);
-  const sf = <K extends keyof ErrosFilters>(k: K, v: ErrosFilters[K]) => setF_((x) => ({ ...x, [k]: v }));
+  const sf = <K extends keyof ErrosFilters>(k: K, v: ErrosFilters[K]) => setF((x) => ({ ...x, [k]: v }));
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -59,7 +72,7 @@ export default function Erros() {
   }, [applied, page]);
 
   useEffect(() => {
-    load();
+    void load();
   }, [load]);
 
   const handleSearch = () => {
@@ -94,9 +107,10 @@ export default function Erros() {
           </div>
         )}
 
-        <div className="grid grid-cols-5 gap-3 mb-5">
+        <div className="grid grid-cols-6 gap-3 mb-5">
           {[
             { label: 'Total de erros', value: stats.total, icon: XCircle, cls: 'text-red-500' },
+            { label: 'Erro de API', value: stats.counts.erro_api ?? 0, icon: XCircle, cls: 'text-red-600' },
             { label: 'Sem valor', value: stats.counts.sem_valor ?? 0, icon: AlertTriangle, cls: 'text-amber-500' },
             {
               label: 'Sem fornecedor',
@@ -184,7 +198,7 @@ export default function Erros() {
                 rows.map((r) => (
                   <tr
                     key={r.id}
-                    className={`cursor-pointer hover:bg-gray-50 ${sel?.id === r.id ? 'bg-brand-light/40' : ''}`}
+                    className={rowClass(r, sel?.id)}
                     onClick={() => setSel(sel?.id === r.id ? null : r)}
                   >
                     <td className="table-cell text-xs whitespace-nowrap font-mono">{fmtDt(r.logged_at)}</td>
