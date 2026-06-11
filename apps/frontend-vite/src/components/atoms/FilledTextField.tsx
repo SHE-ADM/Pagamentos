@@ -1,4 +1,6 @@
 import { useState, type InputHTMLAttributes, type ReactNode } from 'react';
+import { cva } from 'class-variance-authority';
+import { cn } from '../../lib/cn';
 
 interface FilledTextFieldProps extends InputHTMLAttributes<HTMLInputElement> {
   label: string;
@@ -6,22 +8,26 @@ interface FilledTextFieldProps extends InputHTMLAttributes<HTMLInputElement> {
   endAdornment?: ReactNode;
 }
 
+// Wrapper do campo — variante booleana `focused` alterna fundo/borda.
+const fieldWrapper = cva('flex items-center h-12 px-3.5 gap-2.5 rounded-lg border-2 transition-colors', {
+  variants: {
+    focused: {
+      true: 'bg-loginGreen-fieldFocus border-loginGreen-borderFocus',
+      false: 'bg-loginGreen-field border-loginGreen-borderField',
+    },
+  },
+  defaultVariants: { focused: false },
+});
+
 // Atom — campo de formulario com label, fundo preenchido e estado de foco.
 // Aceita `endAdornment` (ex.: botão olho) renderizado à direita do input.
-export default function FilledTextField({ label, error, endAdornment, ...inputProps }: FilledTextFieldProps) {
+export default function FilledTextField({ label, error, endAdornment, ...inputProps }: Readonly<FilledTextFieldProps>) {
   const [focused, setFocused] = useState(false);
 
   return (
     <div className="flex flex-col gap-2">
       <label className="text-sm font-bold text-loginGreen-ink">{label}</label>
-      <div
-        className={`flex items-center h-12 px-3.5 gap-2.5 rounded-lg border-2 transition-colors
-        ${
-          focused
-            ? 'bg-loginGreen-fieldFocus border-loginGreen-borderFocus'
-            : 'bg-loginGreen-field border-loginGreen-borderField'
-        }`}
-      >
+      <div className={cn(fieldWrapper({ focused }))}>
         <input
           {...inputProps}
           onFocus={(e) => {
