@@ -1,4 +1,4 @@
-import type { InputHTMLAttributes } from 'react';
+import { forwardRef, type InputHTMLAttributes } from 'react';
 import { cva } from 'class-variance-authority';
 import { cn } from '../../lib/cn';
 
@@ -20,12 +20,17 @@ const authInput = cva('input', {
 
 // Atom — campo de formulario das telas de autenticacao: label + input
 // controlado + mensagem de erro inline.
-export default function AuthInput({ label, error, className, ...inputProps }: Readonly<AuthInputProps>) {
-  return (
+// forwardRef necessário para integração com react-hook-form Controller.
+const AuthInput = forwardRef<HTMLInputElement, AuthInputProps>(
+  ({ label, error, className, ...inputProps }, ref) => (
     <label className="block">
       <span className="block text-sm font-medium text-gray-700 mb-1">{label}</span>
-      <input className={cn(authInput({ invalid: !!error }), className)} {...inputProps} />
+      <input ref={ref} className={cn(authInput({ invalid: !!error }), className)} {...inputProps} />
       {error && <span className="block mt-1 text-xs text-red-600">{error}</span>}
     </label>
-  );
-}
+  ),
+);
+
+AuthInput.displayName = 'AuthInput';
+
+export default AuthInput;

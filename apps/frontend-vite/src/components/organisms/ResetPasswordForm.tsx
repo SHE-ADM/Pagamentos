@@ -4,48 +4,34 @@
 // onAuthStateChange (evento PASSWORD_RECOVERY) e abre uma sessao temporaria;
 // em seguida supabase.auth.updateUser troca a senha.
 
-import { useState, type FormEvent } from 'react';
+import { useState } from 'react';
+import { useForm, Controller } from 'react-hook-form';
+import { zodResolver } from '@hookform/resolvers/zod';
 import { useNavigate } from 'react-router-dom';
+import { resetPasswordSchema, type ResetPasswordInput } from '@sheild/shared';
 import { supabase } from '../../lib/supabaseClient';
 import AuthInput from '../atoms/AuthInput';
 import GradientPillButton from '../atoms/GradientPillButton';
 import InlineMessage from '../molecules/InlineMessage';
 
-const MIN_PASSWORD_LENGTH = 8;
-
 export default function ResetPasswordForm() {
   const navigate = useNavigate();
-  const [password, setPassword] = useState('');
-  const [confirmPassword, setConfirmPassword] = useState('');
-  const [error, setError] = useState<string | null>(null);
+  const [serverError, setServerError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
 
-  const validate = (): string | null => {
-    if (password.length < MIN_PASSWORD_LENGTH) {
-      return `A senha deve ter no mínimo ${MIN_PASSWORD_LENGTH} caracteres.`;
-    }
-    if (password !== confirmPassword) {
-      return 'As senhas não conferem.';
-    }
-    return null;
-  };
+  const { control, handleSubmit } = useForm<ResetPasswordInput>({
+    resolver: zodResolver(resetPasswordSchema),
+    defaultValues: { password: '', confirmPassword: '' },
+  });
 
-  const handleSubmit = async (e: FormEvent<HTMLFormElement>) => {
-    e.preventDefault();
-    setError(null);
-
-    const validationError = validate();
-    if (validationError) {
-      setError(validationError);
-      return;
-    }
-
+  const onSubmit = async (data: ResetPasswordInput) => {
+    setServerError(null);
     setLoading(true);
-    const { error } = await supabase.auth.updateUser({ password });
+    const { error } = await supabase.auth.updateUser({ password: data.password });
     setLoading(false);
 
     if (error) {
-      setError('Não foi possível redefinir a senha. Solicite um novo link e tente novamente.');
+      setServerError('Não foi possível redefinir a senha. Solicite um novo link e tente novamente.');
       return;
     }
 
@@ -54,30 +40,40 @@ export default function ResetPasswordForm() {
   };
 
   return (
-    <form onSubmit={handleSubmit} className="space-y-4">
+    <form onSubmit={handleSubmit(onSubmit)} className="space-y-4">
       <p className="text-xs text-gray-500">Defina sua nova senha de acesso.</p>
 
-      <AuthInput
-        label="Nova senha"
-        type="password"
-        autoComplete="new-password"
-        placeholder="••••••••"
-        value={password}
-        onChange={(e) => setPassword(e.target.value)}
-        required
+      <Controller
+        name="password"
+        control={control}
+        render={({ field, fieldState }) => (
+          <AuthInput
+            {...field}
+            label="Nova senha"
+            type="password"
+            autoComplete="new-password"
+            placeholder="••••••••"
+            error={fieldState.error?.message}
+          />
+        )}
       />
 
-      <AuthInput
-        label="Confirmar nova senha"
-        type="password"
-        autoComplete="new-password"
-        placeholder="••••••••"
-        value={confirmPassword}
-        onChange={(e) => setConfirmPassword(e.target.value)}
-        required
+      <Controller
+        name="confirmPassword"
+        control={control}
+        render={({ field, fieldState }) => (
+          <AuthInput
+            {...field}
+            label="Confirmar nova senha"
+            type="password"
+            autoComplete="new-password"
+            placeholder="••••••••"
+            error={fieldState.error?.message}
+          />
+        )}
       />
 
-      <InlineMessage type="error">{error}</InlineMessage>
+      <InlineMessage type="error">{serverError}</InlineMessage>
 
       <GradientPillButton type="submit" loading={loading} loadingLabel="Redefinindo…">
         Redefinir senha
