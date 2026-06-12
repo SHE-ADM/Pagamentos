@@ -1,6 +1,7 @@
 // Lógica de variante/resolução do StatusBadge — separada do componente para
 // não disparar o aviso react-refresh/only-export-components (Fast Refresh).
 import { cva, type VariantProps } from 'class-variance-authority';
+import { DOCUMENT_TYPES as SCHEMA_DOCUMENT_TYPES } from '@sheild/shared';
 
 const BASE =
   'inline-flex items-center gap-1 rounded-md px-2 py-0.5 text-[11px] font-medium tracking-wide';
@@ -24,7 +25,7 @@ export const badgeVariants = cva(BASE, {
 });
 
 /** Variante visual do badge — reutilizável por outros componentes. */
-export type BadgeVariant = NonNullable<VariantProps<typeof badgeVariants>['variant']>;
+type BadgeVariant = NonNullable<VariantProps<typeof badgeVariants>['variant']>;
 
 // Valores de status/situação — recebem ponto colorido à esquerda.
 const STATUS_VARIANT: Record<string, BadgeVariant> = {
@@ -58,14 +59,9 @@ const STATUS_VARIANT: Record<string, BadgeVariant> = {
   erro_api: 'redSolid',
 };
 
-// Tipos de documento (document_type / payment_method) — slate + ícone de documento.
-// Comparados em lowercase para cobrir subtipos de tributo em caixa alta (DARF, GPS...).
-const DOCUMENT_TYPES = new Set([
-  'boleto', 'pix', 'nfe', 'nfse', 'cte', 'fatura', 'recibo', 'contrato',
-  'tributo', 'seguro', 'duplicata', 'outro',
-  'darf', 'gps', 'das', 'gru', 'dae', 'gnre', 'ipva', 'iptu', 'iss', 'itbi',
-  'gare', 'dam', 'duam',
-]);
+// Tipos de documento — derivados do schema @sheild/shared (fonte única de verdade).
+// Comparados em lowercase para cobrir subtipos em caixa alta (DARF, GPS…).
+const DOCUMENT_TYPES = new Set<string>(SCHEMA_DOCUMENT_TYPES);
 
 // Origem da extração (extraction_source) — teal + ícone de origem.
 const SOURCE_TYPES = new Set(['email_body', 'pdf_text', 'pdf_vision']);
@@ -73,7 +69,7 @@ const SOURCE_TYPES = new Set(['email_body', 'pdf_text', 'pdf_vision']);
 /** Tipo de prefixo do badge — controla o ornamento (ponto vs. ícone). */
 export type BadgeKind = 'status' | 'document' | 'source';
 
-export interface ResolvedBadge {
+interface ResolvedBadge {
   variant: BadgeVariant;
   kind: BadgeKind;
 }

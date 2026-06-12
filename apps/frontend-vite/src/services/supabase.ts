@@ -38,7 +38,7 @@ async function query<T>(table: string, params: QueryParams = {}): Promise<T> {
 
 // ── email_control ──────────────────────────────────────────────────────────
 
-export interface EmailControlFilters {
+interface EmailControlFilters {
   status?: string;
   sender?: string;
   days?: number;
@@ -156,7 +156,7 @@ export async function getEmailStats(): Promise<EmailStats> {
 
 // ── financial_account_control ───────────────────────────────────────────────
 
-export interface FinancialAccountControlFilters {
+interface FinancialAccountControlFilters {
   supplier?: string;
   docType?: string;
   status?: string;
@@ -170,7 +170,7 @@ export interface FinancialAccountControlFilters {
   sortDir?: 'asc' | 'desc';
 }
 
-export interface Paginated<T> {
+interface Paginated<T> {
   data: T[];
   total: number;
 }
@@ -224,7 +224,7 @@ export async function getFinancialAccountControl({
 
 // ── email_processing_errors ───────────────────────────────────────────────
 
-export interface ProcessingErrorFilters {
+interface ProcessingErrorFilters {
   errorType?: string;
   sender?: string;
   dateFrom?: string;

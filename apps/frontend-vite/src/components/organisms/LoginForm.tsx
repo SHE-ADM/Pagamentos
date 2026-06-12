@@ -1,6 +1,9 @@
-import { useState, type FormEvent } from 'react';
+import { useState } from 'react';
+import { useForm, Controller } from 'react-hook-form';
+import { zodResolver } from '@hookform/resolvers/zod';
 import { Link, useNavigate } from 'react-router-dom';
 import { Eye, EyeOff } from 'lucide-react';
+import { loginSchema, type LoginInput } from '@sheild/shared';
 import { supabase } from '../../lib/supabaseClient';
 import FilledTextField from '../atoms/FilledTextField';
 import AccentPillButton from '../atoms/AccentPillButton';
@@ -8,28 +11,33 @@ import SocialLinksBar from '../molecules/SocialLinksBar';
 
 export default function LoginForm() {
   const navigate = useNavigate();
-  const [email, setEmail] = useState('');
-  const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
   const [remember, setRemember] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  const [serverError, setServerError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
 
-  const handleSubmit = async (e: FormEvent<HTMLFormElement>) => {
-    e.preventDefault();
-    setError(null);
+  const { control, handleSubmit } = useForm<LoginInput>({
+    resolver: zodResolver(loginSchema),
+    defaultValues: { email: '', password: '' },
+  });
+
+  const onSubmit = async (data: LoginInput) => {
+    setServerError(null);
     setLoading(true);
-    const { error } = await supabase.auth.signInWithPassword({ email, password });
+    const { error } = await supabase.auth.signInWithPassword({
+      email: data.email,
+      password: data.password,
+    });
     setLoading(false);
     if (error) {
-      setError('E-mail ou senha incorretos.');
+      setServerError('E-mail ou senha incorretos.');
       return;
     }
     navigate('/emails');
   };
 
   return (
-    <form onSubmit={handleSubmit} className="flex flex-col gap-5 w-full">
+    <form onSubmit={handleSubmit(onSubmit)} className="flex flex-col gap-5 w-full">
       {/* Cabeçalho */}
       <div className="flex flex-col gap-1.5">
         <h1 className="text-4xl font-extrabold text-loginGreen-ink tracking-tight leading-none">Login</h1>
@@ -37,35 +45,45 @@ export default function LoginForm() {
       </div>
 
       {/* Campo e-mail */}
-      <FilledTextField
-        label="Email ou usuário"
-        type="email"
-        autoComplete="email"
-        placeholder="usuario123"
-        value={email}
-        onChange={(e) => setEmail(e.target.value)}
-        required
+      <Controller
+        name="email"
+        control={control}
+        render={({ field, fieldState }) => (
+          <FilledTextField
+            {...field}
+            label="Email ou usuário"
+            type="email"
+            autoComplete="email"
+            placeholder="usuario123"
+            error={fieldState.error?.message}
+          />
+        )}
       />
 
       {/* Campo senha com toggle */}
-      <FilledTextField
-        label="Senha"
-        type={showPassword ? 'text' : 'password'}
-        autoComplete="current-password"
-        placeholder="••••••"
-        value={password}
-        onChange={(e) => setPassword(e.target.value)}
-        required
-        endAdornment={
-          <button
-            type="button"
-            onClick={() => setShowPassword((prev) => !prev)}
-            aria-label={showPassword ? 'Ocultar senha' : 'Mostrar senha'}
-            className="text-loginGreen-inkFaint hover:text-loginGreen-borderFocus flex items-center flex-shrink-0 transition-colors"
-          >
-            {showPassword ? <EyeOff size={20} /> : <Eye size={20} />}
-          </button>
-        }
+      <Controller
+        name="password"
+        control={control}
+        render={({ field, fieldState }) => (
+          <FilledTextField
+            {...field}
+            label="Senha"
+            type={showPassword ? 'text' : 'password'}
+            autoComplete="current-password"
+            placeholder="••••••"
+            error={fieldState.error?.message}
+            endAdornment={
+              <button
+                type="button"
+                onClick={() => setShowPassword((prev) => !prev)}
+                aria-label={showPassword ? 'Ocultar senha' : 'Mostrar senha'}
+                className="text-loginGreen-inkFaint hover:text-loginGreen-borderFocus flex items-center flex-shrink-0 transition-colors"
+              >
+                {showPassword ? <EyeOff size={20} /> : <Eye size={20} />}
+              </button>
+            }
+          />
+        )}
       />
 
       {/* Lembrar-me + Esqueci a senha */}
@@ -87,8 +105,10 @@ export default function LoginForm() {
         </Link>
       </div>
 
-      {/* Mensagem de erro */}
-      {error && <p className="bg-red-50 text-red-700 rounded-lg px-3.5 py-2.5 text-sm">{error}</p>}
+      {/* Erro do servidor (credenciais inválidas) */}
+      {serverError && (
+        <p className="bg-red-50 text-red-700 rounded-lg px-3.5 py-2.5 text-sm">{serverError}</p>
+      )}
 
       {/* Botão Login */}
       <AccentPillButton type="submit" loading={loading} loadingLabel="Entrando…">

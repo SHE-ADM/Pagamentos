@@ -4,7 +4,7 @@ Projeto: pagamentos | Skill: pdf-contas-pagar | v1.0.0
 """
 
 import os, re, sys, json, argparse, logging, unicodedata
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pdfplumber
@@ -95,7 +95,7 @@ def _api_error_record(pdf_path, message: str) -> dict:
         "extraction_source": "erro_api",
         "status": "falha",
         "processing_notes": f"ERRO_API: {message}"[:500],
-        "extracted_at": datetime.utcnow().isoformat(),
+        "extracted_at": datetime.now(timezone.utc).isoformat(),
         **{c: None for c in CSV_COLUMNS if c not in base},
     }
 
@@ -486,14 +486,14 @@ def extract_payment_method(text, doc_type):
 
 # --- Verificar se PDF é scan ---
 def is_scanned_pdf(pdf_path):
-    import subprocess
+    """Heurística sem dependência externa: PDF com pouco/nenhum texto extraível
+    é provavelmente escaneado (imagem). Usa pdfplumber (já requerido) em vez de
+    pdffonts/poppler. Em qualquer erro, assume digital (não bloqueia o fluxo)."""
     try:
-        r = subprocess.run(["pdffonts", str(pdf_path)],
-                           capture_output=True, text=True)
-        lines = [l for l in r.stdout.splitlines() if l.strip()]
-        return len(lines) <= 2
-    except FileNotFoundError:
-        log.warning("pdffonts não encontrado — assumindo PDF digital")
+        with pdfplumber.open(str(pdf_path)) as pdf:
+            text = "".join((p.extract_text() or "") for p in pdf.pages[:2])
+        return len(text.strip()) < 80
+    except Exception:
         return False
 
 # --- Pré-processamento: corrige linhas invertidas (boletos RTL) ---
@@ -542,26 +542,25 @@ def extract_with_pdfplumber(pdf_path):
 
 # --- Extração via Claude Vision ---
 def extract_with_vision(pdf_path):
-    import base64, anthropic, tempfile, subprocess
+    """Extrai os campos lendo o PDF diretamente pelo Claude (sem pdftoppm/poppler).
+
+    Envia o PDF como documento base64; o Claude renderiza internamente — cobre
+    PDFs escaneados/imagem e fontes OCR-B ilegíveis pelo pdfplumber, sem depender
+    de binário externo (poppler) instalado no sistema. Mesmo mecanismo já usado
+    em _try_barcode_vision.
+    """
+    import base64, anthropic
     api_key = os.getenv("ANTHROPIC_API_KEY")
     if not api_key:
         raise EnvironmentError("ANTHROPIC_API_KEY não definida no .env")
 
-    with tempfile.TemporaryDirectory() as tmp:
-        out = os.path.join(tmp, "page")
-        subprocess.run(["pdftoppm","-jpeg","-r","200","-f","1","-l","1",
-                        str(pdf_path), out], check=True, capture_output=True)
-        imgs = sorted(Path(tmp).glob("*.jpg"))
-        if not imgs:
-            raise RuntimeError(f"Nenhuma imagem gerada de {pdf_path.name}")
-        img_b64 = base64.standard_b64encode(imgs[0].read_bytes()).decode()
-
+    pdf_b64 = base64.standard_b64encode(pdf_path.read_bytes()).decode()
     client = anthropic.Anthropic(api_key=api_key)
     resp = client.messages.create(
         model=CLAUDE_MODEL, max_tokens=1200, temperature=0,
         messages=[{"role":"user","content":[
-            {"type":"image","source":{"type":"base64",
-             "media_type":"image/jpeg","data":img_b64}},
+            {"type":"document","source":{"type":"base64",
+             "media_type":"application/pdf","data":pdf_b64}},
             {"type":"text","text":EXTRACTION_PROMPT}
         ]}]
     )
@@ -750,7 +749,7 @@ def build_record_from_json(pdf_path, data: dict, source: str) -> dict:
         "payer_name": data.get("payer_name"),
         "payer_cnpj": re.sub(r"\D", "", str(data.get("payer_cnpj") or "")) or None,
         "processing_notes": None,
-        "extracted_at": datetime.utcnow().isoformat(),
+        "extracted_at": datetime.now(timezone.utc).isoformat(),
     }
     for vf in VALUE_FIELDS_ZERO:
         rec[vf] = _to_decimal(data.get(vf), 0)
@@ -772,7 +771,7 @@ def build_record_from_json(pdf_path, data: dict, source: str) -> dict:
 
 # --- Montar registro por regex (fallback quando Claude indisponivel) ---
 def build_record_regex(pdf_path, raw: str, source: str) -> dict:
-    now = datetime.utcnow().isoformat()
+    now = datetime.now(timezone.utc).isoformat()
     dt  = classify_document(raw)
     notes = ["Extração por regex (fallback) — conferir valores"]
     rec = {
@@ -886,7 +885,7 @@ def process_pdf(pdf_path, force_vision=False):
         log.error(f"  ✗ {pdf_path.name}: {e}")
         return {"source_file": pdf_path.name, "document_type": "ERRO",
                 "extraction_source": "falha", "status": "falha",
-                "processing_notes": str(e), "extracted_at": datetime.utcnow().isoformat(),
+                "processing_notes": str(e), "extracted_at": datetime.now(timezone.utc).isoformat(),
                 **{c: None for c in CSV_COLUMNS if c not in
                    ["source_file","document_type","extraction_source",
                     "status","processing_notes","extracted_at"]}}

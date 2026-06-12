@@ -481,7 +481,12 @@ def get_body_html(msg) -> str:
 
 
 def safe_filename(text: str, max_len: int = 40) -> str:
-    text = re.sub(r"[^\w\s-]", "", text or "", flags=re.UNICODE)
+    # Remove acentos e caracteres nao-ASCII (ex.: º, ª, ç, ã). O nome vira a
+    # chave do objeto no Supabase Storage, que rejeita chaves com esses
+    # caracteres (erro InvalidKey) — e tambem o source_file gravado no banco,
+    # entao disco, source_file e Storage ficam consistentes.
+    text = unicodedata.normalize("NFKD", text or "").encode("ascii", "ignore").decode()
+    text = re.sub(r"[^\w\s-]", "", text)   # agora ASCII: mantem [A-Za-z0-9_], espaco, hifen
     text = re.sub(r"\s+", "_", text.strip())
     return text[:max_len]
 

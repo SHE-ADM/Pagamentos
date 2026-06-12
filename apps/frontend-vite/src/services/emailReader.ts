@@ -4,7 +4,7 @@
 const READ_ENDPOINT = '/api/emails/read';
 
 // Resumo retornado por run_reader() (skills/email-reader/scripts/read_emails.py).
-export interface ReaderSummary {
+interface ReaderSummary {
   imap_user: string;
   supabase_ok: boolean;
   found: number;
@@ -15,7 +15,7 @@ export interface ReaderSummary {
   dry_run: boolean;
 }
 
-export interface TriggerEmailReadOptions {
+interface TriggerEmailReadOptions {
   days?: number;
   all?: boolean;
   markSeen?: boolean;
