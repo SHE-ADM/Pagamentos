@@ -246,18 +246,21 @@ export default function Emails() {
             },
           ].map(({ icon: Icon, label, value, sub, cardId, filter }) => {
             const isActive = activeCard === cardId;
+            const cardRing = isActive ? 'ring-1 ring-brand/30 bg-brand/5' : '';
+            const labelCls = isActive ? 'text-brand' : 'text-gray-500';
+            const valueCls = isActive ? 'text-brand' : 'text-gray-900';
             return (
               <button
                 key={label}
                 type="button"
                 onClick={() => handleCardFilter(cardId, filter)}
-                className={`metric-card w-full text-left cursor-pointer select-none transition-all hover:shadow-md hover:scale-[1.01] ${isActive ? 'ring-1 ring-brand/30 bg-brand/5' : ''}`}
+                className={`metric-card w-full text-left cursor-pointer select-none transition-all hover:shadow-md hover:scale-[1.01] ${cardRing}`}
               >
-                <div className={`flex items-center gap-1.5 text-xs mb-1 ${isActive ? 'text-brand' : 'text-gray-500'}`}>
+                <div className={`flex items-center gap-1.5 text-xs mb-1 ${labelCls}`}>
                   <Icon size={13} />
                   {label}
                 </div>
-                <div className={`text-2xl font-semibold ${isActive ? 'text-brand' : 'text-gray-900'}`}>{value}</div>
+                <div className={`text-2xl font-semibold ${valueCls}`}>{value}</div>
                 <div className="text-xs text-gray-400">{sub}</div>
               </button>
             );

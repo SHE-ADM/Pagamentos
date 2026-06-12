@@ -7,6 +7,8 @@ import { useAuth } from '../contexts/AuthContext';
 export default function Layout({ children }: { children: ReactNode }) {
   const { user, signOut } = useAuth();
 
+  const navClass = (isActive: boolean) => isActive ? 'nav-link active' : 'nav-link';
+
   // Avatar/identidade derivados do e-mail do usuário autenticado.
   const email = user?.email ?? '';
   const initials = email.slice(0, 2).toUpperCase();
@@ -31,13 +33,13 @@ export default function Layout({ children }: { children: ReactNode }) {
           <p className="px-3 pt-1 pb-1.5 text-[9px] font-bold tracking-[0.15em] text-slate-600 uppercase">
             Ativo
           </p>
-          <NavLink to="/emails" className={({ isActive }) => `nav-link ${isActive ? 'active' : ''}`}>
+          <NavLink to="/emails" className={({ isActive }) => navClass(isActive)}>
             <Mail size={16} /> E-mails
           </NavLink>
-          <NavLink to="/consulta" className={({ isActive }) => `nav-link ${isActive ? 'active' : ''}`}>
+          <NavLink to="/consulta" className={({ isActive }) => navClass(isActive)}>
             <Search size={16} /> Consulta
           </NavLink>
-          <NavLink to="/erros" className={({ isActive }) => `nav-link ${isActive ? 'active' : ''}`}>
+          <NavLink to="/erros" className={({ isActive }) => navClass(isActive)}>
             <AlertTriangle size={16} /> Log de Erros
           </NavLink>
 

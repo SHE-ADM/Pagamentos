@@ -277,6 +277,8 @@ export default function Consulta() {
               cardBg = danger ? 'bg-red-50 ring-1 ring-red-300/40' : 'bg-brand/5 ring-1 ring-brand/30';
             }
             const interactive = onCardClick ? 'cursor-pointer hover:shadow-md hover:scale-[1.01]' : '';
+            const iconCls = danger ? 'bg-red-500/10 text-red-600' : 'bg-brand/10 text-brand';
+            const valueCls = danger ? 'text-red-600' : 'text-slate-800';
             return (
               <div
                 key={label}
@@ -286,11 +288,11 @@ export default function Consulta() {
                 onKeyDown={onCardClick ? (e: React.KeyboardEvent) => { if (e.key === 'Enter' || e.key === ' ') onCardClick(); } : undefined}
                 className={`flex-1 min-w-[160px] flex items-center gap-3 rounded-xl shadow-sm border border-slate-100 border-l-4 px-4 py-3 animate-fade-in-up transition-all ${borderLeft} ${cardBg} ${interactive}`}
               >
-                <div className={`flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-full ${danger ? 'bg-red-500/10 text-red-600' : 'bg-brand/10 text-brand'}`}>
+                <div className={`flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-full ${iconCls}`}>
                   <Icon size={18} />
                 </div>
                 <div className="min-w-0">
-                  <div className={`text-2xl font-bold leading-tight ${danger ? 'text-red-600' : 'text-slate-800'}`}>
+                  <div className={`text-2xl font-bold leading-tight ${valueCls}`}>
                     {fmt(value)}
                   </div>
                   <div className="text-xs text-slate-500 truncate">{label}</div>
