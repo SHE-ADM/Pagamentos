@@ -1,7 +1,8 @@
 // src/contexts/AuthContext.tsx
-import { createContext, useContext, useEffect, useState, type ReactNode } from 'react';
+import { createContext, useCallback, useContext, useEffect, useState, type ReactNode } from 'react';
 import type { Session, User } from '@supabase/supabase-js';
 import { supabase } from '../lib/supabaseClient';
+import { useIdleLogout } from '../hooks/useIdleLogout';
 
 interface AuthContextValue {
   user: User | null;
@@ -19,6 +20,10 @@ const AuthContext = createContext<AuthContextValue | null>(null);
 // o autoRefresh do supabase trata a expiração real).
 const isInvalidSessionStatus = (status?: number): boolean =>
   status === 401 || status === 403;
+
+// Minutos de inatividade até o logout automático (configurável via env).
+const IDLE_MINUTES = Number(import.meta.env.VITE_SESSION_IDLE_MINUTES) || 10;
+const IDLE_TIMEOUT_MS = IDLE_MINUTES * 60_000;
 
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
@@ -76,6 +81,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       listener.subscription.unsubscribe();
     };
   }, []);
+
+  // Logout automático por inatividade — ativo apenas quando autenticado.
+  const handleIdleTimeout = useCallback(() => {
+    void supabase.auth.signOut();
+  }, []);
+
+  useIdleLogout({ enabled: !!user, timeoutMs: IDLE_TIMEOUT_MS, onTimeout: handleIdleTimeout });
 
   const signOut = async () => {
     await supabase.auth.signOut();

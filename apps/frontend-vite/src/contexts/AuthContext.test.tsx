@@ -37,6 +37,7 @@ function renderProvider() {
 
 describe('AuthContext', () => {
   beforeEach(() => {
+    localStorage.clear(); // evita que o relógio de inatividade herde estado entre testes
     getSession.mockReset();
     getUser.mockReset();
     signOut.mockReset();
