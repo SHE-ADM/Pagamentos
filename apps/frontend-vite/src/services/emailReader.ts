@@ -17,6 +17,7 @@ export interface ReaderSummary {
 
 export interface TriggerEmailReadOptions {
   days?: number;
+  all?: boolean;
   markSeen?: boolean;
 }
 
@@ -35,6 +36,7 @@ interface ReadEndpointResponse {
  */
 export async function triggerEmailRead({
   days = 0,
+  all = false,
   markSeen = false,
 }: TriggerEmailReadOptions = {}): Promise<ReaderSummary> {
   let res: Response;
@@ -42,7 +44,7 @@ export async function triggerEmailRead({
     res = await fetch(READ_ENDPOINT, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ days, mark_seen: markSeen }),
+      body: JSON.stringify({ days, all, mark_seen: markSeen }),
     });
   } catch {
     // Falha de rede normalmente = backend Flask não está rodando.

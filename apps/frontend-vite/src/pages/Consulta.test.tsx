@@ -43,7 +43,7 @@ describe('Consulta', () => {
     const user = userEvent.setup();
     render(<Consulta />);
 
-    const supplier = screen.getByPlaceholderText('Fornecedor ou CNPJ…');
+    const supplier = screen.getByPlaceholderText('Fornecedor, CNPJ ou Nº doc…');
     await user.type(supplier, 'ACME');
     expect(supplier).toHaveValue('ACME');
 
