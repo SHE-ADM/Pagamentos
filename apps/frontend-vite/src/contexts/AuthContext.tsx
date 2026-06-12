@@ -12,24 +12,69 @@ interface AuthContextValue {
 
 const AuthContext = createContext<AuthContextValue | null>(null);
 
+// getSession() apenas lê o localStorage e não confirma se a sessão ainda é
+// válida no servidor (usuário removido, token revogado). getUser() faz a
+// verificação real. Distinguimos erro de autenticação (401/403 → sessão
+// inválida, desloga) de falha de rede (mantém a sessão de forma otimista —
+// o autoRefresh do supabase trata a expiração real).
+const isInvalidSessionStatus = (status?: number): boolean =>
+  status === 401 || status === 403;
+
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
   const [session, setSession] = useState<Session | null>(null);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    void supabase.auth.getSession().then(({ data }) => {
-      setSession(data.session);
-      setUser(data.session?.user ?? null);
+    let active = true;
+
+    const init = async () => {
+      const { data: sessionData } = await supabase.auth.getSession();
+      const persisted = sessionData.session;
+
+      // Sem sessão persistida → segue para o login.
+      if (!persisted) {
+        if (active) {
+          setSession(null);
+          setUser(null);
+          setLoading(false);
+        }
+        return;
+      }
+
+      // Valida a sessão persistida contra o servidor.
+      const { data: userData, error } = await supabase.auth.getUser();
+      if (!active) return;
+
+      if (userData.user) {
+        // Sessão confirmada pelo servidor.
+        setSession(persisted);
+        setUser(userData.user);
+      } else if (error && isInvalidSessionStatus(error.status)) {
+        // Sessão inválida/órfã → limpa e força o login.
+        await supabase.auth.signOut();
+        setSession(null);
+        setUser(null);
+      } else {
+        // Falha de rede/indeterminada: mantém a sessão otimisticamente.
+        setSession(persisted);
+        setUser(persisted.user);
+      }
+
       setLoading(false);
+    };
+
+    void init();
+
+    const { data: listener } = supabase.auth.onAuthStateChange((_event, nextSession) => {
+      setSession(nextSession);
+      setUser(nextSession?.user ?? null);
     });
 
-    const { data: listener } = supabase.auth.onAuthStateChange((_event, session) => {
-      setSession(session);
-      setUser(session?.user ?? null);
-    });
-
-    return () => listener.subscription.unsubscribe();
+    return () => {
+      active = false;
+      listener.subscription.unsubscribe();
+    };
   }, []);
 
   const signOut = async () => {
