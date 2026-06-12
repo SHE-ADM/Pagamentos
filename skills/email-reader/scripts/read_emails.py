@@ -6,7 +6,7 @@ Deduplicação: tabela email_control no Supabase (message_id UNIQUE).
 Nunca reprocessa um e-mail já registrado, independente de onde o script rodar.
 """
 
-import os, sys, re, imaplib, email, argparse, logging, subprocess, csv, json, tempfile, faulthandler, unicodedata
+import os, sys, re, time, imaplib, email, argparse, logging, subprocess, csv, json, tempfile, faulthandler, unicodedata
 import urllib.request, urllib.error
 from email.header import decode_header
 from email.utils import parseaddr, parsedate_to_datetime
@@ -311,9 +311,15 @@ class SupabaseControl:
 
         Cobre a duplicidade real que a dedup por message_id NAO pega: o mesmo
         remetente envia o MESMO documento em dois e-mails diferentes (Message-ID
-        distintos). Impressao digital do documento, por ordem de forca:
+        distintos). Considera duplicata se QUALQUER impressao digital casar:
           1. barcode (linha digitavel / codigo de barras / chave) — definitivo;
-          2. fornecedor (cnpj > cpf > nome) + valor + vencimento + tipo de documento.
+          2. fornecedor + numero do documento + valor — pega DAS reenviado com
+             vencimento diferente (numero da guia identico);
+          3. fornecedor + valor + vencimento + tipo — pega o mesmo encargo
+             emitido em documentos com numero proprio distinto (ex.: boleto x
+             RPS da mesma fatura, ambos R$ X no mesmo vencimento).
+        As impressoes 2 e 3 sao complementares — uma sozinha deixa passar casos
+        que a outra pega; por isso ambas sao verificadas.
 
         Conservador: so deduplica com um identificador de fornecedor presente.
         Em caso de erro de consulta, retorna False (nao bloqueia a insercao).
@@ -321,40 +327,55 @@ class SupabaseControl:
         if not self._available:
             return False
 
-        barcode = (payload.get("barcode") or "").strip()
-        if barcode:
-            filters = f"barcode=eq.{urllib.parse.quote(barcode, safe='')}"
-        else:
-            # Identificador do fornecedor: o primeiro disponivel.
-            supplier_col = supplier_val = None
-            for col in ("supplier_cnpj", "supplier_cpf", "supplier_name"):
-                if payload.get(col):
-                    supplier_col, supplier_val = col, payload[col]
-                    break
-            if not supplier_col:
-                return False  # sem fornecedor identificavel — nao deduplica
+        def _eq_clause(col: str, v) -> str:
+            if v in (None, ""):
+                return f"{col}=is.null"
+            sval = f"{float(v):.2f}" if col == "amount" else str(v)
+            return f"{col}=eq.{urllib.parse.quote(sval, safe='')}"
 
-            clauses = [f"{supplier_col}=eq.{urllib.parse.quote(str(supplier_val), safe='')}"]
-            for col in ("amount", "due_date", "document_type"):
-                v = payload.get(col)
-                if v in (None, ""):
-                    clauses.append(f"{col}=is.null")
-                else:
-                    # amount: 2 casas para casar com NUMERIC(15,2) gravado.
-                    sval = f"{float(v):.2f}" if col == "amount" else str(v)
-                    clauses.append(f"{col}=eq.{urllib.parse.quote(sval, safe='')}")
+        def _exists(clauses: list) -> bool:
             filters = "&".join(clauses)
+            try:
+                req = urllib.request.Request(
+                    f"{self.base}/rest/v1/financial_account_control?{filters}&select=id&limit=1",
+                    headers=self.headers,
+                )
+                with urllib.request.urlopen(req, timeout=5) as r:
+                    return len(json.loads(r.read())) > 0
+            except Exception as e:
+                log.warning(f"Falha na checagem de duplicidade de conteudo: {e}")
+                return False
 
-        try:
-            req = urllib.request.Request(
-                f"{self.base}/rest/v1/financial_account_control?{filters}&select=id&limit=1",
-                headers=self.headers,
-            )
-            with urllib.request.urlopen(req, timeout=5) as r:
-                return len(json.loads(r.read())) > 0
-        except Exception as e:
-            log.warning(f"Falha na checagem de duplicidade de conteudo: {e}")
-            return False
+        # 1. Barcode — identificador definitivo do documento de pagamento.
+        barcode = (payload.get("barcode") or "").strip()
+        if barcode and _exists([f"barcode=eq.{urllib.parse.quote(barcode, safe='')}"]):
+            return True
+
+        # 2/3. Precisam de um identificador de fornecedor.
+        supplier_col = supplier_val = None
+        for col in ("supplier_cnpj", "supplier_cpf", "supplier_name"):
+            if payload.get(col):
+                supplier_col, supplier_val = col, payload[col]
+                break
+        if not supplier_col:
+            return False  # sem fornecedor identificavel — nao deduplica
+
+        supplier_clause = f"{supplier_col}=eq.{urllib.parse.quote(str(supplier_val), safe='')}"
+
+        # 2. fornecedor + numero do documento + valor (numero substancial).
+        invoice = str(payload.get("invoice_number") or "").strip()
+        if len(invoice) >= 6 and _exists([
+            supplier_clause,
+            f"invoice_number=eq.{urllib.parse.quote(invoice, safe='')}",
+            _eq_clause("amount", payload.get("amount")),
+        ]):
+            return True
+
+        # 3. fornecedor + valor + vencimento + tipo (mesmo encargo, numero distinto).
+        return _exists([supplier_clause] + [
+            _eq_clause(col, payload.get(col))
+            for col in ("amount", "due_date", "document_type")
+        ])
 
     def load_known_ids(self) -> set:
         """Carrega todos os message_id de email_control em um set local.
@@ -1139,6 +1160,26 @@ def try_extract_from_body(email_rec: dict, body_text: str, received_at: str,
 # ---------------------------------------------------------------------------
 # Processar um e-mail
 # ---------------------------------------------------------------------------
+def _parse_internaldate(fetch_meta: bytes | None) -> str | None:
+    """Converte o INTERNALDATE do IMAP para ISO-8601 UTC.
+
+    INTERNALDATE e a hora em que a mensagem chegou na caixa postal — definida
+    pelo servidor, imune ao relogio (ou a header Date adulterado) do remetente.
+    Usa imaplib.Internaldate2tuple (independente de locale) em vez de strptime
+    com %b, que falharia sob locale pt-BR. Retorna None se ausente/invalido.
+    """
+    if not fetch_meta:
+        return None
+    try:
+        tt = imaplib.Internaldate2tuple(fetch_meta)  # struct_time em horario local
+        if not tt:
+            return None
+        epoch = time.mktime(tt)
+        return datetime.fromtimestamp(epoch, timezone.utc).isoformat()
+    except Exception:
+        return None
+
+
 def process_message(mail, uid: bytes, keywords: list,
                     dry_run: bool, mark_seen: bool,
                     ctrl: SupabaseControl) -> dict | None:
@@ -1147,7 +1188,7 @@ def process_message(mail, uid: bytes, keywords: list,
     rec["processed_at"] = now
 
     try:
-        _, data = mail.uid("fetch", uid, "(RFC822)")
+        _, data = mail.uid("fetch", uid, "(INTERNALDATE RFC822)")
         raw = data[0][1]
         msg = email.message_from_bytes(raw)
 
@@ -1158,9 +1199,27 @@ def process_message(mail, uid: bytes, keywords: list,
         sender_name  = decode_str(sender_name) or sender_email
         date_header  = msg.get("Date", "")
 
+        # received_at: INTERNALDATE (chegada na caixa) e a fonte primaria —
+        # confiavel mesmo quando o header Date do remetente vem adulterado ou
+        # com fuso errado. O header Date e fallback. Nunca aceitar data futura.
+        now_dt = datetime.now(timezone.utc)
+        internal_iso = _parse_internaldate(data[0][0])
         try:
-            received_at = parsedate_to_datetime(date_header).astimezone(
-                timezone.utc).isoformat()
+            header_dt = parsedate_to_datetime(date_header).astimezone(timezone.utc)
+        except Exception:
+            header_dt = None
+
+        if internal_iso:
+            received_at = internal_iso
+        elif header_dt is not None and header_dt <= now_dt:
+            received_at = header_dt.isoformat()
+        else:
+            received_at = now
+
+        # Rede de seguranca: jamais gravar received_at no futuro.
+        try:
+            if datetime.fromisoformat(received_at) > now_dt:
+                received_at = now
         except Exception:
             received_at = now
 

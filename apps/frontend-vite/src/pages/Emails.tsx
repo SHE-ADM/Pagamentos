@@ -327,7 +327,7 @@ export default function Emails() {
                       className={`cursor-pointer transition-colors ${
                         sel?.id === r.id
                           ? 'bg-brand/5 border-l-2 border-brand'
-                          : 'hover:bg-zinc-50'
+                          : 'bg-zinc-100 hover:bg-zinc-200/60'
                       }`}
                       onClick={() => setSel(sel?.id === r.id ? null : r)}
                     >

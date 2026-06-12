@@ -1,5 +1,5 @@
 // src/pages/Consulta.tsx
-import { useState, useEffect, useCallback, Fragment } from 'react';
+import { useState, useEffect, useCallback, useRef, Fragment } from 'react';
 import {
   RefreshCw,
   Download,
@@ -126,6 +126,7 @@ export default function Consulta() {
   const [total, setTotal] = useState(0);
   const [activeCard, setActiveCard] = useState<string | null>(null);
   const [sort, setSort] = useState<{ col: string | null; dir: 'asc' | 'desc' | null }>({ col: null, dir: null });
+  const supplierDebounce = useRef<ReturnType<typeof setTimeout> | null>(null);
   const sf = <K extends keyof ConsultaFilters>(k: K, v: ConsultaFilters[K]) =>
     setF((x) => ({ ...x, [k]: v }));
 
@@ -311,12 +312,18 @@ export default function Consulta() {
               onChange={(e) => {
                 const val = e.target.value;
                 sf('supplier', val);
-                if (val === '') {
-                  setApplied((prev) => ({ ...prev, supplier: '' }));
+                if (supplierDebounce.current) clearTimeout(supplierDebounce.current);
+                supplierDebounce.current = setTimeout(() => {
+                  setApplied((prev) => ({ ...prev, supplier: val }));
                   setPage(1);
+                }, 350);
+              }}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') {
+                  if (supplierDebounce.current) clearTimeout(supplierDebounce.current);
+                  handleSearch();
                 }
               }}
-              onKeyDown={(e) => e.key === 'Enter' && handleSearch()}
             />
             <select className="input w-40" value={f.docType} onChange={(e) => sf('docType', e.target.value)}>
               <option value="">Tipo Documento</option>
