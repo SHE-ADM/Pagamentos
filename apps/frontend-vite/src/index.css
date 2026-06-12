@@ -55,6 +55,14 @@
   .table-cell {
     @apply px-3 py-2.5 text-sm text-slate-700 border-b border-slate-100;
   }
+  /* Variante prata — usada em /emails para diferenciar visualmente de /consulta */
+  .table-header-silver {
+    @apply text-[11px] font-medium text-zinc-400 uppercase tracking-widest
+           bg-zinc-50 px-3 py-2 border-b border-zinc-200 text-left;
+  }
+  .table-cell-silver {
+    @apply px-3 py-2.5 text-sm text-zinc-400 border-b border-zinc-100;
+  }
   .table-row-hover {
     /* preparada para a futura passada de estilo das páginas */
     @apply hover:bg-slate-50/80 transition-colors duration-100;

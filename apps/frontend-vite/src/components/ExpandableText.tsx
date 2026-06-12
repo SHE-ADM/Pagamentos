@@ -1,23 +1,35 @@
 import { useState } from 'react';
 
 const PREVIEW_LINES = 3;
+const PREVIEW_CHARS = 200;
 
 interface ExpandableTextProps {
   text: string | null | undefined;
   previewLines?: number;
+  maxChars?: number;
 }
 
 // Atom — texto longo com alternancia "ver mais"/"ver menos". Preserva quebras
 // de linha e espacamento original (whitespace-pre-wrap), util para exibir
 // trechos de e-mail ou observacoes extensas sem poluir a tela por padrao.
-export default function ExpandableText({ text, previewLines = PREVIEW_LINES }: ExpandableTextProps) {
+// Trunca por linhas OU por quantidade de caracteres (o que vencer primeiro).
+export default function ExpandableText({
+  text,
+  previewLines = PREVIEW_LINES,
+  maxChars = PREVIEW_CHARS,
+}: Readonly<ExpandableTextProps>) {
   const [expanded, setExpanded] = useState(false);
 
   if (!text) return null;
 
   const lines = text.split('\n');
-  const isLong = lines.length > previewLines;
-  const preview = lines.slice(0, previewLines).join('\n');
+  const tooManyLines = lines.length > previewLines;
+  const tooLong = text.length > maxChars;
+  const isLong = tooManyLines || tooLong;
+
+  const preview = tooManyLines
+    ? lines.slice(0, previewLines).join('\n')
+    : text.slice(0, maxChars);
 
   return (
     <div>

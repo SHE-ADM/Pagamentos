@@ -12,6 +12,9 @@ import {
   X,
   Eye,
   Inbox,
+  ArrowUp,
+  ArrowDown,
+  ArrowUpDown,
   type LucideIcon,
 } from 'lucide-react';
 import type { FinancialAccountControl } from '@sheild/shared';
@@ -26,8 +29,25 @@ const fmtMoney = (v: number | null): string =>
   v == null ? '—' : Number(v).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
 const fmtCnpj = (c: string | null): string =>
   c?.length === 14 ? `${c.slice(0, 2)}.${c.slice(2, 5)}.${c.slice(5, 8)}/${c.slice(8, 12)}-${c.slice(12)}` : c || '—';
+const fmtCpf = (c: string | null): string =>
+  c?.length === 11 ? `${c.slice(0, 3)}.${c.slice(3, 6)}.${c.slice(6, 9)}-${c.slice(9)}` : c || '—';
+const fmtCnpjOrCpf = (cnpj: string | null, cpf: string | null): string =>
+  cpf != null && cpf !== '' ? fmtCpf(cpf) : fmtCnpj(cnpj);
 
 const PAGE_SIZE = 20;
+
+const SORT_COLS: Record<string, string> = {
+  'Nº Documento':   'invoice_number',
+  'Emissão':        'issue_date',
+  'Fornecedor':     'supplier_name',
+  'CNPJ ou CPF':    'supplier_cnpj',
+  'Tipo Documento': 'document_type',
+  'Tipo Pagamento': 'payment_method',
+  'Vencimento':     'due_date',
+  'Valor':          'amount',
+  'Situação':       'due_status',
+  'Extração':       'extraction_source',
+};
 
 const CSV_COLS: (keyof FinancialAccountControl)[] = [
   'due_date',
@@ -71,6 +91,7 @@ interface ConsultaFilters {
   paymentMethod: string;
   dateFrom: string;
   dateTo: string;
+  dueStatuses?: string[];
 }
 
 const EMPTY_FILTERS: ConsultaFilters = {
@@ -88,6 +109,8 @@ interface MetricCard {
   value: number;
   fmt: (v: number) => string | number;
   danger?: boolean;
+  cardId?: string;
+  onCardClick?: () => void;
 }
 
 export default function Consulta() {
@@ -101,6 +124,8 @@ export default function Consulta() {
   const [applied, setApplied] = useState<ConsultaFilters>({ ...EMPTY_FILTERS });
   const [page, setPage] = useState(1);
   const [total, setTotal] = useState(0);
+  const [activeCard, setActiveCard] = useState<string | null>(null);
+  const [sort, setSort] = useState<{ col: string | null; dir: 'asc' | 'desc' | null }>({ col: null, dir: null });
   const sf = <K extends keyof ConsultaFilters>(k: K, v: ConsultaFilters[K]) =>
     setF((x) => ({ ...x, [k]: v }));
 
@@ -111,7 +136,13 @@ export default function Consulta() {
     setError(null);
     try {
       const [result, st] = await Promise.all([
-        getFinancialAccountControl({ ...applied, page, pageSize: PAGE_SIZE }),
+        getFinancialAccountControl({
+          ...applied,
+          page,
+          pageSize: PAGE_SIZE,
+          sortCol: sort.col ?? undefined,
+          sortDir: sort.dir ?? undefined,
+        }),
         getFinancialStats(),
       ]);
       setRows(result.data);
@@ -122,7 +153,7 @@ export default function Consulta() {
     } finally {
       setLoading(false);
     }
-  }, [applied, page]);
+  }, [applied, page, sort]);
 
   useEffect(() => {
     void load();
@@ -132,24 +163,78 @@ export default function Consulta() {
   // React 18 faz batch dos dois setState — gera um unico load novo.
   const handleSearch = () => {
     setApplied({ ...f });
+    setActiveCard(null);
     setPage(1);
   };
   // Limpar: reseta filtros do form e a busca aplicada, voltando para pagina 1.
   const handleClear = () => {
     setF({ ...EMPTY_FILTERS });
     setApplied({ ...EMPTY_FILTERS });
+    setActiveCard(null);
+    setSort({ col: null, dir: null });
+    setPage(1);
+  };
+
+  // Ciclo: nenhuma → asc → desc → nenhuma (volta ao padrão issue_date.desc).
+  const handleSort = (col: string) => {
+    setSort((prev) => {
+      if (prev.col !== col) return { col, dir: 'asc' };
+      if (prev.dir === 'asc') return { col, dir: 'desc' };
+      return { col: null, dir: null };
+    });
     setPage(1);
   };
   const goPage = (n: number) => setPage(n);
   const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
 
+  const handleCardFilter = (cardId: string, filterOverride: Partial<ConsultaFilters>) => {
+    setSort({ col: null, dir: null });
+    if (activeCard === cardId) {
+      setActiveCard(null);
+      setF({ ...EMPTY_FILTERS });
+      setApplied({ ...EMPTY_FILTERS });
+    } else {
+      setActiveCard(cardId);
+      const next = { ...EMPTY_FILTERS, ...filterOverride };
+      setF(next);
+      setApplied(next);
+    }
+    setPage(1);
+  };
+
   const vencidasCount = stats.vencidas ?? 0;
   const cards: MetricCard[] = [
-    { icon: FileText, label: 'Total de registros', value: stats.totalRecords ?? 0, fmt: (v) => v },
-    { icon: Clock, label: 'Pendentes', value: stats.pending ?? 0, fmt: (v) => v },
     { icon: DollarSign, label: 'Valor total', value: stats.totalValue ?? 0, fmt: fmtMoney },
-    { icon: TrendingUp, label: 'A vencer em 7 dias', value: stats.vencendo ?? 0, fmt: (v) => v },
-    { icon: AlertCircle, label: 'Vencidas', value: vencidasCount, fmt: (v) => v, danger: vencidasCount > 0 },
+    { icon: FileText, label: 'Total de registros', value: stats.totalRecords ?? 0, fmt: (v) => v },
+    {
+      icon: Clock,
+      label: 'Pendentes',
+      value: stats.pending ?? 0,
+      fmt: (v) => v,
+      cardId: 'pendentes',
+      onCardClick: () => handleCardFilter('pendentes', { status: 'pendente' }),
+    },
+    {
+      icon: TrendingUp,
+      label: 'A vencer em 7 dias',
+      value: stats.vencendo ?? 0,
+      fmt: (v) => v,
+      cardId: 'avencer7',
+      onCardClick: () => {
+        const t = new Date().toISOString().slice(0, 10);
+        const t7 = new Date(Date.now() + 7 * 86400000).toISOString().slice(0, 10);
+        handleCardFilter('avencer7', { dateFrom: t, dateTo: t7 });
+      },
+    },
+    {
+      icon: AlertCircle,
+      label: 'Vencidas',
+      value: vencidasCount,
+      fmt: (v) => v,
+      danger: vencidasCount > 0,
+      cardId: 'vencidas',
+      onCardClick: () => handleCardFilter('vencidas', { dueStatuses: ['vencido'] }),
+    },
   ];
 
   return (
@@ -183,28 +268,35 @@ export default function Consulta() {
         )}
 
         <div className="flex gap-3 mb-5 flex-wrap">
-          {cards.map(({ icon: Icon, label, value, fmt, danger }) => (
-            <div
-              key={label}
-              className={`flex-1 min-w-[160px] flex items-center gap-3 bg-white rounded-xl shadow-sm border border-slate-100 border-l-4 px-4 py-3 animate-fade-in-up ${
-                danger ? 'border-l-red-500' : 'border-l-brand'
-              }`}
-            >
+          {cards.map(({ icon: Icon, label, value, fmt, danger, cardId, onCardClick }) => {
+            const isActive = !!cardId && activeCard === cardId;
+            const borderLeft = danger ? 'border-l-red-500' : 'border-l-brand';
+            let cardBg = 'bg-white';
+            if (isActive) {
+              cardBg = danger ? 'bg-red-50 ring-1 ring-red-300/40' : 'bg-brand/5 ring-1 ring-brand/30';
+            }
+            const interactive = onCardClick ? 'cursor-pointer hover:shadow-md hover:scale-[1.01]' : '';
+            return (
               <div
-                className={`flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-full ${
-                  danger ? 'bg-red-500/10 text-red-600' : 'bg-brand/10 text-brand'
-                }`}
+                key={label}
+                role={onCardClick ? 'button' : undefined}
+                tabIndex={onCardClick ? 0 : undefined}
+                onClick={onCardClick}
+                onKeyDown={onCardClick ? (e: React.KeyboardEvent) => { if (e.key === 'Enter' || e.key === ' ') onCardClick(); } : undefined}
+                className={`flex-1 min-w-[160px] flex items-center gap-3 rounded-xl shadow-sm border border-slate-100 border-l-4 px-4 py-3 animate-fade-in-up transition-all ${borderLeft} ${cardBg} ${interactive}`}
               >
-                <Icon size={18} />
-              </div>
-              <div className="min-w-0">
-                <div className={`text-2xl font-bold leading-tight ${danger ? 'text-red-600' : 'text-slate-800'}`}>
-                  {fmt(value)}
+                <div className={`flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-full ${danger ? 'bg-red-500/10 text-red-600' : 'bg-brand/10 text-brand'}`}>
+                  <Icon size={18} />
                 </div>
-                <div className="text-xs text-slate-500 truncate">{label}</div>
+                <div className="min-w-0">
+                  <div className={`text-2xl font-bold leading-tight ${danger ? 'text-red-600' : 'text-slate-800'}`}>
+                    {fmt(value)}
+                  </div>
+                  <div className="text-xs text-slate-500 truncate">{label}</div>
+                </div>
               </div>
-            </div>
-          ))}
+            );
+          })}
         </div>
 
         <div className="relative bg-white rounded-xl shadow-sm border border-slate-100 p-4 mb-4">
@@ -214,7 +306,7 @@ export default function Consulta() {
           <div className="flex gap-2 flex-wrap pt-4">
             <input
               className="input w-44"
-              placeholder="Fornecedor ou CNPJ…"
+              placeholder="Fornecedor, CNPJ ou Nº doc…"
               value={f.supplier}
               onChange={(e) => {
                 const val = e.target.value;
@@ -258,10 +350,10 @@ export default function Consulta() {
               onChange={(e) => sf('dateTo', e.target.value)}
               title="Vencimento até"
             />
-            <button onClick={handleSearch} className="btn btn-primary">
+            <button onClick={handleSearch} className="btn btn-primary w-24">
               <Search size={14} /> Buscar
             </button>
-            <button onClick={handleClear} className="btn">
+            <button onClick={handleClear} className="btn w-24 justify-center">
               Limpar
             </button>
           </div>
@@ -271,19 +363,43 @@ export default function Consulta() {
           <table className="w-full">
             <thead>
               <tr>
-                {['N° Doc', 'Vencimento', 'Situação', 'Fornecedor', 'CNPJ', 'Tipo Documento', 'Tipo Pagamento', 'Valor', 'Extração'].map(
-                  (h) => (
-                    <th key={h} className={`table-header sticky top-0 z-10 ${h === 'Valor' ? 'text-right' : ''}`}>
-                      {h}
+                {Object.keys(SORT_COLS).map((h) => {
+                  const col = SORT_COLS[h];
+                  const isActive = sort.col === col;
+                  let SortIcon = ArrowUpDown;
+                  let ariaSortVal: 'ascending' | 'descending' | 'none' = 'none';
+                  let titleVal = `Ordenar por ${h} crescente`;
+                  if (isActive && sort.dir === 'asc') {
+                    SortIcon = ArrowUp;
+                    ariaSortVal = 'ascending';
+                    titleVal = `Ordenar por ${h} descendente`;
+                  } else if (isActive && sort.dir === 'desc') {
+                    SortIcon = ArrowDown;
+                    ariaSortVal = 'descending';
+                    titleVal = `Remover ordenação de ${h}`;
+                  }
+                  const thBg = isActive ? 'bg-slate-100' : 'hover:bg-slate-100';
+                  return (
+                    <th
+                      key={h}
+                      onClick={() => handleSort(col)}
+                      aria-sort={ariaSortVal}
+                      title={titleVal}
+                      className={`table-header sticky top-0 z-10 cursor-pointer select-none transition-colors ${thBg} ${h === 'Valor' ? 'text-right' : ''}`}
+                    >
+                      <span className="inline-flex items-center gap-1">
+                        {h}
+                        <SortIcon size={11} className={isActive ? 'text-brand' : 'text-slate-300'} />
+                      </span>
                     </th>
-                  ),
-                )}
+                  );
+                })}
               </tr>
             </thead>
             <tbody>
               {rows.length === 0 ? (
                 <tr>
-                  <td colSpan={9} className="py-12">
+                  <td colSpan={10} className="py-12">
                     <div className="flex flex-col items-center justify-center text-center gap-3">
                       <div className="flex h-14 w-14 items-center justify-center rounded-full bg-slate-100 text-slate-300">
                         <Inbox size={26} />
@@ -305,22 +421,21 @@ export default function Consulta() {
                       }`}
                       onClick={() => setSel(sel?.id === r.id ? null : r)}
                     >
-                      <td className="table-cell text-xs font-mono text-slate-500">{r.invoice_number || '—'}</td>
-                      <td className="table-cell text-xs whitespace-nowrap font-mono">{fmtDate(r.due_date)}</td>
+                      <td className="table-cell text-xs font-mono text-slate-600 w-px whitespace-nowrap max-w-[25ch] truncate" title={r.invoice_number ?? ''}>{r.invoice_number || '—'}</td>
+                      <td className="table-cell text-xs font-mono text-slate-600 whitespace-nowrap">{fmtDate(r.issue_date)}</td>
+                      <td className="table-cell text-xs font-mono text-slate-600 w-px whitespace-nowrap max-w-[35ch] truncate" title={r.supplier_name ?? ''}>
+                        {r.supplier_name || '—'}
+                      </td>
+                      <td className="table-cell text-xs font-mono text-slate-600">
+                        {fmtCnpjOrCpf(r.supplier_cnpj, r.supplier_cpf)}
+                      </td>
+                      <td className="table-cell text-xs font-mono text-slate-600">{r.document_type || '—'}</td>
+                      <td className="table-cell text-xs font-mono text-slate-600">{r.payment_method || '—'}</td>
+                      <td className="table-cell text-xs font-mono text-slate-600 whitespace-nowrap">{fmtDate(r.due_date)}</td>
+                      <td className="table-cell text-xs font-mono text-slate-600 text-right">{fmtMoney(r.amount)}</td>
                       <td className="table-cell">
                         <StatusBadge value={r.due_status} />
                       </td>
-                      <td className="table-cell text-xs max-w-[150px] truncate" title={r.supplier_name ?? ''}>
-                        {r.supplier_name || '—'}
-                      </td>
-                      <td className="table-cell text-xs font-mono text-slate-500">{fmtCnpj(r.supplier_cnpj)}</td>
-                      <td className="table-cell">
-                        <StatusBadge value={r.document_type} />
-                      </td>
-                      <td className="table-cell">
-                        <StatusBadge value={r.payment_method} />
-                      </td>
-                      <td className="table-cell text-xs font-mono font-semibold text-slate-800 text-right">{fmtMoney(r.amount)}</td>
                       <td className="table-cell">
                         <StatusBadge value={r.extraction_source} />
                       </td>
@@ -328,7 +443,7 @@ export default function Consulta() {
 
                     {sel?.id === r.id && (
                       <tr>
-                        <td colSpan={9} className="p-0 border-b border-slate-100">
+                        <td colSpan={10} className="p-0 border-b border-slate-100">
                           <div className="relative animate-fade-in-up bg-slate-50/60 border-l-2 border-brand p-4">
                             <button
                               onClick={(e) => {

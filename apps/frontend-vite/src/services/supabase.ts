@@ -43,6 +43,43 @@ export interface EmailControlFilters {
   sender?: string;
   days?: number;
   limit?: number;
+  hasAttachment?: boolean;
+  pdfExtracted?: boolean;
+}
+
+// Busca message_ids em financial_account_control pelo invoice_number, depois
+// retorna as linhas de email_control correspondentes.
+// Usado para permitir pesquisa por nº documento em /emails.
+async function lookupEmailsByInvoiceNumber(
+  term: string,
+  baseParams: QueryParams,
+): Promise<EmailControl[]> {
+  const u1 = new URL(`${BASE_URL}/rest/v1/financial_account_control`);
+  u1.searchParams.set('select', 'gmail_message_id');
+  u1.searchParams.set('invoice_number', `ilike.*${term}*`);
+  u1.searchParams.set('limit', '100');
+  const r1 = await fetch(u1.toString(), { headers: await authHeaders() });
+  if (!r1.ok) return [];
+
+  const accts = (await r1.json()) as { gmail_message_id: string | null }[];
+  const ids = [
+    ...new Set(
+      accts
+        .map((a) => a.gmail_message_id?.replace(/#\d+$/, ''))
+        .filter((id): id is string => Boolean(id)),
+    ),
+  ];
+  if (!ids.length) return [];
+
+  // in.("id1","id2") — aspas duplas para suportar chars especiais no message_id
+  const u2 = new URL(`${BASE_URL}/rest/v1/email_control`);
+  Object.entries(baseParams).forEach(
+    ([k, v]) => v !== undefined && u2.searchParams.set(k, String(v)),
+  );
+  u2.searchParams.set('message_id', `in.("${ids.join('","')}")`);
+  const r2 = await fetch(u2.toString(), { headers: await authHeaders() });
+  if (!r2.ok) return [];
+  return r2.json() as Promise<EmailControl[]>;
 }
 
 export async function getEmailControl({
@@ -50,15 +87,41 @@ export async function getEmailControl({
   sender,
   days,
   limit = 200,
+  hasAttachment,
+  pdfExtracted,
 }: EmailControlFilters = {}): Promise<EmailControl[]> {
-  const params: QueryParams = { select: '*', order: 'received_at.desc', limit };
-  if (status) params['status'] = `eq.${status}`;
-  if (sender) params['sender_email'] = `ilike.*${sender}*`;
+  const baseParams: QueryParams = { select: '*', order: 'received_at.desc', limit };
+  if (status) baseParams['status'] = `eq.${status}`;
   if (days) {
     const since = new Date(Date.now() - days * 86400000).toISOString();
-    params['received_at'] = `gte.${since}`;
+    baseParams['received_at'] = `gte.${since}`;
   }
-  return query<EmailControl[]>('email_control', params);
+  if (hasAttachment !== undefined) baseParams['has_attachment'] = `eq.${String(hasAttachment)}`;
+  if (pdfExtracted !== undefined) baseParams['pdf_extracted'] = `eq.${String(pdfExtracted)}`;
+
+  if (!sender) return query<EmailControl[]>('email_control', baseParams);
+
+  // Busca em paralelo: por remetente/assunto E por nº documento via lookup inverso
+  const senderParams: QueryParams = {
+    ...baseParams,
+    or: `(sender_email.ilike.*${sender}*,subject.ilike.*${sender}*)`,
+  };
+
+  const [senderRows, invoiceRows] = await Promise.all([
+    query<EmailControl[]>('email_control', senderParams),
+    lookupEmailsByInvoiceNumber(sender, baseParams),
+  ]);
+
+  // Merge deduplificado, mantendo ordem desc por received_at
+  const seen = new Set(senderRows.map((r) => r.id));
+  const merged = [...senderRows];
+  for (const r of invoiceRows) {
+    if (!seen.has(r.id)) {
+      seen.add(r.id);
+      merged.push(r);
+    }
+  }
+  return merged.sort((a, b) => (b.received_at ?? '').localeCompare(a.received_at ?? ''));
 }
 
 export interface EmailStats {
@@ -66,19 +129,28 @@ export interface EmailStats {
   withPdf: number;
   extracted: number;
   semPdf: number;
+  soRecebidos: number;
 }
 
 export async function getEmailStats(): Promise<EmailStats> {
-  const [all, withPdf, extracted] = await Promise.all([
+  const [all, withPdf, extracted, pendingExtraction] = await Promise.all([
     query<{ id: number }[]>('email_control', { select: 'id', limit: 1000 }),
     query<{ id: number }[]>('email_control', { select: 'id', has_attachment: 'eq.true', limit: 1000 }),
     query<{ id: number }[]>('email_control', { select: 'id', pdf_extracted: 'eq.true', limit: 1000 }),
+    // Tem anexo mas ainda não foi extraído — fonte de verdade para o card "Só recebidos".
+    query<{ id: number }[]>('email_control', {
+      select: 'id',
+      has_attachment: 'eq.true',
+      pdf_extracted: 'eq.false',
+      limit: 1000,
+    }),
   ]);
   return {
     total: all.length,
     withPdf: withPdf.length,
     extracted: extracted.length,
     semPdf: all.length - withPdf.length,
+    soRecebidos: pendingExtraction.length,
   };
 }
 
@@ -88,11 +160,14 @@ export interface FinancialAccountControlFilters {
   supplier?: string;
   docType?: string;
   status?: string;
+  dueStatuses?: string[];
   paymentMethod?: string;
   dateFrom?: string;
   dateTo?: string;
   page?: number;
   pageSize?: number;
+  sortCol?: string;
+  sortDir?: 'asc' | 'desc';
 }
 
 export interface Paginated<T> {
@@ -104,21 +179,37 @@ export async function getFinancialAccountControl({
   supplier,
   docType,
   status,
+  dueStatuses,
   paymentMethod,
   dateFrom,
   dateTo,
   page = 1,
   pageSize = 20,
+  sortCol,
+  sortDir,
 }: FinancialAccountControlFilters = {}): Promise<Paginated<FinancialAccountControl>> {
   const offset = (page - 1) * pageSize;
   const url = new URL(`${BASE_URL}/rest/v1/financial_account_control`);
   url.searchParams.set('select', '*');
-  url.searchParams.set('order', 'due_date.asc');
+  url.searchParams.set('order', sortCol ? `${sortCol}.${sortDir ?? 'asc'}` : 'issue_date.desc');
   url.searchParams.set('limit', String(pageSize));
   url.searchParams.set('offset', String(offset));
-  if (supplier) url.searchParams.set('supplier_name', `ilike.*${supplier}*`);
+  // or= em três colunas: nome, CNPJ/CPF e nº documento
+  if (supplier) {
+    url.searchParams.set(
+      'or',
+      `(supplier_name.ilike.*${supplier}*,supplier_cnpj.ilike.*${supplier}*,invoice_number.ilike.*${supplier}*)`,
+    );
+  }
   if (docType) url.searchParams.set('document_type', `eq.${docType}`);
-  if (status) url.searchParams.set('status', `eq.${status}`);
+  // Sem filtro de status → exclui cancelado por padrão; filtro explícito sobrescreve.
+  if (status) {
+    url.searchParams.set('status', `eq.${status}`);
+  } else {
+    url.searchParams.set('status', 'neq.cancelado');
+  }
+  if (dueStatuses?.length === 1) url.searchParams.set('due_status', `eq.${dueStatuses[0]}`);
+  else if (dueStatuses && dueStatuses.length > 1) url.searchParams.set('due_status', `in.(${dueStatuses.join(',')})`);
   if (paymentMethod) url.searchParams.set('payment_method', `eq.${paymentMethod}`);
   if (dateFrom) url.searchParams.append('due_date', `gte.${dateFrom}`);
   if (dateTo) url.searchParams.append('due_date', `lte.${dateTo}`);
@@ -127,7 +218,7 @@ export async function getFinancialAccountControl({
   if (!res.ok) throw new Error(`Supabase ${res.status}: ${await res.text()}`);
   const data = (await res.json()) as FinancialAccountControl[];
   const cr = res.headers.get('Content-Range');
-  const total = cr ? parseInt(cr.split('/')[1]) || 0 : data.length;
+  const total = cr ? Number.parseInt(cr.split('/')[1]) || 0 : data.length;
   return { data, total };
 }
 
@@ -165,7 +256,7 @@ export async function getProcessingErrors({
   if (!res.ok) throw new Error(`Supabase ${res.status}: ${await res.text()}`);
   const data = (await res.json()) as ProcessingError[];
   const cr = res.headers.get('Content-Range');
-  const total = cr ? parseInt(cr.split('/')[1]) || 0 : data.length;
+  const total = cr ? Number.parseInt(cr.split('/')[1]) || 0 : data.length;
   return { data, total };
 }
 
@@ -193,6 +284,34 @@ export async function getAccountsByMessageId(messageId: string | null): Promise<
     gmail_message_id: `like.${messageId}*`,
     order: 'due_date.asc',
   });
+}
+
+// Busca em lote o primeiro invoice_number de cada message_id.
+// Usa PostgREST `or=(like.id*)` para cobrir o sufixo #N de múltiplos PDFs.
+// Chunkeia em grupos de 50 para evitar URL muito longa.
+export async function getInvoiceNumbersByMessageIds(
+  messageIds: string[],
+): Promise<Record<string, string>> {
+  if (!messageIds.length) return {};
+  const CHUNK = 50;
+  const map: Record<string, string> = {};
+  for (let i = 0; i < messageIds.length; i += CHUNK) {
+    const chunk = messageIds.slice(i, i + CHUNK);
+    const orVal = `(${chunk.map((id) => `gmail_message_id.like.${id}*`).join(',')})`;
+    const url = new URL(`${BASE_URL}/rest/v1/financial_account_control`);
+    url.searchParams.set('select', 'gmail_message_id,invoice_number');
+    url.searchParams.set('or', orVal);
+    url.searchParams.set('limit', '500');
+    const res = await fetch(url.toString(), { headers: await authHeaders() });
+    if (!res.ok) continue;
+    const data = (await res.json()) as { gmail_message_id: string; invoice_number: string | null }[];
+    for (const r of data) {
+      if (!r.invoice_number) continue;
+      const base = r.gmail_message_id.replace(/#\d+$/, '');
+      if (!map[base]) map[base] = r.invoice_number;
+    }
+  }
+  return map;
 }
 
 export interface FinancialStats {
