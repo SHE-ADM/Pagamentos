@@ -252,6 +252,18 @@ def _normalize_doc_type(raw: str) -> str:
     """
     return _DOC_TYPE_NORM.get(_ns(raw or "outro"), "outro").lower()
 
+
+# Guias de arrecadacao/tributo: nao tem "data de emissao" significativa — o que
+# importa e a competencia (apuracao) e o vencimento. O issue_date extraido nessas
+# guias costuma ser um campo errado (validade, periodo de apuracao); nulo e mais
+# correto do que uma data incorreta, e ordena de forma previsivel em /consulta.
+TAX_DOC_TYPES = {
+    _normalize_doc_type(t) for t in (
+        "tributo", "darf", "gps", "das", "gru", "dae", "dare", "gnre",
+        "ipva", "iptu", "dam", "duam", "iss", "itbi", "gare", "simples nacional",
+    )
+}
+
 # --- Classificação ---
 def classify_document(text: str) -> str:
     t = text.lower()
@@ -356,6 +368,33 @@ def extract_linha_digitavel(text):
         return re.sub(r"\D", "", m.group())
 
     return None
+
+
+def amount_from_barcode(barcode):
+    """Valor (R$) a partir do codigo de barras bancario FEBRABAN de 44 digitos.
+
+    Layout do codigo de barras de boleto bancario:
+        banco(3) moeda(1) DV(1) fator_vencimento(4) valor(10) campo_livre(25)
+    O valor ocupa as posicoes 10-19 (indices 9-18), em centavos. Deterministico
+    e confiavel — recupera boletos cujo PDF nao expoe 'R$' legivel (fonte OCR-B,
+    imagem), causa comum de 'sem_valor'.
+
+    Restringe a boletos bancarios (moeda '9') para nao confundir com:
+      - chave de acesso de NF-e/CT-e (44 digitos, sem campo de valor);
+      - linha digitavel de arrecadacao (48 digitos, outro layout).
+    Sanity-bound descarta lixo de uma eventual chave que passe no filtro de moeda.
+    """
+    if not barcode:
+        return None
+    d = re.sub(r"\D", "", str(barcode))
+    if len(d) != 44 or d[3] != "9" or d[:3] == "000":
+        return None  # nao e boleto bancario FEBRABAN
+    try:
+        valor = int(d[9:19]) / 100.0
+    except ValueError:
+        return None
+    # Faixa plausivel: descarta valor zero e numeros absurdos (provavel chave NF-e).
+    return valor if 0 < valor < 5_000_000 else None
 
 
 # Prompt mínimo usado apenas para recuperar o barcode via Vision.
@@ -599,6 +638,26 @@ def resolve_amount_charged(rec: dict) -> float:
     return round(computed, 2) if computed > 0 else 0
 
 
+def apply_barcode_amount(rec: dict) -> bool:
+    """Tier 1 do resgate de valor: deriva amount do codigo de barras.
+
+    So age quando amount esta ausente/zero E ha um boleto bancario FEBRABAN.
+    Recalcula amount_charged e anota a origem. Retorna True se preencheu o valor.
+    """
+    if rec.get("amount"):
+        return False
+    bc_amount = amount_from_barcode(rec.get("barcode"))
+    if not bc_amount:
+        return False
+    rec["amount"] = bc_amount
+    rec["amount_charged"] = resolve_amount_charged(rec)
+    note = "Valor derivado do código de barras FEBRABAN (texto sem valor)"
+    rec["processing_notes"] = (
+        f'{rec["processing_notes"]} | {note}' if rec.get("processing_notes") else note
+    )
+    return True
+
+
 def _due_date_ddmmyy(due_date) -> str:
     """Converte vencimento 'YYYY-MM-DD' em 'DDMMYY' (ano com 2 digitos).
 
@@ -700,6 +759,10 @@ def build_record_from_json(pdf_path, data: dict, source: str) -> dict:
         notes.append("CNPJ do beneficiario invalido")
     apply_pix_override(rec)
     ensure_due_date(rec, notes)
+    # Emissao nao confiavel em guia de tributo: prefira nulo a uma data errada.
+    if rec["document_type"] in TAX_DOC_TYPES and rec.get("issue_date"):
+        rec["issue_date"] = None
+        notes.append("Emissão ignorada (guia de tributo não tem data de emissão confiável)")
     if not has_document_number(rec["invoice_number"]):
         rec["invoice_number"] = fallback_invoice_number(rec["document_type"], rec["due_date"])
         notes.append("N documento ausente — gerado de tipo+vencimento")
@@ -751,7 +814,9 @@ def build_record(pdf_path, raw, source):
             rec = build_record_from_json(pdf_path, {}, source)
             rec["processing_notes"] = "Vision retornou resposta não-JSON"
             return rec
-        return build_record_from_json(pdf_path, data, source)
+        rec = build_record_from_json(pdf_path, data, source)
+        apply_barcode_amount(rec)  # tier 1: valor via codigo de barras
+        return rec
 
     # pdf_text: tenta Claude e cai para regex APENAS em falhas de documento.
     # Erro de API (credito/auth/rate-limit) propaga como ApiUnavailableError —
@@ -776,6 +841,8 @@ def build_record(pdf_path, raw, source):
             log.info(f"  → barcode recuperado via Vision ({len(ld)} dígitos)")
     if ld is not None:
         rec["barcode"] = normalize_barcode(ld)
+    # Tier 1: valor ausente no texto mas presente no codigo de barras bancario.
+    apply_barcode_amount(rec)
     return rec
 
 # --- Processar um PDF ---
@@ -794,7 +861,23 @@ def process_pdf(pdf_path, force_vision=False):
                     raw, src = extract_with_vision(pdf_path)
                 except FileNotFoundError:
                     log.warning("  → pdftoppm não encontrado — prosseguindo com texto pdfplumber")
-        return build_record(pdf_path, raw, src)
+        rec = build_record(pdf_path, raw, src)
+        # Tier 2: texto extraiu o documento mas sem valor, e o codigo de barras
+        # nao resolveu (sem barcode bancario). Tenta Vision para ler o valor
+        # visualmente. Erro de API propaga; outras falhas mantem o rec de texto.
+        if not rec.get("amount") and src == "pdf_text":
+            log.info("  → valor ausente após texto/barcode — fallback Vision para valor")
+            try:
+                vraw, vsrc = extract_with_vision(pdf_path)
+                vrec = build_record(pdf_path, vraw, vsrc)
+                if vrec.get("amount"):
+                    log.info(f"  → valor recuperado via Vision: {vrec.get('amount')}")
+                    return vrec
+            except Exception as ve:
+                if _is_api_unavailable(ve):
+                    raise
+                log.warning(f"  → Vision para valor falhou ({ve}) — mantendo extração de texto")
+        return rec
     except Exception as e:
         # Erro de API (credito/auth/rate-limit) — falha dura, sem regex.
         if _is_api_unavailable(e):
