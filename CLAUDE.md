@@ -151,7 +151,16 @@ O acesso às rotas internas (`/emails`, `/consulta`, `/erros`) exige login.
 - **Três fluxos** (`apps/frontend-vite/src/pages/auth/`): `LoginPage` → `signInWithPassword`,
   `ForgotPasswordPage` → `resetPasswordForEmail`, `ResetPasswordPage` → `updateUser`.
 - Estado de sessão: `AuthContext`/`useAuth` (`apps/frontend-vite/src/contexts/AuthContext.tsx`),
-  via `supabase.auth.getSession()` + `onAuthStateChange`.
+  via `supabase.auth.getSession()` + `onAuthStateChange`. Ao restaurar, valida a sessão no
+  servidor com `getUser()`: 401/403 → desloga; falha de rede → mantém otimisticamente.
+- **Persistência da sessão**: `supabaseClient.ts` usa `storage: sessionStorage` (não
+  localStorage) — a sessão é descartada ao fechar a aba/navegador, então **reabrir o app
+  sempre exige login**; refresh (F5) na mesma aba mantém. Cada aba autentica de forma
+  isolada.
+- **Logout por inatividade**: `useIdleLogout` (`src/hooks/`) desloga após
+  `VITE_SESSION_IDLE_MINUTES` sem atividade (padrão 10 min). Marcador de atividade em
+  `localStorage` (`pag:last-activity`, compartilhado entre abas); reiniciado no `SIGNED_IN`,
+  limpo no `SIGNED_OUT`.
 - Rotas protegidas: `ProtectedRoute.tsx` redireciona para `/auth/login` sem sessão.
 - RLS: migration `015` trocou policies de leitura de `TO anon` para `TO authenticated` —
   `services/supabase.ts` envia `access_token` no header `Authorization` (além do `apikey`).

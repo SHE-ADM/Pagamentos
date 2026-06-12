@@ -1,11 +1,17 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen } from '@testing-library/react';
+import { render, screen, act } from '@testing-library/react';
+
+const IDLE_KEY = 'pag:last-activity';
 
 // Mock do cliente Supabase — nenhuma chamada de rede real.
 const getSession = vi.fn();
 const getUser = vi.fn();
 const signOut = vi.fn();
 const onAuthStateChange = vi.fn();
+
+// Callback registrado pelo AuthContext em onAuthStateChange — capturado para
+// simular eventos de auth (SIGNED_IN / SIGNED_OUT) nos testes.
+let authCallback: ((event: string, session: unknown) => void) | null = null;
 
 vi.mock('../lib/supabaseClient', () => ({
   supabase: {
@@ -42,7 +48,11 @@ describe('AuthContext', () => {
     getUser.mockReset();
     signOut.mockReset();
     onAuthStateChange.mockReset();
-    onAuthStateChange.mockReturnValue({ data: { subscription: { unsubscribe: vi.fn() } } });
+    authCallback = null;
+    onAuthStateChange.mockImplementation((cb: (event: string, session: unknown) => void) => {
+      authCallback = cb;
+      return { data: { subscription: { unsubscribe: vi.fn() } } };
+    });
   });
 
   it('sem sessão persistida → estado anônimo, sem validar no servidor', async () => {
@@ -86,5 +96,22 @@ describe('AuthContext', () => {
 
     expect(await screen.findByText('user:admin@sheild.app.br')).toBeInTheDocument();
     expect(signOut).not.toHaveBeenCalled();
+  });
+
+  it('SIGNED_IN marca atividade de inatividade; SIGNED_OUT limpa o marcador', async () => {
+    getSession.mockResolvedValue({ data: { session: null } });
+
+    renderProvider();
+    await screen.findByText('anon');
+
+    act(() => {
+      authCallback?.('SIGNED_IN', { user: { id: '1', email: 'admin@sheild.app.br' } });
+    });
+    expect(localStorage.getItem(IDLE_KEY)).not.toBeNull();
+
+    act(() => {
+      authCallback?.('SIGNED_OUT', null);
+    });
+    expect(localStorage.getItem(IDLE_KEY)).toBeNull();
   });
 });

@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, act } from '@testing-library/react';
-import { useIdleLogout } from './useIdleLogout';
+import { useIdleLogout, markIdleActivityNow, clearIdleActivity } from './useIdleLogout';
 
 const STORAGE_KEY = 'pag:last-activity';
 const TIMEOUT_MS = 10 * 60_000; // 10 minutos
@@ -38,7 +38,7 @@ describe('useIdleLogout', () => {
 
     act(() => {
       vi.advanceTimersByTime(TIMEOUT_MS - 60_000);
-      window.dispatchEvent(new MouseEvent('mousedown')); // atividade reseta o relógio
+      globalThis.dispatchEvent(new MouseEvent('mousedown')); // atividade reseta o relógio
       vi.advanceTimersByTime(TIMEOUT_MS - 60_000);
     });
 
@@ -64,5 +64,21 @@ describe('useIdleLogout', () => {
     });
 
     expect(onTimeout).not.toHaveBeenCalled();
+  });
+});
+
+describe('marcadores de atividade (helpers)', () => {
+  beforeEach(() => {
+    localStorage.clear();
+  });
+
+  it('markIdleActivityNow grava o timestamp e clearIdleActivity remove', () => {
+    expect(localStorage.getItem(STORAGE_KEY)).toBeNull();
+
+    markIdleActivityNow();
+    expect(Number(localStorage.getItem(STORAGE_KEY))).toBeGreaterThan(0);
+
+    clearIdleActivity();
+    expect(localStorage.getItem(STORAGE_KEY)).toBeNull();
   });
 });

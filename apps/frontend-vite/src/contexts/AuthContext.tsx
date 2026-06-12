@@ -1,8 +1,16 @@
 // src/contexts/AuthContext.tsx
-import { createContext, useCallback, useContext, useEffect, useState, type ReactNode } from 'react';
+import {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useState,
+  type ReactNode,
+} from 'react';
 import type { Session, User } from '@supabase/supabase-js';
 import { supabase } from '../lib/supabaseClient';
-import { useIdleLogout } from '../hooks/useIdleLogout';
+import { useIdleLogout, markIdleActivityNow, clearIdleActivity } from '../hooks/useIdleLogout';
 
 interface AuthContextValue {
   user: User | null;
@@ -25,7 +33,7 @@ const isInvalidSessionStatus = (status?: number): boolean =>
 const IDLE_MINUTES = Number(import.meta.env.VITE_SESSION_IDLE_MINUTES) || 10;
 const IDLE_TIMEOUT_MS = IDLE_MINUTES * 60_000;
 
-export function AuthProvider({ children }: { children: ReactNode }) {
+export function AuthProvider({ children }: Readonly<{ children: ReactNode }>) {
   const [user, setUser] = useState<User | null>(null);
   const [session, setSession] = useState<Session | null>(null);
   const [loading, setLoading] = useState(true);
@@ -71,9 +79,15 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
     void init();
 
-    const { data: listener } = supabase.auth.onAuthStateChange((_event, nextSession) => {
+    const { data: listener } = supabase.auth.onAuthStateChange((event, nextSession) => {
       setSession(nextSession);
       setUser(nextSession?.user ?? null);
+      // Reinicia a janela de inatividade no login; limpa o marcador no logout.
+      if (event === 'SIGNED_IN') {
+        markIdleActivityNow();
+      } else if (event === 'SIGNED_OUT') {
+        clearIdleActivity();
+      }
     });
 
     return () => {
@@ -89,11 +103,16 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   useIdleLogout({ enabled: !!user, timeoutMs: IDLE_TIMEOUT_MS, onTimeout: handleIdleTimeout });
 
-  const signOut = async () => {
+  const signOut = useCallback(async () => {
     await supabase.auth.signOut();
-  };
+  }, []);
 
-  return <AuthContext.Provider value={{ user, session, loading, signOut }}>{children}</AuthContext.Provider>;
+  const value = useMemo<AuthContextValue>(
+    () => ({ user, session, loading, signOut }),
+    [user, session, loading, signOut],
+  );
+
+  return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
 }
 
 // eslint-disable-next-line react-refresh/only-export-components

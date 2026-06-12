@@ -13,6 +13,18 @@ interface UseIdleLogoutOptions {
   onTimeout: () => void;
 }
 
+// Marca atividade agora — chamado no login (SIGNED_IN) para iniciar uma janela
+// de inatividade limpa, evitando que um marcador antigo derrube o usuário logo
+// após entrar.
+export function markIdleActivityNow(): void {
+  localStorage.setItem(STORAGE_KEY, String(Date.now()));
+}
+
+// Remove o marcador — chamado no logout (SIGNED_OUT).
+export function clearIdleActivity(): void {
+  localStorage.removeItem(STORAGE_KEY);
+}
+
 /**
  * Desloga o usuário após `timeoutMs` sem atividade. O timestamp da última
  * atividade vive no localStorage — compartilhado entre abas e preservado em
@@ -60,17 +72,17 @@ export function useIdleLogout({ enabled, timeoutMs, onTimeout }: UseIdleLogoutOp
     };
 
     ACTIVITY_EVENTS.forEach((evt) => {
-      window.addEventListener(evt, markActivity, { passive: true });
+      globalThis.addEventListener(evt, markActivity, { passive: true });
     });
     document.addEventListener('visibilitychange', onVisible);
-    const interval = window.setInterval(checkIdle, CHECK_INTERVAL_MS);
+    const interval = globalThis.setInterval(checkIdle, CHECK_INTERVAL_MS);
 
     return () => {
       ACTIVITY_EVENTS.forEach((evt) => {
-        window.removeEventListener(evt, markActivity);
+        globalThis.removeEventListener(evt, markActivity);
       });
       document.removeEventListener('visibilitychange', onVisible);
-      window.clearInterval(interval);
+      globalThis.clearInterval(interval);
     };
   }, [enabled, timeoutMs, onTimeout]);
 }
