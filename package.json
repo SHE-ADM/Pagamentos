@@ -8,7 +8,7 @@
     "packages/*"
   ],
   "scripts": {
-    "dev": "concurrently -n vite,api,portal -c green,cyan,magenta \"npm:dev:vite\" \"npm:dev:api\" \"npm:dev:portal\"",
+    "dev": "concurrently --kill-others-on-fail -n vite,api,portal -c green,cyan,magenta npm:dev:vite npm:dev:api npm:dev:portal",
     "dev:vite": "npm run dev --workspace=apps/frontend-vite",
     "dev:api": "npm run dev --workspace=apps/api-backend",
     "dev:portal": "npm run dev --workspace=apps/portal-next",
@@ -17,7 +17,8 @@
     "build:portal": "npm run build --workspace=apps/portal-next",
     "test": "npm run test --workspaces --if-present",
     "lint": "npm run lint --workspaces --if-present",
-    "typecheck": "npm run typecheck --workspaces --if-present"
+    "typecheck": "npm run typecheck -w packages/shared -w apps/frontend-vite -w apps/api-backend -w apps/portal-next",
+    "prune": "npm run prune --workspaces --if-present"
   },
   "devDependencies": {
     "concurrently": "^9.1.0"

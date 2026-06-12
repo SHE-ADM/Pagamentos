@@ -24,7 +24,7 @@ export const badgeVariants = cva(BASE, {
 });
 
 /** Variante visual do badge — reutilizável por outros componentes. */
-export type BadgeVariant = NonNullable<VariantProps<typeof badgeVariants>['variant']>;
+type BadgeVariant = NonNullable<VariantProps<typeof badgeVariants>['variant']>;
 
 // Valores de status/situação — recebem ponto colorido à esquerda.
 const STATUS_VARIANT: Record<string, BadgeVariant> = {
@@ -73,7 +73,7 @@ const SOURCE_TYPES = new Set(['email_body', 'pdf_text', 'pdf_vision']);
 /** Tipo de prefixo do badge — controla o ornamento (ponto vs. ícone). */
 export type BadgeKind = 'status' | 'document' | 'source';
 
-export interface ResolvedBadge {
+interface ResolvedBadge {
   variant: BadgeVariant;
   kind: BadgeKind;
 }
