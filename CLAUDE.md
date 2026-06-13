@@ -137,7 +137,11 @@ Escopo = área afetada: `login`, `email-reader`, `consulta`, `scheduler`, `migra
 - **SonarLint** (engine da IDE, sem CLI): manter o código livre dos achados recorrentes —
   condições positivas em vez de negadas com `else` (S7735: `v == null ? '—' : …`), par
   `[x, setX]` no `useState` (S6754), sem ternário/template literal aninhado no JSX (S3358/
-  S4624 — extrair para uma const antes do `return`).
+  S4624 — extrair para uma const antes do `return`), sem import não usado (S1128), sem
+  seletor booleano que escolhe a ação dentro do método (S2301 — preferir uma única ação
+  com valor por ternário, ex.: `setItem(key, on ? '1' : '0')` em vez de `if/else` com
+  `setItem`/`removeItem`), e sem texto solto logo após um elemento inline em JSX (S6772 —
+  envolver o texto em `<span>`, ex.: `<input … /><span>Lembrar-me</span>`).
 
 ---
 
@@ -151,16 +155,25 @@ O acesso às rotas internas (`/emails`, `/consulta`, `/erros`) exige login.
 - **Três fluxos** (`apps/frontend-vite/src/pages/auth/`): `LoginPage` → `signInWithPassword`,
   `ForgotPasswordPage` → `resetPasswordForEmail`, `ResetPasswordPage` → `updateUser`.
 - Estado de sessão: `AuthContext`/`useAuth` (`apps/frontend-vite/src/contexts/AuthContext.tsx`),
-  via `supabase.auth.getSession()` + `onAuthStateChange`. Ao restaurar, valida a sessão no
+  via `supabase.auth.getSession()` + `onAuthStateChange`. Ao restaurar, primeiro aplica o
+  early-out de inatividade (`isIdleExpired`, ver abaixo); se não expirou, valida a sessão no
   servidor com `getUser()`: 401/403 → desloga; falha de rede → mantém otimisticamente.
-- **Persistência da sessão**: `supabaseClient.ts` usa `storage: sessionStorage` (não
-  localStorage) — a sessão é descartada ao fechar a aba/navegador, então **reabrir o app
-  sempre exige login**; refresh (F5) na mesma aba mantém. Cada aba autentica de forma
-  isolada.
-- **Logout por inatividade**: `useIdleLogout` (`src/hooks/`) desloga após
-  `VITE_SESSION_IDLE_MINUTES` sem atividade (padrão 10 min). Marcador de atividade em
-  `localStorage` (`pag:last-activity`, compartilhado entre abas); reiniciado no `SIGNED_IN`,
-  limpo no `SIGNED_OUT`.
+- **Persistência da sessão (storage híbrido — "Lembrar-me")**: `supabaseClient.ts` usa
+  `storage: hybridAuthStorage` (`src/lib/authStorage.ts`), que roteia o token pelo checkbox
+  "Lembrar-me" via flag `pag:remember` no localStorage (`'1'`/`'0'`): **marcado →
+  `localStorage`** (sobrevive ao fechar o navegador), **desmarcado → `sessionStorage`**
+  (reabrir sempre exige login). `LoginForm` chama `setRememberPreference(remember)` antes do
+  `signIn`; o checkbox **inicializa refletindo a última preferência salva**
+  (`getRememberPreference` no `useState`) — desmarcado na primeira vez e, uma vez marcado,
+  permanece marcado nas próximas sessões até o usuário desmarcar. Refresh (F5) na mesma aba
+  mantém em ambos os casos.
+- **Logout por inatividade (teto de 10 min, vale em ambos os modos)**: `useIdleLogout`
+  (`src/hooks/`) desloga após `VITE_SESSION_IDLE_MINUTES` sem atividade (padrão 10 min).
+  Marcador de atividade em `localStorage` (`pag:last-activity`, compartilhado entre abas);
+  reiniciado no `SIGNED_IN`, limpo no `SIGNED_OUT`. O helper `isIdleExpired(timeoutMs)`
+  (exportado do mesmo hook) é usado no `AuthContext.init()` para deslogar já na reabertura
+  quando o período ocioso herdado expirou — assim "Lembrar-me" mantém a sessão por **no
+  máximo 10 min** entre reaberturas, sem flash de conteúdo protegido.
 - Rotas protegidas: `ProtectedRoute.tsx` redireciona para `/auth/login` sem sessão.
 - RLS: migration `015` trocou policies de leitura de `TO anon` para `TO authenticated` —
   `services/supabase.ts` envia `access_token` no header `Authorization` (além do `apikey`).
@@ -261,7 +274,7 @@ npm install   # na raiz do monorepo — instala todos os workspaces
 
 | Estilo | Páginas | Tokens | Componentes-chave |
 |---|---|---|---|
-| **v2 loginGreen** | `LoginPage` | `loginGreen-*`, `font-jakarta`, `border-8` frame | `FilledTextField`, `AccentPillButton`, `SocialLinksBar` |
+| **v2 loginGreen** | `LoginPage` | `loginGreen-*`, `font-jakarta`, `border-[6px]` frame | `FilledTextField`, `AccentPillButton`, `SocialLinksBar` |
 | **auth gradient** | `ForgotPasswordPage`, `ResetPasswordPage` | `bg-gradient-auth`, `auth-navy` | `AuthLayout`, `AuthInput`, `GradientPillButton`, `InlineMessage` |
 
 Tudo em TypeScript (`.tsx/.ts`) sob `apps/frontend-vite/src/`:
@@ -290,8 +303,11 @@ apps/frontend-vite/src/components/
 ```
 
 Tipos compartilhados vêm de `@sheild/shared` (ex.: `FinancialEmail`, `EmailControl`).
-Helpers em `src/lib/`: `getErrorMessage.ts` (erro em strict mode) e `cn.ts` (merge de
-classes Tailwind — `clsx` + `tailwind-merge`, base do padrão CVA).
+Helpers em `src/lib/`: `getErrorMessage.ts` (erro em strict mode), `cn.ts` (merge de
+classes Tailwind — `clsx` + `tailwind-merge`, base do padrão CVA), `supabaseClient.ts`
+(SDK oficial, só para auth) e `authStorage.ts` (storage híbrido da sessão +
+`setRememberPreference`/`getRememberPreference` — preferência "Lembrar-me"; ver
+seção Autenticação).
 
 ### Guia de cores — paleta `loginGreen` (`apps/frontend-vite/tailwind.config.ts`)
 
@@ -319,35 +335,52 @@ Paleta `brand` (verde dashboard) e `auth` (azul/petróleo) são usadas nas demai
 
 ### Guia de tamanhos — tokens Tailwind em uso
 
-Usar o token mais próximo; valor arbitrário só como exceção documentada.
+Usar o token mais próximo; valor arbitrário só como exceção documentada (ver abaixo).
+A login passou por compactação para centralizar melhor o card — os valores abaixo são
+os **atuais** (não os do design original).
 
 **Tipografia:**
 
 | Classe | Tamanho | Uso no projeto |
 |---|---|---|
-| `text-xs` | 12px | labels sociais, "fale com a gente" |
-| `text-sm` | 14px | labels de campo, textos de meta, erro |
+| `text-xs` | 12px | labels sociais ("fale com a gente"), rótulos dos círculos |
+| `text-sm` | 14px | labels de campo, "lembrar-me", erro inline, links |
 | `text-base` | 16px | corpo padrão do restante do app |
-| `text-lg` | 18px | subtítulo do login |
-| `text-xl` | 20px | texto do botão primário |
-| `text-4xl` | 36px | h1 do login (design original: 42px — token mais próximo) |
+| `text-lg` | 18px | subtítulo do login + texto do botão primário (`AccentPillButton`) |
+| `text-3xl` | 30px | h1 do login ("Login") — reduzido de `text-4xl` nesta sessão |
 
-**Espaçamento e dimensões recorrentes:**
+**Espaçamento e dimensões recorrentes (login page):**
 
 | Classe | px | Uso |
 |---|---|---|
-| `h-12` | 48px | altura dos campos de input |
-| `h-14` | 56px | altura do botão primário |
-| `h-64` | 256px | altura do banner da login page |
-| `w-14 h-14` | 56px | círculos sociais |
-| `border-8` | 8px | frame externo da login page |
+| `h-10` | 40px | altura dos campos de input (`FilledTextField`) |
+| `h-12` | 48px | altura do botão primário (`AccentPillButton`) |
+| `h-56` | 224px | altura do banner da login page |
+| `h-1` | 4px | divisor verde entre banner e card |
+| `w-12 h-12` | 48px | círculos sociais |
+| `w-7 h-7` | 28px | ícone dentro do círculo social |
+| `w-4 h-4` | 16px | checkbox "lembrar-me" (a escala Tailwind **não tem `4.5`** — não usar) |
+| `border-[6px]` | 6px | frame externo + moldura interna do banner (exceção arbitrária) |
 | `border-2` | 2px | borda dos campos e círculos |
-| `rounded-2xl` | 16px | border-radius do card |
+| `ring-4` | 4px | anel interno do card (`ring-inset ring-loginGreen-border/25`) |
+| `rounded-2xl` | 16px | border-radius do card/frame |
 | `rounded-lg` | 8px | border-radius de campos e botão |
-| `gap-5` | 20px | espaçamento entre seções do formulário |
+| `gap-3` | 12px | espaçamento entre seções do formulário |
+| `gap-1.5` | 6px | label↔campo e círculo↔rótulo social |
 | `gap-8` | 32px | espaçamento entre círculos sociais |
-| `p-6` | 24px | padding horizontal do card |
+| `my-3` | 12px | folga vertical extra do botão Login (acima/abaixo, somada ao `gap-3`) |
+| `px-6` | 24px | padding horizontal do card |
+| `pt-2.5` / `pb-3` | 10px / 12px | padding vertical do card (topo/base) |
 | `px-3.5` | 14px | padding horizontal dos campos |
+
+**Exceções de valor arbitrário aceitas (login page):**
+
+- `border-[6px]` — 6px não existe na escala (`border-2`/`-4`/`-8`); usado no frame e na
+  moldura do banner por decisão visual.
+- `object-[center_25%]` — enquadramento do banner sem token equivalente.
+- `w-[calc(100%+2px)] max-w-none -ml-px` no `<img>` do banner — "sangra" 1px para cada
+  lado, recortado pelo `overflow-hidden` do frame, para **eliminar o risco escuro** que a
+  coluna de pixels da borda da imagem deixava contra a moldura verde.
 
 **Fonte customizada:**
 
