@@ -19,9 +19,13 @@ function renderLogin() {
   );
 }
 
+const REMEMBER_KEY = 'pag:remember';
+
 describe('LoginForm', () => {
   beforeEach(() => {
     signInWithPassword.mockReset();
+    localStorage.clear();
+    sessionStorage.clear();
   });
 
   it('renderiza os campos de e-mail e senha e o botão de login', () => {
@@ -57,5 +61,41 @@ describe('LoginForm', () => {
     await user.click(screen.getByRole('button', { name: 'Login' }));
 
     expect(await screen.findByText('E-mail ou senha incorretos.')).toBeInTheDocument();
+  });
+
+  it('"Lembrar-me" começa desmarcado quando não há preferência salva', () => {
+    renderLogin();
+    expect(screen.getByRole('checkbox', { name: /lembrar-me/i })).not.toBeChecked();
+  });
+
+  it('"Lembrar-me" começa marcado quando a preferência salva é "1"', () => {
+    localStorage.setItem(REMEMBER_KEY, '1');
+    renderLogin();
+    expect(screen.getByRole('checkbox', { name: /lembrar-me/i })).toBeChecked();
+  });
+
+  it('marcar "Lembrar-me" persiste a preferência (localStorage pag:remember)', async () => {
+    signInWithPassword.mockResolvedValue({ error: null });
+    const user = userEvent.setup();
+    renderLogin();
+
+    await user.click(screen.getByRole('checkbox', { name: /lembrar-me/i }));
+    await user.type(screen.getByPlaceholderText('usuario123'), 'admin@sheild.app.br');
+    await user.type(screen.getByPlaceholderText('••••••'), 'segredo123');
+    await user.click(screen.getByRole('button', { name: 'Login' }));
+
+    expect(localStorage.getItem(REMEMBER_KEY)).toBe('1');
+  });
+
+  it('login sem marcar "Lembrar-me" salva a preferência como desmarcada', async () => {
+    signInWithPassword.mockResolvedValue({ error: null });
+    const user = userEvent.setup();
+    renderLogin();
+
+    await user.type(screen.getByPlaceholderText('usuario123'), 'admin@sheild.app.br');
+    await user.type(screen.getByPlaceholderText('••••••'), 'segredo123');
+    await user.click(screen.getByRole('button', { name: 'Login' }));
+
+    expect(localStorage.getItem(REMEMBER_KEY)).not.toBe('1');
   });
 });

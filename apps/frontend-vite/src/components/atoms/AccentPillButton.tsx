@@ -10,7 +10,7 @@ interface AccentPillButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> 
 }
 
 const accentPillButton = cva(
-  `w-full h-14 text-xl font-bold text-white rounded-lg flex items-center justify-center gap-2.5
+  `w-full h-12 text-lg font-bold text-white rounded-lg flex items-center justify-center gap-2.5
    transition-colors
    bg-loginGreen-accent hover:bg-loginGreen-accentHover
    disabled:bg-loginGreen-accentMuted disabled:cursor-not-allowed`,

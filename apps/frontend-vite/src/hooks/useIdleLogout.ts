@@ -13,6 +13,18 @@ interface UseIdleLogoutOptions {
   onTimeout: () => void;
 }
 
+// Lê o timestamp da última atividade. Ausente/ inválido → trata como "agora"
+// (sem inatividade herdada).
+function readLastActivity(): number {
+  return Number(localStorage.getItem(STORAGE_KEY)) || Date.now();
+}
+
+// True quando o período ocioso herdado já excedeu o limite — usado pelo
+// AuthContext para ir direto ao login na reabertura, sem restaurar a sessão.
+export function isIdleExpired(timeoutMs: number): boolean {
+  return Date.now() - readLastActivity() >= timeoutMs;
+}
+
 // Marca atividade agora — chamado no login (SIGNED_IN) para iniciar uma janela
 // de inatividade limpa, evitando que um marcador antigo derrube o usuário logo
 // após entrar.
@@ -35,7 +47,6 @@ export function useIdleLogout({ enabled, timeoutMs, onTimeout }: UseIdleLogoutOp
   useEffect(() => {
     if (!enabled) return;
 
-    const readLastActivity = (): number => Number(localStorage.getItem(STORAGE_KEY)) || Date.now();
     const writeLastActivity = (t: number): void => {
       localStorage.setItem(STORAGE_KEY, String(t));
     };
@@ -43,7 +54,7 @@ export function useIdleLogout({ enabled, timeoutMs, onTimeout }: UseIdleLogoutOp
     let fired = false;
     const checkIdle = (): void => {
       if (fired) return;
-      if (Date.now() - readLastActivity() >= timeoutMs) {
+      if (isIdleExpired(timeoutMs)) {
         fired = true;
         localStorage.removeItem(STORAGE_KEY);
         onTimeout();

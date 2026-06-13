@@ -10,7 +10,12 @@ import {
 } from 'react';
 import type { Session, User } from '@supabase/supabase-js';
 import { supabase } from '../lib/supabaseClient';
-import { useIdleLogout, markIdleActivityNow, clearIdleActivity } from '../hooks/useIdleLogout';
+import {
+  useIdleLogout,
+  markIdleActivityNow,
+  clearIdleActivity,
+  isIdleExpired,
+} from '../hooks/useIdleLogout';
 
 interface AuthContextValue {
   user: User | null;
@@ -47,6 +52,19 @@ export function AuthProvider({ children }: Readonly<{ children: ReactNode }>) {
 
       // Sem sessão persistida → segue para o login.
       if (!persisted) {
+        if (active) {
+          setSession(null);
+          setUser(null);
+          setLoading(false);
+        }
+        return;
+      }
+
+      // Inatividade herdada já expirou (ex.: "Lembrar-me" marcado, mas reaberto
+      // após o teto de 10 min) → desloga sem restaurar, evitando flash de
+      // conteúdo protegido e a validação getUser() desnecessária.
+      if (isIdleExpired(IDLE_TIMEOUT_MS)) {
+        await supabase.auth.signOut();
         if (active) {
           setSession(null);
           setUser(null);
