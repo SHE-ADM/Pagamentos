@@ -32,6 +32,22 @@ export function markIdleActivityNow(): void {
   localStorage.setItem(STORAGE_KEY, String(Date.now()));
 }
 
+// Suspensão do logout por inatividade durante tarefas longas sem interação do
+// usuário (ex.: processamento de e-mails). Contador para suportar chamadas
+// aninhadas/concorrentes — só retoma quando todas as suspensões terminam.
+let suspendCount = 0;
+
+export function suspendIdleLogout(): void {
+  suspendCount += 1;
+}
+
+export function resumeIdleLogout(): void {
+  suspendCount = Math.max(0, suspendCount - 1);
+  // Ao retomar, reinicia a janela para o usuário não ser deslogado por um
+  // marcador antigo logo após o término do processamento.
+  if (suspendCount === 0) markIdleActivityNow();
+}
+
 // Remove o marcador — chamado no logout (SIGNED_OUT).
 export function clearIdleActivity(): void {
   localStorage.removeItem(STORAGE_KEY);
@@ -54,6 +70,7 @@ export function useIdleLogout({ enabled, timeoutMs, onTimeout }: UseIdleLogoutOp
     let fired = false;
     const checkIdle = (): void => {
       if (fired) return;
+      if (suspendCount > 0) return; // processamento em andamento — não deslogar
       if (isIdleExpired(timeoutMs)) {
         fired = true;
         localStorage.removeItem(STORAGE_KEY);

@@ -150,13 +150,17 @@ class SupabaseControl:
             "subject":          rec.get("subject"),
             "body_preview":     (rec.get("body_preview") or "")[:500],
             "keyword_matched":  rec.get("keyword_matched"),
-            "has_attachment":   bool(rec.get("has_attachment")),
+            # has_attachment fica NULL quando desconhecido (e-mails 'ignorado', que
+            # não são baixados) — assim não poluem o KPI "Sem anexo PDF" (eq.false).
+            "has_attachment":   None if rec.get("has_attachment") is None else bool(rec.get("has_attachment")),
             "attachment_names": rec.get("attachment_names"),
             "attachment_saved": bool(rec.get("attachment_saved")),
             "pdf_extracted":    bool(rec.get("pdf_extracted")),
             "extraction_csv":   rec.get("extraction_csv"),
             "notes":            rec.get("notes"),
-            "status":           self._derive_status(rec),
+            # Status explícito (ex.: 'ignorado' p/ fora do filtro) tem prioridade;
+            # caso contrário, deriva de pdf_extracted/attachment_saved/notes.
+            "status":           rec.get("status") or self._derive_status(rec),
             "processed_at":     rec.get("processed_at"),
         }
         try:
@@ -306,8 +310,8 @@ class SupabaseControl:
             log.warning(f"Falha ao subir anexo {pdf_path.name}: {e}")
             return False
 
-    def financial_duplicate_exists(self, payload: dict) -> bool:
-        """True se ja existe um documento equivalente em financial_account_control.
+    def find_financial_duplicate(self, payload: dict) -> dict | None:
+        """Retorna a conta existente que representa o MESMO documento, ou None.
 
         Cobre a duplicidade real que a dedup por message_id NAO pega: o mesmo
         remetente envia o MESMO documento em dois e-mails diferentes (Message-ID
@@ -321,11 +325,13 @@ class SupabaseControl:
         As impressoes 2 e 3 sao complementares — uma sozinha deixa passar casos
         que a outra pega; por isso ambas sao verificadas.
 
+        Retorna a 1a conta encontrada (id, due_date, barcode) para o chamador
+        decidir entre pular ou ATUALIZAR (ex.: reemissao com vencimento mais novo).
         Conservador: so deduplica com um identificador de fornecedor presente.
-        Em caso de erro de consulta, retorna False (nao bloqueia a insercao).
+        Em caso de erro de consulta, retorna None (nao bloqueia a insercao).
         """
         if not self._available:
-            return False
+            return None
 
         def _eq_clause(col: str, v) -> str:
             if v in (None, ""):
@@ -333,23 +339,27 @@ class SupabaseControl:
             sval = f"{float(v):.2f}" if col == "amount" else str(v)
             return f"{col}=eq.{urllib.parse.quote(sval, safe='')}"
 
-        def _exists(clauses: list) -> bool:
+        def _find(clauses: list) -> dict | None:
             filters = "&".join(clauses)
             try:
                 req = urllib.request.Request(
-                    f"{self.base}/rest/v1/financial_account_control?{filters}&select=id&limit=1",
+                    f"{self.base}/rest/v1/financial_account_control"
+                    f"?{filters}&select=id,due_date,barcode&limit=1",
                     headers=self.headers,
                 )
                 with urllib.request.urlopen(req, timeout=5) as r:
-                    return len(json.loads(r.read())) > 0
+                    rows = json.loads(r.read())
+                    return rows[0] if rows else None
             except Exception as e:
                 log.warning(f"Falha na checagem de duplicidade de conteudo: {e}")
-                return False
+                return None
 
         # 1. Barcode — identificador definitivo do documento de pagamento.
         barcode = (payload.get("barcode") or "").strip()
-        if barcode and _exists([f"barcode=eq.{urllib.parse.quote(barcode, safe='')}"]):
-            return True
+        if barcode:
+            m = _find([f"barcode=eq.{urllib.parse.quote(barcode, safe='')}"])
+            if m:
+                return m
 
         # 2/3. Precisam de um identificador de fornecedor.
         supplier_col = supplier_val = None
@@ -358,24 +368,55 @@ class SupabaseControl:
                 supplier_col, supplier_val = col, payload[col]
                 break
         if not supplier_col:
-            return False  # sem fornecedor identificavel — nao deduplica
+            return None  # sem fornecedor identificavel — nao deduplica
 
         supplier_clause = f"{supplier_col}=eq.{urllib.parse.quote(str(supplier_val), safe='')}"
 
         # 2. fornecedor + numero do documento + valor (numero substancial).
         invoice = str(payload.get("invoice_number") or "").strip()
-        if len(invoice) >= 6 and _exists([
-            supplier_clause,
-            f"invoice_number=eq.{urllib.parse.quote(invoice, safe='')}",
-            _eq_clause("amount", payload.get("amount")),
-        ]):
-            return True
+        if len(invoice) >= 6:
+            m = _find([
+                supplier_clause,
+                f"invoice_number=eq.{urllib.parse.quote(invoice, safe='')}",
+                _eq_clause("amount", payload.get("amount")),
+            ])
+            if m:
+                return m
 
         # 3. fornecedor + valor + vencimento + tipo (mesmo encargo, numero distinto).
-        return _exists([supplier_clause] + [
+        return _find([supplier_clause] + [
             _eq_clause(col, payload.get(col))
             for col in ("amount", "due_date", "document_type")
         ])
+
+    def financial_duplicate_exists(self, payload: dict) -> bool:
+        """Compat: True se ja existe documento equivalente (ver find_financial_duplicate)."""
+        return self.find_financial_duplicate(payload) is not None
+
+    def update_financial(self, record_id, fields: dict) -> bool:
+        """PATCH de uma conta existente — ex.: atualizar vencimento/boleto de uma
+        guia reemitida para os dados de pagamento mais recentes. Ignora campos None."""
+        if not self._available:
+            return False
+        clean = {k: v for k, v in fields.items() if v not in (None, "")}
+        if not clean:
+            return False
+        try:
+            data = json.dumps(clean).encode()
+            req = urllib.request.Request(
+                f"{self.base}/rest/v1/financial_account_control?id=eq.{record_id}",
+                data=data,
+                headers={**self.headers, "Prefer": "return=minimal"},
+                method="PATCH",
+            )
+            urllib.request.urlopen(req, timeout=10)
+            return True
+        except urllib.error.HTTPError as e:
+            log.error(f"Falha ao atualizar conta {record_id}: {e.code} {e.read().decode(errors='replace')[:150]}")
+            return False
+        except Exception as e:
+            log.error(f"Falha ao atualizar conta {record_id}: {e}")
+            return False
 
     def load_known_ids(self) -> set:
         """Carrega todos os message_id de email_control em um set local.
@@ -1087,14 +1128,34 @@ def extract_and_store_accounts(saved_pdfs: list, message_id: str,
                 acc_index += 1
                 continue
 
-            # Dedup de conteudo: ignora documento ja gravado por outro e-mail
-            # (remetente que reenvia o mesmo boleto/CT-e, com Message-ID diferente).
-            # Roda ANTES da uniquificacao do invoice_number para nao gravar duplicata.
-            if ctrl.financial_duplicate_exists(payload):
-                log.info(
-                    f"    [DUP-DOC] documento já existe em financial_account_control "
-                    f"— ignorado ({row.get('source_file')})"
-                )
+            # Dedup de conteudo: o mesmo documento ja gravado por outro e-mail
+            # (remetente reenvia o mesmo boleto/guia, com Message-ID diferente).
+            # Reemissao com vencimento mais novo (mesma guia) → ATUALIZA a conta
+            # existente para o vencimento/boleto atual, em vez de duplicar ou
+            # manter dados de pagamento vencidos. Roda ANTES da uniquificacao do
+            # invoice_number para nao gravar duplicata.
+            dup = ctrl.find_financial_duplicate(payload)
+            if dup:
+                new_due = payload.get("due_date")
+                old_due = dup.get("due_date")
+                # ISO 'YYYY-MM-DD' compara corretamente como string.
+                if new_due and (not old_due or str(new_due) > str(old_due)):
+                    ctrl.update_financial(dup["id"], {
+                        "due_date":       new_due,
+                        "barcode":        payload.get("barcode"),
+                        "amount_charged": payload.get("amount_charged"),
+                        "fine_interest":  payload.get("fine_interest"),
+                        "other_additions": payload.get("other_additions"),
+                    })
+                    log.info(
+                        f"    [REEMISSAO] mesma guia — conta atualizada p/ vencimento "
+                        f"{new_due} ({row.get('source_file')})"
+                    )
+                else:
+                    log.info(
+                        f"    [DUP-DOC] reemissão igual/mais antiga — mantido "
+                        f"({row.get('source_file')})"
+                    )
                 acc_index += 1
                 continue
 
@@ -1375,9 +1436,10 @@ def run_reader(days: int = 0, all_: bool = False,
 
     for uid in uids:
         try:
-            # Buscar só o header para filtrar rapidamente
+            # Header enxuto para filtrar/registrar rapidamente (inclui remetente e
+            # data, necessários para registrar também os e-mails 'ignorado').
             _, hdr = mail.uid("fetch", uid,
-                              "(BODY.PEEK[HEADER.FIELDS (SUBJECT MESSAGE-ID)])")
+                              "(BODY.PEEK[HEADER.FIELDS (SUBJECT MESSAGE-ID FROM DATE)])")
             hdr_msg = email.message_from_bytes(hdr[0][1])
             subject = decode_str(hdr_msg.get("Subject", ""))
             msg_id  = hdr_msg.get("Message-ID", "").strip()
@@ -1386,17 +1448,39 @@ def run_reader(days: int = 0, all_: bool = False,
             skipped_kw += 1
             continue
 
-        # Filtro por palavra-chave
-        if not match_keyword(subject, keywords):
-            skipped_kw += 1
-            continue
-
-        # Deduplicação: set em memória (O(1)); fallback para consulta individual
-        # se o lote não foi carregado (Supabase indisponível na inicialização).
+        # Deduplicação PRIMEIRO: set em memória (O(1)); fallback para consulta
+        # individual se o lote não foi carregado (Supabase indisponível). Vem antes
+        # do filtro de keyword para não re-registrar e-mails já conhecidos.
         is_dup = (msg_id in known_ids) if known_ids else (msg_id and ctrl.is_processed(msg_id))
         if is_dup:
             log.info(f"  [DUP] {subject[:65]}")
             skipped_dup += 1
+            continue
+
+        # Fora do filtro de assunto → registra como 'ignorado' (sem baixar/extrair),
+        # para que /emails reflita a caixa inteira (o app substitui abrir o webmail).
+        if not match_keyword(subject, keywords):
+            if not dry_run:
+                sender_name, sender_email = parseaddr(hdr_msg.get("From", ""))
+                try:
+                    received_at = parsedate_to_datetime(
+                        hdr_msg.get("Date", "")).astimezone(timezone.utc).isoformat()
+                except Exception:
+                    received_at = datetime.now(timezone.utc).isoformat()
+                ctrl.register({
+                    "message_id":   msg_id,
+                    "subject":      subject,
+                    "sender_name":  decode_str(sender_name) or sender_email,
+                    "sender_email": sender_email,
+                    "received_at":  received_at,
+                    "keyword_matched": None,
+                    "has_attachment":  None,   # desconhecido — não baixamos o corpo
+                    "status":       "ignorado",
+                    "notes":        "Fora do filtro de assunto (não-financeiro)",
+                    "processed_at": datetime.now(timezone.utc).isoformat(),
+                })
+            log.info(f"  [IGN] {subject[:65]}")
+            skipped_kw += 1
             continue
 
         log.info(f"  [NEW] {subject[:65]}")

@@ -856,10 +856,8 @@ def process_pdf(pdf_path, force_vision=False):
             raw, src = extract_with_pdfplumber(pdf_path)
             if len(raw) < 80:
                 log.warning(f"  → Texto curto ({len(raw)} chars) — fallback Vision")
-                try:
-                    raw, src = extract_with_vision(pdf_path)
-                except FileNotFoundError:
-                    log.warning("  → pdftoppm não encontrado — prosseguindo com texto pdfplumber")
+                # Vision envia o PDF em base64 ao Claude (sem poppler/pdftoppm).
+                raw, src = extract_with_vision(pdf_path)
         rec = build_record(pdf_path, raw, src)
         # Tier 2: texto extraiu o documento mas sem valor, e o codigo de barras
         # nao resolveu (sem barcode bancario). Tenta Vision para ler o valor

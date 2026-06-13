@@ -4,6 +4,7 @@ import { RefreshCw, Mail, FileCheck, AlertCircle, CopyMinus, Inbox, CheckCircle2
 import type { EmailControl, FinancialAccountControl } from '@sheild/shared';
 import { getEmailControl, getEmailStats, getAccountsByMessageId, getInvoiceNumbersByMessageIds, type EmailStats } from '../services/supabase';
 import { triggerEmailRead } from '../services/emailReader';
+import { suspendIdleLogout, resumeIdleLogout } from '../hooks/useIdleLogout';
 import { getErrorMessage } from '../lib/getErrorMessage';
 import StatusBadge from '../components/StatusBadge';
 import AttachmentViewer from '../components/AttachmentViewer';
@@ -33,6 +34,11 @@ interface EmailFilters {
 
 const EMPTY_FILTERS: EmailFilters = { status: '', sender: '', days: 7 };
 
+// Teto de linhas da tabela: janela ampla (all-time, days=0) carrega mais para a
+// Busca Geral exibir tudo; janela curta (com filtro de data) mantém o teto menor.
+const TABLE_LIMIT_DEFAULT = 200;
+const TABLE_LIMIT_ALL_TIME = 1000;
+
 export default function Emails() {
   const [rows, setRows] = useState<EmailControl[]>([]);
   const [stats, setStats] = useState<Partial<EmailStats>>({});
@@ -55,7 +61,11 @@ export default function Emails() {
     setLoading(true);
     setError(null);
     try {
-      const [data, st] = await Promise.all([getEmailControl(filters), getEmailStats()]);
+      const limit = filters.days ? TABLE_LIMIT_DEFAULT : TABLE_LIMIT_ALL_TIME;
+      const [data, st] = await Promise.all([
+        getEmailControl({ ...filters, limit }),
+        getEmailStats(),
+      ]);
       setRows(data);
       setStats(st);
     } catch (e) {
@@ -100,6 +110,18 @@ export default function Emails() {
     setError(null);
     setReadMsg(null);
     setReadElapsed(0);
+    // Suspende o logout por inatividade enquanto processa — o usuário pode ficar
+    // ocioso durante vários minutos de extração sem ser deslogado.
+    suspendIdleLogout();
+
+    // Alinha a janela da tabela ao período buscado, senão a tabela continuaria no
+    // filtro padrão de 7 dias e pareceria "trazer poucos e-mails" mesmo após uma
+    // busca ampla. readDays=0 (Busca Geral) → days=0 → tabela sem filtro de data
+    // (todos os períodos). 7/15/30 → mesma janela da busca.
+    if (mode === 'geral') {
+      setActiveCard(null);
+      setFilters({ status: '', sender: '', days: readDays });
+    }
 
     const start = Date.now();
     pollRef.current = setInterval(() => {
@@ -115,14 +137,19 @@ export default function Emails() {
       if (mode === 'geral') {
         criterio = readDays === 0 ? 'todos os e-mails' : `últimos ${readDays} dias`;
       }
+      const abortAviso = s.api_aborted
+        ? ' ⚠️ Processamento interrompido por limite da API — rode novamente para continuar.'
+        : '';
       setReadMsg(
-        `Busca concluída (${criterio}) — ${s.found} e-mail(s) no servidor, ` +
-          `${s.processed} novo(s) processado(s), ${s.skipped_dup} duplicado(s).`,
+        `Busca concluída (${criterio}) — ${s.found} no servidor · ` +
+          `${s.processed} financeiro(s) extraído(s) · ${s.skipped_keyword} ignorado(s) · ` +
+          `${s.skipped_dup} duplicado(s).${abortAviso}`,
       );
     } catch (e) {
       setError(getErrorMessage(e));
     } finally {
       if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; }
+      resumeIdleLogout();
       setReading(false);
       setReadMode(null);
       setReadElapsed(0);
@@ -165,7 +192,7 @@ export default function Emails() {
             <Inbox size={14} className={readMode === 'novos' ? 'animate-pulse' : ''} />
             {labelNovos}
           </button>
-          <div className="flex">
+          <div className="flex mx-2">
             <select
               className="input rounded-r-none border-r-0 w-44 text-sm"
               value={readDays}
@@ -214,9 +241,9 @@ export default function Emails() {
           {[
             {
               icon: Mail,
-              label: 'Total processados',
+              label: 'Total de e-mails',
               value: stats.total ?? 0,
-              sub: 'no email_control',
+              sub: 'na caixa (email_control)',
               cardId: 'total',
               filter: {},
             },

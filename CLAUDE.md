@@ -12,7 +12,7 @@ gravação no Supabase → consulta/exportação pela interface web.
 > 2026-06-09, o projeto adota o monorepo `apps/* + packages/shared` (npm workspaces),
 > mas o backend é **híbrido** — pontos onde ainda diverge do padrão genérico:
 > - **Pipeline Python permanece** (`server/` Flask + `skills/`): IMAP, extração de PDF
->   (Claude Vision + pdfplumber + Poppler). Não há equivalente TS viável; é o coração
+>   (Claude Vision via base64 + pdfplumber). Não há equivalente TS viável; é o coração
 >   do sistema e não foi reescrito.
 > - **`apps/api-backend`** (Next.js 16 + TypeScript, porta 3000) é a camada nova de
 >   dados/CRUD. Aciona o pipeline Python via **ponte HTTP** (`lib/python-bridge.ts` →
@@ -174,6 +174,10 @@ O acesso às rotas internas (`/emails`, `/consulta`, `/erros`) exige login.
   (exportado do mesmo hook) é usado no `AuthContext.init()` para deslogar já na reabertura
   quando o período ocioso herdado expirou — assim "Lembrar-me" mantém a sessão por **no
   máximo 10 min** entre reaberturas, sem flash de conteúdo protegido.
+- **Suspensão durante processamento**: `suspendIdleLogout()`/`resumeIdleLogout()`
+  (contador no `useIdleLogout`) pausam o teto de inatividade enquanto a leitura de
+  e-mails roda (`Emails.handleRead` suspende no início e retoma no `finally`, ambos os
+  modos). Evita logout no meio de um processamento longo; `resume` reinicia a janela.
 - Rotas protegidas: `ProtectedRoute.tsx` redireciona para `/auth/login` sem sessão.
 - RLS: migration `015` trocou policies de leitura de `TO anon` para `TO authenticated` —
   `services/supabase.ts` envia `access_token` no header `Authorization` (além do `apikey`).
@@ -198,9 +202,9 @@ IMAP (Locaweb SSL)                  apps/frontend-vite (React+Vite TS, :5173)
 read_emails.run_reader() ◄───────── server/app.py (Flask, porta 8000)
       │                                        ▲
       │ por e-mail:                            │ ponte HTTP (lib/python-bridge.ts)
-      │  1. filtra por palavra-chave no assunto│
-      │  2. deduplica via email_control.message_id (UNIQUE)
-      │  3. salva PDF em data/pdfs_inbox/   apps/api-backend (Next API, :3000)
+      │  1. deduplica via email_control.message_id (UNIQUE) — pula já vistos
+      │  2. SEM keyword no assunto → registra como 'ignorado' (sem baixar/extrair)
+      │  3. COM keyword → salva PDF em data/pdfs_inbox/  apps/api-backend (:3000)
       │  4. subprocess → extract_pdf.py (Claude API: pdf_text ou pdf_vision)
       │  5. UPSERT em email_control  +  fallback CSV em data/csv_output/
       ▼
@@ -427,7 +431,7 @@ normalizado → auto-insert em `supplier`. Função `normalize_search()` é SECU
 | Valor | Origem |
 |---|---|
 | `pdf_text` | PDF digital (pdfplumber) |
-| `pdf_vision` | PDF escaneado (Claude Vision, exige poppler) |
+| `pdf_vision` | PDF escaneado (Claude Vision via base64 — não exige poppler) |
 | `email_body` | Corpo do e-mail (sem PDF válido) |
 | `falha` | Falha na extração |
 
@@ -439,10 +443,23 @@ Acionado em `process_message()` quando `not has_att` ou `accounts_saved == 0`.
 o termo aparecer, `due_date` = data explícita ou `received_at` como fallback.
 `email_body_excerpt` (migration 016) guarda o corpo completo; exibido via `ExpandableText`.
 
-### Filtro de assunto — `KEYWORDS_DEFAULT`
+### Registrar TODOS os e-mails + filtro de assunto (`KEYWORDS_DEFAULT`)
 
-Linha ~60 de `read_emails.py`. Sobrescrito via `EMAIL_KEYWORDS` no `.env`.
-Comparação case-insensitive contra o assunto do e-mail.
+`run_reader()` registra **todos** os e-mails da caixa em `email_control` — `/emails`
+espelha o webmail inteiro (o app substitui abrir a caixa). O filtro de keyword decide
+**o que extrair**, não o que registrar:
+
+- **Dedup primeiro** (`message_id` em `known_ids`) → pula.
+- **Sem keyword** no assunto → `ctrl.register({... status:'ignorado'})` sem baixar/
+  extrair (`has_attachment` fica NULL para não poluir o KPI "Sem anexo"). Respeita
+  `--dry-run` (não grava).
+- **Com keyword** → `process_message` (baixa + extrai).
+
+Match é **substring** case-insensitive (`match_keyword`, ~linha 494): `transporte`
+pega "conhecimento de transporte". Lista padrão em `KEYWORDS_DEFAULT` (~linha 72),
+**sobrescrita por `EMAIL_KEYWORDS` no `.env`** (fonte de verdade usada hoje — ampliada
+com `transporte, conhecimento de transporte, frete, honorá, título, vencer, unimed,
+tributo, taxa, gnre`, etc.). Evitar tokens curtos ambíguos (`das` casaria "vendas").
 
 ### Frontend — rotas e serviços
 
