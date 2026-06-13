@@ -5,6 +5,8 @@ import {
   markIdleActivityNow,
   clearIdleActivity,
   isIdleExpired,
+  suspendIdleLogout,
+  resumeIdleLogout,
 } from './useIdleLogout';
 
 const STORAGE_KEY = 'pag:last-activity';
@@ -69,6 +71,30 @@ describe('useIdleLogout', () => {
     });
 
     expect(onTimeout).not.toHaveBeenCalled();
+  });
+
+  it('suspenso (processamento) não desloga; retoma após resume', () => {
+    const onTimeout = vi.fn();
+    render(<Harness enabled timeoutMs={TIMEOUT_MS} onTimeout={onTimeout} />);
+
+    suspendIdleLogout();
+    act(() => {
+      vi.advanceTimersByTime(TIMEOUT_MS * 2); // ocioso muito além do limite
+    });
+    expect(onTimeout).not.toHaveBeenCalled();
+
+    // Ao retomar, a janela reinicia (markIdleActivityNow) — ainda não desloga.
+    resumeIdleLogout();
+    act(() => {
+      vi.advanceTimersByTime(TIMEOUT_MS - 60_000);
+    });
+    expect(onTimeout).not.toHaveBeenCalled();
+
+    // Passado o limite após o resume, volta a deslogar normalmente.
+    act(() => {
+      vi.advanceTimersByTime(120_000);
+    });
+    expect(onTimeout).toHaveBeenCalledTimes(1);
   });
 });
 

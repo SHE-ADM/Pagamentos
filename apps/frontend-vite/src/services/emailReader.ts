@@ -13,6 +13,9 @@ interface ReaderSummary {
   skipped_dup: number;
   new_subjects: string[];
   dry_run: boolean;
+  // true quando o run foi interrompido por indisponibilidade da API Anthropic
+  // (crédito/limite) — os e-mails restantes não foram processados.
+  api_aborted?: boolean;
 }
 
 interface TriggerEmailReadOptions {
