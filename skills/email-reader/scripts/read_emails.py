@@ -1366,6 +1366,15 @@ def process_message(mail, uid: bytes, keywords: list,
         log.error(f"  Erro UID {uid}: {e}")
         ctrl.register_error(rec, "processamento_erro", str(e))
 
+    # 'recebido' = casou keyword, mas SEM PDF e SEM conta criada (nem por anexo
+    # nem pelo corpo) — não-acionável. Reclassifica como 'ignorado': mais honesto
+    # que "pendente" e alinhado aos demais ignorados (fora do KPI de revisão).
+    if not rec.get("status") and ctrl._derive_status(rec) == "recebido":
+        rec["status"] = "ignorado"
+        rec["has_attachment"] = None
+        if not rec.get("notes"):
+            rec["notes"] = "Sem PDF e sem conta — tratado como ignorado"
+
     # Gravar no Supabase e no CSV local (fallback)
     ctrl.register(rec)
     append_log_csv(rec)
