@@ -5,6 +5,7 @@ import { Link, useNavigate } from 'react-router-dom';
 import { Eye, EyeOff } from 'lucide-react';
 import { loginSchema, type LoginInput } from '@sheild/shared';
 import { supabase } from '../../lib/supabaseClient';
+import { setRememberPreference, getRememberPreference } from '../../lib/authStorage';
 import FilledTextField from '../atoms/FilledTextField';
 import AccentPillButton from '../atoms/AccentPillButton';
 import SocialLinksBar from '../molecules/SocialLinksBar';
@@ -12,7 +13,9 @@ import SocialLinksBar from '../molecules/SocialLinksBar';
 export default function LoginForm() {
   const navigate = useNavigate();
   const [showPassword, setShowPassword] = useState(false);
-  const [remember, setRemember] = useState(true);
+  // Inicializa refletindo a última escolha salva — uma vez marcado, permanece
+  // marcado nas próximas sessões até o usuário desmarcar.
+  const [remember, setRemember] = useState(getRememberPreference);
   const [serverError, setServerError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
 
@@ -24,6 +27,9 @@ export default function LoginForm() {
   const onSubmit = async (data: LoginInput) => {
     setServerError(null);
     setLoading(true);
+    // Define onde a sessão será persistida ANTES do signIn, para que o token
+    // recém-emitido já vá para o storage correto (local vs session).
+    setRememberPreference(remember);
     const { error } = await supabase.auth.signInWithPassword({
       email: data.email,
       password: data.password,
@@ -37,10 +43,10 @@ export default function LoginForm() {
   };
 
   return (
-    <form onSubmit={handleSubmit(onSubmit)} className="flex flex-col gap-5 w-full">
+    <form onSubmit={handleSubmit(onSubmit)} className="flex flex-col gap-3 w-full">
       {/* Cabeçalho */}
       <div className="flex flex-col gap-1.5">
-        <h1 className="text-4xl font-extrabold text-loginGreen-ink tracking-tight leading-none">Login</h1>
+        <h1 className="text-3xl font-extrabold text-loginGreen-ink tracking-tight leading-none">Login</h1>
         <p className="text-lg font-medium text-loginGreen-accent">Boas-vindas! Faça seu login.</p>
       </div>
 
@@ -93,9 +99,9 @@ export default function LoginForm() {
             type="checkbox"
             checked={remember}
             onChange={(e) => setRemember(e.target.checked)}
-            className="w-4.5 h-4.5 accent-loginGreen-borderFocus cursor-pointer flex-shrink-0"
+            className="w-4 h-4 accent-loginGreen-borderFocus cursor-pointer flex-shrink-0"
           />
-          Lembrar-me
+          <span>Lembrar-me</span>
         </label>
         <Link
           to="/auth/forgot-password"
@@ -111,7 +117,7 @@ export default function LoginForm() {
       )}
 
       {/* Botão Login */}
-      <AccentPillButton type="submit" loading={loading} loadingLabel="Entrando…">
+      <AccentPillButton type="submit" loading={loading} loadingLabel="Entrando…" className="my-3">
         Login
       </AccentPillButton>
 

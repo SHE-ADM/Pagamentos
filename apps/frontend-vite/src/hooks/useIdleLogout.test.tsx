@@ -1,6 +1,11 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, act } from '@testing-library/react';
-import { useIdleLogout, markIdleActivityNow, clearIdleActivity } from './useIdleLogout';
+import {
+  useIdleLogout,
+  markIdleActivityNow,
+  clearIdleActivity,
+  isIdleExpired,
+} from './useIdleLogout';
 
 const STORAGE_KEY = 'pag:last-activity';
 const TIMEOUT_MS = 10 * 60_000; // 10 minutos
@@ -80,5 +85,25 @@ describe('marcadores de atividade (helpers)', () => {
 
     clearIdleActivity();
     expect(localStorage.getItem(STORAGE_KEY)).toBeNull();
+  });
+});
+
+describe('isIdleExpired', () => {
+  beforeEach(() => {
+    localStorage.clear();
+  });
+
+  it('true quando o marcador herdado é mais antigo que o limite', () => {
+    localStorage.setItem(STORAGE_KEY, String(Date.now() - 15 * 60_000));
+    expect(isIdleExpired(TIMEOUT_MS)).toBe(true);
+  });
+
+  it('false quando a atividade é recente', () => {
+    markIdleActivityNow();
+    expect(isIdleExpired(TIMEOUT_MS)).toBe(false);
+  });
+
+  it('false quando não há marcador (trata como atividade agora)', () => {
+    expect(isIdleExpired(TIMEOUT_MS)).toBe(false);
   });
 });

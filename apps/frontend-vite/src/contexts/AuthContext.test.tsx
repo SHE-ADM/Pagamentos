@@ -98,6 +98,20 @@ describe('AuthContext', () => {
     expect(signOut).not.toHaveBeenCalled();
   });
 
+  it('sessão persistida + inatividade expirada → signOut sem validar via getUser', async () => {
+    const user = { id: '1', email: 'admin@sheild.app.br' };
+    getSession.mockResolvedValue({ data: { session: { user } } });
+    signOut.mockResolvedValue({ error: null });
+    // Marcador de atividade antigo (15 min) → teto de 10 min já estourado.
+    localStorage.setItem(IDLE_KEY, String(Date.now() - 15 * 60_000));
+
+    renderProvider();
+
+    expect(await screen.findByText('anon')).toBeInTheDocument();
+    expect(signOut).toHaveBeenCalled();
+    expect(getUser).not.toHaveBeenCalled();
+  });
+
   it('SIGNED_IN marca atividade de inatividade; SIGNED_OUT limpa o marcador', async () => {
     getSession.mockResolvedValue({ data: { session: null } });
 
