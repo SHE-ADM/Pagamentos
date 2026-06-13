@@ -408,6 +408,17 @@ Gravado em `email_control.message_id` (UNIQUE). `register()` usa
 atualizar o registro existente. Fallback local em CSV quando Supabase indisponível
 (`SupabaseControl._available`).
 
+### Dedup de conteúdo + reemissão (`financial_account_control`)
+
+Além do dedup por `message_id`, `find_financial_duplicate(payload)` evita gravar o
+**mesmo documento** chegado em e-mails diferentes. Casa por 3 impressões: (1) barcode;
+(2) fornecedor + `invoice_number` (≥6) + valor — pega **guia/DAS reemitida** com o mesmo
+número e vencimento novo; (3) fornecedor + valor + vencimento + tipo. Quando encontra
+duplicata, `extract_and_store_accounts` **não cria outra conta**: se a reemissão tem
+vencimento **mais recente**, chama `update_financial` para atualizar `due_date` + boleto
+(`barcode`, `amount_charged`, `fine_interest`, `other_additions`) na conta existente — uma
+guia paga uma vez, sempre com o boleto válido. A trigger recalcula `due_status` no UPDATE.
+
 ### Duas chaves Supabase, dois papéis
 
 - **`anon`** (`VITE_SUPABASE_ANON_KEY`): frontend — leitura REST, respeita RLS `TO authenticated`.
@@ -417,7 +428,8 @@ atualizar o registro existente. Fallback local em CSV quando Supabase indisponí
 
 `extract_pdf.py` usa `_ns()` (strip de acentos + lowercase) para lookup em `_DOC_TYPE_NORM`.
 CHECK constraint em `financial_account_control.document_type` usa `lower()` (migration 014).
-Tipos aceitos: `boleto`, `cte`, `nfe`, `nfse`, `tributo`, `seguro`, `fatura`, `recibo`, `contrato`, `outro`.
+Tipos aceitos incluem: `boleto`, `cte`, `nfe`, `nfse`, `tributo`, `das`, `pix`, `seguro`,
+`fatura`, `recibo`, `contrato`, `outro` (DAS de Simples Nacional → `das`; PIX → `pix`).
 `SKIP_ACCOUNT_TYPES = ['nfe', 'nfse']` — não geram conta a pagar.
 
 ### Auto-resolução de fornecedor
@@ -454,6 +466,9 @@ espelha o webmail inteiro (o app substitui abrir a caixa). O filtro de keyword d
   extrair (`has_attachment` fica NULL para não poluir o KPI "Sem anexo"). Respeita
   `--dry-run` (não grava).
 - **Com keyword** → `process_message` (baixa + extrai).
+- **Casou keyword mas sem PDF e sem conta** (não-acionável) → também vira `ignorado`
+  (`has_attachment` NULL), em vez de `recebido`. Decidido em `process_message` antes do
+  `register`: se o status derivado seria `recebido`, grava `ignorado`.
 
 Match é **substring** case-insensitive (`match_keyword`, ~linha 494): `transporte`
 pega "conhecimento de transporte". Lista padrão em `KEYWORDS_DEFAULT` (~linha 72),
@@ -475,11 +490,11 @@ tributo, taxa, gnre`, etc.). Evitar tokens curtos ambíguos (`das` casaria "vend
 ## Banco de dados (Supabase)
 
 Migrations em `supabase/migrations/`, aplicadas **manualmente no SQL Editor** em ordem
-numérica (`001` → `020`). Não há migration automática.
+numérica (`001` → `021`). Não há migration automática.
 
 | Tabela | Propósito |
 |---|---|
-| `email_control` | Dedup/controle. `status` ∈ (recebido, baixado, extraído, falha, ignorado) — migration 019 |
+| `email_control` | Dedup/controle. CHECK aceita (recebido, baixado, extraído, falha, ignorado) — migration 019. **`recebido` não é mais produzido**: e-mail que casou keyword mas ficou sem PDF e sem conta vira `ignorado` (ver "Registrar TODOS os e-mails"); permanece no CHECK por compat |
 | `financial_account_control` | Tabela principal de contas a pagar — uma linha por documento; alimentada pelo pipeline de e-mail **e** por CRUD manual (baixas, consolidações, dashboards). Substitui a antiga `financial_emails` (dropada na migration 020) |
 | `email_processing_errors` | Log de falhas com `raw_payload` JSON |
 | `supplier` | Fornecedores auto-criados pelo trigger |
@@ -502,5 +517,8 @@ RLS habilitado em todas as tabelas. Policies de leitura são `TO authenticated`
 (ordem: `py -3.12`, `-3.13`, `-3.11`, `-3.10`, `-3`, PATH). Logs em
 `logs/scheduler/reader_YYYYMMDD.log`, retidos 30 dias.
 
-Produção: `C:\Sheild\API\Pagamentos` (dev: `C:\Sheild\Projetos\Claude\Contas a pagar\Pagamentos`).
+Dev/único checkout: `C:\Sheild\Projetos\Claude\Contas a pagar\Pagamentos` (branch `Features`,
+sincronizado com `main`). **Não há checkout de produção separado** — `C:\Sheild\API\Pagamentos`
+(citado em versões antigas) não existe como repositório. Para provisionar produção no futuro,
+clonar o `main` no destino; até lá, app e scheduler rodam deste diretório.
 
