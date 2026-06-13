@@ -129,7 +129,7 @@ export interface EmailStats {
   withPdf: number;
   extracted: number;
   semPdf: number;
-  soRecebidos: number;
+  awaitingExtraction: number;
 }
 
 export async function getEmailStats(): Promise<EmailStats> {
@@ -137,7 +137,7 @@ export async function getEmailStats(): Promise<EmailStats> {
     query<{ id: number }[]>('email_control', { select: 'id', limit: 1000 }),
     query<{ id: number }[]>('email_control', { select: 'id', has_attachment: 'eq.true', limit: 1000 }),
     query<{ id: number }[]>('email_control', { select: 'id', pdf_extracted: 'eq.true', limit: 1000 }),
-    // Tem anexo mas ainda não foi extraído — fonte de verdade para o card "Só recebidos".
+    // Tem anexo mas ainda não foi extraído — fonte de verdade para o card "Aguardando extração".
     query<{ id: number }[]>('email_control', {
       select: 'id',
       has_attachment: 'eq.true',
@@ -150,7 +150,7 @@ export async function getEmailStats(): Promise<EmailStats> {
     withPdf: withPdf.length,
     extracted: extracted.length,
     semPdf: all.length - withPdf.length,
-    soRecebidos: pendingExtraction.length,
+    awaitingExtraction: pendingExtraction.length,
   };
 }
 

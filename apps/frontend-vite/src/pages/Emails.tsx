@@ -265,10 +265,10 @@ export default function Emails() {
             },
             {
               icon: CopyMinus,
-              label: 'Só recebidos',
-              value: stats.soRecebidos ?? 0,
-              sub: 'aguardando',
-              cardId: 'sorecebidos',
+              label: 'Aguardando extração',
+              value: stats.awaitingExtraction ?? 0,
+              sub: 'com anexo, sem extração',
+              cardId: 'aguardando',
               filter: { hasAttachment: true, pdfExtracted: false },
             },
           ].map(({ icon: Icon, label, value, sub, cardId, filter }) => {
@@ -304,7 +304,7 @@ export default function Emails() {
           />
           <select className="input w-40" value={filters.status} onChange={(e) => setF('status', e.target.value)}>
             <option value="">Todos os status</option>
-            {['extraído', 'baixado', 'recebido', 'falha', 'ignorado'].map((s) => (
+            {['extraído', 'baixado', 'falha', 'ignorado'].map((s) => (
               <option key={s} value={s}>
                 {s}
               </option>
