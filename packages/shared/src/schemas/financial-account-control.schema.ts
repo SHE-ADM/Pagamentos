@@ -34,6 +34,7 @@ export const DOCUMENT_TYPES = [
   'gare',
   'tributo',
   'pix',
+  'honorários',
 ] as const;
 
 export const EXTRACTION_SOURCES = [

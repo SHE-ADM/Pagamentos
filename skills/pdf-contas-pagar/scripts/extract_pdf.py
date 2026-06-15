@@ -108,7 +108,8 @@ EXTRACTION_PROMPT = (
     "  Tipos gerais: boleto (cobrancas bancarias, carnes, faturas de servico avulso) | "
     "seguro (apolices, premios de seguro) | fechamento (extrato mensal, fatura de fechamento) | "
     "CT-e (Conhecimento de Transporte, DACTE) | NF-e (DANFE, Nota Fiscal Eletronica) | "
-    "nfse (Nota Fiscal de Servicos Eletronica) | recibo | contrato | outro\n"
+    "nfse (Nota Fiscal de Servicos Eletronica) | recibo | contrato | "
+    "honorários (recibo/cobranca de honorarios advocaticios, contabeis ou profissionais) | outro\n"
     "  Tributos — use o subtipo especifico quando identificado:\n"
     "  DARF (Documento de Arrecadacao de Receitas Federais) | "
     "GPS (Guia da Previdencia Social) | "
@@ -237,6 +238,11 @@ _DOC_TYPE_NORM = {
     _ns("cobrança"):   "boleto",
     _ns("outros"):     "outro",
     _ns("outro"):      "outro",
+    # Honorários (serviços profissionais — advocatícios/contábeis); pagamento PIX.
+    _ns("honorario"):              "honorários",
+    _ns("honorarios"):             "honorários",
+    _ns("honorarios advocaticios"): "honorários",
+    _ns("recibo de honorarios"):   "honorários",
     # Subtipos de tributo
     _ns("darf"):            "DARF",
     _ns("gps"):             "GPS",
