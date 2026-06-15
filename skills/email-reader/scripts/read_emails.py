@@ -86,6 +86,8 @@ KEYWORDS_DEFAULT = [
     "seguro",
     # Honorários (serviços profissionais — geralmente pagos via PIX)
     "honorário", "honorários", "honorario", "honorarios",
+    # Container (frete/demurrage/movimentação de contêineres)
+    "container", "conteiner", "contêiner",
 ]
 
 LOG_COLUMNS = [
@@ -763,6 +765,8 @@ _BODY_DOC_KEYWORDS: list[tuple[str, list[str]]] = [
     ("nfe",        ["nota fiscal eletronica", "danfe", "nf-e", "nfe"]),
     # Honorários (serviços profissionais) — tipo próprio; pagamento sempre PIX.
     ("honorários", ["honorario", "honorarios"]),
+    # Container (frete/demurrage/movimentação de contêineres).
+    ("container",  ["container", "conteiner"]),
     ("DARF",       ["darf"]),
     ("GPS",        ["guia da previdencia social", "guia previdencia social", "gps"]),
     ("DAS",        ["simples nacional", "das-simples", "das simples",
@@ -1324,6 +1328,7 @@ def extract_and_store_accounts(saved_pdfs: list, message_id: str,
             payload = build_financial_payload(row, gmid, received_at=err_ctx.get("received_at"))
             # Remetente do e-mail → o trigger alinha supplier.email (migration 023).
             payload["sender_email"] = err_ctx.get("sender_email")
+            payload["subject"]      = err_ctx.get("subject")  # exibido/buscado em /consulta (migration 025)
             ctx     = {**err_ctx, "source_file": row.get("source_file")}
 
             # Validacao 1: valor ausente ou zero
@@ -1410,6 +1415,7 @@ def try_extract_from_body(email_rec: dict, body_text: str, received_at: str,
 
     # Remetente do e-mail → o trigger alinha supplier.email (migration 023).
     payload["sender_email"] = sender_email
+    payload["subject"]      = email_rec.get("subject")  # exibido/buscado em /consulta (migration 025)
 
     # Mesma trava do caminho de PDF: NF-e/NFS-e nao geram conta a pagar.
     # Sem isso, notificacoes de nota fiscal (ex.: NFe da Editora Globo) vazavam

@@ -496,9 +496,10 @@ guia paga uma vez, sempre com o boleto válido. A trigger recalcula `due_status`
 
 `extract_pdf.py` usa `_ns()` (strip de acentos + lowercase) para lookup em `_DOC_TYPE_NORM`.
 CHECK constraint em `financial_account_control.document_type` usa `lower()` (migrations 014,
-017 e **024**). Tipos aceitos incluem: `boleto`, `cte`, `nfe`, `nfse`, `tributo`, `das`,
-`pix`, `seguro`, `fatura`, `recibo`, `contrato`, `honorários`, `outro` (DAS de Simples
-Nacional → `das`; PIX → `pix`).
+017, **024** e **026**). Tipos aceitos incluem: `boleto`, `cte`, `nfe`, `nfse`, `tributo`,
+`das`, `pix`, `seguro`, `fatura`, `recibo`, `contrato`, `honorários`, `container`, `outro`
+(DAS de Simples Nacional → `das`; PIX → `pix`). `container` = frete/demurrage/movimentação de
+contêineres (keyword de assunto + classificação no corpo e PDF; migration 026).
 `SKIP_ACCOUNT_TYPES = ['nfe', 'nfse']` — não geram conta a pagar.
 
 **Regra honorários** (migration 024): e-mail de honorários (keyword de assunto `honorário`;
@@ -633,7 +634,7 @@ numérica (`001` → `023`). Não há migration automática.
 | Tabela | Propósito |
 |---|---|
 | `email_control` | Dedup/controle. `status` ∈ (`extraído`, `recebido`, `pendente`, `falha`, `ignorado`) — **migration 022**. `extraído`=PDF extraído (CSV gerado); `recebido`=sem PDF, conta via corpo; `pendente`=PDF salvo sem CSV (substitui `baixado`); `falha`=casou keyword mas sem PDF e sem conta no corpo; `ignorado`=não-financeiro. O status é calculado em `process_message` pelo resultado real (CSV gerado/corpo), não por `pdf_extracted` |
-| `financial_account_control` | Tabela principal de contas a pagar — uma linha por documento; alimentada pelo pipeline de e-mail **e** por CRUD manual (baixas, consolidações, dashboards). Substitui a antiga `financial_emails` (dropada na migration 020). Tem `sender_email` (migration 023) que o trigger usa p/ alinhar `supplier.email` |
+| `financial_account_control` | Tabela principal de contas a pagar — uma linha por documento; alimentada pelo pipeline de e-mail **e** por CRUD manual (baixas, consolidações, dashboards). Substitui a antiga `financial_emails` (dropada na migration 020). Tem `sender_email` (migration 023; backfill em 025) que o trigger usa p/ alinhar `supplier.email`, e `subject` (migration 025) — ambos com backfill SQL de `email_control` e exibidos/buscados em `/consulta` |
 | `email_processing_errors` | Log de falhas com `raw_payload` JSON |
 | `supplier` | Fornecedores auto-criados pelo trigger. `email` alinhado com `email_control.sender_email` (migration 023) |
 

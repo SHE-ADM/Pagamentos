@@ -109,7 +109,8 @@ EXTRACTION_PROMPT = (
     "seguro (apolices, premios de seguro) | fechamento (extrato mensal, fatura de fechamento) | "
     "CT-e (Conhecimento de Transporte, DACTE) | NF-e (DANFE, Nota Fiscal Eletronica) | "
     "nfse (Nota Fiscal de Servicos Eletronica) | recibo | contrato | "
-    "honorários (recibo/cobranca de honorarios advocaticios, contabeis ou profissionais) | outro\n"
+    "honorários (recibo/cobranca de honorarios advocaticios, contabeis ou profissionais) | "
+    "container (frete/demurrage/movimentacao de conteineres) | outro\n"
     "  Tributos — use o subtipo especifico quando identificado:\n"
     "  DARF (Documento de Arrecadacao de Receitas Federais) | "
     "GPS (Guia da Previdencia Social) | "
@@ -184,6 +185,8 @@ EXTRACTION_PROMPT = (
 )
 
 _DAM_DUAM = "DAM / DUAM"
+_HONORARIOS = "honorários"
+_CONTAINER = "container"
 
 KEYWORDS = {
     # CT-e antes de NF-e: ambos tem "chave de acesso", mas CT-e e mais especifico.
@@ -239,10 +242,14 @@ _DOC_TYPE_NORM = {
     _ns("outros"):     "outro",
     _ns("outro"):      "outro",
     # Honorários (serviços profissionais — advocatícios/contábeis); pagamento PIX.
-    _ns("honorario"):              "honorários",
-    _ns("honorarios"):             "honorários",
-    _ns("honorarios advocaticios"): "honorários",
-    _ns("recibo de honorarios"):   "honorários",
+    _ns("honorario"):              _HONORARIOS,
+    _ns("honorarios"):             _HONORARIOS,
+    _ns("honorarios advocaticios"): _HONORARIOS,
+    _ns("recibo de honorarios"):   _HONORARIOS,
+    # Container (frete/demurrage/movimentação de contêineres).
+    _ns("container"):  _CONTAINER,
+    _ns("conteiner"):  _CONTAINER,
+    _ns("contêiner"):  _CONTAINER,
     # Subtipos de tributo
     _ns("darf"):            "DARF",
     _ns("gps"):             "GPS",

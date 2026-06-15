@@ -195,11 +195,11 @@ export async function getFinancialAccountControl({
   url.searchParams.set('order', sortCol ? `${sortCol}.${sortDir ?? 'asc'}` : 'issue_date.desc');
   url.searchParams.set('limit', String(pageSize));
   url.searchParams.set('offset', String(offset));
-  // or= em três colunas: nome, CNPJ/CPF e nº documento
+  // or= em cinco colunas: nome, CNPJ/CPF, nº documento, assunto e remetente
   if (supplier) {
     url.searchParams.set(
       'or',
-      `(supplier_name.ilike.*${supplier}*,supplier_cnpj.ilike.*${supplier}*,invoice_number.ilike.*${supplier}*)`,
+      `(supplier_name.ilike.*${supplier}*,supplier_cnpj.ilike.*${supplier}*,invoice_number.ilike.*${supplier}*,subject.ilike.*${supplier}*,sender_email.ilike.*${supplier}*)`,
     );
   }
   if (docType) url.searchParams.set('document_type', `eq.${docType}`);

@@ -308,9 +308,9 @@ export default function Consulta() {
             <input
               id="consulta-supplier"
               name="consulta-supplier"
-              aria-label="Buscar por fornecedor, CNPJ ou número do documento"
+              aria-label="Buscar por fornecedor, CNPJ, número do documento, assunto ou remetente"
               className="input w-44"
-              placeholder="Fornecedor, CNPJ ou Nº doc…"
+              placeholder="Fornecedor, CNPJ, Nº doc, assunto ou remetente…"
               value={f.supplier}
               onChange={(e) => {
                 const val = e.target.value;
@@ -492,6 +492,8 @@ export default function Consulta() {
                               {(
                                 [
                                   ['Fornecedor', r.supplier_name],
+                                  ['Assunto', r.subject],
+                                  ['Remetente', r.sender_email],
                                   ['CNPJ', fmtCnpj(r.supplier_cnpj)],
                                   ['N° Documento', r.invoice_number],
                                   ['Competência', r.competence_date],

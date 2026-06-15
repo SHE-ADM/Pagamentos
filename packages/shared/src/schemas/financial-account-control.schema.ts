@@ -35,6 +35,7 @@ export const DOCUMENT_TYPES = [
   'tributo',
   'pix',
   'honorários',
+  'container',
 ] as const;
 
 export const EXTRACTION_SOURCES = [
@@ -143,6 +144,9 @@ export const financialAccountControlSchema = z.object({
 
   // Remetente do e-mail — alinha supplier.email no trigger (migration 023)
   sender_email: z.string().nullable(),
+
+  // Assunto do e-mail — exibido no card e buscável em /consulta (migration 025)
+  subject: z.string().nullable(),
 
   // Corpo do e-mail (quando extraction_source = 'email_body')
   email_body_excerpt: z.string().nullable(),
