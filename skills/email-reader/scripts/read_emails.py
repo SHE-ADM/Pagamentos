@@ -8,6 +8,7 @@ Nunca reprocessa um e-mail já registrado, independente de onde o script rodar.
 
 import os, sys, re, time, imaplib, email, argparse, logging, subprocess, csv, json, tempfile, faulthandler, unicodedata
 import urllib.request, urllib.error, http.cookiejar
+from html import unescape as html_unescape
 from email.header import decode_header
 from email.utils import parseaddr, parsedate_to_datetime
 from datetime import datetime, timezone, timedelta
@@ -1048,7 +1049,9 @@ def extract_pdf_links(text: str, html: str) -> list[str]:
     candidates, seen = [], set()
 
     def _add(url: str):
-        u = url.strip().rstrip(".,;)>\"'")
+        # Desescapa entidades HTML (&amp; → &) — links de boleto vêm escapados no
+        # HTML e quebrariam os parâmetros (ex.: SIEG/Vindi ?b=…&m=…&t=…).
+        u = html_unescape(url.strip()).rstrip(".,;)>\"'")
         # Ignora links que a Locaweb entende como suspeitos (redirect/ofuscados).
         if u and u not in seen and u.startswith("http") and not _is_suspicious_link(u):
             seen.add(u)
@@ -1163,7 +1166,9 @@ def download_pdf_from_url(url: str, sender_email: str, subject: str,
     log.info(f"    Página HTML recebida — buscando link PDF interno")
     html_text = data.decode("utf-8", errors="replace")
     for m in _LINK_HREF_RE.finditer(html_text):
-        inner_url   = m.group(1).strip()
+        # Desescapa &amp; etc. — ex.: SIEG linka o boleto na Vindi (?b=…&m=…&t=…),
+        # cujos parâmetros quebrariam se mantidos como &amp;.
+        inner_url   = html_unescape(m.group(1).strip())
         anchor_text = re.sub(r"<[^>]+>", "", m.group(2)).strip()
         if not inner_url.startswith("http"):
             continue
