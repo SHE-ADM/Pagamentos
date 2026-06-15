@@ -1,16 +1,18 @@
 // src/pages/Emails.tsx
-import { useState, useEffect, useCallback, useRef, Fragment } from 'react';
+import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { RefreshCw, Mail, FileCheck, AlertCircle, CopyMinus, Inbox, Ban, CalendarDays, X, Eye } from 'lucide-react';
 import type { EmailControl, FinancialAccountControl } from '@sheild/shared';
 import { getEmailControl, getEmailStats, getAccountsByMessageId, getInvoiceNumbersByMessageIds, type EmailStats } from '../services/supabase';
 import { triggerEmailRead } from '../services/emailReader';
 import { suspendIdleLogout, resumeIdleLogout } from '../hooks/useIdleLogout';
+import { getEmailColumns } from '../hooks/useGridColumns';
 import { getErrorMessage } from '../lib/getErrorMessage';
 import { getFailureReason } from '../lib/getFailureReason';
 import StatusBadge from '../components/StatusBadge';
 import Alert from '../components/atoms/Alert';
 import AttachmentViewer from '../components/AttachmentViewer';
 import ExpandableText from '../components/ExpandableText';
+import DataGrid from '../components/organisms/DataGrid';
 
 const fmt = (iso: string | null): string =>
   iso
@@ -178,6 +180,9 @@ export default function Emails() {
   const processingLabel = readElapsed > 0 ? `Processando (${readElapsed}s)` : 'Processando…';
   const labelNovos = readMode === 'novos' ? processingLabel : 'Busca Novos';
   const labelGeralBtn = readMode === 'geral' ? processingLabel : 'Executar';
+
+  // Colunas do grid resolvidas com o mapa de nº documento (message_id → nº).
+  const emailColumns = useMemo(() => getEmailColumns(invoiceMap), [invoiceMap]);
 
   return (
     <div className="flex flex-col h-full">
@@ -349,76 +354,21 @@ export default function Emails() {
         </div>
 
         <div className="card overflow-hidden mb-4">
-          <table className="w-full">
-            <thead>
-              <tr>
-                {['Nº Documento', 'Recebido', 'Remetente', 'Assunto', 'Keyword', 'PDF', 'Extração', 'Status'].map((h) => (
-                  <th key={h} className="table-header-silver">
-                    {h}
-                  </th>
-                ))}
-              </tr>
-            </thead>
-            <tbody>
-              {rows.length === 0 ? (
-                <tr>
-                  <td colSpan={8} className="py-12">
-                    <div className="flex flex-col items-center justify-center text-center gap-3">
-                      <div className="flex h-14 w-14 items-center justify-center rounded-full bg-zinc-100 text-zinc-300">
-                        <Inbox size={26} />
-                      </div>
-                      <p className="text-sm text-zinc-400 max-w-xs">
-                        {loading ? 'Buscando registros…' : 'Nenhum e-mail encontrado com os filtros aplicados'}
-                      </p>
-                    </div>
-                  </td>
-                </tr>
-              ) : (
-                rows.map((r) => (
-                  <Fragment key={r.id}>
-                    <tr
-                      className={`cursor-pointer transition-colors ${
-                        sel?.id === r.id
-                          ? 'bg-brand/5 border-l-2 border-brand'
-                          : 'bg-zinc-100 hover:bg-zinc-200/60'
-                      }`}
-                      onClick={() => setSel(sel?.id === r.id ? null : r)}
-                    >
-                      <td
-                        className="table-cell-silver text-xs font-mono w-px whitespace-nowrap max-w-[25ch] truncate"
-                        title={invoiceMap[r.message_id ?? ''] ?? ''}
-                      >
-                        {invoiceMap[r.message_id ?? ''] || '—'}
-                      </td>
-                      <td className="table-cell-silver text-xs font-mono whitespace-nowrap">{fmt(r.received_at)}</td>
-                      <td className="table-cell-silver text-xs font-mono max-w-[140px] truncate" title={r.sender_email ?? ''}>
-                        {r.sender_name || r.sender_email}
-                      </td>
-                      <td className="table-cell-silver text-xs font-mono max-w-[200px] truncate" title={r.subject ?? ''}>
-                        {r.subject}
-                      </td>
-                      <td className="table-cell-silver">
-                        <StatusBadge value={r.keyword_matched} />
-                      </td>
-                      <td className="table-cell-silver text-center text-xs font-mono">
-                        {r.has_attachment ? '✓' : <span className="text-zinc-300">—</span>}
-                      </td>
-                      <td className="table-cell-silver">
-                        {r.pdf_extracted ? (
-                          <StatusBadge value="extracted" />
-                        ) : (
-                          <span className="text-xs text-zinc-300">—</span>
-                        )}
-                      </td>
-                      <td className="table-cell-silver">
-                        <StatusBadge value={r.status} />
-                      </td>
-                    </tr>
-
-                    {sel?.id === r.id && (
-                      <tr>
-                        <td colSpan={8} className="p-0 border-b border-zinc-100">
-                          <div className="relative animate-fade-in-up bg-zinc-50/60 border-l-2 border-brand p-4">
+          <DataGrid
+            columns={emailColumns}
+            rows={rows}
+            rowKey={(r) => String(r.id)}
+            selectedId={sel ? String(sel.id) : null}
+            onRowClick={(r) => setSel(sel?.id === r.id ? null : r)}
+            sortCol={null}
+            sortDir={null}
+            onSort={() => undefined}
+            loading={loading}
+            emptyMessage={loading ? 'Buscando registros…' : 'Nenhum e-mail encontrado com os filtros aplicados'}
+            ariaLabel="Recebimento de e-mails"
+            variant="silver"
+            renderDetail={(r) => (
+                          <div className="relative bg-zinc-50/60 border-l-2 border-brand p-4">
                             <button
                               onClick={(e) => { e.stopPropagation(); setSel(null); }}
                               className="absolute right-3 top-3 flex h-7 w-7 items-center justify-center rounded-full text-zinc-400 hover:bg-zinc-200/60 hover:text-zinc-600 transition-colors"
@@ -506,14 +456,8 @@ export default function Emails() {
                               </div>
                             )}
                           </div>
-                        </td>
-                      </tr>
-                    )}
-                  </Fragment>
-                ))
-              )}
-            </tbody>
-          </table>
+            )}
+          />
         </div>
 
       </div>

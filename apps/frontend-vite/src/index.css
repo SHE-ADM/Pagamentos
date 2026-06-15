@@ -54,6 +54,19 @@
   .table-cell {
     @apply px-3 py-2.5 text-sm text-slate-700 border-b border-slate-100;
   }
+  /* Linha secundária do DataGrid (md/sm): campos ocultos em formato denso.
+     font-size cru (0.65rem) — auto-contido, sem depender de token no @apply. */
+  .table-cell-secondary {
+    @apply px-3 py-1 text-slate-400 border-b border-slate-100 bg-slate-50/30;
+    font-size: 0.65rem;
+    line-height: 1rem;
+  }
+  /* Linha secundária — variante prata (zinc) para o grid de /emails. */
+  .table-cell-secondary-silver {
+    @apply px-3 py-1 text-zinc-400 border-b border-zinc-100 bg-zinc-50/30;
+    font-size: 0.65rem;
+    line-height: 1rem;
+  }
   /* Variante prata — usada em /emails para diferenciar visualmente de /consulta */
   .table-header-silver {
     @apply text-xs font-medium text-zinc-400 uppercase tracking-widest

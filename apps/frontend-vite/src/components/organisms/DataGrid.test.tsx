@@ -1,0 +1,116 @@
+import { describe, it, expect, vi, afterEach } from 'vitest';
+import { render, screen } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
+import DataGrid from './DataGrid';
+import type { ColumnDef } from '../../hooks/useGridColumns';
+
+interface Row {
+  id: number;
+  name: string;
+  tipo: string;
+}
+
+const COLUMNS: ColumnDef<Row>[] = [
+  { key: 'name', header: 'Nome', sortKey: 'name', render: (r) => r.name },
+  {
+    key: 'tipo',
+    header: 'Tipo',
+    hideOn: ['sm', 'md'],
+    secondLine: true,
+    secondLineLabel: 'Tipo',
+    render: (r) => r.tipo,
+  },
+];
+
+const ROWS: Row[] = [
+  { id: 1, name: 'Alpha', tipo: 'boleto' },
+  { id: 2, name: 'Beta', tipo: 'pix' },
+];
+
+const baseProps = {
+  columns: COLUMNS,
+  rows: ROWS,
+  rowKey: (r: Row) => String(r.id),
+  onRowClick: vi.fn(),
+  sortCol: null,
+  sortDir: null,
+  onSort: vi.fn(),
+};
+
+// Força o breakpoint 'sm' (nenhuma media query de min-width casa) para os testes
+// de responsividade; restaurado em afterEach pelo restoreAllMocks.
+const mockBreakpointSm = (): void => {
+  vi.spyOn(globalThis, 'matchMedia').mockImplementation((query: string) => ({
+    matches: false,
+    media: query,
+    onchange: null,
+    addEventListener: () => undefined,
+    removeEventListener: () => undefined,
+    addListener: () => undefined,
+    removeListener: () => undefined,
+    dispatchEvent: () => false,
+  }));
+};
+
+afterEach(() => {
+  vi.restoreAllMocks();
+});
+
+describe('DataGrid', () => {
+  it('renderiza cabeçalhos e linhas', () => {
+    render(<DataGrid {...baseProps} />);
+    expect(screen.getByRole('columnheader', { name: /Nome/ })).toBeInTheDocument();
+    expect(screen.getByText('Alpha')).toBeInTheDocument();
+    expect(screen.getByText('Beta')).toBeInTheDocument();
+  });
+
+  it('aciona onSort com o sortKey ao clicar em cabeçalho ordenável', async () => {
+    const onSort = vi.fn();
+    render(<DataGrid {...baseProps} onSort={onSort} />);
+    await userEvent.click(screen.getByText('Nome'));
+    expect(onSort).toHaveBeenCalledWith('name');
+  });
+
+  it('aciona onRowClick com a linha ao clicar nela', async () => {
+    const onRowClick = vi.fn();
+    render(<DataGrid {...baseProps} onRowClick={onRowClick} />);
+    await userEvent.click(screen.getByText('Alpha'));
+    expect(onRowClick).toHaveBeenCalledWith(ROWS[0]);
+  });
+
+  it('renderiza o painel de detalhe apenas da linha selecionada', () => {
+    render(
+      <DataGrid
+        {...baseProps}
+        selectedId="1"
+        renderDetail={(r) => <div>Detalhe de {r.name}</div>}
+      />,
+    );
+    expect(screen.getByText('Detalhe de Alpha')).toBeInTheDocument();
+    expect(screen.queryByText('Detalhe de Beta')).not.toBeInTheDocument();
+  });
+
+  it('mostra a mensagem de vazio quando não há linhas', () => {
+    render(<DataGrid {...baseProps} rows={[]} emptyMessage="Nada aqui" />);
+    expect(screen.getByText('Nada aqui')).toBeInTheDocument();
+  });
+
+  it('usa o aria-label informado na tabela', () => {
+    render(<DataGrid {...baseProps} ariaLabel="Recebimento de e-mails" />);
+    expect(screen.getByRole('table', { name: 'Recebimento de e-mails' })).toBeInTheDocument();
+  });
+
+  it('aplica o tema prata (silver) nos cabeçalhos', () => {
+    render(<DataGrid {...baseProps} variant="silver" />);
+    expect(screen.getByRole('columnheader', { name: /Nome/ })).toHaveClass('table-header-silver');
+  });
+
+  it('em telas pequenas (sm) desce a coluna marcada para a segunda linha', () => {
+    mockBreakpointSm();
+    render(<DataGrid {...baseProps} />);
+    // 'Tipo' some do cabeçalho principal...
+    expect(screen.queryByRole('columnheader', { name: /Tipo/ })).not.toBeInTheDocument();
+    // ...e reaparece como rótulo da linha secundária (uma por registro).
+    expect(screen.getAllByText('Tipo:')).toHaveLength(ROWS.length);
+  });
+});
