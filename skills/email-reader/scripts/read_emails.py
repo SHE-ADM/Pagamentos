@@ -676,12 +676,35 @@ def _to_decimal(value, default):
 # Termos podem aparecer em qualquer caixa/acentuacao ("Pix"/"PIX"/"pix",
 # "Responsável"/"responsavel") — os regex abaixo sao case-insensitive e
 # cobrem a unica variacao de acento relevante ("respons[aá]vel").
-_BODY_NAME_RE    = re.compile(r"(?im)^[ \t]*(?:nome|respons[aá]vel)[ \t]*[:\-]?[ \t]*(.+?)[ \t]*$")
+# Rotulos de fornecedor (fornecedor/favorecido/...) vem antes dos genericos
+# (nome/responsavel) para terem prioridade. Separador ":"/"-" e OBRIGATORIO,
+# para nao casar frases que apenas comecam por "Empresa..." etc.
+_BODY_NAME_RE    = re.compile(
+    r"(?im)^[ \t]*(?:fornecedor|favorecido|benefici[aá]rio|cedente|"
+    r"raz[aã]o\s+social|empresa|nome|respons[aá]vel)[ \t]*[:\-][ \t]*(.+?)[ \t]*$"
+)
 _BODY_AMOUNT_RE  = re.compile(r"R\$\s*([\d.,]+)")
 _BODY_PIX_RE     = re.compile(r"\bpix\b", re.IGNORECASE)
 _BODY_DUE_RE     = re.compile(r"(?i)venc(?:imento|to)?\D{0,15}?(\d{2}/\d{2}/\d{2,4})")
 _BODY_ISSUE_RE   = re.compile(r"(?i)emiss[aã]o\D{0,10}?(\d{2}/\d{2}/\d{2,4})")
 _BODY_INVOICE_RE = re.compile(r"(?i)\b(?:nf(?:[- ]?e)?|nota\s+fiscal|fatura\s+n[º°.]?)\s*[n°.:]?\s*(\d{3,})")
+# CNPJ: o "/NNNN-NN" e altamente distintivo — baixo risco de falso positivo.
+_BODY_CNPJ_RE    = re.compile(r"\b\d{2}\.?\d{3}\.?\d{3}/\d{4}-?\d{2}\b")
+# CPF: so quando rotulado, para nao casar outros numeros de 11 digitos.
+_BODY_CPF_RE     = re.compile(r"(?i)cpf\D{0,5}(\d{3}\.?\d{3}\.?\d{3}-?\d{2})")
+# Linha digitavel / codigo de barras de boleto (47) ou guia de arrecadacao (48).
+_BODY_BARCODE_RE = re.compile(
+    r"(?i)(?:linha\s+digit[aá]vel|c[oó]digo\s+de\s+barras)\D{0,10}([\d.\s]{47,60})"
+)
+# Comprovante de pagamento ja feito / "pix recebido" — NAO e conta a pagar.
+_BODY_RECEIPT_RE = re.compile(
+    r"(?i)comprovante\s+de\s+(?:pix\s+)?recebido|pix\s+recebido\s+de|"
+    r"pagamento\s+(?:recebido|confirmado)"
+)
+# Sinais de que o e-mail PEDE um pagamento (afasta o falso positivo de comprovante).
+_BODY_PAYMENT_REQUEST_RE = re.compile(
+    r"(?i)fazer\s+o\s+pagamento|favor\s+pagar|por\s+gentileza|efetuar\s+o\s+pagamento"
+)
 
 # Tabela de keywords por tipo de documento — verificada contra o corpo do e-mail.
 # Ordem importa: termos mais específicos antes dos fallbacks genéricos.
@@ -783,17 +806,47 @@ def extract_from_email_body(body_text: str, received_at: str, message_id: str,
       - invoice_number: 'NF XXXX', 'NFe XXXX', 'nota fiscal XXXX', 'fatura N° XXXX'
       - issue_date  : 'emissao DD/MM/AA(AA)'; fallback = data de envio do e-mail
       - due_date    : 'vencimento/vencto DD/MM/AA(AA)'; fallback = issue_date
-      - supplier_name: 'Nome:' / 'Responsavel:' no corpo; fallback = sender_email
+      - supplier_name: 'Fornecedor:'/'Favorecido:'/'Nome:'/... no corpo;
+                       fallback = sender_email (so quando nao ha rotulo nem CNPJ/CPF)
+      - supplier_cnpj/cpf: extraidos do corpo (CNPJ por padrao; CPF so rotulado)
+      - barcode     : linha digitavel / codigo de barras (boleto 47 / arrecadacao 48)
       - payment_method: 'pix' no corpo → 'pix'; caso contrario → 'outro'
       - document_type: 'PIX' quando PIX; senao keywords de tributo; fallback 'outro'
       - invoice_number fallback: '{document_type}_{ddmmyy}' quando nao encontrado
+
+    Guarda: corpos de comprovante de pagamento ja feito / 'pix recebido' (sem
+    pedido de pagamento) retornam None — nao sao conta a pagar.
     """
     if not body_text:
+        return None
+
+    # Guarda: comprovante de pagamento ja feito / "pix recebido" que NAO pede
+    # pagamento — nao e conta a pagar (afasta phishing tipo "Comprovante de Pix
+    # Recebido"). Skip silencioso.
+    if (_BODY_RECEIPT_RE.search(body_text)
+            and not _BODY_PAYMENT_REQUEST_RE.search(body_text)):
         return None
 
     # Campos extraidos do corpo
     name_match    = _BODY_NAME_RE.search(body_text)
     supplier_name = name_match.group(1).strip() if name_match else None
+
+    # CNPJ (somente digitos, exatamente 14) / CPF rotulado (exatamente 11).
+    cnpj_match    = _BODY_CNPJ_RE.search(body_text)
+    supplier_cnpj = re.sub(r"\D", "", cnpj_match.group(0)) if cnpj_match else None
+    if supplier_cnpj and len(supplier_cnpj) != 14:
+        supplier_cnpj = None
+
+    cpf_match     = _BODY_CPF_RE.search(body_text)
+    supplier_cpf  = re.sub(r"\D", "", cpf_match.group(1)) if cpf_match else None
+    if supplier_cpf and len(supplier_cpf) != 11:
+        supplier_cpf = None
+
+    # Barcode: linha digitavel / codigo de barras (44-48 digitos apos limpeza).
+    barcode_match = _BODY_BARCODE_RE.search(body_text)
+    barcode       = re.sub(r"\D", "", barcode_match.group(1)) if barcode_match else None
+    if barcode and not (44 <= len(barcode) <= 48):
+        barcode = None
 
     amount_match   = _BODY_AMOUNT_RE.search(body_text)
     amount         = _brl_to_decimal(amount_match.group(1)) if amount_match else None
@@ -805,8 +858,11 @@ def extract_from_email_body(body_text: str, received_at: str, message_id: str,
     if not amount and not invoice_number:
         return None
 
-    # Fornecedor: label no corpo ou email do remetente como fallback
-    if not supplier_name:
+    # Fornecedor: cai para o e-mail do remetente APENAS quando nao ha rotulo de
+    # nome nem identificador (CNPJ/CPF). Havendo CNPJ/CPF sem nome, deixa o nome
+    # vazio — a trigger resolve_supplier_id resolve pelo documento, evitando
+    # gravar o e-mail interno (remetente) como nome do fornecedor.
+    if not supplier_name and not supplier_cnpj and not supplier_cpf:
         supplier_name = sender_email or "desconhecido"
 
     has_pix = bool(_BODY_PIX_RE.search(body_text))
@@ -843,9 +899,12 @@ def extract_from_email_body(body_text: str, received_at: str, message_id: str,
         "document_type":     document_type,
         "extraction_source": "email_body",
         "supplier_name":     supplier_name,
+        "supplier_cnpj":     supplier_cnpj,
+        "supplier_cpf":      supplier_cpf,
         "amount":            amount,
         "currency":          "BRL",
         "payment_method":    payment_method,
+        "barcode":           barcode,
         "due_date":          due_date,
         "issue_date":        issue_date,
         "invoice_number":    invoice_number,

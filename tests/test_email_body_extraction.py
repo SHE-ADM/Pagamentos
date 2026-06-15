@@ -65,6 +65,37 @@ PIX_BODY = (
     "Chave Pix: exemplo@empresa.com.br"
 )
 
+# Corpo real (resumido) do caso reportado: o rotulo 'Fornecedor:' e o CNPJ
+# estavam no corpo, mas a extracao gravava o e-mail do remetente como fornecedor.
+FORNECEDOR_BODY = (
+    "Bom dia,\n"
+    "Por gentileza fazer o pagamento abaixo:\n\n"
+    "Fornecedor: DENAMU\n"
+    "CNPJ: 49.575.333/0001-38\n\n"
+    "Vencimento: 12/06/2026\n"
+    "Valor: R$ 14.390,26\n\n"
+    "CHAVE PIX E-MAIL:\n"
+    "Denamuembalagems@gmail.com"
+)
+
+# Fatura com linha digitavel (boleto, 47 digitos) no corpo.
+BOLETO_BODY = (
+    "Ola Textil e Confeccoes Otimotex,\n"
+    "Este e um lembrete de pagamento da sua fatura.\n"
+    "Por gentileza efetuar o pagamento.\n"
+    "Linha digitavel: 07790001161205794159807275845787314770000469086\n"
+    "Valor: R$ 4.690,86\n"
+    "Vencimento: 14/06/2026"
+)
+
+# Phishing / notificacao de dinheiro RECEBIDO — nao e conta a pagar.
+COMPROVANTE_BODY = (
+    "Comprovante de Pix Recebido.\n"
+    "Passando aqui pra dizer que o Pix recebido de Joao Roberto Marinho, "
+    "foi confirmado no valor de R$ 79.362,50 do Banco do Brasil.\n"
+    "comprovante no 264081981410-1981410"
+)
+
 
 class ClassifyBodyDocTypeTest(unittest.TestCase):
     def test_classifica_nfe(self):
@@ -88,6 +119,50 @@ class ExtractFromEmailBodyTest(unittest.TestCase):
         )
         self.assertIsNotNone(payload)
         self.assertEqual(payload["document_type"], "nfe")
+
+    def test_extrai_fornecedor_e_cnpj_do_corpo(self):
+        """Bug reportado: 'Fornecedor:' + CNPJ no corpo nao podem virar sender_email."""
+        payload = read_emails.extract_from_email_body(
+            FORNECEDOR_BODY, "2026-06-11T10:00:00+00:00", "<msg-forn>",
+            "estela@lebianco.com.br",
+        )
+        self.assertIsNotNone(payload)
+        self.assertEqual(payload["supplier_name"], "DENAMU")
+        self.assertEqual(payload["supplier_cnpj"], "49575333000138")
+        self.assertEqual(payload["amount"], 14390.26)
+
+    def test_rotulo_favorecido_capturado(self):
+        body = "Favorecido: ACME SERVICOS LTDA\nValor: R$ 100,00"
+        payload = read_emails.extract_from_email_body(
+            body, "2026-06-11T10:00:00+00:00", "<msg-fav>", "x@y.com",
+        )
+        self.assertIsNotNone(payload)
+        self.assertEqual(payload["supplier_name"], "ACME SERVICOS LTDA")
+
+    def test_extrai_barcode_do_corpo(self):
+        payload = read_emails.extract_from_email_body(
+            BOLETO_BODY, "2026-06-11T10:00:00+00:00", "<msg-bol>",
+            "boleto@smartwebservices.com.br",
+        )
+        self.assertIsNotNone(payload)
+        self.assertEqual(payload["barcode"], "07790001161205794159807275845787314770000469086")
+
+    def test_comprovante_recebido_retorna_none(self):
+        """Comprovante de pix recebido (sem pedido de pagamento) nao e conta a pagar."""
+        payload = read_emails.extract_from_email_body(
+            COMPROVANTE_BODY, "2026-06-11T10:00:00+00:00", "<msg-comp>",
+            "no-reply@phishing.com",
+        )
+        self.assertIsNone(payload)
+
+    def test_sem_rotulo_e_sem_documento_usa_sender_email(self):
+        """Fallback preservado: sem rotulo de nome e sem CNPJ/CPF, usa o remetente."""
+        body = "Pode pagar o pix de R$ 50,00 hoje?"
+        payload = read_emails.extract_from_email_body(
+            body, "2026-06-11T10:00:00+00:00", "<msg-fb>", "rose@otimotex.com.br",
+        )
+        self.assertIsNotNone(payload)
+        self.assertEqual(payload["supplier_name"], "rose@otimotex.com.br")
 
 
 class TryExtractFromBodyTest(unittest.TestCase):
