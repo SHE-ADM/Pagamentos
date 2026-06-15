@@ -124,33 +124,34 @@ export async function getEmailControl({
   return merged.sort((a, b) => (b.received_at ?? '').localeCompare(a.received_at ?? ''));
 }
 
+// Contagens por status (taxonomia da migration 022) — uma KPI por status.
 export interface EmailStats {
   total: number;
-  withPdf: number;
-  extracted: number;
-  semPdf: number;
-  awaitingExtraction: number;
+  extraido: number;
+  recebido: number;
+  pendente: number;
+  falha: number;
+  ignorado: number;
 }
 
 export async function getEmailStats(): Promise<EmailStats> {
-  const [all, withPdf, extracted, pendingExtraction] = await Promise.all([
-    query<{ id: number }[]>('email_control', { select: 'id', limit: 1000 }),
-    query<{ id: number }[]>('email_control', { select: 'id', has_attachment: 'eq.true', limit: 1000 }),
-    query<{ id: number }[]>('email_control', { select: 'id', pdf_extracted: 'eq.true', limit: 1000 }),
-    // Tem anexo mas ainda não foi extraído — fonte de verdade para o card "Aguardando extração".
-    query<{ id: number }[]>('email_control', {
-      select: 'id',
-      has_attachment: 'eq.true',
-      pdf_extracted: 'eq.false',
-      limit: 1000,
-    }),
+  const byStatus = (s: string) =>
+    query<{ id: number }[]>('email_control', { select: 'id', status: `eq.${s}`, limit: 2000 });
+  const [all, extraido, recebido, pendente, falha, ignorado] = await Promise.all([
+    query<{ id: number }[]>('email_control', { select: 'id', limit: 2000 }),
+    byStatus('extraído'),
+    byStatus('recebido'),
+    byStatus('pendente'),
+    byStatus('falha'),
+    byStatus('ignorado'),
   ]);
   return {
     total: all.length,
-    withPdf: withPdf.length,
-    extracted: extracted.length,
-    semPdf: all.length - withPdf.length,
-    awaitingExtraction: pendingExtraction.length,
+    extraido: extraido.length,
+    recebido: recebido.length,
+    pendente: pendente.length,
+    falha: falha.length,
+    ignorado: ignorado.length,
   };
 }
 

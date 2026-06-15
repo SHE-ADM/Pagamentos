@@ -447,12 +447,15 @@ class SupabaseControl:
 
     @staticmethod
     def _derive_status(rec: dict) -> str:
-        # email_control.status em pt-BR (CHECK da migration 019)
-        if rec.get("pdf_extracted"):   return "extraído"
-        if rec.get("attachment_saved"):return "baixado"
-        if rec.get("notes") and "erro" in str(rec.get("notes","")).lower():
+        # email_control.status (CHECK migration 022). Fallback quando process_message
+        # nao definiu o status explicitamente (ex.: caminho de excecao).
+        if rec.get("notes") and "erro" in str(rec.get("notes", "")).lower():
             return "falha"
-        return "recebido"
+        if rec.get("pdf_extracted"):
+            return "extraído" if rec.get("has_attachment") else "recebido"
+        if rec.get("attachment_saved"):
+            return "pendente"
+        return "falha"
 
 
 import urllib.parse  # necessário para quote no is_processed
@@ -599,12 +602,15 @@ def read_extracted_rows(csv_path: str) -> list:
         return []
 
 
-def build_financial_payload(row: dict, gmail_message_id: str) -> dict:
+def build_financial_payload(row: dict, gmail_message_id: str,
+                            received_at: str | None = None) -> dict:
     """Converte uma linha do CSV de extracao em payload para financial_account_control.
 
     Sanitiza os campos com restricao no schema (CHAR(14) do CNPJ e
     NUMERIC do amount) para evitar rejeicao do INSERT. O due_status NAO
-    e calculado aqui — fica por conta da trigger no banco.
+    e calculado aqui — fica por conta da trigger no banco. Aplica os mesmos
+    fallbacks do caminho de corpo: emissao->data do e-mail (received_at);
+    vencimento->emissao; numero->"{tipo}_{ddmmyy}".
     """
     payload = {f: _none_if_blank(row.get(f)) for f in FINANCIAL_FIELDS}
 
@@ -625,6 +631,21 @@ def build_financial_payload(row: dict, gmail_message_id: str) -> dict:
     # Campos de valor do boleto: em branco -> 0 (NOT NULL DEFAULT 0 no banco)
     for vf in FINANCIAL_VALUE_FIELDS:
         payload[vf] = _to_decimal(payload.get(vf), 0)
+
+    # Emissão ausente → data do e-mail (received_at).
+    if not payload.get("issue_date") and received_at:
+        payload["issue_date"] = received_at[:10]
+
+    # Vencimento ausente (ex.: CT-e/DACTE não traz vencimento) → emissão; sem
+    # emissão, a data de hoje.
+    if not payload.get("due_date"):
+        payload["due_date"] = payload.get("issue_date") or datetime.now().strftime("%Y-%m-%d")
+
+    # Nº documento em branco → "{tipo}_{ddmmyy(vencimento|emissão)}" (mesma regra do corpo).
+    if not payload.get("invoice_number"):
+        ddmmyy = _iso_date_to_ddmmyy(payload.get("due_date") or payload.get("issue_date"))
+        if ddmmyy:
+            payload["invoice_number"] = f"{payload.get('document_type') or 'outro'}_{ddmmyy}"
 
     payload["currency"] = payload.get("currency") or "BRL"
     payload["status"]   = payload.get("status") or "pendente"
@@ -1069,6 +1090,11 @@ def extract_and_store_accounts(saved_pdfs: list, message_id: str,
     err_ctx = email_rec or {}
 
     for pdf_path in saved_pdfs:
+        # Publica o PDF no Storage SEMPRE (antes da extracao) — assim o anexo fica
+        # disponivel para revisao manual mesmo quando a extracao falha por completo.
+        # Nao-fatal: se o upload falhar, a extracao segue normalmente.
+        ctrl.upload_attachment(pdf_path)
+
         csv_path = run_extraction(pdf_path)
         if not csv_path:
             ctrl.register_error(
@@ -1079,9 +1105,6 @@ def extract_and_store_accounts(saved_pdfs: list, message_id: str,
             continue
 
         csvs_ok.append(csv_path)
-        # Publica o PDF no Storage para visualizacao de qualquer computador.
-        # Nao-fatal: se falhar, a conta ainda e gravada (anexo re-publicavel depois).
-        ctrl.upload_attachment(pdf_path)
         for row in read_extracted_rows(csv_path):
             # Falha de API na extracao: registra erro_api e interrompe o run com
             # seguranca (sem gravar conta, sem fallback regex silencioso).
@@ -1103,7 +1126,9 @@ def extract_and_store_accounts(saved_pdfs: list, message_id: str,
                 continue
 
             gmid    = message_id if acc_index == 0 else f"{message_id}#{acc_index}"
-            payload = build_financial_payload(row, gmid)
+            payload = build_financial_payload(row, gmid, received_at=err_ctx.get("received_at"))
+            # Remetente do e-mail → o trigger alinha supplier.email (migration 023).
+            payload["sender_email"] = err_ctx.get("sender_email")
             ctx     = {**err_ctx, "source_file": row.get("source_file")}
 
             # Validacao 1: valor ausente ou zero
@@ -1187,6 +1212,9 @@ def try_extract_from_body(email_rec: dict, body_text: str, received_at: str,
     payload = extract_from_email_body(body_text, received_at, message_id, sender_email)
     if payload is None:
         return False  # Sem sinal financeiro — ignorar silenciosamente
+
+    # Remetente do e-mail → o trigger alinha supplier.email (migration 023).
+    payload["sender_email"] = sender_email
 
     # Mesma trava do caminho de PDF: NF-e/NFS-e nao geram conta a pagar.
     # Sem isso, notificacoes de nota fiscal (ex.: NFe da Editora Globo) vazavam
@@ -1337,7 +1365,8 @@ def process_message(mail, uid: bytes, keywords: list,
         csvs_ok, accounts_saved = extract_and_store_accounts(
             saved_pdfs, message_id, ctrl, email_rec=rec)
 
-        rec["pdf_extracted"]  = len(csvs_ok) > 0
+        csv_generated = len(csvs_ok) > 0
+        rec["pdf_extracted"]  = csv_generated
         rec["extraction_csv"] = " | ".join(csvs_ok) if csvs_ok else None
         if accounts_saved:
             log.info(f"    {accounts_saved} conta(s) gravada(s) em financial_account_control")
@@ -1345,13 +1374,24 @@ def process_message(mail, uid: bytes, keywords: list,
         if not has_att:
             rec["notes"] = "Sem anexo PDF — registrado para revisão"
 
-        # Extração do corpo quando: sem PDF | extração falhou | resultado em branco
-        # | nenhuma conta atendeu os dados mínimos (sem valor ou sem fornecedor)
-        if not has_att or accounts_saved == 0:
-            if try_extract_from_body(rec, body_text, received_at, message_id, ctrl,
-                                     sender_email=sender_email):
+        # Corpo é fallback SOMENTE quando o anexo NÃO produziu conta válida
+        # (accounts_saved == 0). Assim os dados do corpo nunca conflitam com um
+        # arquivo anexado válido (reconhecido como conta a pagar) — havendo conta
+        # do anexo, o corpo é ignorado. try_extract_from_body valida fornecedor+valor.
+        body_created = False
+        if accounts_saved == 0:
+            body_created = try_extract_from_body(rec, body_text, received_at, message_id, ctrl,
+                                                 sender_email=sender_email)
+            if body_created:
                 rec["pdf_extracted"] = True
                 rec["notes"]         = "Conta extraída do corpo do e-mail"
+
+        # Status (CHECK migration 022): CSV gerado=extraído; PDF salvo sem CSV=pendente;
+        # conta via corpo=recebido; senão (sem anexo e sem conta no corpo)=falha.
+        if has_att:
+            rec["status"] = "extraído" if csv_generated else "pendente"
+        else:
+            rec["status"] = "recebido" if body_created else "falha"
 
         if mark_seen:
             mail.uid("store", uid, "+FLAGS", "\\Seen")
@@ -1366,16 +1406,8 @@ def process_message(mail, uid: bytes, keywords: list,
         log.error(f"  Erro UID {uid}: {e}")
         ctrl.register_error(rec, "processamento_erro", str(e))
 
-    # 'recebido' = casou keyword, mas SEM PDF e SEM conta criada (nem por anexo
-    # nem pelo corpo) — não-acionável. Reclassifica como 'ignorado': mais honesto
-    # que "pendente" e alinhado aos demais ignorados (fora do KPI de revisão).
-    if not rec.get("status") and ctrl._derive_status(rec) == "recebido":
-        rec["status"] = "ignorado"
-        rec["has_attachment"] = None
-        if not rec.get("notes"):
-            rec["notes"] = "Sem PDF e sem conta — tratado como ignorado"
-
-    # Gravar no Supabase e no CSV local (fallback)
+    # O status já foi definido em process_message (extraído/recebido/pendente/falha).
+    # No caminho de exceção fica a cargo de _derive_status (→ 'falha').
     ctrl.register(rec)
     append_log_csv(rec)
     return rec
