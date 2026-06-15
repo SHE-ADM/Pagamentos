@@ -1,5 +1,5 @@
 // src/pages/Consulta.tsx
-import { useState, useEffect, useCallback, useRef, Fragment } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import {
   RefreshCw,
   Download,
@@ -11,44 +11,24 @@ import {
   Search,
   X,
   Eye,
-  Inbox,
-  ArrowUp,
-  ArrowDown,
-  ArrowUpDown,
   type LucideIcon,
 } from 'lucide-react';
 import type { FinancialAccountControl } from '@sheild/shared';
 import { getFinancialAccountControl, getFinancialStats, type FinancialStats } from '../services/supabase';
 import { getErrorMessage } from '../lib/getErrorMessage';
-import StatusBadge from '../components/StatusBadge';
 import Alert from '../components/atoms/Alert';
 import ExpandableText from '../components/ExpandableText';
 import AttachmentViewer from '../components/AttachmentViewer';
+import DataGrid from '../components/organisms/DataGrid';
+import { CONSULTA_COLUMNS } from '../hooks/useGridColumns';
 
 const fmtDate = (d: string | null): string => (d ? new Date(d + 'T00:00:00').toLocaleDateString('pt-BR') : '—');
 const fmtMoney = (v: number | null): string =>
   v == null ? '—' : Number(v).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
 const fmtCnpj = (c: string | null): string =>
   c?.length === 14 ? `${c.slice(0, 2)}.${c.slice(2, 5)}.${c.slice(5, 8)}/${c.slice(8, 12)}-${c.slice(12)}` : c || '—';
-const fmtCpf = (c: string | null): string =>
-  c?.length === 11 ? `${c.slice(0, 3)}.${c.slice(3, 6)}.${c.slice(6, 9)}-${c.slice(9)}` : c || '—';
-const fmtCnpjOrCpf = (cnpj: string | null, cpf: string | null): string =>
-  cpf != null && cpf !== '' ? fmtCpf(cpf) : fmtCnpj(cnpj);
 
 const PAGE_SIZE = 20;
-
-const SORT_COLS: Record<string, string> = {
-  'Nº Documento':   'invoice_number',
-  'Emissão':        'issue_date',
-  'Fornecedor':     'supplier_name',
-  'CNPJ ou CPF':    'supplier_cnpj',
-  'Tipo Documento': 'document_type',
-  'Tipo Pagamento': 'payment_method',
-  'Vencimento':     'due_date',
-  'Valor':          'amount',
-  'Situação':       'due_status',
-  'Extração':       'extraction_source',
-};
 
 const CSV_COLS: (keyof FinancialAccountControl)[] = [
   'due_date',
@@ -246,7 +226,7 @@ export default function Consulta() {
       <div className="px-6 py-4 border-b border-slate-200 bg-white flex items-center justify-between">
         <div>
           <h1 className="text-base font-semibold text-slate-800">Consulta de movimentações</h1>
-          <p className="text-xs text-slate-400 mt-0.5">Contas a pagar — tabela financial_account_control</p>
+          <p className="text-xs text-slate-400 mt-0.5">Controle de contas a pagar</p>
         </div>
         <div className="flex gap-2">
           <button onClick={() => exportCsv(rows)} className="btn" disabled={!rows.length}>
@@ -376,91 +356,19 @@ export default function Consulta() {
         </div>
 
         <div className="card mb-2">
-          <table className="w-full">
-            <thead>
-              <tr>
-                {Object.keys(SORT_COLS).map((h) => {
-                  const col = SORT_COLS[h];
-                  const isActive = sort.col === col;
-                  let SortIcon = ArrowUpDown;
-                  let ariaSortVal: 'ascending' | 'descending' | 'none' = 'none';
-                  let titleVal = `Ordenar por ${h} crescente`;
-                  if (isActive && sort.dir === 'asc') {
-                    SortIcon = ArrowUp;
-                    ariaSortVal = 'ascending';
-                    titleVal = `Ordenar por ${h} descendente`;
-                  } else if (isActive && sort.dir === 'desc') {
-                    SortIcon = ArrowDown;
-                    ariaSortVal = 'descending';
-                    titleVal = `Remover ordenação de ${h}`;
-                  }
-                  const thBg = isActive ? 'bg-slate-100' : 'hover:bg-slate-100';
-                  return (
-                    <th
-                      key={h}
-                      onClick={() => handleSort(col)}
-                      aria-sort={ariaSortVal}
-                      title={titleVal}
-                      className={`table-header sticky top-0 z-10 cursor-pointer select-none transition-colors ${thBg} ${h === 'Valor' ? 'text-right' : ''}`}
-                    >
-                      <span className="inline-flex items-center gap-1">
-                        {h}
-                        <SortIcon size={11} className={isActive ? 'text-brand' : 'text-slate-300'} />
-                      </span>
-                    </th>
-                  );
-                })}
-              </tr>
-            </thead>
-            <tbody>
-              {rows.length === 0 ? (
-                <tr>
-                  <td colSpan={10} className="py-12">
-                    <div className="flex flex-col items-center justify-center text-center gap-3">
-                      <div className="flex h-14 w-14 items-center justify-center rounded-full bg-slate-100 text-slate-300">
-                        <Inbox size={26} />
-                      </div>
-                      <p className="text-sm text-slate-400 max-w-xs">
-                        {loading ? 'Buscando registros…' : 'Nenhum registro encontrado — ajuste os filtros e clique em Buscar'}
-                      </p>
-                    </div>
-                  </td>
-                </tr>
-              ) : (
-                rows.map((r) => (
-                  <Fragment key={r.id}>
-                    <tr
-                      className={`cursor-pointer transition-colors ${
-                        sel?.id === r.id
-                          ? 'bg-brand/5 border-l-2 border-brand'
-                          : 'hover:bg-slate-50/60'
-                      }`}
-                      onClick={() => setSel(sel?.id === r.id ? null : r)}
-                    >
-                      <td className="table-cell text-xs font-mono text-slate-600 w-px whitespace-nowrap max-w-[25ch] truncate" title={r.invoice_number ?? ''}>{r.invoice_number || '—'}</td>
-                      <td className="table-cell text-xs font-mono text-slate-600 whitespace-nowrap">{fmtDate(r.issue_date)}</td>
-                      <td className="table-cell text-xs font-mono text-slate-600 w-px whitespace-nowrap max-w-[35ch] truncate" title={r.supplier_name ?? ''}>
-                        {r.supplier_name || '—'}
-                      </td>
-                      <td className="table-cell text-xs font-mono text-slate-600">
-                        {fmtCnpjOrCpf(r.supplier_cnpj, r.supplier_cpf)}
-                      </td>
-                      <td className="table-cell text-xs font-mono text-slate-600">{r.document_type || '—'}</td>
-                      <td className="table-cell text-xs font-mono text-slate-600">{r.payment_method || '—'}</td>
-                      <td className="table-cell text-xs font-mono text-slate-600 whitespace-nowrap">{fmtDate(r.due_date)}</td>
-                      <td className="table-cell text-xs font-mono text-slate-600 text-right">{fmtMoney(r.amount)}</td>
-                      <td className="table-cell">
-                        <StatusBadge value={r.due_status} />
-                      </td>
-                      <td className="table-cell">
-                        <StatusBadge value={r.extraction_source} />
-                      </td>
-                    </tr>
-
-                    {sel?.id === r.id && (
-                      <tr>
-                        <td colSpan={10} className="p-0 border-b border-slate-100">
-                          <div className="relative animate-fade-in-up bg-slate-50/60 border-l-2 border-brand p-4">
+          <DataGrid
+            columns={CONSULTA_COLUMNS}
+            rows={rows}
+            rowKey={(r) => String(r.id)}
+            selectedId={sel ? String(sel.id) : null}
+            onRowClick={(r) => setSel(sel?.id === r.id ? null : r)}
+            sortCol={sort.col}
+            sortDir={sort.dir}
+            onSort={handleSort}
+            loading={loading}
+            emptyMessage={loading ? 'Buscando registros…' : 'Nenhum registro encontrado — ajuste os filtros e clique em Buscar'}
+            renderDetail={(r) => (
+                          <div className="relative bg-slate-50/60 border-l-2 border-brand p-4">
                             <button
                               onClick={(e) => {
                                 e.stopPropagation();
@@ -538,14 +446,8 @@ export default function Consulta() {
                               </div>
                             )}
                           </div>
-                        </td>
-                      </tr>
-                    )}
-                  </Fragment>
-                ))
-              )}
-            </tbody>
-          </table>
+            )}
+          />
         </div>
 
         <div className="flex items-center justify-between py-2 px-1 mb-4">
