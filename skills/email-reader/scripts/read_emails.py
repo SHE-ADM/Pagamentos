@@ -7,7 +7,7 @@ Nunca reprocessa um e-mail já registrado, independente de onde o script rodar.
 """
 
 import os, sys, re, time, imaplib, email, argparse, logging, subprocess, csv, json, tempfile, faulthandler, unicodedata
-import urllib.request, urllib.error
+import urllib.request, urllib.error, http.cookiejar
 from email.header import decode_header
 from email.utils import parseaddr, parsedate_to_datetime
 from datetime import datetime, timezone, timedelta
@@ -964,11 +964,63 @@ _LINK_TEXT_RE = re.compile(
     r"clique\s*aqui|acesse|emitir|emiss[aã]o|vencimento|cobran[cç]a|slip",
     re.IGNORECASE,
 )
-# Segmento de URL que sugere boleto/PDF
+# Segmento de URL que sugere boleto/PDF. Inclui 'protocolo' para reconhecer
+# portais de fatura via link (ex.: BRASPRESS /protocoloweb?protocolo=...), em que
+# a URL nao traz 'boleto'/'fatura' no caminho.
 _LINK_URL_RE = re.compile(
-    r"boleto|fatura|invoice|bill|download|pdf|pagamento|documento|cobranca",
+    r"boleto|fatura|invoice|bill|download|pdf|pagamento|documento|cobranca|protocolo",
     re.IGNORECASE,
 )
+# Portal BRASPRESS: o link do e-mail (/protocoloweb?protocolo=CHAVE) abre uma pagina
+# cujo botao "Download" chama faturaPDF(chave), que baixa de
+# /fatura/download?protocolo=CHAVE&protocoloWeb=true (exige cookie de sessao).
+_BRASPRESS_PROTO_RE = re.compile(r"protocolo=([0-9A-Za-z]+)", re.IGNORECASE)
+
+def _braspress_download_url(page_url: str) -> "str | None":
+    """Se page_url for um link de fatura por protocolo BRASPRESS, retorna a URL
+    direta de download do PDF; caso contrario None. Funcao pura (testavel)."""
+    low = page_url.lower()
+    if "braspress" not in low or "protocolo" not in low:
+        return None
+    m = _BRASPRESS_PROTO_RE.search(page_url)
+    if not m:
+        return None
+    return ("https://www.braspress.com.br/fatura/download"
+            f"?protocolo={m.group(1)}&protocoloWeb=true")
+
+# Wrappers de redirecionamento/rastreamento de cliques usados em phishing — a
+# Locaweb marca mensagens com esses links como "potencialmente suspeitas".
+# Nao seguir (poderiam baixar malware no lugar do boleto). Ex.: redirect do Bing
+# (bing.com/ck/a?...&u=a1<base64 do destino>), SafeLinks, Proofpoint URL Defense.
+_SUSPICIOUS_LINK_RE = re.compile(
+    r"(?i)("
+    r"bing\.com/ck/|"                    # Bing click redirect
+    r"/ck/a\?|"                          # padrao /ck/a? de redirect ofuscado
+    r"safelinks\.protection\.outlook|"   # Microsoft SafeLinks
+    r"urldefense\.(?:com|proofpoint)|"   # Proofpoint URL Defense
+    r"[?&]u=a1aHR0c"                     # destino em base64 ('aHR0c' = 'http')
+    r")"
+)
+
+def _is_suspicious_link(url: str) -> bool:
+    """True se a URL for um redirect/rastreador ofuscado que a Locaweb classifica
+    como suspeito — esses links nao sao seguidos para download. Funcao pura."""
+    return bool(_SUSPICIOUS_LINK_RE.search(url or ""))
+
+# Aviso da Locaweb para link suspeito ("Tem certeza que deseja acessar este link?"
+# / "identificada como potencialmente suspeita"). NOTA: normalmente esse aviso e um
+# modal do webmail exibido APOS o clique — nao costuma estar no corpo bruto (IMAP).
+# A defesa primaria e o padrao da URL (_is_suspicious_link); esta verificacao de
+# corpo e uma rede secundaria (ex.: aviso citado/encaminhado dentro do corpo).
+_SUSPICIOUS_BODY_RE = re.compile(
+    r"(?i)tem\s+certeza\s+que\s+deseja\s+acessar\s+este\s+link"
+    r"|identificada\s+como\s+potencialmente\s+suspeita"
+)
+
+def _body_has_suspicious_warning(text: str, html: str) -> bool:
+    """True se o corpo trouxer o aviso de link suspeito da Locaweb. Funcao pura."""
+    return bool(_SUSPICIOUS_BODY_RE.search((text or "") + " " + (html or "")))
+
 _LINK_HREF_RE = re.compile(
     r'<a[^>]+href=["\']([^"\']{10,})["\'][^>]*>(.*?)</a>',
     re.IGNORECASE | re.DOTALL,
@@ -988,11 +1040,17 @@ def extract_pdf_links(text: str, html: str) -> list[str]:
     Inclui links HTML cujo texto-âncora ou caminho da URL sugira boleto/fatura.
     Limita a 10 candidatas por e-mail para evitar downloads em massa.
     """
+    # Aviso de link suspeito da Locaweb no corpo → não seguir nenhum link.
+    if _body_has_suspicious_warning(text, html):
+        log.info("    Aviso de link suspeito (Locaweb) no corpo — links ignorados")
+        return []
+
     candidates, seen = [], set()
 
     def _add(url: str):
         u = url.strip().rstrip(".,;)>\"'")
-        if u and u not in seen and u.startswith("http"):
+        # Ignora links que a Locaweb entende como suspeitos (redirect/ofuscados).
+        if u and u not in seen and u.startswith("http") and not _is_suspicious_link(u):
             seen.add(u)
             candidates.append(u)
 
@@ -1015,11 +1073,18 @@ def extract_pdf_links(text: str, html: str) -> list[str]:
     return candidates[:10]
 
 
-def _fetch_url(url: str, timeout: int = 30) -> "tuple[bytes, str, str] | None":
-    """GET em url; retorna (conteúdo, content_type, url_final) ou None."""
+def _fetch_url(url: str, timeout: int = 30,
+               opener: "urllib.request.OpenerDirector | None" = None
+               ) -> "tuple[bytes, str, str] | None":
+    """GET em url; retorna (conteúdo, content_type, url_final) ou None.
+
+    Quando `opener` é informado (build_opener com HTTPCookieProcessor), a chamada
+    reutiliza a mesma sessão/cookies — necessário para portais que exigem cookie
+    de sessão entre a página e o download (ex.: BRASPRESS JSESSIONID)."""
     try:
         req = urllib.request.Request(url, headers={"User-Agent": _LINK_UA})
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
+        _open = opener.open if opener is not None else urllib.request.urlopen
+        with _open(req, timeout=timeout) as resp:
             return (
                 resp.read(_MAX_PDF_LINK_BYTES),
                 resp.headers.get("Content-Type", "").lower(),
@@ -1054,13 +1119,20 @@ def download_pdf_from_url(url: str, sender_email: str, subject: str,
     """Baixa um PDF de uma URL, seguindo até um nível de página HTML intermediária.
 
     Fluxo:
-      1. Faz GET na URL (segue redirects automaticamente via urllib).
+      1. Faz GET na URL (segue redirects; usa sessão com cookies).
       2. Se a resposta contiver bytes PDF (%PDF), salva e retorna.
-      3. Se a resposta for HTML (landing page / tracking redirect),
+      3. Portal conhecido (BRASPRESS protocoloweb): monta a URL direta de
+         download da fatura e baixa com o mesmo cookie de sessão.
+      4. Se a resposta for HTML (landing page / tracking redirect),
          varre os links da página em busca de um link PDF e tenta baixá-lo.
-      4. Qualquer outro conteúdo é ignorado.
+      5. Qualquer outro conteúdo é ignorado.
     """
-    result = _fetch_url(url)
+    # Sessão com cookies — necessária para portais que exigem JSESSIONID entre a
+    # página inicial e o download (ex.: BRASPRESS).
+    cj = http.cookiejar.CookieJar()
+    opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(cj))
+
+    result = _fetch_url(url, opener=opener)
     if not result:
         return None
     data, content_type, final_url = result
@@ -1072,7 +1144,17 @@ def download_pdf_from_url(url: str, sender_email: str, subject: str,
     if b"%PDF" in data[:32]:
         return _save_pdf_data(data, sender_email, subject, received_at)
 
-    # Caso 2: página HTML intermediária — busca link PDF na página
+    # Caso 2: portal BRASPRESS — a página inicial setou o JSESSIONID; agora baixa
+    # a fatura pela URL direta (mesma sessão/cookies).
+    bp_url = _braspress_download_url(url)
+    if bp_url:
+        log.info(f"    Portal BRASPRESS — baixando fatura: {bp_url[:80]}")
+        inner = _fetch_url(bp_url, timeout=60, opener=opener)
+        if inner and b"%PDF" in inner[0][:32]:
+            return _save_pdf_data(inner[0], sender_email, subject, received_at)
+        log.info(f"    Download BRASPRESS não retornou PDF")
+
+    # Caso 3: página HTML intermediária — busca link PDF na página
     is_html = "text/html" in content_type or b"<html" in data[:200].lower()
     if not is_html:
         log.info(f"    Conteúdo não reconhecido (tipo: {content_type[:40]})")
@@ -1090,7 +1172,7 @@ def download_pdf_from_url(url: str, sender_email: str, subject: str,
                 or _LINK_URL_RE.search(inner_url)
                 or _LINK_TEXT_RE.search(anchor_text)):
             log.info(f"    Candidato na página: {inner_url[:70]}")
-            inner = _fetch_url(inner_url)
+            inner = _fetch_url(inner_url, opener=opener)
             if inner and b"%PDF" in inner[0][:32]:
                 return _save_pdf_data(inner[0], sender_email, subject, received_at)
 

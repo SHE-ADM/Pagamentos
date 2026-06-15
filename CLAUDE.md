@@ -518,6 +518,33 @@ o propaga para `supplier.email` ao resolver/criar o fornecedor.
 | `email_body` | Corpo do e-mail (sem PDF válido) |
 | `falha` | Falha na extração |
 
+### Boleto por link (sem anexo) — prioridade anexo → link → corpo
+
+A prioridade de extração vale também para **links**: e-mail **sem anexo PDF mas com link**
+deve usar o link para encontrar o boleto, antes de cair no corpo. Em `process_message`,
+quando `save_attachments` não traz nada, o fluxo chama `extract_pdf_links(body_text,
+body_html)` e tenta `download_pdf_from_url` em cada candidato; os PDFs obtidos entram em
+`saved_pdfs` e seguem o caminho normal — inclusive **upload no Storage** (todo PDF salvo
+passa por `upload_attachment` dentro de `extract_and_store_accounts`, anexo ou link).
+
+- **Reconhecimento do link** (`extract_pdf_links`): âncora/URL com termos de cobrança
+  (`_LINK_TEXT_RE`/`_LINK_URL_RE`, que inclui `protocolo`) ou caminho `.pdf`.
+- **Portal BRASPRESS** (`download_pdf_from_url` + `_braspress_download_url`): o link do
+  e-mail (`/protocoloweb?protocolo=CHAVE`) abre uma página cujo botão chama
+  `faturaPDF(chave)`, que baixa de `/fatura/download?protocolo=CHAVE&protocoloWeb=true`.
+  O download exige **cookie de sessão** (`JSESSIONID`) — por isso `download_pdf_from_url`
+  usa um `http.cookiejar`/opener compartilhado entre a página e o download (`_fetch_url`
+  aceita `opener`). Outros portais com fluxo semelhante seguem o mesmo padrão.
+- **Links suspeitos são ignorados** (`_is_suspicious_link`, regra Locaweb): redirecionadores/
+  rastreadores ofuscados — `bing.com/ck/a?…&u=a1<base64>`, Microsoft SafeLinks, Proofpoint
+  URL Defense — **nunca** viram candidatos a download (evita baixar malware de phishing).
+  Esta é a **defesa primária**: detecta no corpo o próprio link que faz a Locaweb exibir o
+  aviso "Tem certeza que deseja acessar este link?" (modal de webmail mostrado **após** o
+  clique, logo ausente do corpo bruto). Como rede secundária, `_body_has_suspicious_warning`
+  descarta todos os links se esse texto de aviso aparecer citado no corpo.
+
+Testes: `tests/test_link_extraction.py` (reconhecimento, filtro de suspeito, URL BRASPRESS).
+
 ### Caminho `email_body`
 
 Acionado em `process_message()` **só quando `accounts_saved == 0`** (o anexo não gerou
