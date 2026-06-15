@@ -4,21 +4,23 @@ import { cva, type VariantProps } from 'class-variance-authority';
 import { DOCUMENT_TYPES as SCHEMA_DOCUMENT_TYPES } from '@sheild/shared';
 
 const BASE =
-  'inline-flex items-center gap-1 rounded-md px-2 py-0.5 text-[11px] font-medium tracking-wide';
+  'inline-flex items-center gap-1 rounded-md px-2 py-0.5 text-xs font-medium tracking-wide';
 
-/** Estilo do badge por variante — fonte única via CVA (cada classe é literal p/ o JIT). */
+// As chaves de variante são consumidas por STATUS_VARIANT abaixo; as classes
+// usam a paleta semântica `status-*` do tema (cada valor é string literal p/ o JIT).
+/** Estilo do badge por variante — fonte única via CVA. */
 export const badgeVariants = cva(BASE, {
   variants: {
     variant: {
-      amber: 'bg-amber-50 text-amber-700 border border-amber-200', // pendente / atenção
-      emerald: 'bg-emerald-50 text-emerald-700 border border-emerald-200', // sucesso / pago
-      red: 'bg-red-50 text-red-600 border border-red-200', // erro / vencido
-      redSolid: 'bg-red-600 text-white border border-red-700', // erro crítico (API indisponível)
-      slate: 'bg-slate-100 text-slate-500 border border-slate-200', // neutro / cancelado
-      blue: 'bg-blue-50 text-blue-600 border border-blue-200', // informativo / a vencer
-      document: 'bg-slate-50 text-slate-600 border border-slate-200', // tipos de documento
-      source: 'bg-teal-50 text-teal-700 border border-teal-200', // origem da extração
-      neutral: 'bg-slate-50 text-slate-600 border border-slate-200', // fallback não mapeado
+      amber: 'bg-status-warning-bg text-status-warning-fg border border-status-warning-border', // pendente / atenção
+      emerald: 'bg-status-success-bg text-status-success-fg border border-status-success-border', // sucesso / pago
+      red: 'bg-status-error-bg text-status-error-fg border border-status-error-border', // erro / vencido
+      redSolid: 'bg-status-error-solid text-white border border-status-error-solidBorder', // erro crítico (API indisponível)
+      slate: 'bg-status-neutral-bg text-status-neutral-fg border border-status-neutral-border', // neutro / cancelado
+      blue: 'bg-status-info-bg text-status-info-fg border border-status-info-border', // informativo / a vencer
+      document: 'bg-status-neutral-bg text-status-neutral-fg border border-status-neutral-border', // tipos de documento
+      source: 'bg-status-source-bg text-status-source-fg border border-status-source-border', // origem da extração
+      neutral: 'bg-status-neutral-bg text-status-neutral-fg border border-status-neutral-border', // fallback não mapeado
     },
   },
   defaultVariants: { variant: 'neutral' },
@@ -43,8 +45,9 @@ const STATUS_VARIANT: Record<string, BadgeVariant> = {
   'não pago': 'red',
   cancelado: 'slate',
   falha: 'red',
-  // email_control.status (migration 019) — 'baixado' e 'falha' já mapeados acima
-  recebido: 'slate',
+  // email_control.status (migration 022) — 'pendente' e 'falha' já mapeados acima.
+  // recebido = conta via corpo (sucesso); extraído = conta de PDF; ignorado = não-financeiro.
+  recebido: 'blue',
   extraído: 'emerald',
   ignorado: 'slate',
   // email_processing_errors.error_type

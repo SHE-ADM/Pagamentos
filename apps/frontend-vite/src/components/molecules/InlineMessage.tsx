@@ -11,8 +11,8 @@ type InlineMessageType = 'error' | 'success';
 const messageVariants = cva('rounded-lg px-3 py-2 text-sm', {
   variants: {
     type: {
-      error: 'bg-red-50 text-red-700',
-      success: 'bg-green-50 text-green-700',
+      error: 'bg-status-error-bg text-status-error-fg',
+      success: 'bg-status-success-bg text-status-success-fg',
     },
   },
   defaultVariants: { type: 'error' },

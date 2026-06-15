@@ -113,7 +113,7 @@ export default function LoginForm() {
 
       {/* Erro do servidor (credenciais inválidas) */}
       {serverError && (
-        <p className="bg-red-50 text-red-700 rounded-lg px-3.5 py-2.5 text-sm">{serverError}</p>
+        <p className="bg-status-error-bg text-status-error-fg rounded-lg px-3.5 py-2.5 text-sm">{serverError}</p>
       )}
 
       {/* Botão Login */}

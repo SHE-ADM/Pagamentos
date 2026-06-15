@@ -1,11 +1,12 @@
 // src/pages/Erros.tsx
 import { useState, useEffect, useCallback } from 'react';
-import { RefreshCw, AlertCircle, AlertTriangle, XCircle, Info } from 'lucide-react';
+import { RefreshCw, AlertTriangle, XCircle, Info } from 'lucide-react';
 import type { ProcessingError } from '@sheild/shared';
 import { getProcessingErrors, getProcessingErrorStats, type ProcessingErrorStats } from '../services/supabase';
 import { getErrorMessage } from '../lib/getErrorMessage';
 import { cn } from '../lib/cn';
 import StatusBadge from '../components/StatusBadge';
+import Alert from '../components/atoms/Alert';
 
 const fmtDt = (d: string | null): string => (d ? new Date(d).toLocaleString('pt-BR') : '—');
 
@@ -25,7 +26,10 @@ const ERROR_TYPES = [
 function rowClass(r: ProcessingError, selectedId: number | undefined): string {
   const selected = selectedId === r.id;
   if (r.error_type === 'erro_api') {
-    return cn('cursor-pointer bg-red-50 hover:bg-red-100', selected && 'ring-1 ring-inset ring-red-300');
+    return cn(
+      'cursor-pointer bg-status-error-bg hover:bg-status-error-border',
+      selected && 'ring-1 ring-inset ring-status-error-border',
+    );
   }
   return cn('cursor-pointer hover:bg-gray-50', selected && 'bg-brand-light/40');
 }
@@ -99,12 +103,9 @@ export default function Erros() {
 
       <div className="flex-1 overflow-y-auto px-6 py-5">
         {error && (
-          <div className="mb-4 p-3 bg-red-50 border border-red-200 rounded-lg text-sm text-red-700 flex gap-2">
-            <AlertCircle size={16} className="flex-shrink-0 mt-0.5" />
-            <span>
-              <strong>Erro:</strong> {error}
-            </span>
-          </div>
+          <Alert variant="error" className="mb-4">
+            <strong>Erro:</strong> {error}
+          </Alert>
         )}
 
         <div className="grid grid-cols-6 gap-3 mb-5">
@@ -142,7 +143,7 @@ export default function Erros() {
         </div>
 
         <div className="flex gap-2 mb-4 flex-wrap">
-          <select className="input w-44" value={f.errorType} onChange={(e) => sf('errorType', e.target.value)}>
+          <select id="erros-type" name="erros-type" aria-label="Filtrar por tipo de erro" className="input w-44" value={f.errorType} onChange={(e) => sf('errorType', e.target.value)}>
             <option value="">Todos os tipos</option>
             {ERROR_TYPES.map((t) => (
               <option key={t} value={t}>
@@ -151,6 +152,9 @@ export default function Erros() {
             ))}
           </select>
           <input
+            id="erros-sender"
+            name="erros-sender"
+            aria-label="Filtrar por remetente"
             className="input w-44"
             placeholder="Remetente…"
             value={f.sender}
@@ -158,6 +162,9 @@ export default function Erros() {
             onKeyDown={(e) => e.key === 'Enter' && handleSearch()}
           />
           <input
+            id="erros-date-from"
+            name="erros-date-from"
+            aria-label="Data inicial"
             type="date"
             className="input w-36"
             value={f.dateFrom}
@@ -165,6 +172,9 @@ export default function Erros() {
             title="Data de"
           />
           <input
+            id="erros-date-to"
+            name="erros-date-to"
+            aria-label="Data final"
             type="date"
             className="input w-36"
             value={f.dateTo}
@@ -218,7 +228,7 @@ export default function Erros() {
                       {r.source_file || '—'}
                     </td>
                     <td
-                      className="table-cell text-xs max-w-[200px] truncate text-red-600"
+                      className="table-cell text-xs max-w-[200px] truncate text-status-error-fg"
                       title={r.error_message ?? ''}
                     >
                       {r.error_message || '—'}
@@ -270,8 +280,8 @@ export default function Erros() {
             </dl>
             {sel.raw_payload != null && (
               <div className="mt-2">
-                <p className="text-[10px] text-gray-400 mb-1 uppercase tracking-wide">Payload bruto</p>
-                <pre className="text-[10px] bg-gray-50 rounded-lg p-3 overflow-x-auto text-gray-600 whitespace-pre-wrap">
+                <p className="text-xs text-gray-400 mb-1 uppercase tracking-wide">Payload bruto</p>
+                <pre className="text-xs bg-gray-50 rounded-lg p-3 overflow-x-auto text-gray-600 whitespace-pre-wrap">
                   {JSON.stringify(sel.raw_payload, null, 2)}
                 </pre>
               </div>

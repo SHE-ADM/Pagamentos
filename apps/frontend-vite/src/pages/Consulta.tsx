@@ -21,6 +21,7 @@ import type { FinancialAccountControl } from '@sheild/shared';
 import { getFinancialAccountControl, getFinancialStats, type FinancialStats } from '../services/supabase';
 import { getErrorMessage } from '../lib/getErrorMessage';
 import StatusBadge from '../components/StatusBadge';
+import Alert from '../components/atoms/Alert';
 import ExpandableText from '../components/ExpandableText';
 import AttachmentViewer from '../components/AttachmentViewer';
 
@@ -260,25 +261,22 @@ export default function Consulta() {
 
       <div className="flex-1 overflow-y-auto px-6 py-5">
         {error && (
-          <div className="mb-4 p-3 bg-red-50 border border-red-200 rounded-lg text-sm text-red-700 flex gap-2">
-            <AlertCircle size={16} className="flex-shrink-0 mt-0.5" />
-            <span>
-              <strong>Erro:</strong> {error}
-            </span>
-          </div>
+          <Alert variant="error" className="mb-4">
+            <strong>Erro:</strong> {error}
+          </Alert>
         )}
 
         <div className="flex gap-3 mb-5 flex-wrap">
           {cards.map(({ icon: Icon, label, value, fmt, danger, cardId, onCardClick }) => {
             const isActive = !!cardId && activeCard === cardId;
-            const borderLeft = danger ? 'border-l-red-500' : 'border-l-brand';
+            const borderLeft = danger ? 'border-l-status-error-solid' : 'border-l-brand';
             let cardBg = 'bg-white';
             if (isActive) {
-              cardBg = danger ? 'bg-red-50 ring-1 ring-red-300/40' : 'bg-brand/5 ring-1 ring-brand/30';
+              cardBg = danger ? 'bg-status-error-bg ring-1 ring-status-error-border/40' : 'bg-brand/5 ring-1 ring-brand/30';
             }
             const interactive = onCardClick ? 'cursor-pointer hover:shadow-md hover:scale-[1.01]' : '';
-            const iconCls = danger ? 'bg-red-500/10 text-red-600' : 'bg-brand/10 text-brand';
-            const valueCls = danger ? 'text-red-600' : 'text-slate-800';
+            const iconCls = danger ? 'bg-status-error-solid/10 text-status-error-fg' : 'bg-brand/10 text-brand';
+            const valueCls = danger ? 'text-status-error-fg' : 'text-slate-800';
             return (
               <div
                 key={label}
@@ -303,11 +301,14 @@ export default function Consulta() {
         </div>
 
         <div className="relative bg-white rounded-xl shadow-sm border border-slate-100 p-4 mb-4">
-          <span className="absolute left-4 top-2 text-[10px] uppercase tracking-widest text-slate-400">
+          <span className="absolute left-4 top-2 text-xs uppercase tracking-widest text-slate-400">
             Filtros
           </span>
           <div className="flex gap-2 flex-wrap pt-4">
             <input
+              id="consulta-supplier"
+              name="consulta-supplier"
+              aria-label="Buscar por fornecedor, CNPJ ou número do documento"
               className="input w-44"
               placeholder="Fornecedor, CNPJ ou Nº doc…"
               value={f.supplier}
@@ -327,25 +328,28 @@ export default function Consulta() {
                 }
               }}
             />
-            <select className="input w-40" value={f.docType} onChange={(e) => sf('docType', e.target.value)}>
+            <select id="consulta-doc-type" name="consulta-doc-type" aria-label="Filtrar por tipo de documento" className="input w-40" value={f.docType} onChange={(e) => sf('docType', e.target.value)}>
               <option value="">Tipo Documento</option>
               {['darf','das','dae','dam / duam','gare','gnre','gps','gru','iss','iptu','ipva','itbi','pix','tributo','boleto','cte','nfe','nfse','recibo','seguro','outro'].map((t) => (
                 <option key={t}>{t}</option>
               ))}
             </select>
-            <select className="input w-36" value={f.paymentMethod} onChange={(e) => sf('paymentMethod', e.target.value)}>
+            <select id="consulta-payment-method" name="consulta-payment-method" aria-label="Filtrar por tipo de pagamento" className="input w-36" value={f.paymentMethod} onChange={(e) => sf('paymentMethod', e.target.value)}>
               <option value="">Tipo Pagamento</option>
               {['boleto','pix','ted','cartão','depósito','duplicata','bancário','carteira','vale','crédito','débito','dinheiro','transferência','cheque','outro'].map((m) => (
                 <option key={m}>{m}</option>
               ))}
             </select>
-            <select className="input w-32" value={f.status} onChange={(e) => sf('status', e.target.value)}>
+            <select id="consulta-status" name="consulta-status" aria-label="Filtrar por situação" className="input w-32" value={f.status} onChange={(e) => sf('status', e.target.value)}>
               <option value="">Situação</option>
               {['pendente', 'a vencer', 'vencido', 'prorrogado', 'baixado', 'protestado', 'cartório', 'pago', 'pago protesto', 'pago cartório', 'não pago', 'cancelado', 'falha'].map((s) => (
                 <option key={s}>{s}</option>
               ))}
             </select>
             <input
+              id="consulta-date-from"
+              name="consulta-date-from"
+              aria-label="Vencimento inicial"
               type="date"
               className="input w-36"
               value={f.dateFrom}
@@ -353,6 +357,9 @@ export default function Consulta() {
               title="Vencimento de"
             />
             <input
+              id="consulta-date-to"
+              name="consulta-date-to"
+              aria-label="Vencimento final"
               type="date"
               className="input w-36"
               value={f.dateTo}

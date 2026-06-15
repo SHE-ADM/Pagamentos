@@ -1,12 +1,14 @@
 // src/pages/Emails.tsx
 import { useState, useEffect, useCallback, useRef, Fragment } from 'react';
-import { RefreshCw, Mail, FileCheck, AlertCircle, CopyMinus, Inbox, CheckCircle2, CalendarDays, X, Eye } from 'lucide-react';
+import { RefreshCw, Mail, FileCheck, AlertCircle, CopyMinus, Inbox, Ban, CalendarDays, X, Eye } from 'lucide-react';
 import type { EmailControl, FinancialAccountControl } from '@sheild/shared';
 import { getEmailControl, getEmailStats, getAccountsByMessageId, getInvoiceNumbersByMessageIds, type EmailStats } from '../services/supabase';
 import { triggerEmailRead } from '../services/emailReader';
 import { suspendIdleLogout, resumeIdleLogout } from '../hooks/useIdleLogout';
 import { getErrorMessage } from '../lib/getErrorMessage';
+import { getFailureReason } from '../lib/getFailureReason';
 import StatusBadge from '../components/StatusBadge';
+import Alert from '../components/atoms/Alert';
 import AttachmentViewer from '../components/AttachmentViewer';
 import ExpandableText from '../components/ExpandableText';
 
@@ -194,6 +196,9 @@ export default function Emails() {
           </button>
           <div className="flex mx-2">
             <select
+              id="emails-read-days"
+              name="emails-read-days"
+              aria-label="Período da Busca Geral"
               className="input rounded-r-none border-r-0 w-44 text-sm"
               value={readDays}
               onChange={(e) => setReadDays(+e.target.value)}
@@ -222,22 +227,18 @@ export default function Emails() {
 
       <div className="flex-1 overflow-y-auto px-6 py-5">
         {error && (
-          <div className="mb-4 p-3 bg-red-50 border border-red-200 rounded-lg text-sm text-red-700 flex gap-2">
-            <AlertCircle size={16} className="flex-shrink-0 mt-0.5" />
-            <span>
-              <strong>Erro:</strong> {error}
-            </span>
-          </div>
+          <Alert variant="error" className="mb-4">
+            <strong>Erro:</strong> {error}
+          </Alert>
         )}
 
         {readMsg && (
-          <div className="mb-4 p-3 bg-green-50 border border-green-200 rounded-lg text-sm text-green-700 flex gap-2">
-            <CheckCircle2 size={16} className="flex-shrink-0 mt-0.5" />
-            <span>{readMsg}</span>
-          </div>
+          <Alert variant="success" className="mb-4">
+            {readMsg}
+          </Alert>
         )}
 
-        <div className="grid grid-cols-4 gap-3 mb-5">
+        <div className="grid grid-cols-6 gap-3 mb-5">
           {[
             {
               icon: Mail,
@@ -249,27 +250,43 @@ export default function Emails() {
             },
             {
               icon: FileCheck,
-              label: 'PDFs extraídos',
-              value: stats.extracted ?? 0,
-              sub: 'com sucesso',
-              cardId: 'extraidos',
-              filter: { pdfExtracted: true },
+              label: 'Extraídos',
+              value: stats.extraido ?? 0,
+              sub: 'conta via PDF',
+              cardId: 'extraido',
+              filter: { status: 'extraído' },
             },
             {
-              icon: AlertCircle,
-              label: 'Sem anexo PDF',
-              value: stats.semPdf ?? 0,
-              sub: 'revisão manual',
-              cardId: 'sempdf',
-              filter: { hasAttachment: false },
+              icon: Inbox,
+              label: 'Recebidos',
+              value: stats.recebido ?? 0,
+              sub: 'conta via corpo',
+              cardId: 'recebido',
+              filter: { status: 'recebido' },
             },
             {
               icon: CopyMinus,
-              label: 'Aguardando extração',
-              value: stats.awaitingExtraction ?? 0,
-              sub: 'com anexo, sem extração',
-              cardId: 'aguardando',
-              filter: { hasAttachment: true, pdfExtracted: false },
+              label: 'Pendente',
+              value: stats.pendente ?? 0,
+              sub: 'PDF salvo, sem extração',
+              cardId: 'pendente',
+              filter: { status: 'pendente' },
+            },
+            {
+              icon: AlertCircle,
+              label: 'Falha',
+              value: stats.falha ?? 0,
+              sub: 'sem conta — revisão',
+              cardId: 'falha',
+              filter: { status: 'falha' },
+            },
+            {
+              icon: Ban,
+              label: 'Ignorados',
+              value: stats.ignorado ?? 0,
+              sub: 'não-financeiro',
+              cardId: 'ignorado',
+              filter: { status: 'ignorado' },
             },
           ].map(({ icon: Icon, label, value, sub, cardId, filter }) => {
             const isActive = activeCard === cardId;
@@ -296,21 +313,27 @@ export default function Emails() {
 
         <div className="flex gap-2 mb-4">
           <input
+            id="emails-search"
+            name="emails-search"
+            aria-label="Buscar por remetente, assunto ou número do documento"
             className="input max-w-xs"
             placeholder="Remetente, assunto ou Nº doc…"
             value={filters.sender}
             onChange={(e) => setF('sender', e.target.value)}
             onKeyDown={(e) => e.key === 'Enter' && load()}
           />
-          <select className="input w-40" value={filters.status} onChange={(e) => setF('status', e.target.value)}>
+          <select id="emails-status" name="emails-status" aria-label="Filtrar por status" className="input w-40" value={filters.status} onChange={(e) => setF('status', e.target.value)}>
             <option value="">Todos os status</option>
-            {['extraído', 'baixado', 'falha', 'ignorado'].map((s) => (
+            {['extraído', 'recebido', 'pendente', 'falha', 'ignorado'].map((s) => (
               <option key={s} value={s}>
                 {s}
               </option>
             ))}
           </select>
           <select
+            id="emails-days"
+            name="emails-days"
+            aria-label="Filtrar por período"
             className="input w-36"
             value={filters.days}
             onChange={(e) => setF('days', +e.target.value)}
@@ -406,6 +429,11 @@ export default function Emails() {
                             <p className="text-xs font-semibold text-zinc-500 mb-3 uppercase tracking-wide pr-8">
                               Detalhes — {r.sender_name || r.sender_email} · {fmt(r.received_at)}
                             </p>
+                            {r.status === 'falha' && (
+                              <Alert variant="error" className="mb-3 text-xs">
+                                <strong>Por que este e-mail falhou:</strong> {getFailureReason(r)}
+                              </Alert>
+                            )}
                             {r.has_attachment && r.attachment_names && (
                               <div className="mb-3 flex flex-wrap gap-2">
                                 {r.attachment_names.split(',').map((f) => f.trim()).filter(Boolean).map((f) => (
@@ -446,7 +474,7 @@ export default function Emails() {
                               ))}
                             </dl>
                             <div className="mt-3">
-                              <p className="text-[10px] text-zinc-400 mb-2 uppercase tracking-wide">
+                              <p className="text-xs text-zinc-400 mb-2 uppercase tracking-wide">
                                 Conta(s) registrada(s) — financial_account_control
                               </p>
                               {accounts.length === 0 ? (

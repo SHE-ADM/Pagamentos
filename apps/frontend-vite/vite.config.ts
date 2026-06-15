@@ -14,6 +14,18 @@ export default defineConfig({
       '/api': 'http://127.0.0.1:8000',
     },
   },
+  build: {
+    rollupOptions: {
+      output: {
+        // Vendors estáveis em chunks próprios — melhora cache e download paralelo.
+        // O código das rotas é dividido via React.lazy (ver App.tsx).
+        manualChunks: {
+          'react-vendor': ['react', 'react-dom', 'react-router-dom'],
+          supabase: ['@supabase/supabase-js'],
+        },
+      },
+    },
+  },
   test: {
     environment: 'jsdom',
     globals: true,
