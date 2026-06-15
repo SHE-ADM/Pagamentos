@@ -692,7 +692,13 @@ _BODY_NAME_RE    = re.compile(
     r"(?im)^[ \t]*(?:fornecedor|favorecido|benefici[aá]rio|cedente|"
     r"raz[aã]o\s+social|empresa|nome|respons[aá]vel)[ \t]*[:\-][ \t]*(.+?)[ \t]*$"
 )
-_BODY_AMOUNT_RE  = re.compile(r"R\$\s*([\d.,]+)")
+# Valor monetario. Tolera separadores entre "R$" e o numero ("R$:", "R$ -")
+# porque varios e-mails internos escrevem "R$:  297,08".
+_BODY_AMOUNT_RE  = re.compile(r"R\$\s*[:\-]?\s*([\d.,]+)")
+# Valor rotulado como "Total" / "Valor Total" — tem PRECEDENCIA: quando o corpo
+# lista parcelas somadas/subtraidas, o total e o valor a pagar (nao a 1a parcela).
+_BODY_TOTAL_RE   = re.compile(
+    r"(?i)(?:valor\s+)?total\s*[:\-]?\s*R\$\s*[:\-]?\s*([\d.,]+)")
 _BODY_PIX_RE     = re.compile(r"\bpix\b", re.IGNORECASE)
 _BODY_DUE_RE     = re.compile(r"(?i)venc(?:imento|to)?\D{0,15}?(\d{2}/\d{2}/\d{2,4})")
 _BODY_ISSUE_RE   = re.compile(r"(?i)emiss[aã]o\D{0,10}?(\d{2}/\d{2}/\d{2,4})")
@@ -824,6 +830,30 @@ def _brl_to_decimal(raw: str | None):
         return None
 
 
+def _extract_body_amount(body_text: str) -> "float | None":
+    """Determina o valor a pagar a partir do corpo do e-mail.
+
+    Regra (decisao de negocio):
+      1. Valor rotulado como "Total"/"Valor Total" tem precedencia — quando o
+         corpo lista parcelas (lado a lado, somando ou subtraindo), o total e o
+         valor a pagar. Ex.: "Valor: R$ 297,08 + R$ 6,96 / Total: R$ 304,04".
+      2. Sem rotulo de total e com varios valores → soma as parcelas (fallback).
+      3. Um unico valor → o proprio valor.
+      4. Nenhum valor → None.
+    """
+    total_match = _BODY_TOTAL_RE.search(body_text)
+    if total_match:
+        return _brl_to_decimal(total_match.group(1))
+
+    valores = [v for v in (_brl_to_decimal(m) for m in _BODY_AMOUNT_RE.findall(body_text))
+               if v is not None]
+    if not valores:
+        return None
+    if len(valores) == 1:
+        return valores[0]
+    return round(sum(valores), 2)
+
+
 def _br_date_to_iso(raw: str | None) -> str | None:
     """Converte data 'dd/mm/aaaa' ou 'dd/mm/aa' do corpo do e-mail para 'aaaa-mm-dd'."""
     if not raw:
@@ -854,7 +884,8 @@ def extract_from_email_body(body_text: str, received_at: str, message_id: str,
     (sem valor R$ nem numero de documento). O chamador deve ignorar silenciosamente.
 
     Regras de extracao:
-      - amount      : primeiro 'R$ X.XXX,XX' encontrado
+      - amount      : valor rotulado 'Total'/'Valor Total' (precedencia); sem
+                       rotulo, soma as parcelas; valor unico → ele mesmo (_extract_body_amount)
       - invoice_number: 'NF XXXX', 'NFe XXXX', 'nota fiscal XXXX', 'fatura N° XXXX'
       - issue_date  : 'emissao DD/MM/AA(AA)'; fallback = data de envio do e-mail
       - due_date    : 'vencimento/vencto DD/MM/AA(AA)'; fallback = issue_date
@@ -900,8 +931,7 @@ def extract_from_email_body(body_text: str, received_at: str, message_id: str,
     if barcode and not (44 <= len(barcode) <= 48):
         barcode = None
 
-    amount_match   = _BODY_AMOUNT_RE.search(body_text)
-    amount         = _brl_to_decimal(amount_match.group(1)) if amount_match else None
+    amount         = _extract_body_amount(body_text)
 
     inv_match      = _BODY_INVOICE_RE.search(body_text)
     invoice_number = inv_match.group(1).strip() if inv_match else None
@@ -1405,13 +1435,15 @@ def try_extract_from_body(email_rec: dict, body_text: str, received_at: str,
                           sender_email: str | None = None) -> bool:
     """Tenta gravar uma conta extraida do corpo do e-mail (sem PDF valido).
 
-    Retorna True se uma conta foi gravada.
-    Retorna False silenciosamente quando o corpo nao contem sinal financeiro
-    (sem valor R$ nem numero de documento) — nao gera entrada em errors.
+    Retorna True se uma conta foi gravada; False caso contrario, anotando o
+    motivo em email_rec['notes']. O log em email_processing_errors e feito de
+    forma centralizada no chamador (process_message), para TODA falha.
     """
     payload = extract_from_email_body(body_text, received_at, message_id, sender_email)
     if payload is None:
-        return False  # Sem sinal financeiro — ignorar silenciosamente
+        # Sem sinal financeiro (sem valor nem documento) no corpo.
+        email_rec["notes"] = "Corpo sem sinal financeiro (sem valor nem documento)"
+        return False
 
     # Remetente do e-mail → o trigger alinha supplier.email (migration 023).
     payload["sender_email"] = sender_email
@@ -1423,15 +1455,13 @@ def try_extract_from_body(email_rec: dict, body_text: str, received_at: str,
     dtype = (payload.get("document_type") or "").strip().lower()
     if dtype in SKIP_ACCOUNT_TYPES:
         log.info(f"    {dtype.upper()} (corpo do e-mail) ignorado — nao gera conta a pagar")
+        email_rec["notes"] = f"{dtype.upper()} (corpo do e-mail) — nao gera conta a pagar"
         return False
 
     # Mesma validacao de valor do caminho de PDF (extract_and_store_accounts):
-    # sem valor nao ha conta a pagar — registra erro e nao grava.
+    # sem valor nao ha conta a pagar.
     if not payload.get("amount"):
-        ctrl.register_error(
-            email_rec, "sem_valor",
-            "Valor ausente ou zero no corpo do e-mail", raw_payload=payload
-        )
+        email_rec["notes"] = "Valor ausente ou zero no corpo do e-mail"
         return False
 
     # Dedup de conteudo: mesmo pedido de pagamento reenviado em outro e-mail.
@@ -1446,10 +1476,7 @@ def try_extract_from_body(email_rec: dict, body_text: str, received_at: str,
         log.info("    Conta extraída do corpo do e-mail e gravada em financial_account_control")
         return True
 
-    ctrl.register_error(
-        email_rec, "db_erro",
-        "Falha ao gravar conta extraida do corpo do e-mail", raw_payload=payload
-    )
+    email_rec["notes"] = "Falha ao gravar conta extraida do corpo do e-mail"
     return False
 
 # ---------------------------------------------------------------------------
@@ -1593,6 +1620,22 @@ def process_message(mail, uid: bytes, keywords: list,
             rec["status"] = "extraído" if csv_generated else "pendente"
         else:
             rec["status"] = "recebido" if body_created else "falha"
+
+        # Regra: TODA falha gera log em email_processing_errors para revisão —
+        # inclusive o corpo sem sinal financeiro, que antes saía silencioso.
+        # try_extract_from_body anota o motivo em rec["notes"]. O caminho de
+        # exceção tem seu próprio log abaixo (não passa por aqui).
+        if rec["status"] == "falha":
+            ctrl.register_error(
+                rec, "falha_processamento",
+                rec.get("notes") or "E-mail casou keyword mas nenhuma conta foi gerada",
+                raw_payload={
+                    "subject":         rec.get("subject"),
+                    "keyword_matched": rec.get("keyword_matched"),
+                    "has_attachment":  rec.get("has_attachment"),
+                    "body_preview":    rec.get("body_preview"),
+                },
+            )
 
         if mark_seen:
             mail.uid("store", uid, "+FLAGS", "\\Seen")
