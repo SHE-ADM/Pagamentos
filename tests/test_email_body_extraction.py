@@ -155,6 +155,28 @@ class ExtractFromEmailBodyTest(unittest.TestCase):
         )
         self.assertIsNone(payload)
 
+    def test_honorarios_vira_tipo_honorarios_e_pix(self):
+        """E-mail de honorários (serviços) → document_type 'honorários' + payment 'pix'."""
+        body = (
+            "Bom dia,\n"
+            "Por gentileza fazer o pix dos honorários advocatícios do mês.\n"
+            "Valor: R$ 1.500,00\nVencimento: 20/06/2026"
+        )
+        payload = read_emails.extract_from_email_body(
+            body, "2026-06-15T10:00:00+00:00", "<msg-hon>", "adv@escritorio.com.br")
+        self.assertIsNotNone(payload)
+        self.assertEqual(payload["document_type"], "honorários")
+        self.assertEqual(payload["payment_method"], "pix")
+
+    def test_honorarios_sem_mencao_pix_ainda_forca_pix(self):
+        """Regra de negócio: honorários sempre paga via pix, mesmo sem citar 'pix'."""
+        body = "Cobrança de honorários contábeis referente ao mês. Valor R$ 800,00."
+        payload = read_emails.extract_from_email_body(
+            body, "2026-06-15T10:00:00+00:00", "<msg-hon2>", "contador@x.com.br")
+        self.assertIsNotNone(payload)
+        self.assertEqual(payload["document_type"], "honorários")
+        self.assertEqual(payload["payment_method"], "pix")
+
     def test_sem_rotulo_e_sem_documento_usa_sender_email(self):
         """Fallback preservado: sem rotulo de nome e sem CNPJ/CPF, usa o remetente."""
         body = "Pode pagar o pix de R$ 50,00 hoje?"

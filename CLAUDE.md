@@ -495,10 +495,17 @@ guia paga uma vez, sempre com o boleto válido. A trigger recalcula `due_status`
 ### Normalização de `document_type`
 
 `extract_pdf.py` usa `_ns()` (strip de acentos + lowercase) para lookup em `_DOC_TYPE_NORM`.
-CHECK constraint em `financial_account_control.document_type` usa `lower()` (migration 014).
-Tipos aceitos incluem: `boleto`, `cte`, `nfe`, `nfse`, `tributo`, `das`, `pix`, `seguro`,
-`fatura`, `recibo`, `contrato`, `outro` (DAS de Simples Nacional → `das`; PIX → `pix`).
+CHECK constraint em `financial_account_control.document_type` usa `lower()` (migrations 014,
+017 e **024**). Tipos aceitos incluem: `boleto`, `cte`, `nfe`, `nfse`, `tributo`, `das`,
+`pix`, `seguro`, `fatura`, `recibo`, `contrato`, `honorários`, `outro` (DAS de Simples
+Nacional → `das`; PIX → `pix`).
 `SKIP_ACCOUNT_TYPES = ['nfe', 'nfse']` — não geram conta a pagar.
+
+**Regra honorários** (migration 024): e-mail de honorários (keyword de assunto `honorário`;
+termo `honorário(s)` no corpo ou recibo) é gravado com `document_type='honorários'` e
+`payment_method='pix'` — honorários têm **precedência sobre o override de PIX** do tipo, e o
+pagamento é forçado a `pix` tanto no corpo (`extract_from_email_body`) quanto no PDF
+(`build_financial_payload`).
 
 ### Auto-resolução de fornecedor
 

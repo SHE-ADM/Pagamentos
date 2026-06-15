@@ -84,6 +84,8 @@ KEYWORDS_DEFAULT = [
     "fechamento",
     # Seguro
     "seguro",
+    # Honorários (serviços profissionais — geralmente pagos via PIX)
+    "honorário", "honorários", "honorario", "honorarios",
 ]
 
 LOG_COLUMNS = [
@@ -648,6 +650,10 @@ def build_financial_payload(row: dict, gmail_message_id: str,
         if ddmmyy:
             payload["invoice_number"] = f"{payload.get('document_type') or 'outro'}_{ddmmyy}"
 
+    # Honorários: forma de pagamento sempre PIX (regra de negócio), mesmo via PDF.
+    if (payload.get("document_type") or "").lower() == "honorários":
+        payload["payment_method"] = "pix"
+
     payload["currency"] = payload.get("currency") or "BRL"
     payload["status"]   = payload.get("status") or "pendente"
     payload["gmail_message_id"] = gmail_message_id
@@ -716,6 +722,8 @@ _BODY_DOC_KEYWORDS: list[tuple[str, list[str]]] = [
     ("nfse",       ["nota fiscal de servico", "nota fiscal eletronica de servico",
                     "nota fiscal de servicos eletronica", "nfs-e", "nfse"]),
     ("nfe",        ["nota fiscal eletronica", "danfe", "nf-e", "nfe"]),
+    # Honorários (serviços profissionais) — tipo próprio; pagamento sempre PIX.
+    ("honorários", ["honorario", "honorarios"]),
     ("DARF",       ["darf"]),
     ("GPS",        ["guia da previdencia social", "guia previdencia social", "gps"]),
     ("DAS",        ["simples nacional", "das-simples", "das simples",
@@ -881,13 +889,16 @@ def extract_from_email_body(body_text: str, received_at: str, message_id: str,
         # Regra de negocio: sem nenhuma data, usa a data da extracao (hoje).
         due_date = datetime.now().strftime("%Y-%m-%d")
 
-    if has_pix:
-        payment_method = "pix"
+    # Honorários têm precedência sobre o override de PIX: registra como tipo
+    # "honorários" e, por regra de negócio, forma de pagamento "pix".
+    classified = _classify_body_doc_type(body_text)
+    if classified == "honorários":
+        document_type, payment_method = "honorários", "pix"
+    elif has_pix:
+        # PIX sobrescreve o tipo quando não é honorários.
+        document_type, payment_method = "PIX", "pix"
     else:
-        payment_method = "outro"
-
-    # PIX sobrescreve qualquer tipo; senao detecta subtipos de tributo via keywords
-    document_type = "PIX" if has_pix else _classify_body_doc_type(body_text)
+        document_type, payment_method = classified, "outro"
 
     # Numero de documento: valor encontrado no corpo ou fallback tipo+ddmmyy
     if not invoice_number:
