@@ -86,6 +86,8 @@ KEYWORDS_DEFAULT = [
     "seguro",
     # Honorários (serviços profissionais — geralmente pagos via PIX)
     "honorário", "honorários", "honorario", "honorarios",
+    # Container (frete/demurrage/movimentação de contêineres)
+    "container", "conteiner", "contêiner",
 ]
 
 LOG_COLUMNS = [
@@ -763,6 +765,8 @@ _BODY_DOC_KEYWORDS: list[tuple[str, list[str]]] = [
     ("nfe",        ["nota fiscal eletronica", "danfe", "nf-e", "nfe"]),
     # Honorários (serviços profissionais) — tipo próprio; pagamento sempre PIX.
     ("honorários", ["honorario", "honorarios"]),
+    # Container (frete/demurrage/movimentação de contêineres).
+    ("container",  ["container", "conteiner"]),
     ("DARF",       ["darf"]),
     ("GPS",        ["guia da previdencia social", "guia previdencia social", "gps"]),
     ("DAS",        ["simples nacional", "das-simples", "das simples",

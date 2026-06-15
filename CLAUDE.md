@@ -496,9 +496,10 @@ guia paga uma vez, sempre com o boleto válido. A trigger recalcula `due_status`
 
 `extract_pdf.py` usa `_ns()` (strip de acentos + lowercase) para lookup em `_DOC_TYPE_NORM`.
 CHECK constraint em `financial_account_control.document_type` usa `lower()` (migrations 014,
-017 e **024**). Tipos aceitos incluem: `boleto`, `cte`, `nfe`, `nfse`, `tributo`, `das`,
-`pix`, `seguro`, `fatura`, `recibo`, `contrato`, `honorários`, `outro` (DAS de Simples
-Nacional → `das`; PIX → `pix`).
+017, **024** e **026**). Tipos aceitos incluem: `boleto`, `cte`, `nfe`, `nfse`, `tributo`,
+`das`, `pix`, `seguro`, `fatura`, `recibo`, `contrato`, `honorários`, `container`, `outro`
+(DAS de Simples Nacional → `das`; PIX → `pix`). `container` = frete/demurrage/movimentação de
+contêineres (keyword de assunto + classificação no corpo e PDF; migration 026).
 `SKIP_ACCOUNT_TYPES = ['nfe', 'nfse']` — não geram conta a pagar.
 
 **Regra honorários** (migration 024): e-mail de honorários (keyword de assunto `honorário`;

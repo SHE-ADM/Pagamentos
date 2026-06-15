@@ -111,6 +111,12 @@ class ClassifyBodyDocTypeTest(unittest.TestCase):
             "outro",
         )
 
+    def test_classifica_container(self):
+        self.assertEqual(
+            read_emails._classify_body_doc_type("Demurrage de contêiner no porto"),
+            "container",
+        )
+
 
 class ExtractFromEmailBodyTest(unittest.TestCase):
     def test_nfe_e_classificada_como_nfe(self):
@@ -185,6 +191,15 @@ class ExtractFromEmailBodyTest(unittest.TestCase):
         )
         self.assertIsNotNone(payload)
         self.assertEqual(payload["supplier_name"], "rose@otimotex.com.br")
+
+    def test_container_vira_tipo_container(self):
+        """E-mail de frete/movimentação de container → document_type 'container'."""
+        body = "Cobrança de frete de container. Vencimento 20/06/2026. Valor R$ 3.500,00"
+        payload = read_emails.extract_from_email_body(
+            body, "2026-06-15T10:00:00+00:00", "<msg-cont>", "frete@transp.com.br",
+        )
+        self.assertIsNotNone(payload)
+        self.assertEqual(payload["document_type"], "container")
 
     def test_nome_pela_assinatura_titulada_tem_prioridade(self):
         """'pix p/ Wesley' + assinatura 'Prof. Wesley S. Paixão' → usa a assinatura."""
