@@ -1,4 +1,4 @@
-import { useState, forwardRef, type InputHTMLAttributes, type ReactNode } from 'react';
+import { useId, useState, forwardRef, type InputHTMLAttributes, type ReactNode } from 'react';
 import { cva } from 'class-variance-authority';
 import { cn } from '../../lib/cn';
 
@@ -22,16 +22,22 @@ const fieldWrapper = cva('flex items-center h-10 px-3.5 gap-2.5 rounded-lg borde
 // Atom — campo de formulario com label, fundo preenchido e estado de foco.
 // forwardRef necessário para integração com react-hook-form Controller.
 const FilledTextField = forwardRef<HTMLInputElement, FilledTextFieldProps>(
-  ({ label, error, endAdornment, ...inputProps }, ref) => {
+  ({ label, error, endAdornment, id, ...inputProps }, ref) => {
     const [focused, setFocused] = useState(false);
+    const generatedId = useId();
+    const inputId = id ?? generatedId;
+    const errorId = `${inputId}-error`;
 
     return (
       <div className="flex flex-col gap-1.5">
-        <label className="text-sm font-bold text-loginGreen-ink">{label}</label>
+        <label htmlFor={inputId} className="text-sm font-bold text-loginGreen-ink">{label}</label>
         <div className={cn(fieldWrapper({ focused }))}>
           <input
             {...inputProps}
+            id={inputId}
             ref={ref}
+            aria-invalid={error ? true : undefined}
+            aria-describedby={error ? errorId : undefined}
             onFocus={(e) => {
               setFocused(true);
               inputProps.onFocus?.(e);
@@ -44,7 +50,7 @@ const FilledTextField = forwardRef<HTMLInputElement, FilledTextFieldProps>(
           />
           {endAdornment}
         </div>
-        {error && <span className="text-xs text-red-600">{error}</span>}
+        {error && <span id={errorId} className="text-xs text-status-error-fg">{error}</span>}
       </div>
     );
   },

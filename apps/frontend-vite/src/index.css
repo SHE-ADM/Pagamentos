@@ -7,8 +7,7 @@
     --sidebar-width: 208px; /* 13rem — largura do painel de navegação */
   }
   body {
-    @apply bg-surface-page text-ink-primary antialiased;
-    font-size: 13px;
+    @apply bg-surface-page text-ink-primary antialiased text-sm;
     line-height: 1.6;
   }
   * {
@@ -21,7 +20,7 @@
     @apply inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium;
   }
   .btn {
-    @apply inline-flex items-center gap-1.5 px-3 py-1.5 text-[13px] font-medium
+    @apply inline-flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium
            border border-slate-200 rounded-lg bg-white shadow-sm
            hover:bg-slate-50 transition-all duration-150 active:scale-95 cursor-pointer;
   }
@@ -49,7 +48,7 @@
     animation: fadeInUp 0.2s ease-out both;
   }
   .table-header {
-    @apply text-[11px] font-medium text-slate-500 uppercase tracking-widest
+    @apply text-xs font-medium text-slate-500 uppercase tracking-widest
            bg-slate-50 px-3 py-2 border-b border-slate-200 text-left;
   }
   .table-cell {
@@ -57,7 +56,7 @@
   }
   /* Variante prata — usada em /emails para diferenciar visualmente de /consulta */
   .table-header-silver {
-    @apply text-[11px] font-medium text-zinc-400 uppercase tracking-widest
+    @apply text-xs font-medium text-zinc-400 uppercase tracking-widest
            bg-zinc-50 px-3 py-2 border-b border-zinc-200 text-left;
   }
   .table-cell-silver {

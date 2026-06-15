@@ -39,32 +39,37 @@ describe('StatusBadge', () => {
     const { container } = render(<StatusBadge value="email_body" />);
     expect(screen.getByText('email_body')).toBeInTheDocument();
     const badge = screen.getByText('email_body');
-    expect(badge.className).toContain('text-teal-700');
+    expect(badge.className).toContain('text-status-source-fg');
     expect(container.querySelector('svg')).not.toBeNull();
   });
 
   it('mapeia "vencido" para a variante vermelha', () => {
     render(<StatusBadge value="vencido" />);
-    expect(screen.getByText('vencido').className).toContain('text-red-600');
+    expect(screen.getByText('vencido').className).toContain('text-status-error-fg');
   });
 
   it('mapeia "pago" para a variante esmeralda', () => {
     render(<StatusBadge value="pago" />);
-    expect(screen.getByText('pago').className).toContain('text-emerald-700');
+    expect(screen.getByText('pago').className).toContain('text-status-success-fg');
+  });
+
+  it('mapeia "recebido" (conta via corpo) para a variante azul', () => {
+    render(<StatusBadge value="recebido" />);
+    expect(screen.getByText('recebido').className).toContain('text-status-info-fg');
   });
 
   it('mapeia "erro_api" para vermelho sólido (distinto do erro comum)', () => {
     render(<StatusBadge value="erro_api" />);
     const badge = screen.getByText('erro_api');
     // vermelho sólido: fundo cheio + texto branco — destaca de extracao_falhou (red suave)
-    expect(badge.className).toContain('bg-red-600');
+    expect(badge.className).toContain('bg-status-error-solid');
     expect(badge.className).toContain('text-white');
   });
 
   it('"extracao_falhou" usa vermelho suave — diferente do erro_api sólido', () => {
     render(<StatusBadge value="extracao_falhou" />);
     const badge = screen.getByText('extracao_falhou');
-    expect(badge.className).toContain('text-red-600');
-    expect(badge.className).not.toContain('bg-red-600');
+    expect(badge.className).toContain('text-status-error-fg');
+    expect(badge.className).not.toContain('bg-status-error-solid');
   });
 });

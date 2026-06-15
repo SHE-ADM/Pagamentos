@@ -48,8 +48,11 @@ Estas regras se aplicam a **todo** código novo ou alterado neste projeto, sem e
   - **Organism**: componente com estado e lógica de negócio (formulário completo, tabela paginada).
 - Estilo **exclusivamente via classes Tailwind** — `style={{}}` inline é proibido quando
   existir token ou classe equivalente no Tailwind.
-- **Tokens de cor**: usar sempre `loginGreen-*` nas telas de auth (ver guia abaixo).
-  Nunca use hex hardcoded em JSX ou CSS quando o token já existe na paleta.
+- **Tokens de cor**: usar `loginGreen-*` nas telas de auth e `status-*`
+  (feedback, badges e banners — ver guia abaixo) no restante do app. Nunca use hex
+  hardcoded **nem cores default do Tailwind** (`red-*`, `amber-*`, `emerald-*`, `blue-*`,
+  `teal-*`…) para estados semânticos — o token semântico é a fonte de verdade única
+  (paleta no `tailwind.config.ts`).
 - **Tokens de tamanho**: usar os tokens Tailwind mais próximos em vez de valores
   arbitrários (ex.: `text-sm` em vez de `text-[15px]`). Valores sem token equivalente
   (ex.: `object-[center_25%]`) são aceitos como exceção justificada.
@@ -63,7 +66,8 @@ Estas regras se aplicam a **todo** código novo ou alterado neste projeto, sem e
   `cn()` (`src/lib/cn.ts` — `clsx` + `tailwind-merge`): `cn(badgeVariants({ variant }), className)`.
   Cada valor de variante continua sendo uma **string literal completa** (compatível com o
   JIT). Componentes-referência: `StatusBadge` (mapa em `statusBadge.variants.ts`),
-  `InlineMessage`, `AuthInput`, `FilledTextField`, `AccentPillButton`, `GradientPillButton`.
+  `Alert` (banner de página — error/success/warning/info), `InlineMessage`, `AuthInput`,
+  `FilledTextField`, `AccentPillButton`, `GradientPillButton`.
   Mantenha as definições `cva` que não são componentes em arquivo separado (`*.variants.ts`)
   para não disparar `react-refresh/only-export-components`.
 
@@ -142,6 +146,31 @@ Escopo = área afetada: `login`, `email-reader`, `consulta`, `scheduler`, `migra
   com valor por ternário, ex.: `setItem(key, on ? '1' : '0')` em vez de `if/else` com
   `setItem`/`removeItem`), e sem texto solto logo após um elemento inline em JSX (S6772 —
   envolver o texto em `<span>`, ex.: `<input … /><span>Lembrar-me</span>`).
+
+### 6 — Acessibilidade (WCAG 2.1 AA)
+
+Alvo: **WCAG 2.1 Nível AA** em todas as telas. Regras práticas:
+
+- **Todo controle de formulário tem nome acessível + `id`/`name`.** Inputs/selects de filtro
+  recebem `aria-label` (nome para leitores de tela e para o axe) **e** `id`/`name` (resolve
+  o alerta de autofill do Chrome). Campos com label visível usam `<label htmlFor>` ligado a
+  um `id` — ver `FilledTextField`/`AuthInput`, que geram `id` via `useId` e associam o erro
+  por `aria-invalid` + `aria-describedby`. Botão só-ícone leva `aria-label` (ex.: olho de
+  senha).
+- **Contraste**: pares texto/fundo cumprem AA — texto normal ≥4.5:1, texto grande/ícone de
+  UI ≥3:1. Ao criar ou alterar um token de cor, **validar o ratio** (controles desabilitados
+  são isentos pela 1.4.3).
+- **Testes a11y automatizados (jest-axe, AA)**: matcher em `tests/setup.ts`
+  (`expect.extend(toHaveNoViolations)`); runner configurado em `tests/axe.ts` (tags
+  `wcag2a/2aa/21a/21aa`). Todo componente/página relevante ganha um `*.a11y.test.tsx` com
+  `expect(await axe(container)).toHaveNoViolations()`. Páginas com serviços mockam os
+  serviços (ver `pages/Consulta.a11y.test.tsx`, `pages/Emails.a11y.test.tsx`).
+- **Contraste é travado por teste** em `tests/contrast.a11y.test.ts`: lê os tokens reais do
+  `tailwind.config.ts` e falha se algum par cair abaixo do mínimo AA. Cobre a lacuna do axe
+  em **jsdom**, que **não avalia `color-contrast`** (regra desligada em `tests/axe.ts`).
+- **Limitação conhecida (follow-up)**: contraste sob render real só por axe em navegador
+  (Lighthouse/Playwright). O Lighthouse roda em Chrome e pega o que o jsdom não pega
+  (contraste real, ordem de foco, autofill) — usar para auditoria periódica.
 
 ---
 
@@ -250,7 +279,7 @@ python skills\email-reader\scripts\read_emails.py --dry-run
 python skills\email-reader\scripts\read_emails.py --all --mark-seen
 ```
 
-Reprocessar PDFs com falha (`status=downloaded`, `pdf_extracted=false`):
+Reprocessar PDFs pendentes (`status=pendente`: `attachment_saved=true`, `pdf_extracted=false`):
 
 ```powershell
 py -3 scripts\retry_extraction.py          # usar py -3, não python
@@ -286,9 +315,10 @@ Tudo em TypeScript (`.tsx/.ts`) sob `apps/frontend-vite/src/`:
 ```
 apps/frontend-vite/src/components/
 ├── atoms/
-│   ├── FilledTextField.tsx    # (v2) campo label + fundo verde + foco via useState
+│   ├── Alert.tsx              # (app) banner de página via cva — error/success/warning/info + ícone
+│   ├── FilledTextField.tsx    # (v2) campo label + fundo verde + id (useId) + aria-invalid
 │   ├── AccentPillButton.tsx   # (v2) botão primário verde + ArrowRight
-│   ├── AuthInput.tsx          # (gradient) campo label + input + erro inline
+│   ├── AuthInput.tsx          # (gradient) campo label + input + erro inline (aria-describedby)
 │   └── GradientPillButton.tsx # (gradient) botão pill com bg-gradient-auth
 ├── molecules/
 │   ├── SocialLinksBar.tsx     # (v2) círculos Otimotex/Lebianco/WhatsApp
@@ -309,9 +339,14 @@ apps/frontend-vite/src/components/
 Tipos compartilhados vêm de `@sheild/shared` (ex.: `FinancialEmail`, `EmailControl`).
 Helpers em `src/lib/`: `getErrorMessage.ts` (erro em strict mode), `cn.ts` (merge de
 classes Tailwind — `clsx` + `tailwind-merge`, base do padrão CVA), `supabaseClient.ts`
-(SDK oficial, só para auth) e `authStorage.ts` (storage híbrido da sessão +
+(SDK oficial, só para auth), `authStorage.ts` (storage híbrido da sessão +
 `setRememberPreference`/`getRememberPreference` — preferência "Lembrar-me"; ver
-seção Autenticação).
+seção Autenticação) e `getFailureReason.ts` (texto pt-BR explicando por que um e-mail
+ficou em `falha`, exibido no `Alert` do card de `/emails`).
+
+Infra de teste a11y em `tests/`: `setup.ts` (matcher `toHaveNoViolations`), `axe.ts`
+(runner AA + `color-contrast` desligado) e `contrast.a11y.test.ts` (guarda de contraste
+dos tokens). Ver regra mandatória 6.
 
 ### Guia de cores — paleta `loginGreen` (`apps/frontend-vite/tailwind.config.ts`)
 
@@ -322,8 +357,8 @@ Telas de auth usam **exclusivamente** estes tokens:
 | `loginGreen-ink` | `#0c1e14` | títulos, labels, texto de input |
 | `loginGreen-inkMid` | `#2a3d30` | textos secundários ("lembrar-me") |
 | `loginGreen-inkMuted` | `#4a6b55` | labels sociais, divisores |
-| `loginGreen-inkFaint` | `#7aab8a` | ícone olho |
-| `loginGreen-placeholder` | `#8ab89a` | placeholder (`placeholder:text-loginGreen-placeholder`) |
+| `loginGreen-inkFaint` | `#558a6d` | ícone olho — AA ≥3:1 sobre o campo (1.4.11) |
+| `loginGreen-placeholder` | `#437355` | placeholder (`placeholder:text-loginGreen-placeholder`) — AA ≥4.5:1 sobre o campo |
 | `loginGreen-field` | `#eef9f3` | fundo dos campos |
 | `loginGreen-fieldFocus` | `#e4f6ec` | fundo em foco |
 | `loginGreen-socialBg` | `#f4fcf7` | fundo dos círculos sociais |
@@ -337,11 +372,44 @@ Telas de auth usam **exclusivamente** estes tokens:
 
 Paleta `brand` (verde dashboard) e `auth` (azul/petróleo) são usadas nas demais páginas — não misturar com `loginGreen`.
 
+> **Contraste AA travado:** `loginGreen-inkFaint`/`-placeholder` foram escurecidos para
+> cumprir AA sobre o campo verde (≥3:1 ícone / ≥4.5:1 placeholder). Não clarear sem
+> revalidar em `tests/contrast.a11y.test.ts`.
+
+### Guia de cores — paleta semântica `status` (`tailwind.config.ts`)
+
+Fonte de verdade para **feedback, badges e banners** em todo o app — usar estes tokens em
+vez de cores default do Tailwind. Cada grupo tem `bg` (fundo suave), `fg` (texto/ícone) e
+`border`; `error` ainda tem `solid`/`solidBorder` (badge crítico de fundo cheio). Todos
+cumprem WCAG AA (verificado em `tests/contrast.a11y.test.ts`).
+
+| Token | fg / bg | Uso |
+|---|---|---|
+| `status-error-*` | `#b91c1c` / `#fef2f2` (border `#fecaca`) | erro, vencido, falha |
+| `status-error-solid` | branco / `#dc2626` | badge crítico (`erro_api`) |
+| `status-success-*` | `#15803d` / `#f0fdf4` | sucesso, pago, extraído |
+| `status-warning-*` | `#b45309` / `#fffbeb` | atenção, pendente |
+| `status-info-*` | `#1d4ed8` / `#eff6ff` | informativo, a vencer, recebido |
+| `status-source-*` | `#0f766e` / `#f0fdfa` | origem da extração (teal) |
+| `status-neutral-*` | `#64748b` / `#f8fafc` | neutro, cancelado, documento |
+
+Aplicação **sempre via `cva`**: `StatusBadge` (`statusBadge.variants.ts`), `Alert` (banner
+de página) e `InlineMessage`. As quatro paletas — `brand` (verde dashboard), `auth`
+(azul/petróleo), `loginGreen` (auth v2) e `status` (semântica) — **não se misturam**; cada
+uma no seu contexto.
+
 ### Guia de tamanhos — tokens Tailwind em uso
 
 Usar o token mais próximo; valor arbitrário só como exceção documentada (ver abaixo).
 A login passou por compactação para centralizar melhor o card — os valores abaixo são
 os **atuais** (não os do design original).
+
+> **Snap aplicado em todo o app (não só na login):** tamanhos arbitrários de fonte foram
+> eliminados — `text-[9px]/[10px]/[11px]` → `text-xs`, `text-[13px]`/`body` → `text-sm`,
+> `tracking-[0.15em]` → `tracking-widest`. **Não reintroduzir `text-[Npx]`**; o corpo
+> (`body` em `index.css`) é `text-sm` (14px) e as classes utilitárias `.table-header*` /
+> badge base usam `text-xs`. As únicas exceções arbitrárias aceitas seguem sendo as de
+> layout (ver abaixo) — nunca tipografia.
 
 **Tipografia:**
 
@@ -437,6 +505,9 @@ Tipos aceitos incluem: `boleto`, `cte`, `nfe`, `nfse`, `tributo`, `das`, `pix`, 
 Trigger `trg_fe_supplier_id` (BEFORE INSERT OR UPDATE em `financial_account_control`) chama
 `resolve_supplier_id(cnpj, cpf, name)`: busca exata por CNPJ/CPF → fallback por nome
 normalizado → auto-insert em `supplier`. Função `normalize_search()` é SECURITY DEFINER.
+O mesmo trigger **alinha `supplier.email` com o remetente** (`migration 023`): a extração
+grava `financial_account_control.sender_email` (de `email_control.sender_email`) e o trigger
+o propaga para `supplier.email` ao resolver/criar o fornecedor.
 
 ### `extraction_source` — origem dos dados
 
@@ -449,11 +520,17 @@ normalizado → auto-insert em `supplier`. Função `normalize_search()` é SECU
 
 ### Caminho `email_body`
 
-Acionado em `process_message()` quando `not has_att` ou `accounts_saved == 0`.
+Acionado em `process_message()` **só quando `accounts_saved == 0`** (o anexo não gerou
+conta válida) — assim o corpo nunca conflita com um arquivo anexado válido.
 `extract_from_email_body()` faz parsing por regex: `supplier_name` via
-`Nome`/`Responsável`, `amount` via `R$ ([\d.,]+)`, `payment_method = 'pix'` se
-o termo aparecer, `due_date` = data explícita ou `received_at` como fallback.
-`email_body_excerpt` (migration 016) guarda o corpo completo; exibido via `ExpandableText`.
+`Nome`/`Responsável` (fallback = `sender_email`), `amount` via `R$ ([\d.,]+)`,
+`payment_method = 'pix'` se o termo aparecer. **Valida fornecedor+valor**: sem valor → não
+grava conta (vira `falha`). `email_body_excerpt` (migration 016) guarda o corpo completo.
+
+**Fallbacks de campo (corpo E PDF — `build_financial_payload`):** `issue_date` vazio →
+data do e-mail (`received_at`); `due_date` vazio → `issue_date` → hoje; `invoice_number`
+vazio → `"{document_type}_{ddmmyy(vencimento|emissão)}"`. `supplier_name`/`amount` são
+obrigatórios para gerar conta.
 
 ### Registrar TODOS os e-mails + filtro de assunto (`KEYWORDS_DEFAULT`)
 
@@ -463,12 +540,12 @@ espelha o webmail inteiro (o app substitui abrir a caixa). O filtro de keyword d
 
 - **Dedup primeiro** (`message_id` em `known_ids`) → pula.
 - **Sem keyword** no assunto → `ctrl.register({... status:'ignorado'})` sem baixar/
-  extrair (`has_attachment` fica NULL para não poluir o KPI "Sem anexo"). Respeita
-  `--dry-run` (não grava).
-- **Com keyword** → `process_message` (baixa + extrai).
-- **Casou keyword mas sem PDF e sem conta** (não-acionável) → também vira `ignorado`
-  (`has_attachment` NULL), em vez de `recebido`. Decidido em `process_message` antes do
-  `register`: se o status derivado seria `recebido`, grava `ignorado`.
+  extrair (`has_attachment` fica NULL). Respeita `--dry-run` (não grava).
+- **Com keyword** → `process_message` (baixa + extrai) define o status pelo resultado:
+  `extraído` (CSV gerado) · `pendente` (PDF salvo sem CSV) · `recebido` (sem PDF, conta
+  via corpo) · `falha` (casou keyword mas sem PDF e sem conta no corpo). Ver migration 022.
+- **Corpo é fallback só quando o anexo NÃO gera conta** (`accounts_saved==0`) — havendo
+  conta de arquivo anexado válido, o corpo é ignorado (sem conflito).
 
 Match é **substring** case-insensitive (`match_keyword`, ~linha 494): `transporte`
 pega "conhecimento de transporte". Lista padrão em `KEYWORDS_DEFAULT` (~linha 72),
@@ -487,17 +564,28 @@ tributo, taxa, gnre`, etc.). Evitar tokens curtos ambíguos (`das` casaria "vend
 - `services/supabase.ts` — fetch direto REST, `Prefer: count=exact` + `Content-Range` para paginação.
 - `services/emailReader.ts` — `POST /api/emails/read` proxiado pelo Vite para Flask.
 
+### Build e code-splitting (`frontend-vite`)
+
+- **Rotas lazy** (`App.tsx`): só `LoginPage` entra no bundle inicial; as três telas de
+  dados (`Emails`/`Consulta`/`Erros`) e os fluxos de auth secundários (`Forgot`/`Reset`)
+  são `React.lazy` + `Suspense` (fallback "Carregando…"; um `Suspense` interno mantém o
+  `Layout`/sidebar visível enquanto a página carrega). **Toda rota/página nova segue esse
+  padrão** `lazy(() => import(...))`.
+- **`manualChunks`** (`vite.config.ts`): `react-vendor` (react/-dom/router) e `supabase`
+  (SDK) em chunks próprios — melhora cache e download paralelo e elimina o aviso `>500 kB`
+  do Vite. O código de cada rota lazy vira um chunk à parte automaticamente.
+
 ## Banco de dados (Supabase)
 
 Migrations em `supabase/migrations/`, aplicadas **manualmente no SQL Editor** em ordem
-numérica (`001` → `021`). Não há migration automática.
+numérica (`001` → `023`). Não há migration automática.
 
 | Tabela | Propósito |
 |---|---|
-| `email_control` | Dedup/controle. CHECK aceita (recebido, baixado, extraído, falha, ignorado) — migration 019. **`recebido` não é mais produzido**: e-mail que casou keyword mas ficou sem PDF e sem conta vira `ignorado` (ver "Registrar TODOS os e-mails"); permanece no CHECK por compat |
-| `financial_account_control` | Tabela principal de contas a pagar — uma linha por documento; alimentada pelo pipeline de e-mail **e** por CRUD manual (baixas, consolidações, dashboards). Substitui a antiga `financial_emails` (dropada na migration 020) |
+| `email_control` | Dedup/controle. `status` ∈ (`extraído`, `recebido`, `pendente`, `falha`, `ignorado`) — **migration 022**. `extraído`=PDF extraído (CSV gerado); `recebido`=sem PDF, conta via corpo; `pendente`=PDF salvo sem CSV (substitui `baixado`); `falha`=casou keyword mas sem PDF e sem conta no corpo; `ignorado`=não-financeiro. O status é calculado em `process_message` pelo resultado real (CSV gerado/corpo), não por `pdf_extracted` |
+| `financial_account_control` | Tabela principal de contas a pagar — uma linha por documento; alimentada pelo pipeline de e-mail **e** por CRUD manual (baixas, consolidações, dashboards). Substitui a antiga `financial_emails` (dropada na migration 020). Tem `sender_email` (migration 023) que o trigger usa p/ alinhar `supplier.email` |
 | `email_processing_errors` | Log de falhas com `raw_payload` JSON |
-| `supplier` | Fornecedores auto-criados pelo trigger |
+| `supplier` | Fornecedores auto-criados pelo trigger. `email` alinhado com `email_control.sender_email` (migration 023) |
 
 `financial_account_control.status` (ciclo de vida do pagamento, default `pendente`) e
 `due_status` (situação de vencimento, gravada pela trigger) compartilham o mesmo domínio

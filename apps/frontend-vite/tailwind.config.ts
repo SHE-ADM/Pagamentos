@@ -24,6 +24,16 @@ export default {
         danger: '#ef4444',
         warning: '#f59e0b',
         info: '#3b82f6',
+        // Paleta semântica de feedback — fonte de verdade dos status/banners.
+        // bg = fundo suave · fg = texto/borda forte · border = borda suave.
+        status: {
+          error: { bg: '#fef2f2', fg: '#b91c1c', border: '#fecaca', solid: '#dc2626', solidBorder: '#b91c1c' },
+          success: { bg: '#f0fdf4', fg: '#15803d', border: '#bbf7d0' },
+          warning: { bg: '#fffbeb', fg: '#b45309', border: '#fde68a' },
+          info: { bg: '#eff6ff', fg: '#1d4ed8', border: '#bfdbfe' },
+          source: { bg: '#f0fdfa', fg: '#0f766e', border: '#99f6e4' }, // teal — origem da extração
+          neutral: { bg: '#f8fafc', fg: '#64748b', border: '#e2e8f0' }, // slate — neutro/cancelado
+        },
         ink: {
           primary: '#0f172a', // texto principal
           secondary: '#64748b', // texto secundário
@@ -38,8 +48,8 @@ export default {
           ink: '#0c1e14', // títulos, labels, input text
           inkMid: '#2a3d30', // "lembrar-me"
           inkMuted: '#4a6b55', // labels sociais, divisor
-          inkFaint: '#7aab8a', // ícone olho
-          placeholder: '#8ab89a', // placeholder dos inputs
+          inkFaint: '#558a6d', // ícone olho — AA: ≥3:1 sobre o campo verde (1.4.11)
+          placeholder: '#437355', // placeholder dos inputs — AA: ≥4.5:1 sobre o campo
           // Fundos
           surface: '#e6f5ec',
           field: '#eef9f3', // fundo do campo
