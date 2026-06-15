@@ -1324,6 +1324,7 @@ def extract_and_store_accounts(saved_pdfs: list, message_id: str,
             payload = build_financial_payload(row, gmid, received_at=err_ctx.get("received_at"))
             # Remetente do e-mail → o trigger alinha supplier.email (migration 023).
             payload["sender_email"] = err_ctx.get("sender_email")
+            payload["subject"]      = err_ctx.get("subject")  # exibido/buscado em /consulta (migration 025)
             ctx     = {**err_ctx, "source_file": row.get("source_file")}
 
             # Validacao 1: valor ausente ou zero
@@ -1410,6 +1411,7 @@ def try_extract_from_body(email_rec: dict, body_text: str, received_at: str,
 
     # Remetente do e-mail → o trigger alinha supplier.email (migration 023).
     payload["sender_email"] = sender_email
+    payload["subject"]      = email_rec.get("subject")  # exibido/buscado em /consulta (migration 025)
 
     # Mesma trava do caminho de PDF: NF-e/NFS-e nao geram conta a pagar.
     # Sem isso, notificacoes de nota fiscal (ex.: NFe da Editora Globo) vazavam
