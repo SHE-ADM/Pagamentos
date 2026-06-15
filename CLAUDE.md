@@ -568,10 +568,14 @@ e-mails `status='falha'`, rebusca o corpo no IMAP, baixa o boleto pelo link e gr
 
 Acionado em `process_message()` **só quando `accounts_saved == 0`** (o anexo não gerou
 conta válida) — assim o corpo nunca conflita com um arquivo anexado válido.
-`extract_from_email_body()` faz parsing por regex: `supplier_name` via
-`Nome`/`Responsável` (fallback = `sender_email`), `amount` via `R$ ([\d.,]+)`,
-`payment_method = 'pix'` se o termo aparecer. **Valida fornecedor+valor**: sem valor → não
-grava conta (vira `falha`). `email_body_excerpt` (migration 016) guarda o corpo completo.
+`extract_from_email_body()` faz parsing por regex: `supplier_name` via rótulo
+(`Fornecedor`/`Favorecido`/`Nome`/`Responsável`…) ou CNPJ/CPF. **Sem rótulo nem documento**,
+tenta sinais (`_supplier_from_signals`) antes do remetente: assinatura titulada (`Prof./Dr.
+<Nome>`) e destinatário do pagamento (`pix/pagar p/|para <Nome>`, com stopwords cortando a
+captura) — ex.: honorários "pix p/ Wesley" + "Prof. Wesley S. Paixão". Só então cai para
+`sender_email`. `amount` via `R$ ([\d.,]+)`; `payment_method='pix'` se o termo aparecer (ou
+sempre, p/ honorários). **Valida fornecedor+valor**: sem valor → não grava conta (vira
+`falha`). `email_body_excerpt` (migration 016) guarda o corpo completo.
 
 **Fallbacks de campo (corpo E PDF — `build_financial_payload`):** `issue_date` vazio →
 data do e-mail (`received_at`); `due_date` vazio → `issue_date` → hoje; `invoice_number`

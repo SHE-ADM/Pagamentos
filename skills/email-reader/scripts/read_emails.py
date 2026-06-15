@@ -703,6 +703,45 @@ _BODY_CPF_RE     = re.compile(r"(?i)cpf\D{0,5}(\d{3}\.?\d{3}\.?\d{3}-?\d{2})")
 _BODY_BARCODE_RE = re.compile(
     r"(?i)(?:linha\s+digit[aá]vel|c[oó]digo\s+de\s+barras)\D{0,10}([\d.\s]{47,60})"
 )
+# Fallback de nome do fornecedor (sem rotulo e sem CNPJ/CPF), em ordem de confianca:
+#   1) "pix/pagar/transferir ... p/|para <Nome>" — destinatario do pagamento.
+#   2) Assinatura titulada "Prof./Dr./Sr. <Nome>" — quem prestou o servico.
+# Caso classico: honorarios de profissional ("pix p/ Wesley" + "Prof. Wesley S. Paixao").
+# Tokens capitalizados (preservam acento); o verbo/rotulo e case-insensitive.
+_NAME_TOKEN = r"[A-ZÀ-Ý][A-Za-zÀ-ÿ.'-]+"
+_NAME_SEQ   = r"(" + _NAME_TOKEN + r"(?:\s+" + _NAME_TOKEN + r"){0,3})"
+_BODY_PAYTO_RE = re.compile(
+    r"(?i:\b(?:pix|pag\w*|transfer\w*|dep[oó]sit\w*)\b)[^.\n]{0,15}?"
+    r"(?i:p/|\bpra\b|\bpara\b)\s+" + _NAME_SEQ
+)
+_BODY_SIGN_RE  = re.compile(r"(?i:\b(?:prof|dr|dra|sr|sra)\b)\.?\s+" + _NAME_SEQ)
+# Palavras que NAO fazem parte de nome — cortam a captura (evita "Wesley Ref...").
+_NAME_STOPWORDS = {
+    "ref", "refer", "total", "valor", "obs", "att", "atenciosamente", "hoje",
+    "amanha", "favor", "gentileza", "conta", "banco", "ag", "cc", "pix", "obg",
+    "obrigado", "obrigada", "desde", "ja", "agradeco",
+}
+
+def _clean_person_name(raw: str) -> "str | None":
+    """Limpa a captura de nome: corta no primeiro stopword e exige >= 3 chars."""
+    out = []
+    for tok in (raw or "").split():
+        if tok.strip(".,").lower() in _NAME_STOPWORDS:
+            break
+        out.append(tok)
+    name = " ".join(out).strip(" .,")
+    return name if len(name) >= 3 else None
+
+def _supplier_from_signals(body_text: str) -> "str | None":
+    """Tenta extrair o nome do fornecedor sem rotulo: assinatura titulada
+    (mais completa) e, depois, o destinatario do pagamento ('p/ <Nome>')."""
+    for rx in (_BODY_SIGN_RE, _BODY_PAYTO_RE):
+        m = rx.search(body_text or "")
+        if m:
+            name = _clean_person_name(m.group(1))
+            if name:
+                return name
+    return None
 # Comprovante de pagamento ja feito / "pix recebido" — NAO e conta a pagar.
 _BODY_RECEIPT_RE = re.compile(
     r"(?i)comprovante\s+de\s+(?:pix\s+)?recebido|pix\s+recebido\s+de|"
@@ -867,12 +906,11 @@ def extract_from_email_body(body_text: str, received_at: str, message_id: str,
     if not amount and not invoice_number:
         return None
 
-    # Fornecedor: cai para o e-mail do remetente APENAS quando nao ha rotulo de
-    # nome nem identificador (CNPJ/CPF). Havendo CNPJ/CPF sem nome, deixa o nome
-    # vazio — a trigger resolve_supplier_id resolve pelo documento, evitando
-    # gravar o e-mail interno (remetente) como nome do fornecedor.
+    # Fornecedor sem rotulo nem identificador: tenta sinais (destinatario do pix
+    # "p/ <Nome>" / assinatura "Prof. <Nome>") antes de cair no e-mail do
+    # remetente. Havendo CNPJ/CPF, deixa o nome vazio (a trigger resolve pelo doc).
     if not supplier_name and not supplier_cnpj and not supplier_cpf:
-        supplier_name = sender_email or "desconhecido"
+        supplier_name = _supplier_from_signals(body_text) or sender_email or "desconhecido"
 
     has_pix = bool(_BODY_PIX_RE.search(body_text))
 
