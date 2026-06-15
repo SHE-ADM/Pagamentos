@@ -17,3 +17,13 @@ FROM   email_control ec
 WHERE  ec.message_id = split_part(f.gmail_message_id, '#', 1)
   AND  f.subject IS NULL
   AND  ec.subject IS NOT NULL;
+
+-- Backfill companheiro de sender_email: a coluna existe desde a migration 023,
+-- mas registros anteriores ficaram NULL. Necessário para exibir/pesquisar o
+-- remetente em /consulta também no histórico.
+UPDATE financial_account_control f
+SET    sender_email = ec.sender_email
+FROM   email_control ec
+WHERE  ec.message_id = split_part(f.gmail_message_id, '#', 1)
+  AND  f.sender_email IS NULL
+  AND  ec.sender_email IS NOT NULL;
