@@ -140,6 +140,9 @@ export const financialAccountControlSchema = z.object({
   payer_cnpj: z.string().nullable(),
   payer_name: z.string().nullable(),
 
+  // Remetente do e-mail — alinha supplier.email no trigger (migration 023)
+  sender_email: z.string().nullable(),
+
   // Corpo do e-mail (quando extraction_source = 'email_body')
   email_body_excerpt: z.string().nullable(),
 

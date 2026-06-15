@@ -3,7 +3,7 @@ retry_extraction.py — Re-executa extração para PDFs que falharam.
 
 Dois modos:
 
-1) Pendentes (padrão): e-mails com status 'baixado' (pdf_extracted=false e
+1) Pendentes (padrão): e-mails com status 'pendente' (pdf_extracted=false e
    attachment_saved=true) — PDFs salvos mas nunca extraídos.
 
 2) --from-errors: e-mails que GERARAM conta parcial ou nenhuma por falha de
@@ -15,7 +15,7 @@ Dois modos:
    reprocessamento (se a API cair, o log de erro é preservado).
 
 Uso:
-    py -3 scripts/retry_extraction.py                  # pendentes (status baixado)
+    py -3 scripts/retry_extraction.py                  # pendentes (status pendente)
     py -3 scripts/retry_extraction.py --dry-run        # lista pendentes sem extrair
     py -3 scripts/retry_extraction.py --from-errors    # reprocessa falhas em /erros
     py -3 scripts/retry_extraction.py --from-errors --dry-run
@@ -306,7 +306,7 @@ def main():
             log.info(f"  ✓ {accounts_saved} conta(s) gravada(s) — status → extraído")
             ok += 1
         else:
-            log.warning("  ✗ Extração falhou — status mantido como 'baixado'")
+            log.warning("  ✗ Extração falhou — status mantido como 'pendente'")
             failed += 1
 
     log.info(f"\n{'='*50}")
