@@ -75,6 +75,14 @@ class ExtractPdfLinksTest(unittest.TestCase):
         text = "Visite https://www.exemplo.com/sobre-nos para saber mais."
         self.assertEqual(read_emails.extract_pdf_links(text, ""), [])
 
+    def test_desescapa_amp_no_link(self):
+        """Links de fatura/boleto vêm com &amp; no HTML — devem ser desescapados
+        para os parâmetros não quebrarem (ex.: SIEG → Vindi ?b=…&m=…&t=…)."""
+        text = "Sua fatura: https://app.sieg.com/faturas?bill=506792844&amp;name=TEXTIL&amp;branchid=10"
+        links = read_emails.extract_pdf_links(text, "")
+        self.assertEqual(
+            links, ["https://app.sieg.com/faturas?bill=506792844&name=TEXTIL&branchid=10"])
+
     def test_aviso_locaweb_no_corpo_descarta_todos_os_links(self):
         """Aviso 'Tem certeza que deseja acessar este link' → nenhum link seguido."""
         text = (

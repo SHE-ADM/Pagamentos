@@ -529,12 +529,19 @@ passa por `upload_attachment` dentro de `extract_and_store_accounts`, anexo ou l
 
 - **Reconhecimento do link** (`extract_pdf_links`): âncora/URL com termos de cobrança
   (`_LINK_TEXT_RE`/`_LINK_URL_RE`, que inclui `protocolo`) ou caminho `.pdf`.
-- **Portal BRASPRESS** (`download_pdf_from_url` + `_braspress_download_url`): o link do
-  e-mail (`/protocoloweb?protocolo=CHAVE`) abre uma página cujo botão chama
-  `faturaPDF(chave)`, que baixa de `/fatura/download?protocolo=CHAVE&protocoloWeb=true`.
-  O download exige **cookie de sessão** (`JSESSIONID`) — por isso `download_pdf_from_url`
-  usa um `http.cookiejar`/opener compartilhado entre a página e o download (`_fetch_url`
-  aceita `opener`). Outros portais com fluxo semelhante seguem o mesmo padrão.
+- **Página HTML intermediária** (`download_pdf_from_url`): se o link abre uma landing/portal
+  HTML, varre os `<a>` (1 nível) atrás de um link de boleto (âncora/URL de cobrança ou
+  `.pdf`) e baixa o PDF. Hrefs são **desescapados** (`html.unescape`, `&amp;`→`&`) para os
+  parâmetros não quebrarem. Cobre **SIEG genericamente** (a página `app.sieg.com/faturas`
+  tem `<a id="hlBoleto">Gerar Boleto</a>` apontando para o PDF na Vindi — sem handler
+  dedicado). Faturas SIEG já **pagas** não trazem boleto (corretamente não geram conta).
+- **Portal BRASPRESS** (`download_pdf_from_url` + `_braspress_download_url`): caso que o scan
+  genérico não cobre, pois o link do PDF é montado por JS. O link do e-mail
+  (`/protocoloweb?protocolo=CHAVE`) abre uma página cujo botão chama `faturaPDF(chave)`, que
+  baixa de `/fatura/download?protocolo=CHAVE&protocoloWeb=true`. Exige **cookie de sessão**
+  (`JSESSIONID`) — por isso `download_pdf_from_url` usa um `http.cookiejar`/opener
+  compartilhado entre a página e o download (`_fetch_url` aceita `opener`). Outros portais
+  com link de PDF montado por JS seguem esse padrão (handler dedicado).
 - **Links suspeitos são ignorados** (`_is_suspicious_link`, regra Locaweb): redirecionadores/
   rastreadores ofuscados — `bing.com/ck/a?…&u=a1<base64>`, Microsoft SafeLinks, Proofpoint
   URL Defense — **nunca** viram candidatos a download (evita baixar malware de phishing).
@@ -543,7 +550,12 @@ passa por `upload_attachment` dentro de `extract_and_store_accounts`, anexo ou l
   clique, logo ausente do corpo bruto). Como rede secundária, `_body_has_suspicious_warning`
   descarta todos os links se esse texto de aviso aparecer citado no corpo.
 
-Testes: `tests/test_link_extraction.py` (reconhecimento, filtro de suspeito, URL BRASPRESS).
+Testes: `tests/test_link_extraction.py` (reconhecimento, unescape, filtro de suspeito, URL BRASPRESS).
+
+**Reprocessar histórico**: `scripts/reprocess_link_emails.py` (com `--dry-run`) varre os
+e-mails `status='falha'`, rebusca o corpo no IMAP, baixa o boleto pelo link e grava em
+`financial_account_control` + atualiza `email_control` (`falha`→`extraído`); duplicatas
+(original + encaminhado) deduplicam para uma conta e ambos os e-mails viram `extraído`.
 
 ### Caminho `email_body`
 
