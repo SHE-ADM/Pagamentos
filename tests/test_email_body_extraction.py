@@ -178,13 +178,35 @@ class ExtractFromEmailBodyTest(unittest.TestCase):
         self.assertEqual(payload["payment_method"], "pix")
 
     def test_sem_rotulo_e_sem_documento_usa_sender_email(self):
-        """Fallback preservado: sem rotulo de nome e sem CNPJ/CPF, usa o remetente."""
+        """Fallback preservado: sem rotulo, sem CNPJ/CPF e sem sinais, usa o remetente."""
         body = "Pode pagar o pix de R$ 50,00 hoje?"
         payload = read_emails.extract_from_email_body(
             body, "2026-06-11T10:00:00+00:00", "<msg-fb>", "rose@otimotex.com.br",
         )
         self.assertIsNotNone(payload)
         self.assertEqual(payload["supplier_name"], "rose@otimotex.com.br")
+
+    def test_nome_pela_assinatura_titulada_tem_prioridade(self):
+        """'pix p/ Wesley' + assinatura 'Prof. Wesley S. Paixão' → usa a assinatura."""
+        body = (
+            "Pfv pode fazer o pix p/ Wesley Ref so honorários dos serviços. "
+            "Total R$ 675,00\nAtenciosamente\nProf. Wesley S. Paixão"
+        )
+        payload = read_emails.extract_from_email_body(
+            body, "2026-06-10T10:00:00+00:00", "<msg-wesley>", "rose@otimotex.com.br",
+        )
+        self.assertIsNotNone(payload)
+        self.assertEqual(payload["supplier_name"], "Wesley S. Paixão")
+        self.assertEqual(payload["document_type"], "honorários")
+
+    def test_nome_pelo_destinatario_do_pix(self):
+        """Sem assinatura: usa o destinatário do pagamento ('p/ <Nome>')."""
+        body = "Bom dia, favor pagar o pix para João Silva. Valor R$ 200,00"
+        payload = read_emails.extract_from_email_body(
+            body, "2026-06-11T10:00:00+00:00", "<msg-joao>", "rose@otimotex.com.br",
+        )
+        self.assertIsNotNone(payload)
+        self.assertEqual(payload["supplier_name"], "João Silva")
 
 
 class TryExtractFromBodyTest(unittest.TestCase):
