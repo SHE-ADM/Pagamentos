@@ -2,12 +2,16 @@
 // Envelope padrão de resposta da API (monorepo-crud-spec.md).
 // Todos os route handlers retornam { success, data?, error?, meta? }.
 
+// Contratos públicos do envelope — exportados por convenção (consumidos via
+// inferência de `ok`/`fail`), por isso marcados ts-prune-ignore.
+// ts-prune-ignore-next
 export interface ApiResponseMeta {
   total?: number;
   page?: number;
   limit?: number;
 }
 
+// ts-prune-ignore-next
 export interface ApiResponse<T = unknown> {
   success: boolean;
   data?: T;

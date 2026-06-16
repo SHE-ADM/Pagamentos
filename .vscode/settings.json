@@ -1,0 +1,5 @@
+{
+  "//": "Monorepo flat-config: faz a extensão ESLint rodar com cwd em cada app, achando o eslint.config.mjs e resolvendo tsconfigRootDir. Sem isso o editor acusa 'No tsconfigRootDir was set' / 'couldn't find an eslint.config file' nos componentes.",
+  "eslint.workingDirectories": [{ "mode": "auto" }],
+  "eslint.validate": ["javascript", "javascriptreact", "typescript", "typescriptreact"]
+}
