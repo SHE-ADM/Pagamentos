@@ -1287,11 +1287,19 @@ def _run_extraction_once(pdf_path: Path) -> tuple[str | None, str | None, bool]:
     """
     try:
         with tempfile.TemporaryDirectory(dir=CSV_OUTPUT) as tmp_out:
+            # UTF-8 nos DOIS lados: o extract_pdf emite Unicode (✓, →) nos logs.
+            # Em console Windows (cp1252) isso quebra a captura — o parent lança
+            # UnicodeDecodeError ao decodificar a saída do filho, derrubando a
+            # extração mesmo com o PDF já extraído. Parent: encoding utf-8 +
+            # errors='replace' (nunca quebra). Filho: env PYTHONUTF8/PYTHONIOENCODING
+            # garante que ele escreva utf-8 independente do code page do console.
+            child_env = {**os.environ, "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"}
             result = subprocess.run(
                 [sys.executable, str(EXTRACT_SCRIPT),
                  "--input", str(pdf_path),
                  "--output", tmp_out],
-                capture_output=True, text=True, timeout=180
+                capture_output=True, text=True, timeout=180,
+                encoding="utf-8", errors="replace", env=child_env,
             )
             if result.returncode != 0:
                 return None, f"rc={result.returncode}: {(result.stderr or '').strip()[:300]}", True
