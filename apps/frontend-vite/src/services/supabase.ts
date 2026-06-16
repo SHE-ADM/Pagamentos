@@ -176,6 +176,29 @@ interface Paginated<T> {
   total: number;
 }
 
+// Aplica os filtros de financial_account_control nos search params — compartilhado
+// entre a listagem paginada e a soma do card "Valor total".
+function applyFinancialFilters(
+  params: URLSearchParams,
+  { supplier, docType, status, dueStatuses, paymentMethod, dateFrom, dateTo }: FinancialAccountControlFilters,
+): void {
+  // or= em cinco colunas: nome, CNPJ/CPF, nº documento, assunto e remetente
+  if (supplier) {
+    params.set(
+      'or',
+      `(supplier_name.ilike.*${supplier}*,supplier_cnpj.ilike.*${supplier}*,invoice_number.ilike.*${supplier}*,subject.ilike.*${supplier}*,sender_email.ilike.*${supplier}*)`,
+    );
+  }
+  if (docType) params.set('document_type', `eq.${docType}`);
+  // Sem filtro de status → exclui cancelado por padrão; filtro explícito sobrescreve.
+  params.set('status', status ? `eq.${status}` : 'neq.cancelado');
+  if (dueStatuses?.length === 1) params.set('due_status', `eq.${dueStatuses[0]}`);
+  else if (dueStatuses && dueStatuses.length > 1) params.set('due_status', `in.(${dueStatuses.join(',')})`);
+  if (paymentMethod) params.set('payment_method', `eq.${paymentMethod}`);
+  if (dateFrom) params.append('due_date', `gte.${dateFrom}`);
+  if (dateTo) params.append('due_date', `lte.${dateTo}`);
+}
+
 export async function getFinancialAccountControl({
   supplier,
   docType,
@@ -195,25 +218,7 @@ export async function getFinancialAccountControl({
   url.searchParams.set('order', sortCol ? `${sortCol}.${sortDir ?? 'asc'}` : 'issue_date.desc');
   url.searchParams.set('limit', String(pageSize));
   url.searchParams.set('offset', String(offset));
-  // or= em cinco colunas: nome, CNPJ/CPF, nº documento, assunto e remetente
-  if (supplier) {
-    url.searchParams.set(
-      'or',
-      `(supplier_name.ilike.*${supplier}*,supplier_cnpj.ilike.*${supplier}*,invoice_number.ilike.*${supplier}*,subject.ilike.*${supplier}*,sender_email.ilike.*${supplier}*)`,
-    );
-  }
-  if (docType) url.searchParams.set('document_type', `eq.${docType}`);
-  // Sem filtro de status → exclui cancelado por padrão; filtro explícito sobrescreve.
-  if (status) {
-    url.searchParams.set('status', `eq.${status}`);
-  } else {
-    url.searchParams.set('status', 'neq.cancelado');
-  }
-  if (dueStatuses?.length === 1) url.searchParams.set('due_status', `eq.${dueStatuses[0]}`);
-  else if (dueStatuses && dueStatuses.length > 1) url.searchParams.set('due_status', `in.(${dueStatuses.join(',')})`);
-  if (paymentMethod) url.searchParams.set('payment_method', `eq.${paymentMethod}`);
-  if (dateFrom) url.searchParams.append('due_date', `gte.${dateFrom}`);
-  if (dateTo) url.searchParams.append('due_date', `lte.${dateTo}`);
+  applyFinancialFilters(url.searchParams, { supplier, docType, status, dueStatuses, paymentMethod, dateFrom, dateTo });
   const reqHeaders = await authHeaders({ Prefer: 'count=exact' });
   const res = await fetch(url.toString(), { headers: reqHeaders });
   if (!res.ok) throw new Error(`Supabase ${res.status}: ${await res.text()}`);
@@ -221,6 +226,22 @@ export async function getFinancialAccountControl({
   const cr = res.headers.get('Content-Range');
   const total = cr ? Number.parseInt(cr.split('/')[1]) || 0 : data.length;
   return { data, total };
+}
+
+// Soma de `amount` para o filtro corrente — alimenta o card "Valor total" de
+// /consulta, que reflete o subconjunto filtrado (cards ou filtros manuais).
+// Busca só a coluna amount (sem paginar) e soma no cliente, como getFinancialStats.
+export async function getFinancialAccountTotalValue(
+  filters: FinancialAccountControlFilters = {},
+): Promise<number> {
+  const url = new URL(`${BASE_URL}/rest/v1/financial_account_control`);
+  url.searchParams.set('select', 'amount');
+  url.searchParams.set('limit', '10000');
+  applyFinancialFilters(url.searchParams, filters);
+  const res = await fetch(url.toString(), { headers: await authHeaders() });
+  if (!res.ok) throw new Error(`Supabase ${res.status}: ${await res.text()}`);
+  const data = (await res.json()) as { amount: number | null }[];
+  return data.reduce((s, r) => s + (Number(r.amount) || 0), 0);
 }
 
 // ── email_processing_errors ───────────────────────────────────────────────
@@ -324,9 +345,14 @@ export interface FinancialStats {
 }
 
 export async function getFinancialStats(): Promise<FinancialStats> {
+  // `neq.cancelado` espelha o padrão da listagem (applyFinancialFilters): contas
+  // canceladas ficam fora dos KPIs (Total de registros, Valor total, Vencidas) a
+  // menos que o usuário filtre explicitamente por situação. Mantém o KPI "Total
+  // de registros" consistente com o rodapé do grid.
   const [all, pending] = await Promise.all([
     query<Pick<FinancialAccountControl, 'amount' | 'status' | 'due_date' | 'due_status'>[]>('financial_account_control', {
       select: 'amount,status,due_date,due_status',
+      status: 'neq.cancelado',
       limit: 1000,
     }),
     query<{ id: number }[]>('financial_account_control', { select: 'id', status: 'eq.pendente', limit: 1000 }),
