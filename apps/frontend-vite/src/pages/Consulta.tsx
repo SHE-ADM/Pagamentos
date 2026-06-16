@@ -14,7 +14,12 @@ import {
   type LucideIcon,
 } from 'lucide-react';
 import type { FinancialAccountControl } from '@sheild/shared';
-import { getFinancialAccountControl, getFinancialStats, type FinancialStats } from '../services/supabase';
+import {
+  getFinancialAccountControl,
+  getFinancialStats,
+  getFinancialAccountTotalValue,
+  type FinancialStats,
+} from '../services/supabase';
 import { getErrorMessage } from '../lib/getErrorMessage';
 import Alert from '../components/atoms/Alert';
 import ExpandableText from '../components/ExpandableText';
@@ -97,6 +102,8 @@ interface MetricCard {
 export default function Consulta() {
   const [rows, setRows] = useState<FinancialAccountControl[]>([]);
   const [stats, setStats] = useState<Partial<FinancialStats>>({});
+  // Soma de "Valor total" para o filtro aplicado (cards/filtros). null = sem dado ainda.
+  const [filteredValue, setFilteredValue] = useState<number | null>(null);
   const [sel, setSel] = useState<FinancialAccountControl | null>(null);
   const [viewing, setViewing] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
@@ -140,6 +147,25 @@ export default function Consulta() {
   useEffect(() => {
     void load();
   }, [load]);
+
+  // "Valor total" reflete o filtro aplicado (cards ou filtros manuais). Depende
+  // só de `applied` — não re-soma ao paginar/ordenar. O flag `cancelled` descarta
+  // respostas de filtros já trocados (evita sobrescrever com valor obsoleto).
+  useEffect(() => {
+    let cancelled = false;
+    const run = async () => {
+      try {
+        const v = await getFinancialAccountTotalValue(applied);
+        if (!cancelled) setFilteredValue(v);
+      } catch {
+        if (!cancelled) setFilteredValue(null);
+      }
+    };
+    void run();
+    return () => {
+      cancelled = true;
+    };
+  }, [applied]);
 
   // Buscar: congela filtro atual em applied e volta para pagina 1.
   // React 18 faz batch dos dois setState — gera um unico load novo.
@@ -186,7 +212,7 @@ export default function Consulta() {
 
   const vencidasCount = stats.vencidas ?? 0;
   const cards: MetricCard[] = [
-    { icon: DollarSign, label: 'Valor total', value: stats.totalValue ?? 0, fmt: fmtMoney },
+    { icon: DollarSign, label: 'Valor total', value: filteredValue ?? stats.totalValue ?? 0, fmt: fmtMoney },
     { icon: FileText, label: 'Total de registros', value: stats.totalRecords ?? 0, fmt: (v) => v },
     {
       icon: Clock,

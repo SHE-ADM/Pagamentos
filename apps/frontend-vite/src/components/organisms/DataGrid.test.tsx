@@ -37,22 +37,14 @@ const baseProps = {
   onSort: vi.fn(),
 };
 
-// Força o breakpoint 'sm' (nenhuma media query de min-width casa) para os testes
-// de responsividade; restaurado em afterEach pelo restoreAllMocks.
-const mockBreakpointSm = (): void => {
-  vi.spyOn(globalThis, 'matchMedia').mockImplementation((query: string) => ({
-    matches: false,
-    media: query,
-    onchange: null,
-    addEventListener: () => undefined,
-    removeEventListener: () => undefined,
-    addListener: () => undefined,
-    removeListener: () => undefined,
-    dispatchEvent: () => false,
-  }));
+// Força um breakpoint definindo a largura do container observado pelo
+// ResizeObserver stub (tests/setup.ts). <640 = 'sm'. Restaurado no afterEach.
+const setContainerWidth = (px: number): void => {
+  (globalThis as { __roWidth?: number }).__roWidth = px;
 };
 
 afterEach(() => {
+  delete (globalThis as { __roWidth?: number }).__roWidth;
   vi.restoreAllMocks();
 });
 
@@ -106,7 +98,7 @@ describe('DataGrid', () => {
   });
 
   it('em telas pequenas (sm) desce a coluna marcada para a segunda linha', () => {
-    mockBreakpointSm();
+    setContainerWidth(400); // < 640 → breakpoint 'sm'
     render(<DataGrid {...baseProps} />);
     // 'Tipo' some do cabeçalho principal...
     expect(screen.queryByRole('columnheader', { name: /Tipo/ })).not.toBeInTheDocument();

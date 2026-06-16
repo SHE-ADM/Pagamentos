@@ -8,10 +8,9 @@ import { toHaveNoViolations } from 'jest-axe';
 
 expect.extend(toHaveNoViolations);
 
-// jsdom não implementa window.matchMedia — necessário para hooks de breakpoint
-// (useBreakpoint/DataGrid). matches=true mantém o breakpoint 'lg' (tabela completa)
-// nos testes, equivalente ao viewport padrão do jsdom (1024px).
-Object.defineProperty(window, 'matchMedia', {
+// jsdom não implementa matchMedia — shim genérico (matches=true) para libs que o
+// consultem. Os breakpoints do DataGrid não usam mais matchMedia.
+Object.defineProperty(globalThis, 'matchMedia', {
   writable: true,
   configurable: true,
   value: (query: string) => ({
@@ -25,3 +24,22 @@ Object.defineProperty(window, 'matchMedia', {
     dispatchEvent: () => false,
   }),
 });
+
+// jsdom não implementa ResizeObserver — usado por `useContainerBreakpoint`
+// (DataGrid mede a largura real do container). Stub controlável: a largura é lida
+// de globalThis.__roWidth no observe (padrão 1280 = breakpoint 'lg').
+class ResizeObserverStub {
+  constructor(private readonly cb: ResizeObserverCallback) {}
+  observe(): void {
+    const width = (globalThis as { __roWidth?: number }).__roWidth ?? 1280;
+    const entry = { contentRect: { width } } as ResizeObserverEntry;
+    this.cb([entry], this);
+  }
+  unobserve(): void {
+    /* no-op */
+  }
+  disconnect(): void {
+    /* no-op */
+  }
+}
+globalThis.ResizeObserver = ResizeObserverStub;

@@ -1,23 +1,51 @@
 // src/components/Layout.tsx
-import type { ReactNode } from 'react';
+import { useState, type ReactNode } from 'react';
 import { NavLink } from 'react-router-dom';
-import { Mail, Search, BarChart2, Edit3, Receipt, AlertTriangle, LogOut } from 'lucide-react';
+import { cva } from 'class-variance-authority';
+import { Mail, Search, BarChart2, Edit3, Receipt, AlertTriangle, LogOut, Menu, X } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
+import { cn } from '../lib/cn';
 
-export default function Layout({ children }: { children: ReactNode }) {
+// Link de navegação — estado ativo via cva (fonte única das classes). Local e
+// não exportado, então não dispara react-refresh/only-export-components.
+const navLink = cva('nav-link', {
+  variants: { active: { true: 'active', false: '' } },
+  defaultVariants: { active: false },
+});
+
+export default function Layout({ children }: Readonly<{ children: ReactNode }>) {
   const { user, signOut } = useAuth();
-
-  const navClass = (isActive: boolean) => isActive ? 'nav-link active' : 'nav-link';
+  // Drawer da sidebar no mobile (< lg). Em lg+ a sidebar é estática e sempre visível.
+  const [navOpen, setNavOpen] = useState(false);
 
   // Avatar/identidade derivados do e-mail do usuário autenticado.
   const email = user?.email ?? '';
   const initials = email.slice(0, 2).toUpperCase();
   const emailShort = email.length > 16 ? `${email.slice(0, 16)}…` : email;
 
+  const closeNav = (): void => setNavOpen(false);
+
   return (
     <div className="flex h-screen bg-gray-50">
-      <aside className="flex-shrink-0 w-[var(--sidebar-width)] bg-sidebar text-slate-300 border-r border-sidebar-border flex flex-col">
-        <div className="px-4 py-4 border-b border-sidebar-border">
+      {/* Backdrop do drawer — só no mobile quando aberto. */}
+      {navOpen && (
+        <button
+          type="button"
+          aria-label="Fechar menu"
+          onClick={closeNav}
+          className="fixed inset-0 z-30 bg-black/40 lg:hidden"
+        />
+      )}
+
+      <aside
+        className={cn(
+          'fixed inset-y-0 left-0 z-40 w-[var(--sidebar-width)] bg-sidebar text-slate-300',
+          'border-r border-sidebar-border flex flex-col transition-transform duration-200',
+          'lg:static lg:translate-x-0',
+          navOpen ? 'translate-x-0' : '-translate-x-full',
+        )}
+      >
+        <div className="px-4 py-4 border-b border-sidebar-border flex items-center justify-between">
           <div className="flex items-center gap-2.5">
             <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-gradient-to-br from-brand to-brand-dark shadow-sm shadow-brand/30">
               <Receipt size={16} className="text-white" />
@@ -27,19 +55,28 @@ export default function Layout({ children }: { children: ReactNode }) {
               <div className="text-xs text-slate-500">contas a pagar</div>
             </div>
           </div>
+          {/* Fechar — só no mobile. */}
+          <button
+            type="button"
+            aria-label="Fechar menu"
+            onClick={closeNav}
+            className="lg:hidden text-slate-400 hover:text-white transition-colors"
+          >
+            <X size={18} />
+          </button>
         </div>
 
         <nav className="flex-1 px-2 py-3 space-y-0.5">
           <p className="px-3 pt-1 pb-1.5 text-xs font-bold tracking-widest text-slate-600 uppercase">
             Ativo
           </p>
-          <NavLink to="/emails" className={({ isActive }) => navClass(isActive)}>
+          <NavLink to="/emails" onClick={closeNav} className={({ isActive }) => navLink({ active: isActive })}>
             <Mail size={16} /> E-mails
           </NavLink>
-          <NavLink to="/consulta" className={({ isActive }) => navClass(isActive)}>
+          <NavLink to="/consulta" onClick={closeNav} className={({ isActive }) => navLink({ active: isActive })}>
             <Search size={16} /> Consulta
           </NavLink>
-          <NavLink to="/erros" className={({ isActive }) => navClass(isActive)}>
+          <NavLink to="/erros" onClick={closeNav} className={({ isActive }) => navLink({ active: isActive })}>
             <AlertTriangle size={16} /> Log de Erros
           </NavLink>
 
@@ -81,7 +118,23 @@ export default function Layout({ children }: { children: ReactNode }) {
         </div>
       </aside>
 
-      <main className="flex-1 overflow-hidden flex flex-col">{children}</main>
+      <main className="flex-1 min-w-0 overflow-hidden flex flex-col">
+        {/* Barra superior — só no mobile (< lg): abre o drawer. */}
+        <header className="lg:hidden flex items-center gap-3 border-b border-slate-200 bg-white px-4 py-3">
+          <button
+            type="button"
+            aria-label="Abrir menu"
+            aria-expanded={navOpen}
+            onClick={() => setNavOpen(true)}
+            className="text-slate-600 hover:text-brand transition-colors"
+          >
+            <Menu size={22} />
+          </button>
+          <span className="font-semibold text-sm text-ink-primary">pagamentos</span>
+        </header>
+
+        <div className="flex-1 min-h-0">{children}</div>
+      </main>
     </div>
   );
 }
