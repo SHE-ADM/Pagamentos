@@ -572,11 +572,22 @@ pagamento é forçado a `pix` tanto no corpo (`extract_from_email_body`) quanto 
 ### Auto-resolução de fornecedor
 
 Trigger `trg_fe_supplier_id` (BEFORE INSERT OR UPDATE em `financial_account_control`) chama
-`resolve_supplier_id(cnpj, cpf, name)`: busca exata por CNPJ/CPF → fallback por nome
-normalizado → auto-insert em `supplier`. Função `normalize_search()` é SECURITY DEFINER.
-O mesmo trigger **alinha `supplier.email` com o remetente** (`migration 023`): a extração
-grava `financial_account_control.sender_email` (de `email_control.sender_email`) e o trigger
-o propaga para `supplier.email` ao resolver/criar o fornecedor.
+`resolve_supplier_id(cnpj, cpf, name, email)`. Ordem de busca (`migration 027`/`028`):
+**CNPJ → CPF → e-mail exato → nome normalizado → auto-insert** em `supplier`. Função
+`normalize_search()` é SECURITY DEFINER.
+
+- **Reconhecimento por e-mail** (`027`): na falta de CNPJ/CPF, o **remetente** (`sender_email`)
+  é a chave — regra de negócio: o e-mail é estável por fornecedor e raramente um fornecedor
+  tem o e-mail como `trade_name`/`legal_name`. Por isso, ao casar, um nome cadastrado em
+  formato de e-mail é **promovido** ao nome real quando este chega (`_enrich_supplier_name`).
+  Match por **e-mail exato** (case-insensitive) — seguro até em domínios públicos; match por
+  **domínio** foi deliberadamente evitado (risco com `gmail.com`/`hotmail.com`).
+- **Múltiplos e-mails** (`028`): `supplier` tem `email`, `email2`, `email3`, `email4` e o
+  match considera os quatro. O trigger **acrescenta** o remetente no primeiro campo vazio
+  (`_add_supplier_email`) em vez de sobrescrever `email` — sem duplicar (dedup case-insensitive);
+  com os 4 cheios, o excedente é ignorado. A extração grava
+  `financial_account_control.sender_email` (de `email_control.sender_email`) e o trigger o
+  propaga ao resolver/criar o fornecedor.
 
 ### `extraction_source` — origem dos dados
 
@@ -711,7 +722,7 @@ tributo, taxa, gnre`, etc.). Evitar tokens curtos ambíguos (`das` casaria "vend
 ## Banco de dados (Supabase)
 
 Migrations em `supabase/migrations/`, aplicadas **manualmente no SQL Editor** em ordem
-numérica (`001` → `026`). Não há migration automática.
+numérica (`001` → `028`). Não há migration automática.
 
 | Tabela | Propósito |
 |---|---|
