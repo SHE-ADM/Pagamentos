@@ -1,8 +1,21 @@
 import { Fragment, type ReactNode } from 'react';
 import { Inbox, ArrowUp, ArrowDown, ArrowUpDown, type LucideIcon } from 'lucide-react';
-import { useBreakpoint } from '../../hooks/useBreakpoint';
+import { useContainerBreakpoint } from '../../hooks/useContainerBreakpoint';
 import type { ColumnDef } from '../../hooks/useGridColumns';
 import { cn } from '../../lib/cn';
+import {
+  type GridVariant,
+  headerCell,
+  sortIcon,
+  bodyRow,
+  bodyCell,
+  skeletonBar,
+  emptyIcon,
+  emptyText,
+  secondCell,
+  secondText,
+  detailCell,
+} from './dataGrid.variants';
 
 interface DataGridProps<T> {
   columns: ColumnDef<T>[];
@@ -23,58 +36,18 @@ interface DataGridProps<T> {
   renderDetail?: (row: T) => ReactNode;
 }
 
-type GridVariant = 'default' | 'silver';
-
-/**
- * Classes por tema. Cada valor é uma string literal completa (JIT-safe — o
- * Tailwind não gera CSS para nomes de classe computados/concatenados).
- */
-const VARIANT_STYLES = {
-  default: {
-    header: 'table-header',
-    cell: 'table-cell text-slate-600',
-    rowHover: 'hover:bg-slate-50/60',
-    skeleton: 'bg-slate-100',
-    emptyIcon: 'bg-slate-100 text-slate-300',
-    emptyText: 'text-slate-400',
-    secondCell: 'table-cell-secondary',
-    secondSep: 'text-slate-300',
-    secondLabel: 'text-slate-400',
-    secondValue: 'text-slate-500',
-    detailBorder: 'border-slate-100',
-  },
-  silver: {
-    header: 'table-header-silver',
-    cell: 'table-cell-silver text-zinc-600',
-    rowHover: 'bg-zinc-100 hover:bg-zinc-200/60',
-    skeleton: 'bg-zinc-100',
-    emptyIcon: 'bg-zinc-100 text-zinc-300',
-    emptyText: 'text-zinc-400',
-    secondCell: 'table-cell-secondary-silver',
-    secondSep: 'text-zinc-300',
-    secondLabel: 'text-zinc-400',
-    secondValue: 'text-zinc-500',
-    detailBorder: 'border-zinc-100',
-  },
-} as const;
-
 const SKELETON_ROWS = 5;
-
-/** Classe de alinhamento do conteúdo (if/return — sem ternário aninhado). */
-function alignClass(align?: 'left' | 'right' | 'center'): string {
-  if (align === 'right') return 'text-right';
-  if (align === 'center') return 'text-center';
-  return '';
-}
 
 const hasValue = (v: unknown): boolean => v != null && v !== '';
 
 /**
- * Grid responsivo genérico. Em `lg` mostra todas as colunas (tabela clássica);
- * em `md`/`sm` oculta as marcadas com `hideOn` e desce as `secondLine` para uma
- * sub-linha densa abaixo de cada registro. O painel de detalhe (ao clicar na
- * linha) vem pela prop `renderDetail`. A responsividade reaproveita a mesma regra
- * de `useGridColumns`, aplicada genericamente às `columns` recebidas.
+ * Grid responsivo genérico ("à prova de mobile"). O breakpoint vem da largura
+ * REAL do container (`useContainerBreakpoint` + ResizeObserver), não da janela —
+ * então sidebar/paddings são considerados. Em `lg` mostra todas as colunas; em
+ * `md`/`sm` oculta as marcadas com `hideOn` e desce as `secondLine` para uma
+ * sub-linha densa. Colunas com `truncate` cortam texto longo (com `title`). A
+ * `<table>` fica num wrapper `overflow-x-auto` — se ainda assim não couber, rola
+ * horizontalmente em vez de cortar. Estilos por tema vêm de `dataGrid.variants.ts`.
  */
 export default function DataGrid<T>({
   columns,
@@ -91,8 +64,7 @@ export default function DataGrid<T>({
   variant = 'default',
   renderDetail,
 }: Readonly<DataGridProps<T>>) {
-  const styles = VARIANT_STYLES[variant];
-  const breakpoint = useBreakpoint();
+  const { ref, breakpoint } = useContainerBreakpoint<HTMLDivElement>();
   // O `!== 'lg'` estreita o tipo do breakpoint para 'sm' | 'md' (permite includes).
   const hidden = (col: ColumnDef<T>): boolean =>
     breakpoint !== 'lg' && (col.hideOn?.includes(breakpoint) ?? false);
@@ -124,20 +96,16 @@ export default function DataGrid<T>({
               aria-sort={ariaSortVal}
               title={sortKey ? titleVal : undefined}
               onClick={sortKey ? () => onSort(sortKey) : undefined}
-              className={cn(
-                styles.header,
-                'sticky top-0 z-10 select-none transition-colors',
-                alignClass(col.align),
-                sortKey && 'cursor-pointer',
-                active && 'bg-slate-100',
-                !active && sortKey && 'hover:bg-slate-100',
-              )}
+              className={headerCell({
+                variant,
+                align: col.align ?? 'left',
+                sortable: !!sortKey,
+                active,
+              })}
             >
               <span className="inline-flex items-center gap-1">
                 {col.header}
-                {sortKey && (
-                  <SortIcon size={11} className={active ? 'text-brand' : 'text-slate-300'} />
-                )}
+                {sortKey && <SortIcon size={11} className={sortIcon({ active })} />}
               </span>
             </th>
           );
@@ -152,8 +120,8 @@ export default function DataGrid<T>({
     body = Array.from({ length: SKELETON_ROWS }, (_, i) => (
       <tr key={`skeleton-${i}`} className="animate-pulse">
         {visibleColumns.map((col) => (
-          <td key={String(col.key)} className={styles.cell}>
-            <div className={cn('h-3 rounded', styles.skeleton)} />
+          <td key={String(col.key)} className={bodyCell({ variant })}>
+            <div className={skeletonBar({ variant })} />
           </td>
         ))}
       </tr>
@@ -164,10 +132,10 @@ export default function DataGrid<T>({
       <tr>
         <td colSpan={colSpan} className="py-12">
           <div className="flex flex-col items-center justify-center text-center gap-3">
-            <div className={cn('flex h-14 w-14 items-center justify-center rounded-full', styles.emptyIcon)}>
+            <div className={emptyIcon({ variant })}>
               <Inbox size={26} />
             </div>
-            <p className={cn('text-sm max-w-xs', styles.emptyText)}>{emptyMessage}</p>
+            <p className={emptyText({ variant })}>{emptyMessage}</p>
           </div>
         </td>
       </tr>
@@ -181,31 +149,45 @@ export default function DataGrid<T>({
         <Fragment key={key}>
           <tr
             onClick={() => onRowClick(row)}
-            className={cn(
-              'cursor-pointer transition-colors',
-              isSelected && 'bg-brand/5 border-l-2 border-brand',
-              !isSelected && styles.rowHover,
-            )}
+            className={bodyRow({ variant, selected: isSelected })}
           >
-            {visibleColumns.map((col) => (
-              <td
-                key={String(col.key)}
-                className={cn(styles.cell, 'text-xs font-mono', alignClass(col.align), col.className)}
-              >
-                {col.render(row)}
-              </td>
-            ))}
+            {visibleColumns.map((col) => {
+              const value = col.render(row);
+              // Truncagem opcional: corta texto longo e expõe o valor no `title`.
+              const title = typeof value === 'string' ? value : undefined;
+              const content = col.truncate ? (
+                <span className="block truncate" title={title}>
+                  {value}
+                </span>
+              ) : (
+                value
+              );
+              return (
+                <td
+                  key={String(col.key)}
+                  className={cn(
+                    bodyCell({ variant, align: col.align ?? 'left', dense: true }),
+                    col.truncate && 'max-w-[14rem]',
+                    col.className,
+                  )}
+                >
+                  {content}
+                </td>
+              );
+            })}
           </tr>
 
           {secondLineItems.length > 0 && (
             <tr aria-label="Campos adicionais do registro">
-              <td colSpan={colSpan} className={styles.secondCell}>
+              <td colSpan={colSpan} className={secondCell({ variant })}>
                 <div className="flex flex-wrap items-center gap-x-1.5 gap-y-0.5">
                   {secondLineItems.map((col, idx) => (
                     <span key={String(col.key)} className="inline-flex items-center gap-1 whitespace-nowrap">
-                      {idx > 0 && <span className={styles.secondSep}>·</span>}
-                      <span className={styles.secondLabel}>{col.secondLineLabel ?? col.header}:</span>
-                      <span className={styles.secondValue}>{col.render(row)}</span>
+                      {idx > 0 && <span className={secondText({ variant, tone: 'sep' })}>·</span>}
+                      <span className={secondText({ variant, tone: 'label' })}>
+                        {col.secondLineLabel ?? col.header}:
+                      </span>
+                      <span className={secondText({ variant, tone: 'value' })}>{col.render(row)}</span>
                     </span>
                   ))}
                 </div>
@@ -215,7 +197,7 @@ export default function DataGrid<T>({
 
           {isSelected && renderDetail && (
             <tr>
-              <td colSpan={colSpan} className={cn('p-0 border-b', styles.detailBorder)}>
+              <td colSpan={colSpan} className={detailCell({ variant })}>
                 <div className="animate-fade-in-up">{renderDetail(row)}</div>
               </td>
             </tr>
@@ -226,9 +208,11 @@ export default function DataGrid<T>({
   }
 
   return (
-    <table aria-label={ariaLabel} className="w-full">
-      {head}
-      <tbody>{body}</tbody>
-    </table>
+    <div ref={ref} className="overflow-x-auto">
+      <table aria-label={ariaLabel} className="w-full">
+        {head}
+        <tbody>{body}</tbody>
+      </table>
+    </div>
   );
 }

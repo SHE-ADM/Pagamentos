@@ -81,8 +81,11 @@ export const ACCOUNT_STATUSES = [
   'falha',
 ] as const;
 
-// Situação de vencimento calculada pela trigger trg_fe_due_status.
-export const DUE_STATUSES = ['a vencer', 'vencido'] as const;
+// Situação de vencimento (coluna due_status). Compartilha o MESMO domínio de 13
+// valores de `status` no banco (CHECK idêntico). A trigger trg_fe_due_status hoje
+// só grava 'a vencer'/'vencido', mas baixas/CRUD manual podem definir os demais —
+// por isso o enum reflete o domínio completo, não só os 2 valores da trigger.
+export const DUE_STATUSES = ACCOUNT_STATUSES;
 
 export const documentTypeSchema = z.enum(DOCUMENT_TYPES);
 export const extractionSourceSchema = z.enum(EXTRACTION_SOURCES);

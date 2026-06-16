@@ -12,6 +12,9 @@ let cached: SupabaseClient | null = null;
 
 // Lazy: evita lançar no import (ex.: durante build) quando as envs ainda não
 // estão presentes. O erro só ocorre se a API for de fato usada sem configuração.
+// Scaffolding da camada CRUD futura (monorepo-crud-spec): ainda sem consumidor —
+// o ts-prune-ignore evita falso "dead code" até as rotas de dados o utilizarem.
+// ts-prune-ignore-next
 export function getSupabaseAdmin(): SupabaseClient {
   if (!url || !serviceKey) {
     throw new Error('SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY não configuradas no ambiente do servidor');

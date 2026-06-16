@@ -1,0 +1,67 @@
+"""
+Testes para a extração do valor a pagar a partir do corpo do e-mail
+(_extract_body_amount em read_emails.py).
+
+Regra de negócio coberta:
+  - valor rotulado 'Total'/'Valor Total' tem PRECEDÊNCIA (resultado da soma);
+  - sem rótulo de total e com várias parcelas → soma;
+  - valor único → ele mesmo;
+  - tolera o separador 'R$:' (dois-pontos) usado em e-mails internos;
+  - sem valor → None.
+"""
+
+import sys
+import unittest
+from pathlib import Path
+
+_SCRIPTS_DIR = Path(__file__).resolve().parents[1] / "skills" / "email-reader" / "scripts"
+sys.path.insert(0, str(_SCRIPTS_DIR))
+
+import read_emails  # noqa: E402
+
+# Corpo real do caso "Pagamento de Almoço e Zona Azul" (parcelas + total).
+ALMOCO_BODY = (
+    "Bom dia, segue para pagamento:\r\n"
+    "Valor :    R$:  297,08 + R$: 6,96\r\n"
+    "Total :  R$:  304,04\r\n"
+    "Pix p/ Nadim\r\n"
+)
+
+
+class ExtractBodyAmountTest(unittest.TestCase):
+    def test_total_rotulado_tem_precedencia_sobre_parcelas(self):
+        # Não pode somar (608,08) nem pegar a 1ª parcela (297,08): é o Total.
+        self.assertEqual(read_emails._extract_body_amount(ALMOCO_BODY), 304.04)
+
+    def test_valor_total_com_separador_de_milhar(self):
+        self.assertEqual(
+            read_emails._extract_body_amount("Valor Total: R$ 1.250,00"), 1250.00)
+
+    def test_sem_total_soma_as_parcelas(self):
+        self.assertEqual(
+            read_emails._extract_body_amount("Pague R$ 100,00 e R$ 50,00"), 150.00)
+
+    def test_valor_unico(self):
+        self.assertEqual(read_emails._extract_body_amount("Total R$ 80,00"), 80.00)
+
+    def test_valor_unico_sem_rotulo(self):
+        self.assertEqual(read_emails._extract_body_amount("R$ 297,08"), 297.08)
+
+    def test_tolera_dois_pontos_apos_rs(self):
+        self.assertEqual(read_emails._extract_body_amount("R$:6,96"), 6.96)
+
+    def test_sem_valor_retorna_none(self):
+        self.assertIsNone(read_emails._extract_body_amount("sem valor algum aqui"))
+
+
+class ExtractFromEmailBodyAmountTest(unittest.TestCase):
+    def test_corpo_do_almoco_extrai_total(self):
+        payload = read_emails.extract_from_email_body(
+            ALMOCO_BODY, received_at="2026-06-15T16:27:12+00:00",
+            message_id="<almoco-test>", sender_email="nadim@otimotex.com.br")
+        self.assertIsNotNone(payload)
+        self.assertEqual(payload["amount"], 304.04)
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -7,6 +7,8 @@
 const PYTHON_SERVICE_URL = process.env.PYTHON_SERVICE_URL ?? 'http://127.0.0.1:8000';
 
 // Resumo retornado por run_reader() (skills/email-reader/scripts/read_emails.py).
+// Tipo público (retorno de triggerReader) — consumido via inferência.
+// ts-prune-ignore-next
 export interface ReaderSummary {
   imap_user: string;
   supabase_ok: boolean;
@@ -18,6 +20,7 @@ export interface ReaderSummary {
   dry_run: boolean;
 }
 
+// ts-prune-ignore-next
 export interface TriggerReaderOptions {
   days?: number;
   markSeen?: boolean;

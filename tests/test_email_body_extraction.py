@@ -237,18 +237,20 @@ class TryExtractFromBodyTest(unittest.TestCase):
         self.assertEqual(ctrl.financial_calls, [])  # nada gravado
         self.assertEqual(ctrl.error_calls, [])      # skip silencioso, nao e erro
 
-    def test_corpo_sem_valor_registra_erro_e_nao_grava(self):
+    def test_corpo_sem_valor_anota_motivo_e_nao_grava(self):
         ctrl = FakeControl()
         # Corpo com numero de documento (sinal financeiro) mas sem valor R$.
         body = "Fatura n. 9876 referente ao servico prestado."
+        rec = {"message_id": "<msg-sem-valor>"}
         gravou = read_emails.try_extract_from_body(
-            {"message_id": "<msg-sem-valor>"}, body,
-            "2026-06-10T00:00:00+00:00", "<msg-sem-valor>", ctrl,
+            rec, body, "2026-06-10T00:00:00+00:00", "<msg-sem-valor>", ctrl,
         )
         self.assertFalse(gravou)
         self.assertEqual(ctrl.financial_calls, [])
-        self.assertEqual(len(ctrl.error_calls), 1)
-        self.assertEqual(ctrl.error_calls[0][0], "sem_valor")
+        # O log de erro agora e centralizado em process_message (TODA falha).
+        # Aqui a funcao apenas anota o motivo em rec["notes"].
+        self.assertEqual(ctrl.error_calls, [])
+        self.assertIn("valor", rec["notes"].lower())
 
     def test_pedido_pix_legitimo_continua_gravando(self):
         """Garante que a correcao nao quebrou o caminho feliz (pagamento PIX)."""

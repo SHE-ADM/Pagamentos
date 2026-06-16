@@ -1,7 +1,6 @@
-import { createElement, useMemo, type ReactNode } from 'react';
+import { createElement, type ReactNode } from 'react';
 import type { FinancialAccountControl, EmailControl } from '@sheild/shared';
 import StatusBadge from '../components/StatusBadge';
-import type { Breakpoint } from './useBreakpoint';
 
 // Formatters — cópia das implementações de Consulta.tsx. A consolidação num
 // módulo único (src/lib) é follow-up de quando Consulta.tsx for migrado ao hook.
@@ -48,6 +47,8 @@ export interface ColumnDef<T> {
   secondLine?: boolean;
   /** Rótulo exibido ao lado do valor na linha secundária. */
   secondLineLabel?: string;
+  /** Trunca texto longo na célula (com `title`) — evita estourar a largura no mobile. */
+  truncate?: boolean;
   className?: string;
 }
 
@@ -71,6 +72,7 @@ export const CONSULTA_COLUMNS: ColumnDef<FinancialAccountControl>[] = [
     key: 'supplier_name',
     header: 'Fornecedor',
     sortKey: 'supplier_name',
+    truncate: true,
     render: (r) => r.supplier_name ?? '—',
   },
   {
@@ -153,11 +155,13 @@ export function getEmailColumns(invoiceMap: Record<string, string>): ColumnDef<E
     {
       key: 'sender_email',
       header: 'Remetente',
+      truncate: true,
       render: (r) => r.sender_name || r.sender_email || '—',
     },
     {
       key: 'subject',
       header: 'Assunto',
+      truncate: true,
       render: (r) => r.subject ?? '—',
     },
     {
@@ -187,30 +191,4 @@ export function getEmailColumns(invoiceMap: Record<string, string>): ColumnDef<E
       render: (r) => createElement(StatusBadge, { value: r.status }),
     },
   ];
-}
-
-interface UseGridColumnsResult {
-  /** Colunas visíveis na linha principal no breakpoint atual. */
-  visibleColumns: ColumnDef<FinancialAccountControl>[];
-  /** Colunas com secondLine=true que ficaram ocultas → linha de detalhe inline. */
-  secondLineColumns: ColumnDef<FinancialAccountControl>[];
-}
-
-/**
- * Deriva as colunas do grid para o breakpoint corrente:
- * - oculta da linha principal as colunas cujo `hideOn` inclui o breakpoint;
- * - dessas, as que têm `secondLine=true` compõem a `secondLineColumns`.
- * Em 'lg' nada é ocultado (todas visíveis, segunda linha vazia).
- */
-export function useGridColumns(breakpoint: Breakpoint): UseGridColumnsResult {
-  return useMemo(() => {
-    // O `!== 'lg'` estreita o tipo para 'sm' | 'md', permitindo includes(breakpoint).
-    const hidden = (col: ColumnDef<FinancialAccountControl>): boolean =>
-      breakpoint !== 'lg' && (col.hideOn?.includes(breakpoint) ?? false);
-
-    return {
-      visibleColumns: CONSULTA_COLUMNS.filter((c) => !hidden(c)),
-      secondLineColumns: CONSULTA_COLUMNS.filter((c) => c.secondLine && hidden(c)),
-    };
-  }, [breakpoint]);
 }
