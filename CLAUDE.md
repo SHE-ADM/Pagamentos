@@ -729,7 +729,8 @@ numérica (`001` → `028`). Não há migration automática.
 | `email_control` | Dedup/controle. `status` ∈ (`extraído`, `recebido`, `pendente`, `falha`, `ignorado`) — **migration 022**. `extraído`=PDF extraído (CSV gerado); `recebido`=sem PDF, conta via corpo; `pendente`=PDF salvo sem CSV (substitui `baixado`); `falha`=casou keyword mas sem PDF e sem conta no corpo; `ignorado`=não-financeiro. O status é calculado em `process_message` pelo resultado real (CSV gerado/corpo), não por `pdf_extracted` |
 | `financial_account_control` | Tabela principal de contas a pagar — uma linha por documento; alimentada pelo pipeline de e-mail **e** por CRUD manual (baixas, consolidações, dashboards). Substitui a antiga `financial_emails` (dropada na migration 020). Tem `sender_email` (migration 023; backfill em 025) que o trigger usa p/ alinhar `supplier.email`, e `subject` (migration 025) — ambos com backfill SQL de `email_control` e exibidos/buscados em `/consulta` |
 | `email_processing_errors` | Log de falhas com `raw_payload` JSON |
-| `supplier` | Fornecedores auto-criados pelo trigger. `email` alinhado com `email_control.sender_email` (migration 023) |
+| `supplier` | Fornecedores auto-criados pelo trigger. Reconhecimento por **e-mail** em `email`/`email2`/`email3`/`email4` (migrations 023/027/028) — ver "Auto-resolução de fornecedor" |
+| `company` | Empresa pagadora (**cadastro**, tem campo `email`). Auto-resolvida pelo trigger `resolve_company_id` a partir de `payer_cnpj`/`payer_name`. **Preservada em limpezas** (ver abaixo) |
 
 `financial_account_control.status` (ciclo de vida do pagamento, default `pendente`) e
 `due_status` (situação de vencimento, gravada pela trigger) compartilham o mesmo domínio
@@ -751,6 +752,29 @@ faz cast); só os schemas de **auth** rodam em runtime via `zodResolver`.
 RLS habilitado em todas as tabelas. Policies de leitura são `TO authenticated`
 (migrations 015/018/019); escrita em `financial_account_control` é `TO service_role`
 (CRUD via Next API). Toda nova tabela deve seguir o mesmo padrão.
+
+### Limpeza / reset de dados (SEMPRE preservar os cadastros)
+
+Ao limpar a base para uma nova busca geral, **SEMPRE preserve estas tabelas de
+cadastro/configuração** — não são alimentadas pelo pipeline e nunca devem ser apagadas:
+
+- `company`
+- `financial_account`
+- `financial_bank`
+- `financial_chart_of_account`
+- `financial_chart_of_account_group`
+- `financial_chart_of_account_subgroup`
+- `financial_cost_center`
+
+**Alvos da limpeza** (truncar com `RESTART IDENTITY CASCADE`): `email_control`,
+`financial_account_control`, `email_processing_errors`, `supplier` e `audit_log` — mais o
+bucket **`attachments`** do Storage e o cache local (`data/pdfs_inbox`, `data/csv_output`).
+`supplier` é recriado automaticamente pelo trigger de resolução no reprocessamento; a
+`company` preservada continua resolvendo `company_id` das novas contas.
+
+> **Storage:** `DELETE` direto em `storage.objects` é bloqueado (`protect_delete`). Esvaziar
+> o bucket via **Storage API** (`POST object/list/attachments` → `DELETE object/attachments`
+> com `{prefixes:[…]}`), usando `SUPABASE_SERVICE_KEY` do `.env` da raiz.
 
 ## Windows Task Scheduler
 
