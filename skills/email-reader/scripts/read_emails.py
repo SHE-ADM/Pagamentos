@@ -1726,6 +1726,26 @@ def process_message(mail, uid: bytes, keywords: list,
 # ---------------------------------------------------------------------------
 # Execução reutilizável (CLI + API)
 # ---------------------------------------------------------------------------
+
+# Timeout de socket do IMAP (segundos). SEM ele, um fetch que estanca (mensagem
+# muito grande, hiccup do servidor) bloqueia o run inteiro indefinidamente — foi
+# o que travou um run no e-mail de 3 faturas + XMLs. Com timeout, a operação
+# levanta socket.timeout, o e-mail é pulado/erra e o run segue em vez de congelar.
+IMAP_TIMEOUT_SECONDS = int(os.getenv("IMAP_TIMEOUT", "120"))
+
+
+def _connect_imap() -> imaplib.IMAP4_SSL:
+    """Conecta/autentica no IMAP com timeout de socket e seleciona a caixa."""
+    mail = imaplib.IMAP4_SSL(
+        os.getenv("IMAP_HOST"),
+        int(os.getenv("IMAP_PORT", 993)),
+        timeout=IMAP_TIMEOUT_SECONDS,
+    )
+    mail.login(os.getenv("IMAP_USER"), os.getenv("IMAP_PASS"))
+    mail.select(os.getenv("IMAP_MAILBOX", "INBOX"))
+    return mail
+
+
 def run_reader(days: int = 0, all_: bool = False,
                dry_run: bool = False, mark_seen: bool = False) -> dict:
     """
@@ -1757,12 +1777,7 @@ def run_reader(days: int = 0, all_: bool = False,
     log.info("=" * 58)
 
     try:
-        mail = imaplib.IMAP4_SSL(
-            os.getenv("IMAP_HOST"),
-            int(os.getenv("IMAP_PORT", 993))
-        )
-        mail.login(os.getenv("IMAP_USER"), os.getenv("IMAP_PASS"))
-        mail.select(os.getenv("IMAP_MAILBOX", "INBOX"))
+        mail = _connect_imap()
         log.info("IMAP conectado")
     except Exception as e:
         log.error(f"Falha IMAP: {e}")
