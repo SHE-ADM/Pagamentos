@@ -1271,15 +1271,20 @@ def download_pdf_from_url(url: str, sender_email: str, subject: str,
 # ---------------------------------------------------------------------------
 # Acionar extract_pdf.py
 # ---------------------------------------------------------------------------
-def run_extraction(pdf_path: Path) -> str | None:
-    """Executa extract_pdf.py em subprocesso e retorna o CSV gerado por ESTE run.
+# Robustez da extração: uma falha transitória (crash do subprocesso, timeout) não
+# deve derrubar o PDF — repete com backoff. Falha definitiva (rc=0 sem CSV = nada a
+# extrair) não repete. O motivo é propagado para gravar em email_processing_errors.
+EXTRACTION_MAX_ATTEMPTS = 3
+EXTRACTION_RETRY_BACKOFF = (2, 5)  # segundos de espera entre tentativas
 
-    Usa um diretório de saída temporário exclusivo por chamada, evitando que um
-    run com falha retorne um CSV obsoleto de execução anterior.
+
+def _run_extraction_once(pdf_path: Path) -> tuple[str | None, str | None, bool]:
+    """Uma tentativa de extração. Retorna (csv_path, motivo_falha, transitorio).
+
+    `transitorio=True` indica que vale repetir (rc≠0, timeout, exceção de
+    subprocesso); `False` é falha definitiva (rc=0 sem CSV — repetir não muda).
+    Usa diretório de saída temporário exclusivo, evitando CSV obsoleto de run anterior.
     """
-    if not EXTRACT_SCRIPT.exists():
-        log.warning(f"extract_pdf.py não encontrado: {EXTRACT_SCRIPT}")
-        return None
     try:
         with tempfile.TemporaryDirectory(dir=CSV_OUTPUT) as tmp_out:
             result = subprocess.run(
@@ -1289,20 +1294,50 @@ def run_extraction(pdf_path: Path) -> str | None:
                 capture_output=True, text=True, timeout=180
             )
             if result.returncode != 0:
-                log.error(f"    Erro extração (rc={result.returncode}): {result.stderr[:300]}")
-                return None
+                return None, f"rc={result.returncode}: {(result.stderr or '').strip()[:300]}", True
             csvs = sorted(Path(tmp_out).glob("*_extracted.csv"),
                           key=lambda p: p.stat().st_mtime, reverse=True)
             if not csvs:
-                log.warning(f"    extract_pdf concluiu sem CSV: {result.stdout[-200:]}")
-                return None
+                return None, f"rc=0 sem CSV: {(result.stdout or '').strip()[-200:]}", False
             # Move o CSV para o diretório definitivo antes que o tempdir seja removido
             final = CSV_OUTPUT / csvs[0].name
             csvs[0].replace(final)
-            return str(final)
+            return str(final), None, False
+    except subprocess.TimeoutExpired:
+        return None, "timeout (>180s) na extração", True
     except Exception as e:
-        log.error(f"    Falha extract_pdf: {e}")
-        return None
+        return None, f"exceção no subprocesso: {e}", True
+
+
+def run_extraction(pdf_path: Path) -> tuple[str | None, str | None]:
+    """Executa extract_pdf.py em subprocesso e retorna (csv_path, motivo_falha).
+
+    Em sucesso: (caminho_do_csv, None). Em falha: (None, motivo). Repete falhas
+    transitórias com backoff — um blip de subprocesso/timeout não perde o PDF. O
+    motivo final é gravado em email_processing_errors (observável em /erros), em
+    vez de só no console do Flask.
+    """
+    if not EXTRACT_SCRIPT.exists():
+        msg = f"extract_pdf.py não encontrado: {EXTRACT_SCRIPT}"
+        log.warning(msg)
+        return None, msg
+
+    reason = None
+    for attempt in range(1, EXTRACTION_MAX_ATTEMPTS + 1):
+        csv_path, reason, transient = _run_extraction_once(pdf_path)
+        if csv_path:
+            return csv_path, None
+        if not transient or attempt == EXTRACTION_MAX_ATTEMPTS:
+            break
+        wait = EXTRACTION_RETRY_BACKOFF[min(attempt - 1, len(EXTRACTION_RETRY_BACKOFF) - 1)]
+        log.warning(
+            f"    extração falhou (tentativa {attempt}/{EXTRACTION_MAX_ATTEMPTS}): "
+            f"{reason} — repetindo em {wait}s"
+        )
+        time.sleep(wait)
+
+    log.error(f"    extração falhou definitivamente: {reason}")
+    return None, reason
 
 
 def extract_and_store_accounts(saved_pdfs: list, message_id: str,
@@ -1324,12 +1359,13 @@ def extract_and_store_accounts(saved_pdfs: list, message_id: str,
         # Nao-fatal: se o upload falhar, a extracao segue normalmente.
         ctrl.upload_attachment(pdf_path)
 
-        csv_path = run_extraction(pdf_path)
+        csv_path, extract_err = run_extraction(pdf_path)
         if not csv_path:
             ctrl.register_error(
                 {**err_ctx, "source_file": pdf_path.name},
                 "extracao_falhou",
-                f"extract_pdf nao gerou CSV para {pdf_path.name}"
+                f"extract_pdf nao gerou CSV para {pdf_path.name}",
+                raw_payload={"source_file": pdf_path.name, "detalhe": extract_err},
             )
             continue
 
