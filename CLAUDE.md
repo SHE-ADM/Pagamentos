@@ -67,9 +67,12 @@ Estas regras se aplicam a **todo** código novo ou alterado neste projeto, sem e
   Cada valor de variante continua sendo uma **string literal completa** (compatível com o
   JIT). Componentes-referência: `StatusBadge` (mapa em `statusBadge.variants.ts`),
   `Alert` (banner de página — error/success/warning/info), `InlineMessage`, `AuthInput`,
-  `FilledTextField`, `AccentPillButton`, `GradientPillButton`.
+  `FilledTextField`, `AccentPillButton`, `GradientPillButton` e `DataGrid` (tema
+  `default`/`silver` + estados de linha/cabeçalho em `dataGrid.variants.ts`).
   Mantenha as definições `cva` que não são componentes em arquivo separado (`*.variants.ts`)
-  para não disparar `react-refresh/only-export-components`.
+  para não disparar `react-refresh/only-export-components`. A exceção aceita é um `cva`
+  **local e não exportado** dentro do próprio componente (ex.: `navLink` em `Layout.tsx`),
+  que não dispara a regra de Fast Refresh.
 
 ### 2 — Todo componente tem teste
 
@@ -78,6 +81,10 @@ Estas regras se aplicam a **todo** código novo ou alterado neste projeto, sem e
 - **Suíte configurada (Vitest):** `apps/frontend-vite` (jsdom + Testing Library) e
   `apps/api-backend` (env node). Rode `npm test` na raiz (roda todos os workspaces) ou
   `npm run test --workspace=apps/<app>`.
+- **Suíte Python (pytest):** `py -3 -m pytest tests/` (ex.: `test_link_extraction.py`,
+  `test_email_body_extraction.py`, `test_body_amount.py`, `test_extract_pdf.py`). Cobre o
+  pipeline de extração; rodar após mexer em `read_emails.py`/`extract_pdf.py` ou nos
+  scripts de reprocessamento. Não é incluída no `npm test`.
 - Referência de granularidade: `frontend-vite/src/components/StatusBadge.test.tsx`,
   `ExpandableText.test.tsx`, `organisms/LoginForm.test.tsx`.
 - **Follow-up:** `apps/portal-next` ainda sem testes — bloqueado pelo conflito de duas
@@ -138,6 +145,23 @@ Escopo = área afetada: `login`, `email-reader`, `consulta`, `scheduler`, `migra
   import.meta.dirname` — não remover, é o que evita o erro "No tsconfigRootDir was set" no
   editor. Nos apps Next, **não** habilitar `projectService: true` (quebra o parsing dos
   `*.config.mjs`); apenas `tsconfigRootDir`.
+- **`.vscode/settings.json` (não remover)**: o monorepo só tem flat config **por-app**
+  (sem `eslint.config` na raiz). Sem `eslint.workingDirectories: [{ "mode": "auto" }]` a
+  extensão ESLint roda com cwd na raiz, não acha config e acusa "couldn't find an
+  eslint.config file" / "No tsconfigRootDir was set" nos componentes. O `mode: auto` faz a
+  extensão rodar com cwd em cada app.
+- **ts-prune (dead code / exports órfãos)**: `npm run prune` na raiz roda nos 3 workspaces
+  e **deve reportar 0**. `ts-prune` está declarado só em `frontend-vite` (resolvido por
+  hoist nos apps Next). Os apps Next ignoram os defaults do framework via
+  `--ignore "next.config|...|app.*(page|layout|route)"`. Export público intencional **sem
+  consumidor** (scaffolding da camada CRUD ou contrato de tipo consumido por inferência —
+  `getSupabaseAdmin`, `ApiResponse`/`ApiResponseMeta`, `ReaderSummary`/`TriggerReaderOptions`)
+  leva `// ts-prune-ignore-next` na linha acima, documentando a intenção. Não deixar export
+  morto de verdade: removê-lo (foi assim que saíram o hook `useGridColumns` e os
+  `scripts/_check_*.py`).
+- **Python — `vulture`** (`py -3 -m vulture server/ skills/ scripts/ --min-confidence 60`):
+  caça funções/variáveis mortas. Rotas Flask decoradas (`@app.get`/`@app.post`) aparecem
+  como "unused function" — **falsos positivos**, ignorar.
 - **SonarLint** (engine da IDE, sem CLI): manter o código livre dos achados recorrentes —
   condições positivas em vez de negadas com `else` (S7735: `v == null ? '—' : …`), par
   `[x, setX]` no `useState` (S6754), sem ternário/template literal aninhado no JSX (S3358/
@@ -146,6 +170,12 @@ Escopo = área afetada: `login`, `email-reader`, `consulta`, `scheduler`, `migra
   com valor por ternário, ex.: `setItem(key, on ? '1' : '0')` em vez de `if/else` com
   `setItem`/`removeItem`), e sem texto solto logo após um elemento inline em JSX (S6772 —
   envolver o texto em `<span>`, ex.: `<input … /><span>Lembrar-me</span>`).
+  Também recorrentes: props de componente React como `Readonly<…>` (S6759 —
+  `{ children }: Readonly<{ children: ReactNode }>`); função com complexidade cognitiva
+  >15 (S3776 — extrair helpers, ex.: o laço de `reprocess_link_emails.py` virou
+  `_process_row`/`_first_pdf`/`_store_pdf`); `logging.exception()` em vez de `logging.error()`
+  dentro de `except` (S8572); e f-string sem campo de substituição (S3457 — usar string
+  normal).
 
 ### 6 — Acessibilidade (WCAG 2.1 AA)
 
@@ -253,23 +283,22 @@ Supabase (PostgreSQL)  ── financial_account_control (dados extraídos)
 Dependências dos apps: `npm install` na **raiz** (workspaces — lockfile único).
 
 ```powershell
-# Terminal 1 — backend Flask (porta 8000) — necessário para leitura de e-mails
-python server\app.py
-
-# Terminal 2 — os 3 apps Node de uma vez (vite :5173, api :3000, portal :3002)
-npm run dev            # via concurrently — substitui os 3 comandos abaixo
+# Tudo de uma vez: Flask (:8000) + os 3 apps Node (vite :5173, api :3000, portal :3002)
+npm run dev            # via concurrently — substitui os comandos abaixo
 
 # …ou individualmente, em terminais separados:
+npm run dev:flask      # backend Flask (:8000) — leitura de e-mails (py -3 server/app.py)
 npm run dev:vite       # frontend Vite interno (proxy /api → Flask :8000)
 npm run dev:api        # Next API de dados — opcional p/ o fluxo atual
 npm run dev:portal     # portal público — opcional
 ```
 
-Scripts da raiz: `npm run dev` (sobe vite+api+portal em paralelo via `concurrently`) ·
-`npm test` · `npm run typecheck` · `npm run lint` (rodam em todos os workspaces via
-`--workspaces --if-present`). Builds: `npm run build:vite|build:api|build:portal`.
-Ordem de startup quando se testa o fluxo de e-mail ponta a ponta: **Flask antes** da Next API
-(o `dev` raiz não inclui o Flask/Python — inicie-o à parte).
+Scripts da raiz: `npm run dev` (sobe **flask+vite+api+portal** em paralelo via
+`concurrently`) · `npm test` · `npm run typecheck` · `npm run lint` · `npm run prune`
+(rodam em todos os workspaces via `--workspaces --if-present`). Builds:
+`npm run build:vite|build:api|build:portal`. O `dev` raiz **inclui o Flask**
+(`dev:flask` = `py -3 server/app.py`); requer Python com `pdfplumber` no PATH. Para
+subir só os apps Node, use os `dev:vite|dev:api|dev:portal` individuais.
 
 Leitura de e-mails:
 
@@ -284,6 +313,14 @@ Reprocessar PDFs pendentes (`status=pendente`: `attachment_saved=true`, `pdf_ext
 ```powershell
 py -3 scripts\retry_extraction.py          # usar py -3, não python
 py -3 scripts\retry_extraction.py --dry-run
+```
+
+Reprocessar a fila de `falha` (rebusca o corpo no IMAP). Os dois são complementares —
+rode primeiro o de **link** (boleto por URL), depois o de **corpo**:
+
+```powershell
+py -3 scripts\reprocess_link_emails.py --dry-run   # boleto por link (BRASPRESS/SIEG…)
+py -3 scripts\reprocess_body_emails.py --dry-run   # conta no corpo do e-mail (sem anexo/link)
 ```
 
 Extração isolada:
@@ -327,14 +364,23 @@ apps/frontend-vite/src/components/
 ├── organisms/
 │   ├── LoginForm.tsx          # (v2) estado + validação + supabase.auth.signInWithPassword
 │   ├── ForgotPasswordForm.tsx # (gradient) resetPasswordForEmail + mensagem genérica
-│   └── ResetPasswordForm.tsx  # (gradient) updateUser + signOut + redirect
+│   ├── ResetPasswordForm.tsx  # (gradient) updateUser + signOut + redirect
+│   ├── DataGrid.tsx           # grid responsivo genérico (+ DataGrid.test.tsx); tema via cva
+│   └── dataGrid.variants.ts   # cva por slot (header/row/cell/skeleton/empty/…) tema default|silver
 ├── AuthLayout.tsx             # (gradient) wrapper full-page para Forgot/Reset
-├── Layout.tsx (+ Layout.test.tsx)
+├── AttachmentViewer.tsx       # visualizador de PDF (signed URL do Storage) em iframe/modal
+├── Layout.tsx (+ Layout.test.tsx)   # sidebar; navLink = cva local (estado active)
 ├── ProtectedRoute.tsx
 ├── StatusBadge.tsx (+ StatusBadge.test.tsx)   # componente; variantes em statusBadge.variants.ts
 ├── statusBadge.variants.ts    # cva(badgeVariants) + resolveBadge + mapas de tipo/status
 └── ExpandableText.tsx         # expansível "ver mais/ver menos" (+ ExpandableText.test.tsx)
 ```
+
+Hooks em `src/hooks/`: `useContainerBreakpoint.ts` (faixa `sm`/`md`/`lg` pela largura
+**real do container** via `ResizeObserver` — não da janela; usado pelo `DataGrid` p/ ocultar
+colunas considerando sidebar/paddings) e `useGridColumns.ts` (metadados de coluna —
+`ColumnDef`, `CONSULTA_COLUMNS`, `getEmailColumns`; é módulo de **definições**, não um hook,
+apesar do nome). `useIdleLogout.ts` e `useAuth` cobrem sessão (ver Autenticação).
 
 Tipos compartilhados vêm de `@sheild/shared` (ex.: `FinancialEmail`, `EmailControl`).
 Helpers em `src/lib/`: `getErrorMessage.ts` (erro em strict mode), `cn.ts` (merge de
@@ -397,6 +443,21 @@ Aplicação **sempre via `cva`**: `StatusBadge` (`statusBadge.variants.ts`), `Al
 de página) e `InlineMessage`. As quatro paletas — `brand` (verde dashboard), `auth`
 (azul/petróleo), `loginGreen` (auth v2) e `status` (semântica) — **não se misturam**; cada
 uma no seu contexto.
+
+### Guia de cores — grid de dados (`DataGrid`, `dataGrid.variants.ts`)
+
+O `DataGrid` é **chrome de tabela neutro**, não estado semântico — por isso usa as escalas
+neutras default do Tailwind (exceção explícita à regra "não usar cores default" da Regra 1,
+que vale só para **estados semânticos**). Dois temas via `variant`:
+
+| Tema | Uso | Neutro | Header/célula |
+|---|---|---|---|
+| `default` | `/consulta` | `slate-*` | `.table-header` / `.table-cell` |
+| `silver` | `/emails` | `zinc-*` | `.table-header-silver` / `.table-cell-silver` |
+
+Linha selecionada usa o acento `brand` (`bg-brand/5 border-l-2 border-brand`); o `StatusBadge`
+dentro das células continua na paleta `status`. Cada slot (header, row, cell, skeleton, empty,
+sub-linha de detalhe) é um `cva` próprio com a base + o neutro do tema — string literal completa.
 
 ### Guia de tamanhos — tokens Tailwind em uso
 
@@ -614,6 +675,27 @@ tributo, taxa, gnre`, etc.). Evitar tokens curtos ambíguos (`das` casaria "vend
 
 - `services/supabase.ts` — fetch direto REST, `Prefer: count=exact` + `Content-Range` para paginação.
 - `services/emailReader.ts` — `POST /api/emails/read` proxiado pelo Vite para Flask.
+- **`/consulta` — `cancelado` oculto por padrão (consistência grid ↔ KPIs):** `applyFinancialFilters`
+  aplica `status=neq.cancelado` quando **não** há filtro de situação. `getFinancialStats` usa o
+  **mesmo** filtro, então o rodapé "N registros", o KPI "Total de registros", o "Valor total" e
+  "Vencidas" batem com o grid — contas canceladas só aparecem se o usuário escolher `cancelado`
+  no filtro de situação (que sobrescreve o `neq`). Ao criar nova query/KPI sobre
+  `financial_account_control`, replicar esse padrão para não divergir.
+- **Grid compartilhado (responsivo, "à prova de mobile")**: `/consulta` (tema `default`) e
+  `/emails` (tema `silver`) renderizam pelo mesmo `organisms/DataGrid.tsx`, com as colunas de
+  `useGridColumns.ts` (`CONSULTA_COLUMNS` / `getEmailColumns`). Estratégia em camadas:
+  1. **breakpoint pela largura do container** (`useContainerBreakpoint`/`ResizeObserver`),
+     não da janela — então oculta colunas (`hideOn`) e desce as `secondLine` para uma
+     sub-linha conforme o espaço **real** (considera a sidebar);
+  2. **truncagem** de texto longo nas colunas com `truncate: true` (Fornecedor, Assunto,
+     Remetente) — corta com `…` e expõe o valor no `title`;
+  3. **rolagem horizontal** como rede de segurança: a `<table>` vive num wrapper
+     `overflow-x-auto` no próprio `DataGrid` (rola em vez de cortar). **Trade-off:** o
+     cabeçalho **deixou de ser `sticky`** (o wrapper de rolagem seria um novo contexto de
+     scroll e quebraria o sticky vertical).
+  A **sidebar** (`Layout.tsx`) colapsa em drawer com hambúrguer abaixo de `lg` (overlay +
+  fecha ao navegar); em `lg+` é estática. Isso libera a largura no celular — toda página
+  nova deve viver dentro desse `Layout`.
 
 ### Build e code-splitting (`frontend-vite`)
 
@@ -629,7 +711,7 @@ tributo, taxa, gnre`, etc.). Evitar tokens curtos ambíguos (`das` casaria "vend
 ## Banco de dados (Supabase)
 
 Migrations em `supabase/migrations/`, aplicadas **manualmente no SQL Editor** em ordem
-numérica (`001` → `023`). Não há migration automática.
+numérica (`001` → `026`). Não há migration automática.
 
 | Tabela | Propósito |
 |---|---|
@@ -645,6 +727,15 @@ cartório, pago, pago protesto, pago cartório, não pago, cancelado, falha` (mi
 `payment_method` aceita `boleto, pix, ted, cartão, depósito, duplicata, bancário, carteira,
 vale, crédito, débito, dinheiro, transferência, cheque, outro`; `extraction_source` ∈
 (`email_body, pdf_text, pdf_vision, falha`).
+
+**Schemas Zod (`packages/shared`) = fonte única de tipos.** Os tipos TS são `z.infer` dos
+schemas (não há tipo escrito à mão para divergir); os `z.enum` espelham 1:1 os CHECK do
+banco — ao alterar um CHECK, **atualizar o enum correspondente**. `due_status` reutiliza
+`ACCOUNT_STATUSES` (o domínio completo de 13 valores, idêntico a `status`), não só os
+`'a vencer'/'vencido'` que a trigger grava hoje — baixas/CRUD manual podem usar os demais.
+O frontend consome os schemas de dados (`FinancialAccountControl`, `EmailControl`,
+`ProcessingError`) **apenas como `import type`** (sem `.parse()` em runtime — `services/supabase.ts`
+faz cast); só os schemas de **auth** rodam em runtime via `zodResolver`.
 
 RLS habilitado em todas as tabelas. Policies de leitura são `TO authenticated`
 (migrations 015/018/019); escrita em `financial_account_control` é `TO service_role`
