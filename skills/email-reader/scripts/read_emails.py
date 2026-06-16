@@ -1502,6 +1502,29 @@ def _parse_internaldate(fetch_meta: bytes | None) -> str | None:
         return None
 
 
+def status_for_result(has_attachment: bool, csv_generated: bool,
+                       body_created: bool) -> str:
+    """Deriva email_control.status a partir do resultado real do processamento.
+
+    Prioridade (CHECK migration 022): conta do PDF > conta do corpo > anexo sem
+    conta. A conta criada pelo corpo vale MESMO com anexo presente — o anexo,
+    nesse caso, nao gerou conta valida (csv_generated=False), entao 'recebido'
+    reflete a origem real (corpo), evitando o falso 'pendente'.
+
+      - csv_generated  -> 'extraído'  (PDF extraido, CSV gerado)
+      - body_created   -> 'recebido'  (conta extraida do corpo do e-mail)
+      - has_attachment -> 'pendente'  (PDF salvo, aguardando reprocessamento)
+      - nenhum         -> 'falha'     (casou keyword, mas nada foi gerado)
+    """
+    if csv_generated:
+        return "extraído"
+    if body_created:
+        return "recebido"
+    if has_attachment:
+        return "pendente"
+    return "falha"
+
+
 def process_message(mail, uid: bytes, keywords: list,
                     dry_run: bool, mark_seen: bool,
                     ctrl: SupabaseControl) -> dict | None:
@@ -1614,12 +1637,11 @@ def process_message(mail, uid: bytes, keywords: list,
                 rec["pdf_extracted"] = True
                 rec["notes"]         = "Conta extraída do corpo do e-mail"
 
-        # Status (CHECK migration 022): CSV gerado=extraído; PDF salvo sem CSV=pendente;
-        # conta via corpo=recebido; senão (sem anexo e sem conta no corpo)=falha.
-        if has_att:
-            rec["status"] = "extraído" if csv_generated else "pendente"
-        else:
-            rec["status"] = "recebido" if body_created else "falha"
+        # Status (CHECK migration 022): conta do PDF > conta do corpo > anexo sem
+        # conta. A conta vinda do corpo (body_created) prevalece sobre o anexo que
+        # nao gerou CSV — assim um e-mail com anexo cuja conta saiu do corpo fica
+        # 'recebido', e nao um falso 'pendente'.
+        rec["status"] = status_for_result(has_att, csv_generated, body_created)
 
         # Regra: TODA falha gera log em email_processing_errors para revisão —
         # inclusive o corpo sem sinal financeiro, que antes saía silencioso.
