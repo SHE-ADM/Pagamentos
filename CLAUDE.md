@@ -749,15 +749,24 @@ e-mails `status='falha'`, rebusca o corpo no IMAP, baixa o boleto pelo link e gr
 
 Acionado em `process_message()` **só quando `accounts_saved == 0`** (o anexo não gerou
 conta válida) — assim o corpo nunca conflita com um arquivo anexado válido.
-`extract_from_email_body()` faz parsing por regex: `supplier_name` via rótulo
-(`Fornecedor`/`Favorecido`/`Nome`/`Responsável`…) ou CNPJ/CPF. **Sem rótulo nem documento**,
-tenta sinais (`_supplier_from_signals`) antes do remetente: assinatura titulada (`Prof./Dr.
-<Nome>`) e destinatário do pagamento (`pix/pagar p/|para <Nome>`, com stopwords cortando a
-captura) — ex.: honorários "pix p/ Wesley" + "Prof. Wesley S. Paixão". Depois tenta o **mapa
-por remetente** (`_supplier_from_sender`/`_SENDER_SUPPLIER_MAP`: `correios.com.br` → `Correios`)
-e só então cai para `sender_email`. `amount` via `R$ ([\d.,]+)`; `payment_method='pix'` se o termo aparecer (ou
-sempre, p/ honorários). **Valida fornecedor+valor**: sem valor → não grava conta (vira
-`falha`). `email_body_excerpt` (migration 016) guarda o corpo completo. O **barcode do corpo**
+`extract_from_email_body()` faz parsing por regex. **Fornecedor** (`_BODY_NAME_RE`): rótulo no
+início da linha — `fornecedor`/`responsável`/`prestador`/`nome` (+ `favorecido`/`beneficiário`/
+`cedente`/`razão social`/`empresa`). O **separador `:`/`-` é OPCIONAL** (aceita só espaço,
+ex.: "Nome MATEUS JAE WON AHN"); para não capturar continuação de frase ("Responsável **pela**
+compra"), o valor **deve começar por maiúscula/dígito** (char class `[A-ZÀ-Þ0-9]` case-sensitive;
+só o rótulo é case-insensitive via `(?i:...)`), e `\b` evita casar prefixo ("Nomeação"). **Cuidado
+CRLF:** o fim da linha é `[ \t\r]*$` — o `\r` do `\r\n` bloqueia o `$` se esquecido (bug já
+corrigido; teste usa `\r\n`). **Sem rótulo nem documento**, tenta sinais (`_supplier_from_signals`):
+assinatura titulada (`Prof./Dr. <Nome>`) e destinatário do pagamento (`pix/pagar p/|para <Nome>`,
+com stopwords cortando a captura). Depois o **mapa por remetente** (`_supplier_from_sender`/
+`_SENDER_SUPPLIER_MAP`: `correios.com.br` → `Correios`) e só então cai para `sender_email`.
+**Valor** (`_extract_body_amount`): (1) "Total"/"Valor Total" com `R$` tem precedência; (2) valores
+`R$` somados; (3) **fallback sem `R$`** (`_BODY_LABELED_AMT_RE`) — número rotulado por `Valor`/`Total`
+no formato BR com **exatamente 2 casas** (`Valor 50,00`, `Total 1.250,00`), usado só quando não há
+nenhum `R$` (exige rótulo + centavos p/ não pegar número solto/`NF 1087`; "Total" tem precedência
+sobre "Valor"). `payment_method='pix'` se o termo aparecer (ou sempre, p/ honorários). **Valida
+fornecedor+valor**: sem valor → não grava conta (vira `falha`). `email_body_excerpt` (migration 016)
+guarda o corpo completo. O **barcode do corpo**
 é normalizado por `_normalize_body_barcode`, que reusa `extract_pdf.normalize_barcode` (import
 lazy) — mesma regra canônica do caminho de PDF (44/48 dígitos mantidos, 47 → 44, outros →
 None), em vez de um `re.sub` solto que aceitava qualquer sequência de 44-48 (F2).

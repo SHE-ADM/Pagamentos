@@ -163,6 +163,32 @@ class ExtractFromEmailBodyTest(unittest.TestCase):
         self.assertIsNotNone(payload)
         self.assertEqual(payload["supplier_name"], "ACME SERVICOS LTDA")
 
+    def test_rotulo_nome_sem_separador(self):
+        # Caso real (zona azul): "Nome MATEUS JAE WON AHN" — rótulo sem ":"/"-".
+        # CRLF + espaço no fim (como o e-mail real): o \r não pode bloquear o $.
+        body = "Nome MATEUS JAE WON AHN \r\nValor R$ 19,99"
+        payload = read_emails.extract_from_email_body(
+            body, "2026-06-17T00:00:00+00:00", "<msg-nome>", "financeiro@otimotex.com.br",
+        )
+        self.assertIsNotNone(payload)
+        self.assertEqual(payload["supplier_name"], "MATEUS JAE WON AHN")
+        self.assertEqual(payload["amount"], 19.99)
+
+    def test_rotulos_prestador_e_responsavel(self):
+        for label in ("Prestador", "Responsável", "Fornecedor"):
+            body = f"{label}: BETA SERVICOS LTDA\nValor R$ 50,00"
+            p = read_emails.extract_from_email_body(
+                body, "2026-06-17T00:00:00+00:00", f"<msg-{label}>", "x@y.com")
+            self.assertEqual(p["supplier_name"], "BETA SERVICOS LTDA", label)
+
+    def test_rotulo_sem_separador_nao_captura_continuacao_de_frase(self):
+        # "Responsável pela compra" não pode virar fornecedor "pela compra"
+        # (minúsculo → guarda de maiúscula barra). Cai no fallback do remetente.
+        body = "Responsável pela compra do mês\nValor R$ 50,00"
+        p = read_emails.extract_from_email_body(
+            body, "2026-06-17T00:00:00+00:00", "<msg-frase>", "compras@otimotex.com.br")
+        self.assertEqual(p["supplier_name"], "compras@otimotex.com.br")
+
     def test_extrai_barcode_do_corpo(self):
         payload = read_emails.extract_from_email_body(
             BOLETO_BODY, "2026-06-11T10:00:00+00:00", "<msg-bol>",
