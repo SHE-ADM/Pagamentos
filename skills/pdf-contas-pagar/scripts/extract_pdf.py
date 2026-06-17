@@ -39,6 +39,11 @@ CSV_COLUMNS = [
 # Modelo Claude usado tanto na extracao por texto quanto na visao.
 CLAUDE_MODEL = "claude-sonnet-4-6"
 
+# Timeout (segundos) por requisicao a Claude API. Sem timeout explicito o SDK
+# usa ~10 min/request; num run sincrono que processa muitos PDFs, um request
+# travado congela o pipeline inteiro — mesma falha ja resolvida no IMAP.
+CLAUDE_API_TIMEOUT_SECONDS = int(os.getenv("CLAUDE_API_TIMEOUT", "90"))
+
 # Campos de valor que, em branco no boleto, sao gravados como 0.
 VALUE_FIELDS_ZERO = [
     "discount", "other_deductions", "fine_interest",
@@ -453,7 +458,7 @@ def _try_barcode_vision(pdf_path: Path) -> str | None:
         return None
     try:
         pdf_b64 = base64.standard_b64encode(pdf_path.read_bytes()).decode()
-        client = anthropic.Anthropic(api_key=api_key)
+        client = anthropic.Anthropic(api_key=api_key, timeout=CLAUDE_API_TIMEOUT_SECONDS)
         resp = client.messages.create(
             model=CLAUDE_MODEL, max_tokens=100, temperature=0,
             messages=[{"role": "user", "content": [
@@ -581,7 +586,7 @@ def extract_with_vision(pdf_path):
         raise EnvironmentError("ANTHROPIC_API_KEY não definida no .env")
 
     pdf_b64 = base64.standard_b64encode(pdf_path.read_bytes()).decode()
-    client = anthropic.Anthropic(api_key=api_key)
+    client = anthropic.Anthropic(api_key=api_key, timeout=CLAUDE_API_TIMEOUT_SECONDS)
     resp = client.messages.create(
         model=CLAUDE_MODEL, max_tokens=1200, temperature=0,
         messages=[{"role":"user","content":[
@@ -605,7 +610,7 @@ def extract_fields_with_claude(text: str) -> dict:
     if not api_key:
         raise EnvironmentError("ANTHROPIC_API_KEY não definida no .env")
 
-    client = anthropic.Anthropic(api_key=api_key)
+    client = anthropic.Anthropic(api_key=api_key, timeout=CLAUDE_API_TIMEOUT_SECONDS)
     resp = client.messages.create(
         model=CLAUDE_MODEL, max_tokens=1200, temperature=0,
         messages=[{"role":"user","content":
