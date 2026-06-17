@@ -623,7 +623,7 @@ NOTIFICATION_PHRASE_TERMS = (
     "confirmacao de pagamento", "confirmacao do pagamento", "pagamento confirmado",
     "pagamento processado", "aviso de vencimento",
     "titulo a vencer", "lembrete de vencimento", "titulos proximos do vencimento",
-    "comprovante de pix", "protesto", "protestado", "cartorio",
+    "comprovante de pix", "protesto", "protestado", "cartorio", "comunicado",
 )
 
 

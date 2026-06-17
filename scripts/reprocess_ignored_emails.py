@@ -78,6 +78,10 @@ EXPLICIT_IGNORE_IDS = frozenset({
     "<010d019ecb578947-75e14f59-03d5-4e1c-9750-fe92ec2c983e-000000@ca-central-1.amazonses.com>",
     "<178141067126.3156.9499819598040139061@otimotex.com.br>",
     "<d400380c-54e7-4990-a78c-b8017a9ba431@transminuano.com.br>",
+    # Avisos/oferta sem termo de assunto generalizavel (marcados manualmente):
+    "<CACV6zXcZ+6=AuRDVNFOtwbqWa4fQQBTuR040jcotXtH4zyeHJA@mail.gmail.com>",  # Fwd: Fretes (oferta)
+    "<671F5CD1-FD5B-4E08-9590-09542AA45218@ssw.inf.br>",                     # NOVA AREA DO CLIENTE
+    "<B66E11DF-847F-4C99-B817-2188CDA52CBB@ssw.inf.br>",                     # Taxa de Agendamento
 })
 
 

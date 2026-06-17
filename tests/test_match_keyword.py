@@ -92,7 +92,8 @@ class IgnorableNotificationTest(unittest.TestCase):
                         "Comprovante de Pix Recebido .",
                         "ALERTA: Título protestado - Sua reputação no SPC/Serasa",
                         "Intimação de protesto - Tabelionato",
-                        "Comunicado do Cartório de Protesto"]:
+                        "Comunicado do Cartório de Protesto",
+                        "Comunicado Importante: Operações de entrega - Arlete"]:
             self.assertTrue(read_emails.subject_is_ignorable_notification(assunto), assunto)
 
     def test_pagaveis_reais_sao_false(self):
