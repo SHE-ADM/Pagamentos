@@ -23,6 +23,7 @@ const baseEmail: EmailControl = {
   notes: null,
   processed_at: '2026-06-11T12:19:00Z',
   updated_at: '2026-06-11T12:19:00Z',
+  reviewed_at: null,
 };
 
 describe('getStatusExplanation', () => {

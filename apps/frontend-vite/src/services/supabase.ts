@@ -124,6 +124,22 @@ export async function getEmailControl({
   return merged.sort((a, b) => (b.received_at ?? '').localeCompare(a.received_at ?? ''));
 }
 
+// Marca um e-mail como revisado (reviewed_at = agora) — usado em /emails ao abrir
+// o card de detalhes de um e-mail com falha. A migration 030 restringe o papel
+// `authenticated` a escrever SOMENTE a coluna reviewed_at. Retorna o ISO gravado.
+export async function markEmailReviewed(id: number): Promise<string> {
+  const reviewedAt = new Date().toISOString();
+  const url = new URL(`${BASE_URL}/rest/v1/email_control`);
+  url.searchParams.set('id', `eq.${id}`);
+  const res = await fetch(url.toString(), {
+    method: 'PATCH',
+    headers: await authHeaders({ Prefer: 'return=minimal' }),
+    body: JSON.stringify({ reviewed_at: reviewedAt }),
+  });
+  if (!res.ok) throw new Error(`Supabase ${res.status}: ${await res.text()}`);
+  return reviewedAt;
+}
+
 // Contagens por status (taxonomia da migration 022) — uma KPI por status.
 export interface EmailStats {
   total: number;

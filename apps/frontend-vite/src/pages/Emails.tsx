@@ -2,7 +2,7 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { RefreshCw, Mail, FileCheck, AlertCircle, CopyMinus, Inbox, Ban, CalendarDays, X, Eye } from 'lucide-react';
 import type { EmailControl, FinancialAccountControl } from '@sheild/shared';
-import { getEmailControl, getEmailStats, getAccountsByMessageId, getInvoiceNumbersByMessageIds, type EmailStats } from '../services/supabase';
+import { getEmailControl, getEmailStats, getAccountsByMessageId, getInvoiceNumbersByMessageIds, markEmailReviewed, type EmailStats } from '../services/supabase';
 import { triggerEmailRead } from '../services/emailReader';
 import { suspendIdleLogout, resumeIdleLogout } from '../hooks/useIdleLogout';
 import { getEmailColumns } from '../hooks/useGridColumns';
@@ -371,7 +371,18 @@ export default function Emails() {
             rows={rows}
             rowKey={(r) => String(r.id)}
             selectedId={sel ? String(sel.id) : null}
-            onRowClick={(r) => setSel(sel?.id === r.id ? null : r)}
+            onRowClick={(r) => {
+              const opening = sel?.id !== r.id;
+              setSel(opening ? r : null);
+              // Abrir o card de detalhes de um e-mail 'falha' = revisado.
+              if (opening && r.status === 'falha' && !r.reviewed_at) {
+                void markEmailReviewed(r.id)
+                  .then((reviewedAt) =>
+                    setRows((prev) =>
+                      prev.map((x) => (x.id === r.id ? { ...x, reviewed_at: reviewedAt } : x))))
+                  .catch(() => undefined);
+              }
+            }}
             sortCol={null}
             sortDir={null}
             onSort={() => undefined}

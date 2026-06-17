@@ -44,6 +44,10 @@ export const emailControlSchema = z.object({
   notes: z.string().nullable(),
   processed_at: z.string(),
   updated_at: z.string(),
+
+  // Revisão manual (migration 030): marcado quando o usuário abre o card de
+  // detalhes de um e-mail com falha em /emails — sinaliza "já revisado".
+  reviewed_at: z.string().nullable().default(null),
 });
 
 export type EmailControl = z.infer<typeof emailControlSchema>;
