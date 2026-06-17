@@ -323,6 +323,14 @@ py -3 scripts\reprocess_link_emails.py --dry-run   # boleto por link (BRASPRESS/
 py -3 scripts\reprocess_body_emails.py --dry-run   # conta no corpo do e-mail (sem anexo/link)
 ```
 
+Reprocessar após **ampliar o filtro de assunto** (acrônimos de tributo) ou ajustar a regra
+de NF-e. Fase A: `ignorado` que passou a casar keyword → rebusca no IMAP e extrai. Fase B:
+NF-e pura sem conta a pagar → reclassifica para `ignorado` (só status, sem IMAP):
+
+```powershell
+py -3 scripts\reprocess_ignored_emails.py --dry-run
+```
+
 Extração isolada:
 
 ```powershell
@@ -695,17 +703,44 @@ espelha o webmail inteiro (o app substitui abrir a caixa). O filtro de keyword d
 - **Sem keyword** no assunto → `ctrl.register({... status:'ignorado'})` sem baixar/
   extrair (`has_attachment` fica NULL). Respeita `--dry-run` (não grava).
 - **Com keyword** → `process_message` (baixa + extrai) define o status via `status_for_result`,
-  por **prioridade**: CSV do PDF → `extraído` · conta do corpo → `recebido` (**vale mesmo com
-  anexo** cujo PDF não gerou CSV — antes virava um falso `pendente`) · anexo salvo sem conta →
-  `pendente` · nada → `falha`. Ver migration 022 e `tests/test_status_for_result.py`.
+  por **prioridade**: conta do PDF (`accounts_saved>0`) → `extraído` · **NF-e pura sem conta**
+  (`subject_is_pure_nfe`) → `ignorado` · CSV do PDF → `extraído` · conta do corpo → `recebido`
+  (**vale mesmo com anexo** cujo PDF não gerou CSV — antes virava um falso `pendente`) · anexo
+  salvo sem conta → `pendente` · **notificação sem anexo/conta** (`subject_is_ignorable_notification`)
+  → `ignorado` · nada → `falha`. Ver migration 022 e `tests/test_status_for_result.py`.
 - **Corpo é fallback só quando o anexo NÃO gera conta** (`accounts_saved==0`) — havendo
   conta de arquivo anexado válido, o corpo é ignorado (sem conflito).
 
-Match é **substring** case-insensitive (`match_keyword`, ~linha 494): `transporte`
-pega "conhecimento de transporte". Lista padrão em `KEYWORDS_DEFAULT` (~linha 72),
-**sobrescrita por `EMAIL_KEYWORDS` no `.env`** (fonte de verdade usada hoje — ampliada
-com `transporte, conhecimento de transporte, frete, honorá, título, vencer, unimed,
-tributo, taxa, gnre`, etc.). Evitar tokens curtos ambíguos (`das` casaria "vendas").
+**Matching de keyword (`match_keyword`, `tests/test_match_keyword.py`)** — comparação
+**sem acento** (NFD + lowercase). Dois modos:
+- **Acrônimos de tributo/câmbio** (`WORD_KEYWORDS`: `darf, das, dae, dam, duam, gps, gru,
+  gnre, gare, ipva, iptu, iss, itbi, cambio`) casam por **palavra inteira** (`\b…\b`) —
+  evita falso positivo de substring (`das` em "ca**das**tro"/"executa**das**", `iss` em
+  "em**iss**ão", `gru` em "**gru**po", `cambio` em "inter**câmbio**").
+- **Demais termos** (frases e siglas distintivas: `boleto, nota fiscal, nf-e, conhecimento
+  de transporte, dacte`…) seguem **substring**.
+- **Câmbio**: lê `cambio` **ou** `câmbio` (sem acento), mas a keyword gravada/retornada é
+  sempre `câmbio` (forma gramatical correta na lista).
+
+Lista padrão em `KEYWORDS_DEFAULT`, **sobrescrita por `EMAIL_KEYWORDS` no `.env`** (fonte de
+verdade usada hoje). **NF-e "pura"** (`subject_is_pure_nfe`): assunto com `nota fiscal/nfe/
+nf-e/nfse/nfs-e` **por palavra inteira** (não casa "co**nfe**cções") e **sem** indício de
+pagável (`boleto/fatura/vencimento/`acrônimos…) que **não** gera conta a pagar vira
+`ignorado` em vez de `falha` — notificação fiscal não é conta a pagar.
+
+**Notificações → `ignorado`** (`subject_is_ignorable_notification`, `tests/test_match_keyword.py`):
+e-mails de aviso/confirmação **sem anexo e sem conta no corpo** (gatilho no lugar do antigo
+`falha`) viram `ignorado`. Termos: palavra inteira `nfe, nf-e, informe, sieg`; frases
+`informativo, confirmado (o) pagamento, confirmação de/do pagamento, pagamento confirmado,
+pagamento processado, aviso de vencimento, título a vencer, lembrete de vencimento, títulos
+próximos do vencimento, comprovante de pix, protesto, protestado, cartório`. **Não** há
+exclusão por boleto/fatura aqui — o
+gatilho já exige ausência de anexo/conta (sem anexo nem dado no corpo ⇒ é só um aviso); com
+anexo, o PDF vira `pendente` (revisão), nunca `ignorado`. Reprocesso histórico (e Message-IDs
+avulsos marcados à mão, ex.: alerta de protesto SPC/Serasa) via
+`scripts/reprocess_ignored_emails.py`. **SIEG**: por decisão do responsável (2026-06-17),
+avisos da SIEG sem anexo/conta são `ignorado` — convive com o handler SIEG adiado (A1):
+faturas SIEG novas também ficam `ignorado` até o handler ser ativado.
 
 ### Frontend — rotas e serviços
 
@@ -753,11 +788,11 @@ tributo, taxa, gnre`, etc.). Evitar tokens curtos ambíguos (`das` casaria "vend
 ## Banco de dados (Supabase)
 
 Migrations em `supabase/migrations/`, aplicadas **manualmente no SQL Editor** em ordem
-numérica (`001` → `028`). Não há migration automática.
+numérica (`001` → `029`). Não há migration automática.
 
 | Tabela | Propósito |
 |---|---|
-| `email_control` | Dedup/controle. `status` ∈ (`extraído`, `recebido`, `pendente`, `falha`, `ignorado`) — **migration 022**. `extraído`=PDF extraído (CSV gerado); `recebido`=sem PDF, conta via corpo; `pendente`=PDF salvo sem CSV (substitui `baixado`); `falha`=casou keyword mas sem PDF e sem conta no corpo; `ignorado`=não-financeiro. O status é calculado em `process_message` pelo resultado real (CSV gerado/corpo), não por `pdf_extracted` |
+| `email_control` | Dedup/controle. `status` ∈ (`extraído`, `recebido`, `pendente`, `falha`, `ignorado`) — **migration 022**. `extraído`=PDF extraído (CSV gerado); `recebido`=sem PDF, conta via corpo; `pendente`=PDF salvo sem CSV (substitui `baixado`); `falha`=casou keyword mas sem PDF e sem conta no corpo; `ignorado`=não-financeiro (sem keyword) **ou NF-e pura sem conta a pagar** (`subject_is_pure_nfe`). O status é calculado em `process_message` pelo resultado real (conta/CSV/corpo), não por `pdf_extracted` |
 | `financial_account_control` | Tabela principal de contas a pagar — uma linha por documento; alimentada pelo pipeline de e-mail **e** por CRUD manual (baixas, consolidações, dashboards). Substitui a antiga `financial_emails` (dropada na migration 020). Tem `sender_email` (migration 023; backfill em 025) que o trigger usa p/ alinhar `supplier.email`, e `subject` (migration 025) — ambos com backfill SQL de `email_control` e exibidos/buscados em `/consulta` |
 | `email_processing_errors` | Log de falhas com `raw_payload` JSON |
 | `supplier` | Fornecedores auto-criados pelo trigger. Reconhecimento por **e-mail** em `email`/`email2`/`email3`/`email4` (migrations 023/027/028) — ver "Auto-resolução de fornecedor" |
@@ -790,6 +825,7 @@ Ao limpar a base para uma nova busca geral, **SEMPRE preserve estas tabelas de
 cadastro/configuração** — não são alimentadas pelo pipeline e nunca devem ser apagadas:
 
 - `company`
+- `supplier` (cadastro com curadoria manual — `email`/`email2`/`email3`/`email4` usados na busca de `/consulta`; truncá-lo destruiria os e-mails cadastrados à mão)
 - `financial_account`
 - `financial_bank`
 - `financial_chart_of_account`
@@ -798,10 +834,13 @@ cadastro/configuração** — não são alimentadas pelo pipeline e nunca devem 
 - `financial_cost_center`
 
 **Alvos da limpeza** (truncar com `RESTART IDENTITY CASCADE`): `email_control`,
-`financial_account_control`, `email_processing_errors`, `supplier` e `audit_log` — mais o
+`financial_account_control`, `email_processing_errors`, `audit_log` — mais o
 bucket **`attachments`** do Storage e o cache local (`data/pdfs_inbox`, `data/csv_output`).
-`supplier` é recriado automaticamente pelo trigger de resolução no reprocessamento; a
-`company` preservada continua resolvendo `company_id` das novas contas.
+`supplier` **não** é mais alvo: embora seja auto-criado pelo trigger, acumula curadoria
+manual (e-mails `email2`/`email3`/`email4`) que seria perdida na truncagem; no
+reprocessamento o `resolve_supplier_id` reutiliza os fornecedores existentes (casa por
+CNPJ/CPF/e-mail/nome) sem duplicar. A `company` e o `supplier` preservados continuam
+resolvendo `company_id`/`supplier_id` das novas contas.
 
 > **Storage:** `DELETE` direto em `storage.objects` é bloqueado (`protect_delete`). Esvaziar
 > o bucket via **Storage API** (`POST object/list/attachments` → `DELETE object/attachments`
