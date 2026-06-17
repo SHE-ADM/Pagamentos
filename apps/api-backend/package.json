@@ -8,7 +8,7 @@
     "start": "next start -p 3000",
     "lint": "eslint",
     "typecheck": "tsc --noEmit",
-    "prune": "ts-prune --ignore \"next.config|vitest.config|\\.next|app.*(page|layout|route)\"",
+    "prune": "ts-prune --ignore \"next.config|vitest.config|middleware|\\.next|app.*(page|layout|route)\"",
     "test": "vitest run",
     "test:watch": "vitest"
   },
