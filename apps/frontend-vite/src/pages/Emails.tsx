@@ -1,5 +1,5 @@
 // src/pages/Emails.tsx
-import { useState, useEffect, useCallback, useMemo } from 'react';
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { RefreshCw, Mail, FileCheck, AlertCircle, CopyMinus, Copy, Inbox, Ban, CalendarDays, X, Eye } from 'lucide-react';
 import type { EmailControl, FinancialAccountControl } from '@sheild/shared';
 import { getEmailControl, getEmailStats, getAccountsByMessageId, getInvoiceNumbersByMessageIds, markEmailReviewed, type EmailStats } from '../services/supabase';
@@ -55,6 +55,21 @@ const EMPTY_FILTERS: EmailFilters = { status: '', sender: '', days: 7 };
 // Busca Geral exibir tudo; janela curta (com filtro de data) mantém o teto menor.
 const TABLE_LIMIT_DEFAULT = 200;
 const TABLE_LIMIT_ALL_TIME = 1000;
+
+// Tom de cor de cada card por status — ESPELHA o StatusBadge (célula "Status").
+// Esquema (decisão de UI): Total=preto · Extraídos+Recebidos=verde · Falha=vermelho ·
+// Pendente+Ignorados+Duplicidades=cinza. `fg` colore ícone + número; `activeRing` é o
+// destaque (anel + fundo suave) quando o card está selecionado como filtro.
+// Strings literais completas (JIT).
+const CARD_TONE: Record<string, { fg: string; activeRing: string }> = {
+  total:       { fg: 'text-gray-900',          activeRing: 'ring-1 ring-slate-300 bg-slate-50' },
+  extraido:    { fg: 'text-status-success-fg', activeRing: 'ring-1 ring-status-success-border bg-status-success-bg' },
+  recebido:    { fg: 'text-status-success-fg', activeRing: 'ring-1 ring-status-success-border bg-status-success-bg' },
+  pendente:    { fg: 'text-status-neutral-fg', activeRing: 'ring-1 ring-status-neutral-border bg-status-neutral-bg' },
+  falha:       { fg: 'text-status-error-fg',   activeRing: 'ring-1 ring-status-error-border bg-status-error-bg' },
+  ignorado:    { fg: 'text-status-neutral-fg', activeRing: 'ring-1 ring-status-neutral-border bg-status-neutral-bg' },
+  duplicidade: { fg: 'text-status-neutral-fg', activeRing: 'ring-1 ring-status-neutral-border bg-status-neutral-bg' },
+};
 
 export default function Emails() {
   const [rows, setRows] = useState<EmailControl[]>([]);
@@ -115,37 +130,18 @@ export default function Emails() {
       .catch(() => setAccounts([]));
   }, [sel]);
 
-  // Dispara a leitura IMAP no backend e acompanha a PROGRESSÃO.
-  // O job roda em background no Flask (POST /start responde na hora) e o frontend
-  // faz poll de GET /progress a cada ~1,5s — mostra fase, X/Y e contadores ao vivo
-  // sem segurar um request HTTP por minutos (o que parecia "travar").
-  // mode='novos' → IMAP UNSEEN (apenas não lidos)
-  // mode='geral' → IMAP SINCE N dias (usa o filtro de período da tabela)
-  const handleRead = async (mode: 'novos' | 'geral') => {
-    setReading(true);
-    setReadMode(mode);
-    setError(null);
-    setReadMsg(null);
-    setProgress(null);
-    // Suspende o logout por inatividade enquanto processa — o usuário pode ficar
-    // ocioso durante vários minutos de extração sem ser deslogado.
-    suspendIdleLogout();
+  // Acompanha o job de leitura (poll de GET /progress) até concluir/falhar.
+  // Reutilizado por handleRead E pela reconexão no carregamento (efeito abaixo):
+  // o job roda em background no Flask, então se o usuário ATUALIZAR a aba no meio do
+  // processamento o estado da UI se perdia e o botão parecia "pronto" enquanto o
+  // backend seguia registrando e-mails (total subindo a cada refresh). `trackingRef`
+  // garante um único loop de poll mesmo se o efeito de reconexão reavaliar.
+  const trackingRef = useRef(false);
 
-    // Alinha a janela da tabela ao período buscado, senão a tabela continuaria no
-    // filtro padrão de 7 dias e pareceria "trazer poucos e-mails" mesmo após uma
-    // busca ampla. readDays=0 (Busca Geral) → days=0 → tabela sem filtro de data
-    // (todos os períodos). 7/15/30 → mesma janela da busca.
-    if (mode === 'geral') {
-      setActiveCard(null);
-      setFilters({ status: '', sender: '', days: readDays });
-    }
-
+  const trackJob = useCallback(async (mode: 'novos' | 'geral' | null) => {
+    if (trackingRef.current) return; // já acompanhando — evita poll duplicado
+    trackingRef.current = true;
     try {
-      const days = mode === 'novos' ? 0 : readDays;
-      const all = mode === 'geral' && readDays === 0;
-      await startEmailRead({ days, all });
-
-      // Poll do progresso até o job concluir (ou falhar).
       let final: ReadProgress | null = null;
       let ticks = 0;
       let errors = 0;
@@ -157,7 +153,6 @@ export default function Emails() {
           p = await getEmailReadProgress();
           errors = 0;
         } catch {
-          // Falha transitória do poll — tolera alguns antes de desistir.
           errors += 1;
           if (errors >= PROGRESS_MAX_ERRORS) throw new Error('Perdi contato com o backend durante o processamento.');
           continue;
@@ -172,10 +167,10 @@ export default function Emails() {
         setError(final.error);
       } else if (final?.summary) {
         const s = final.summary;
-        let criterio = 'não lidos';
-        if (mode === 'geral') {
-          criterio = readDays === 0 ? 'todos os e-mails' : `últimos ${readDays} dias`;
-        }
+        let criterio: string;
+        if (mode === 'novos') criterio = 'não lidos';
+        else if (mode === 'geral') criterio = readDays === 0 ? 'todos os e-mails' : `últimos ${readDays} dias`;
+        else criterio = 'processamento retomado';
         const abortAviso = s.api_aborted
           ? ' ⚠️ Processamento interrompido por limite da API — rode novamente para continuar.'
           : '';
@@ -188,13 +183,65 @@ export default function Emails() {
     } catch (e) {
       setError(getErrorMessage(e));
     } finally {
+      trackingRef.current = false;
       resumeIdleLogout();
       setReading(false);
       setReadMode(null);
       setProgress(null);
       await load();
     }
+  }, [load, readDays]);
+
+  // Dispara a leitura IMAP (job em background no Flask) e acompanha a progressão.
+  // mode='novos' → IMAP UNSEEN · mode='geral' → IMAP SINCE N dias / ALL.
+  const handleRead = async (mode: 'novos' | 'geral') => {
+    setError(null);
+    setReadMsg(null);
+    setProgress(null);
+    setReading(true);
+    setReadMode(mode);
+    // Suspende o logout por inatividade enquanto processa.
+    suspendIdleLogout();
+
+    // Alinha a janela da tabela ao período buscado (readDays=0 → todos).
+    if (mode === 'geral') {
+      setActiveCard(null);
+      setFilters({ status: '', sender: '', days: readDays });
+    }
+
+    try {
+      const days = mode === 'novos' ? 0 : readDays;
+      const all = mode === 'geral' && readDays === 0;
+      await startEmailRead({ days, all });
+    } catch (e) {
+      setError(getErrorMessage(e));
+      resumeIdleLogout();
+      setReading(false);
+      setReadMode(null);
+      return;
+    }
+    await trackJob(mode);
   };
+
+  // Reconexão: se houver um job rodando no backend (ex.: a aba foi atualizada no
+  // meio do processamento), retoma o banner + poll em vez de parecer "pronto".
+  // trackJob é idempotente (trackingRef), então não inicia um segundo loop.
+  useEffect(() => {
+    let cancelled = false;
+    getEmailReadProgress()
+      .then((p) => {
+        if (cancelled || !p.running || trackingRef.current) return;
+        suspendIdleLogout();
+        setReading(true);
+        setReadMode('geral');
+        setProgress(p);
+        void trackJob(null);
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, [trackJob]);
 
   const setF = <K extends keyof EmailFilters>(k: K, v: EmailFilters[K]) =>
     setFilters((f) => ({ ...f, [k]: v }));
@@ -322,7 +369,7 @@ export default function Emails() {
               icon: Mail,
               label: 'Total de e-mails',
               value: stats.total ?? 0,
-              sub: 'na caixa (email_control)',
+              sub: 'na caixa de entradas',
               cardId: 'total',
               filter: {},
             },
@@ -351,12 +398,12 @@ export default function Emails() {
               filter: { status: 'pendente' },
             },
             {
-              icon: AlertCircle,
-              label: 'Falha',
-              value: stats.falha ?? 0,
-              sub: 'sem conta — revisão',
-              cardId: 'falha',
-              filter: { status: 'falha' },
+              icon: Copy,
+              label: 'Duplicidades',
+              value: stats.duplicidade ?? 0,
+              sub: 'conta já registrada',
+              cardId: 'duplicidade',
+              filter: { status: 'duplicidade' },
             },
             {
               icon: Ban,
@@ -367,18 +414,20 @@ export default function Emails() {
               filter: { status: 'ignorado' },
             },
             {
-              icon: Copy,
-              label: 'Duplicidades',
-              value: stats.duplicidade ?? 0,
-              sub: 'conta já registrada',
-              cardId: 'duplicidade',
-              filter: { status: 'duplicidade' },
+              icon: AlertCircle,
+              label: 'Falha',
+              value: stats.falha ?? 0,
+              sub: 'sem conta — revisão',
+              cardId: 'falha',
+              filter: { status: 'falha' },
             },
           ].map(({ icon: Icon, label, value, sub, cardId, filter }) => {
+            const tone = CARD_TONE[cardId] ?? CARD_TONE.total;
             const isActive = activeCard === cardId;
-            const cardRing = isActive ? 'ring-1 ring-brand/30 bg-brand/5' : '';
-            const labelCls = isActive ? 'text-brand' : 'text-gray-500';
-            const valueCls = isActive ? 'text-brand' : 'text-gray-900';
+            // Ícone e número sempre na cor do status (relaciona com a célula Status);
+            // a label fica cinza e só assume a cor quando o card está ativo (filtro).
+            const cardRing = isActive ? tone.activeRing : '';
+            const labelCls = isActive ? tone.fg : 'text-gray-500';
             return (
               <button
                 key={label}
@@ -387,10 +436,10 @@ export default function Emails() {
                 className={`metric-card w-full text-left cursor-pointer select-none transition-all hover:shadow-md hover:scale-[1.01] ${cardRing}`}
               >
                 <div className={`flex items-center gap-1.5 text-xs mb-1 ${labelCls}`}>
-                  <Icon size={13} />
+                  <Icon size={13} className={tone.fg} />
                   {label}
                 </div>
-                <div className={`text-2xl font-semibold ${valueCls}`}>{value}</div>
+                <div className={`text-2xl font-semibold ${tone.fg}`}>{value}</div>
                 <div className="text-xs text-gray-400">{sub}</div>
               </button>
             );

@@ -26,7 +26,10 @@ const falhaRow = {
   status: 'falha', notes: null, processed_at: '2026-06-10T12:00:00Z',
   updated_at: '2026-06-10T12:00:00Z', reviewed_at: null,
 };
-vi.mock('../services/emailReader', () => ({ startEmailRead: vi.fn(), getEmailReadProgress: vi.fn() }));
+vi.mock('../services/emailReader', () => ({
+  startEmailRead: vi.fn(),
+  getEmailReadProgress: vi.fn(() => Promise.resolve({ running: false })),
+}));
 vi.mock('../hooks/useIdleLogout', () => ({ suspendIdleLogout: vi.fn(), resumeIdleLogout: vi.fn() }));
 
 import Emails from './Emails';
@@ -53,6 +56,19 @@ describe('Emails', () => {
 
     expect(search).toHaveValue('');
     expect(screen.queryByRole('button', { name: 'Limpar busca' })).not.toBeInTheDocument();
+  });
+
+  it('cada card usa a cor do StatusBadge correspondente (Falha=erro, Extraídos=sucesso)', async () => {
+    render(<Emails />);
+    await waitFor(() => expect(getEmailStats).toHaveBeenCalled());
+
+    // O card "Falha" carrega o tom de erro (mesma cor do badge de status 'falha').
+    const falhaCard = screen.getByText('Falha').closest('button');
+    expect(falhaCard?.querySelector('.text-status-error-fg')).not.toBeNull();
+
+    // O card "Extraídos" carrega o tom de sucesso (mesma cor do badge 'extraído').
+    const extraidoCard = screen.getByText('Extraídos').closest('button');
+    expect(extraidoCard?.querySelector('.text-status-success-fg')).not.toBeNull();
   });
 
   it('marca e-mail com falha como revisado ao abrir o card e exibe o check', async () => {

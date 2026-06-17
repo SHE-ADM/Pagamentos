@@ -464,16 +464,24 @@ cumprem WCAG AA (verificado em `tests/contrast.a11y.test.ts`).
 |---|---|---|
 | `status-error-*` | `#b91c1c` / `#fef2f2` (border `#fecaca`) | erro, vencido, falha |
 | `status-error-solid` | branco / `#dc2626` | badge crítico (`erro_api`) |
-| `status-success-*` | `#15803d` / `#f0fdf4` | sucesso, pago, extraído |
-| `status-warning-*` | `#b45309` / `#fffbeb` | atenção, pendente |
-| `status-info-*` | `#1d4ed8` / `#eff6ff` | informativo, a vencer, recebido |
+| `status-success-*` | `#15803d` / `#f0fdf4` | sucesso, pago, **extraído + recebido** (verde) |
+| `status-warning-*` | `#b45309` / `#fffbeb` | atenção (cartório, erros de extração) |
+| `status-info-*` | `#1d4ed8` / `#eff6ff` | informativo, a vencer, prorrogado, baixado |
 | `status-source-*` | `#0f766e` / `#f0fdfa` | origem da extração (teal) |
-| `status-neutral-*` | `#64748b` / `#f8fafc` | neutro, cancelado, documento |
+| `status-neutral-*` | `#475569` / `#f8fafc` | neutro, cancelado, documento, **pendente + ignorado + duplicidade** (cinza slate-600) |
 
 Aplicação **sempre via `cva`**: `StatusBadge` (`statusBadge.variants.ts`), `Alert` (banner
 de página) e `InlineMessage`. As quatro paletas — `brand` (verde dashboard), `auth`
 (azul/petróleo), `loginGreen` (auth v2) e `status` (semântica) — **não se misturam**; cada
 uma no seu contexto.
+
+**Cards de KPI em `/emails` espelham o badge** (`CARD_TONE` em `Emails.tsx`): ícone + número
+de cada card usam a mesma cor do `StatusBadge` do status; o card ativo (filtro) ganha anel +
+fundo no tom. Esquema (decisão de UI): **Total**=preto (`text-gray-900`) · **Extraídos +
+Recebidos**=verde · **Falha**=vermelho · **Pendente + Ignorados + Duplicidades**=cinza
+(`neutral`). Ordem dos cards: Total · Extraídos · Recebidos · Pendente · Duplicidades ·
+Ignorados · Falha. Ao mudar a cor de um status, mexer **só** no `STATUS_VARIANT`
+(`statusBadge.variants.ts`) — o card herda pelo `CARD_TONE` apontando o mesmo token.
 
 ### Guia de cores — grid de dados (`DataGrid`, `dataGrid.variants.ts`)
 
@@ -851,6 +859,12 @@ faturas SIEG em `ignorado`; o handler A1 (baixar o boleto real) segue como melho
   "voltava" antes do fim (parecia travado). `run_reader(on_progress=...)` é a fonte do progresso
   (callback best-effort, não derruba o run); o estado vive em `server/app.py` (dict + lock, **um
   job por vez**). O `POST /api/emails/read` síncrono permanece só para a ponte da Next API.
+  **Reconexão ao job (não regredir):** o poll vive em `trackJob` (idempotente via `trackingRef`),
+  reusado por `handleRead` **e** por um efeito no mount que consulta `GET /progress` e, se houver
+  job **rodando**, retoma banner + poll. Sem isso, atualizar a aba no meio do processamento perdia
+  o estado e o botão parecia "pronto" enquanto o backend seguia registrando (total subia a cada
+  refresh). O card **"Total de e-mails"** (sub-rótulo "na caixa de entradas") = contagem de
+  `email_control`, que converge para o total do INBOX **quando o job termina** (não antes).
 - **`/consulta` — `cancelado` oculto por padrão (consistência grid ↔ KPIs):** `applyFinancialFilters`
   aplica `status=neq.cancelado` quando **não** há filtro de situação. `getFinancialStats` usa o
   **mesmo** filtro, então o rodapé "N registros", o KPI "Total de registros", o "Valor total" e

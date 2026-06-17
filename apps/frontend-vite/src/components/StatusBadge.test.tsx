@@ -53,19 +53,17 @@ describe('StatusBadge', () => {
     expect(screen.getByText('pago').className).toContain('text-status-success-fg');
   });
 
-  it('mapeia "recebido" (conta via corpo) para a variante azul', () => {
+  it('mapeia "recebido" (conta via corpo) para verde — igual a "extraído"', () => {
     render(<StatusBadge value="recebido" />);
-    expect(screen.getByText('recebido').className).toContain('text-status-info-fg');
+    expect(screen.getByText('recebido').className).toContain('text-status-success-fg');
   });
 
-  it('mapeia "duplicidade" para teal com ponto (status, não ícone)', () => {
-    const { container } = render(<StatusBadge value="duplicidade" />);
-    const badge = screen.getByText('duplicidade');
-    // teal (variante source) para destacar de 'ignorado' (slate)…
-    expect(badge.className).toContain('text-status-source-fg');
-    // …mas com ponto de status (não ícone de origem).
-    expect(container.querySelector('span.rounded-full')).not.toBeNull();
-    expect(container.querySelector('svg')).toBeNull();
+  it('pendente, ignorado e duplicidade usam o mesmo cinza (slate/neutral)', () => {
+    for (const v of ['pendente', 'ignorado', 'duplicidade']) {
+      const { unmount } = render(<StatusBadge value={v} />);
+      expect(screen.getByText(v).className).toContain('text-status-neutral-fg');
+      unmount();
+    }
   });
 
   it('mapeia "erro_api" para vermelho sólido (distinto do erro comum)', () => {

@@ -167,10 +167,10 @@ export function getEmailColumns(invoiceMap: Record<string, string>): ColumnDef<E
     },
     {
       key: 'keyword_matched',
-      header: 'Keyword',
+      header: 'Tipo documento',
       hideOn: ['sm', 'md'],
       secondLine: true,
-      secondLineLabel: 'Keyword',
+      secondLineLabel: 'Tipo documento',
       render: (r) => createElement(StatusBadge, { value: r.keyword_matched }),
     },
     {
