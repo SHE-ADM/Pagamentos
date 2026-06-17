@@ -733,8 +733,10 @@ e-mails de aviso/confirmação **sem anexo e sem conta no corpo** (gatilho no lu
 `falha`) viram `ignorado`. Termos: palavra inteira `nfe, nf-e, informe, sieg`; frases
 `informativo, confirmado (o) pagamento, confirmação de/do pagamento, pagamento confirmado,
 pagamento processado, aviso de vencimento, título a vencer, lembrete de vencimento, títulos
-próximos do vencimento, comprovante de pix, protesto, protestado, cartório`. **Não** há
-exclusão por boleto/fatura aqui — o
+próximos do vencimento, comprovante de pix, protesto, protestado, cartório, comunicado`.
+Avisos sem termo generalizável (oferta de frete, "nova área do cliente", "taxa de
+agendamento") são marcados por **Message-ID** em `EXPLICIT_IGNORE_IDS`
+(`scripts/reprocess_ignored_emails.py`). **Não** há exclusão por boleto/fatura aqui — o
 gatilho já exige ausência de anexo/conta (sem anexo nem dado no corpo ⇒ é só um aviso); com
 anexo, o PDF vira `pendente` (revisão), nunca `ignorado`. Reprocesso histórico (e Message-IDs
 avulsos marcados à mão, ex.: alerta de protesto SPC/Serasa) via
