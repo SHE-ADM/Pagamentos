@@ -671,6 +671,13 @@ passa por `upload_attachment` dentro de `extract_and_store_accounts`, anexo ou l
   (`JSESSIONID`) — por isso `download_pdf_from_url` usa um `http.cookiejar`/opener
   compartilhado entre a página e o download (`_fetch_url` aceita `opener`). Outros portais
   com link de PDF montado por JS seguem esse padrão (handler dedicado).
+- **Lmed/mdnet (portal ScriptCase) — adiado por CAPTCHA (decisão do usuário, 2026-06-17):**
+  `srv2.mdnet.com.br/lmedseg/vExternoFatura` pede os "primeiros 3 dígitos do CPF/CNPJ"
+  (campo `m_veri`) **e um CAPTCHA com imagem**. O prefixo do CNPJ viria de `company.cnpj`
+  (`company_id=1`, tentar 5 e depois 3 primeiros dígitos), mas o captcha bloqueia o download
+  automático → fatura fica em `falha` p/ download manual. **Regra de prefixo de CNPJ ainda
+  não implementada** — fazer quando houver um portal que peça só o prefixo (sem captcha).
+  Detalhes na memória `link-boleto-pipeline`.
 - **Links suspeitos são ignorados** (`_is_suspicious_link`, regra Locaweb): redirecionadores/
   rastreadores ofuscados — `bing.com/ck/a?…&u=a1<base64>`, Microsoft SafeLinks, Proofpoint
   URL Defense — **nunca** viram candidatos a download (evita baixar malware de phishing).
