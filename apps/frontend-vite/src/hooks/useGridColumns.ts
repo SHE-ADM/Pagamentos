@@ -2,6 +2,15 @@ import { createElement, type ReactNode } from 'react';
 import { CheckCircle2 } from 'lucide-react';
 import type { FinancialAccountControl, EmailControl } from '@sheild/shared';
 import StatusBadge from '../components/StatusBadge';
+import CheckToggle from '../components/atoms/CheckToggle';
+import type { FinancialAccountFlag } from '../services/supabase';
+
+/** Callback acionado ao marcar/desmarcar um checkbox de flag na célula do grid. */
+export type ToggleFlag = (
+  row: FinancialAccountControl,
+  field: FinancialAccountFlag,
+  value: boolean,
+) => void;
 
 // Formatters — cópia das implementações de Consulta.tsx. A consolidação num
 // módulo único (src/lib) é follow-up de quando Consulta.tsx for migrado ao hook.
@@ -53,8 +62,14 @@ export interface ColumnDef<T> {
   className?: string;
 }
 
-/** Definição de todas as colunas do grid de /consulta, na ordem de exibição. */
-export const CONSULTA_COLUMNS: ColumnDef<FinancialAccountControl>[] = [
+/**
+ * Definição de todas as colunas do grid de /consulta, na ordem de exibição.
+ * É uma **factory** (não constante) porque as colunas "Tem NF" e "Tem Boleto"
+ * renderizam um checkbox que escreve no banco — precisam do callback `onToggleFlag`
+ * fornecido pela página (que faz o update otimista + persistência via REST).
+ */
+export function getConsultaColumns(onToggleFlag: ToggleFlag): ColumnDef<FinancialAccountControl>[] {
+  return [
   {
     key: 'invoice_number',
     header: 'Nº Documento',
@@ -129,7 +144,30 @@ export const CONSULTA_COLUMNS: ColumnDef<FinancialAccountControl>[] = [
     hideOn: ['sm', 'md'],
     render: (r) => createElement(StatusBadge, { value: r.extraction_source }),
   },
-];
+  {
+    key: 'has_invoice',
+    header: 'Tem NF',
+    align: 'center',
+    render: (r) =>
+      createElement(CheckToggle, {
+        checked: r.has_invoice,
+        ariaLabel: `Tem NF — ${r.supplier_name ?? 'registro'}`,
+        onToggle: (v: boolean) => onToggleFlag(r, 'has_invoice', v),
+      }),
+  },
+  {
+    key: 'has_bank_slip',
+    header: 'Tem Boleto',
+    align: 'center',
+    render: (r) =>
+      createElement(CheckToggle, {
+        checked: r.has_bank_slip,
+        ariaLabel: `Tem Boleto — ${r.supplier_name ?? 'registro'}`,
+        onToggle: (v: boolean) => onToggleFlag(r, 'has_bank_slip', v),
+      }),
+  },
+  ];
+}
 
 /**
  * Colunas do grid de /emails. É uma **factory** (não constante) porque o "Nº

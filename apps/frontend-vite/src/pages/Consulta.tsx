@@ -1,5 +1,5 @@
 // src/pages/Consulta.tsx
-import { useState, useEffect, useCallback, useRef } from 'react';
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import {
   RefreshCw,
   Download,
@@ -18,6 +18,7 @@ import {
   getFinancialAccountControl,
   getFinancialStats,
   getFinancialAccountTotalValue,
+  setFinancialAccountFlag,
   type FinancialStats,
 } from '../services/supabase';
 import { getErrorMessage } from '../lib/getErrorMessage';
@@ -25,7 +26,7 @@ import Alert from '../components/atoms/Alert';
 import ExpandableText from '../components/ExpandableText';
 import AttachmentViewer from '../components/AttachmentViewer';
 import DataGrid from '../components/organisms/DataGrid';
-import { CONSULTA_COLUMNS } from '../hooks/useGridColumns';
+import { getConsultaColumns, type ToggleFlag } from '../hooks/useGridColumns';
 
 const fmtDate = (d: string | null): string => (d ? new Date(d + 'T00:00:00').toLocaleDateString('pt-BR') : '—');
 const fmtMoney = (v: number | null): string =>
@@ -166,6 +167,18 @@ export default function Consulta() {
       cancelled = true;
     };
   }, [applied]);
+
+  // Marca/desmarca uma flag de curadoria ("Tem NF" / "Tem Boleto") com update
+  // otimista no estado local + persistência via REST; reverte se a gravação falhar.
+  const handleToggleFlag = useCallback<ToggleFlag>((row, field, value) => {
+    setRows((prev) => prev.map((r) => (r.id === row.id ? { ...r, [field]: value } : r)));
+    void setFinancialAccountFlag(row.id, field, value).catch((e: unknown) => {
+      setRows((prev) => prev.map((r) => (r.id === row.id ? { ...r, [field]: !value } : r)));
+      setError(getErrorMessage(e));
+    });
+  }, []);
+
+  const columns = useMemo(() => getConsultaColumns(handleToggleFlag), [handleToggleFlag]);
 
   // Buscar: congela filtro atual em applied e volta para pagina 1.
   // React 18 faz batch dos dois setState — gera um unico load novo.
@@ -400,7 +413,7 @@ export default function Consulta() {
 
         <div className="card mb-2">
           <DataGrid
-            columns={CONSULTA_COLUMNS}
+            columns={columns}
             rows={rows}
             rowKey={(r) => String(r.id)}
             selectedId={sel ? String(sel.id) : null}

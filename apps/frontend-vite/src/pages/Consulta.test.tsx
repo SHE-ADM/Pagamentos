@@ -1,19 +1,42 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
+import type { FinancialAccountControl } from '@sheild/shared';
 
 // Mocka o serviço de dados — o teste cobre o layout/interação, não a rede.
 const getFinancialAccountControl = vi.fn();
 const getFinancialStats = vi.fn();
 const getFinancialAccountTotalValue = vi.fn();
+const setFinancialAccountFlag = vi.fn();
 
 vi.mock('../services/supabase', () => ({
   getFinancialAccountControl: (...args: unknown[]) => getFinancialAccountControl(...args),
   getFinancialStats: (...args: unknown[]) => getFinancialStats(...args),
   getFinancialAccountTotalValue: (...args: unknown[]) => getFinancialAccountTotalValue(...args),
+  setFinancialAccountFlag: (...args: unknown[]) => setFinancialAccountFlag(...args),
 }));
 
 import Consulta from './Consulta';
+
+// Linha mínima para os testes de grid — só os campos lidos pelas colunas.
+const makeRow = (over: Partial<FinancialAccountControl> = {}): FinancialAccountControl =>
+  ({
+    id: 1,
+    supplier_name: 'ACME LTDA',
+    invoice_number: '12345',
+    issue_date: '2026-06-01',
+    due_date: '2026-06-10',
+    amount: 100,
+    supplier_cnpj: null,
+    supplier_cpf: null,
+    document_type: 'boleto',
+    payment_method: 'boleto',
+    due_status: 'a vencer',
+    extraction_source: 'pdf_text',
+    has_invoice: false,
+    has_bank_slip: false,
+    ...over,
+  }) as FinancialAccountControl;
 
 describe('Consulta', () => {
   beforeEach(() => {
@@ -26,6 +49,21 @@ describe('Consulta', () => {
       vencidas: 0,
     });
     getFinancialAccountTotalValue.mockResolvedValue(0);
+    setFinancialAccountFlag.mockReset().mockResolvedValue(undefined);
+  });
+
+  it('marca a flag "Tem NF" e persiste via setFinancialAccountFlag', async () => {
+    const user = userEvent.setup();
+    getFinancialAccountControl.mockResolvedValue({ data: [makeRow()], total: 1 });
+    render(<Consulta />);
+
+    const box = await screen.findByRole('checkbox', { name: /Tem NF/ });
+    expect(box).not.toBeChecked();
+
+    await user.click(box);
+
+    expect(setFinancialAccountFlag).toHaveBeenCalledWith(1, 'has_invoice', true);
+    await waitFor(() => expect(box).toBeChecked());
   });
 
   it('renderiza cabeçalho, cards de métricas e estado vazio', async () => {

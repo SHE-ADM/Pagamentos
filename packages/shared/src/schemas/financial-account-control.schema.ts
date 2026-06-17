@@ -140,6 +140,11 @@ export const financialAccountControlSchema = z.object({
   status: accountStatusSchema.default('pendente'),
   due_status: dueStatusSchema.nullable(),
 
+  // Flags de curadoria manual (checkbox em /consulta — migration 033).
+  // NOT NULL DEFAULT FALSE no banco; editados pelo usuário, não pelo pipeline.
+  has_invoice: z.boolean().default(false),
+  has_bank_slip: z.boolean().default(false),
+
   // Pagador (sacado)
   company_id: z.number().int().nullable(),
   payer_cnpj: z.string().nullable(),
