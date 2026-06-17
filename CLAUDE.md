@@ -704,8 +704,12 @@ sempre, p/ honorários). **Valida fornecedor+valor**: sem valor → não grava c
 Boleto Fatura"): quando o anexo não vem e o link é portal HTML sem PDF, `get_body_text()`
 volta vazio. `process_message` então usa `_html_to_text(get_body_html(msg))` (remove tags,
 desescapa, colapsa espaços) para alimentar a extração — recupera "Fatura nº: 3918439"
-(→ `invoice_number`) e "Valor da fatura R$ 1.530,47" (→ `amount`). Prioridade segue
-**anexo → link → corpo**. Testes: `tests/test_body_html_extraction.py`.
+(→ `invoice_number`), "Valor da fatura R$ 1.530,47" (→ `amount`) e classifica
+`document_type='fatura'` (keyword `fatura` em `_BODY_DOC_KEYWORDS`, fallback antes de
+`outro`). Prioridade segue **anexo → link → corpo**. O status da conta do corpo é **sempre
+`pendente`** — a baixa/atualização é feita pelo usuário, mesmo quando o corpo diz "pagamento
+realizado com sucesso". Dedup do corpo (`financial_duplicate_exists`) evita duplicar conta já
+registrada. Testes: `tests/test_body_html_extraction.py`.
 
 **Fallbacks de campo (corpo E PDF — `build_financial_payload`):** `issue_date` vazio →
 data do e-mail (`received_at`); `due_date` vazio → `issue_date` → hoje; `invoice_number`
