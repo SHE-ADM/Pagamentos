@@ -558,8 +558,19 @@ Três proteções aprendidas "na dor" — manter:
   **derrubava a extração em massa** mesmo com o PDF extraído. `subprocess.run` usa
   `encoding='utf-8', errors='replace'` (parent) + `env PYTHONUTF8=1/PYTHONIOENCODING=utf-8`
   (filho). **Não remover.**
+- **FETCH RFC822 robusto** (`_rfc822_from_fetch`): o `imaplib` pode **intercalar** respostas
+  (um `FLAGS`/`UID` isolado como item `bytes`) no retorno do `fetch`. Aí `data[0]` não é a
+  tupla `(meta, raw)` e `data[0][1]` indexa um `bytes`, devolvendo um **int** — e
+  `email.message_from_bytes(int)` quebra com `'int' object has no attribute 'decode'`
+  (crash intermitente). `process_message` usa `_rfc822_from_fetch(data)`, que varre `data`
+  e pega a primeira tupla cujo 2º elemento sejam bytes. **Nunca** voltar a `data[0][1]` direto.
+- **Reprocesso sem perda de dado** (`scripts/reprocess_ignored_emails.py`): a Fase A **não
+  apaga** a linha de `email_control` antes de reprocessar — roda `process_message` (que
+  re-registra com `ignore-duplicates` e cria a conta) e só então faz `PATCH` do status. Apagar
+  antes arriscava perder o e-mail se a extração falhasse.
 
-Testes: `tests/test_run_extraction.py`, `tests/test_imap_timeout.py`, `tests/test_status_for_result.py`.
+Testes: `tests/test_run_extraction.py`, `tests/test_imap_timeout.py`, `tests/test_status_for_result.py`,
+`tests/test_rfc822_fetch.py`.
 
 ### Deduplicação por `message_id`
 
