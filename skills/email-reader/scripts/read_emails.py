@@ -858,15 +858,19 @@ def _to_decimal(value, default):
 # proprio corpo da mensagem (geralmente PIX), sem PDF anexado. O schema ja
 # reserva extraction_source='email_body' para esse caso (migration 001).
 #
-# Termos podem aparecer em qualquer caixa/acentuacao ("Pix"/"PIX"/"pix",
-# "Responsável"/"responsavel") — os regex abaixo sao case-insensitive e
-# cobrem a unica variacao de acento relevante ("respons[aá]vel").
-# Rotulos de fornecedor (fornecedor/favorecido/...) vem antes dos genericos
-# (nome/responsavel) para terem prioridade. Separador ":"/"-" e OBRIGATORIO,
-# para nao casar frases que apenas comecam por "Empresa..." etc.
+# Rotulo de fornecedor no inicio de uma linha do corpo. Inclui os termos pedidos
+# pelo usuario (fornecedor/responsavel/prestador/nome) + variantes ja usadas.
+# O separador ":"/"-" e OPCIONAL (pode vir so um espaco, ex.: "Nome MATEUS ...").
+# Para NAO capturar continuacoes de frase ("Responsável pela compra", "Empresa de
+# transporte"), o valor deve comecar por LETRA MAIUSCULA ou digito (nome proprio):
+# o char class `[A-ZÀ-Þ0-9]` e case-SENSITIVE (so o rotulo e case-insensitive via
+# `(?i:...)`); `\b` evita casar o rotulo como prefixo ("Nomeação").
 _BODY_NAME_RE    = re.compile(
-    r"(?im)^[ \t]*(?:fornecedor|favorecido|benefici[aá]rio|cedente|"
-    r"raz[aã]o\s+social|empresa|nome|respons[aá]vel)[ \t]*[:\-][ \t]*(.+?)[ \t]*$"
+    r"^[ \t]*"
+    r"(?i:fornecedor|favorecido|benefici[aá]rio|cedente|raz[aã]o\s+social|"
+    r"empresa|nome|respons[aá]vel|prestador)"
+    r"\b[ \t]*[:\-]?[ \t]*([A-ZÀ-Þ0-9][^\r\n]*?)[ \t\r]*$",
+    re.MULTILINE,
 )
 # Valor monetario. Tolera separadores entre "R$" e o numero ("R$:", "R$ -")
 # porque varios e-mails internos escrevem "R$:  297,08".
@@ -875,6 +879,14 @@ _BODY_AMOUNT_RE  = re.compile(r"R\$\s*[:\-]?\s*([\d.,]+)")
 # lista parcelas somadas/subtraidas, o total e o valor a pagar (nao a 1a parcela).
 _BODY_TOTAL_RE   = re.compile(
     r"(?i)(?:valor\s+)?total\s*[:\-]?\s*R\$\s*[:\-]?\s*([\d.,]+)")
+# Valor ROTULADO sem "R$" (ex.: "Valor 50,00", "Valor: 1.250,00", "Total 304,04").
+# So usado como FALLBACK quando nao ha nenhum valor com "R$". Exige o rotulo
+# (valor/total) E o formato monetario BR com EXATAMENTE 2 casas decimais — assim
+# nao captura numeros soltos (quantidades, "NF 1087", datas). group(1)=rotulo,
+# group(2)=numero. "Total"/"Valor Total" tem precedencia sobre "Valor" simples.
+_BODY_LABELED_AMT_RE = re.compile(
+    r"(?i)\b(valor\s+total|total|valor)\b\s*[:\-]?\s*"
+    r"(\d{1,3}(?:\.\d{3})*,\d{2}|\d+,\d{2})(?!\d)")
 _BODY_PIX_RE     = re.compile(r"\bpix\b", re.IGNORECASE)
 _BODY_DUE_RE     = re.compile(r"(?i)venc(?:imento|to)?\D{0,15}?(\d{2}/\d{2}/\d{2,4})")
 _BODY_ISSUE_RE   = re.compile(r"(?i)emiss[aã]o\D{0,10}?(\d{2}/\d{2}/\d{2,4})")
@@ -1030,7 +1042,8 @@ def _extract_body_amount(body_text: str) -> "float | None":
          valor a pagar. Ex.: "Valor: R$ 297,08 + R$ 6,96 / Total: R$ 304,04".
       2. Sem rotulo de total e com varios valores → soma as parcelas (fallback).
       3. Um unico valor → o proprio valor.
-      4. Nenhum valor → None.
+      4. Sem "R$": valor ROTULADO ("Valor 50,00"/"Total 304,04") — precedencia ao total.
+      5. Nenhum valor → None.
     """
     total_match = _BODY_TOTAL_RE.search(body_text)
     if total_match:
@@ -1038,11 +1051,17 @@ def _extract_body_amount(body_text: str) -> "float | None":
 
     valores = [v for v in (_brl_to_decimal(m) for m in _BODY_AMOUNT_RE.findall(body_text))
                if v is not None]
-    if not valores:
-        return None
     if len(valores) == 1:
         return valores[0]
-    return round(sum(valores), 2)
+    if valores:
+        return round(sum(valores), 2)
+
+    # Fallback sem "R$": numero rotulado por "Valor"/"Total" (precedencia ao total).
+    rotulados = _BODY_LABELED_AMT_RE.findall(body_text)  # [(rotulo, numero), ...]
+    if rotulados:
+        totais = [num for (lbl, num) in rotulados if "total" in lbl.lower()]
+        return _brl_to_decimal(totais[0] if totais else rotulados[0][1])
+    return None
 
 
 def _br_date_to_iso(raw: str | None) -> str | None:

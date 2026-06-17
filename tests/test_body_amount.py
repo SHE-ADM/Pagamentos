@@ -54,6 +54,42 @@ class ExtractBodyAmountTest(unittest.TestCase):
         self.assertIsNone(read_emails._extract_body_amount("sem valor algum aqui"))
 
 
+class LabeledAmountWithoutRSTest(unittest.TestCase):
+    """Fallback: valor ROTULADO sem 'R$' (ex.: 'Valor 50,00')."""
+
+    def test_valor_sem_rs(self):
+        self.assertEqual(read_emails._extract_body_amount("Nome X\r\nValor 50,00"), 50.00)
+
+    def test_valor_com_dois_pontos_sem_rs(self):
+        self.assertEqual(read_emails._extract_body_amount("Valor: 50,00"), 50.00)
+
+    def test_valor_com_milhar_sem_rs(self):
+        self.assertEqual(read_emails._extract_body_amount("Valor 1.250,00"), 1250.00)
+
+    def test_total_sem_rs(self):
+        self.assertEqual(read_emails._extract_body_amount("Total 304,04"), 304.04)
+
+    def test_total_tem_precedencia_sobre_valor_sem_rs(self):
+        # Sem R$: o "Total" é o valor a pagar, não a 1ª parcela "Valor".
+        self.assertEqual(
+            read_emails._extract_body_amount("Valor 100,00\nValor 50,00\nTotal 150,00"), 150.00)
+
+    def test_rs_tem_precedencia_sobre_rotulado_sem_rs(self):
+        # Havendo "R$", ele vence (o fallback sem R$ nem é alcançado).
+        self.assertEqual(read_emails._extract_body_amount("Valor 50,00\nPague R$ 80,00"), 80.00)
+
+    # --- Guardas (não pode capturar número solto / sem centavos / sem rótulo) ---
+    def test_sem_centavos_nao_captura(self):
+        self.assertIsNone(read_emails._extract_body_amount("Valor 50"))
+
+    def test_numero_sem_rotulo_nao_captura(self):
+        self.assertIsNone(read_emails._extract_body_amount("foram 50,00 reais no caixa"))
+
+    def test_nf_com_rotulo_diferente_nao_vira_valor(self):
+        # "NF 1087" não é valor (sem rótulo valor/total e sem centavos).
+        self.assertIsNone(read_emails._extract_body_amount("NF 1087 referente ao mês"))
+
+
 class ExtractFromEmailBodyAmountTest(unittest.TestCase):
     def test_corpo_do_almoco_extrai_total(self):
         payload = read_emails.extract_from_email_body(
@@ -61,6 +97,17 @@ class ExtractFromEmailBodyAmountTest(unittest.TestCase):
             message_id="<almoco-test>", sender_email="nadim@otimotex.com.br")
         self.assertIsNotNone(payload)
         self.assertEqual(payload["amount"], 304.04)
+
+    def test_corpo_zona_azul_sem_rs_extrai_nome_valor_pix(self):
+        # Caso real (id 224): "Nome MATEUS... / Valor 50,00 / chave pix ...".
+        body = "Nome MATEUS JAE WON AHN \r\n\r\nValor 50,00 \r\n\r\nchave pix 123456789"
+        payload = read_emails.extract_from_email_body(
+            body, received_at="2026-06-17T00:00:00+00:00",
+            message_id="<zona-sem-rs>", sender_email="financeiro@otimotex.com.br")
+        self.assertIsNotNone(payload)
+        self.assertEqual(payload["supplier_name"], "MATEUS JAE WON AHN")
+        self.assertEqual(payload["amount"], 50.00)
+        self.assertEqual(payload["payment_method"], "pix")
 
 
 if __name__ == "__main__":
