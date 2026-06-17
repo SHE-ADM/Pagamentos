@@ -90,9 +90,13 @@ Estas regras se aplicam a **todo** código novo ou alterado neste projeto, sem e
   scripts de reprocessamento. Não é incluída no `npm test`.
 - Referência de granularidade: `frontend-vite/src/components/StatusBadge.test.tsx`,
   `ExpandableText.test.tsx`, `organisms/LoginForm.test.tsx`.
-- **Follow-up:** `apps/portal-next` ainda sem testes — bloqueado pelo conflito de duas
-  versões do React no monorepo (18 em frontend-vite hoisted vs 19 nos apps Next).
-  Resolver alinhando versões ou com setup de teste dedicado.
+- **`apps/portal-next`**: testado via **server rendering** (`react-dom/server`
+  `renderToStaticMarkup`) em vez de jsdom + `@testing-library/react` — isso **contorna o
+  conflito de duas versões do React** no monorepo (18 hoisted do frontend-vite vs 19 local
+  dos apps Next): renderizar um componente sem hooks no servidor não dispara "invalid hook
+  call". `vitest.config.ts` usa `resolve.dedupe: ['react','react-dom']`. Componentes com
+  estado/hooks ainda exigiriam alinhar as versões — usar server rendering enquanto o portal
+  for de páginas simples (ex.: `app/page.test.tsx`).
 
 ### 3 — REST no backend
 
@@ -115,6 +119,15 @@ Regras comuns a toda rota nova:
 Rotas novas de CRUD/dados vão na **Next API** (envelope `{ success, ... }`, Repository →
 Service → Route, conforme `monorepo-crud-spec.md`). A exceção aceita: `POST /api/emails/read`
 usa POST + corpo de parâmetros porque é uma **ação de disparo**, não um recurso CRUD.
+
+**Auth das rotas Next (`apps/api-backend/middleware.ts` + `lib/auth.ts`):** o middleware
+protege `/api/*` (matcher `/api/((?!health).*)` — `/api/health` fica público) exigindo
+`Authorization: Bearer <token>`. O token é validado contra o Supabase Auth (`auth.getUser`)
+com a **chave anon** (`SUPABASE_ANON_KEY`, nunca a service_role); sem token/ inválido →
+`401`, falha de validação → `500` (envelope `fail`). A lógica fica em `lib/auth.ts`
+(`requireAuth`/`getBearerToken`, testável). Isso **não** intercepta o caminho atual do
+frontend (leitura de e-mails fala com o Flask direto); cobre a API de dados Next p/ a fase
+do portal.
 
 ### 4 — Conventional Commits (todo o projeto)
 
@@ -554,6 +567,12 @@ Proteções aprendidas "na dor" — manter:
   120s): sem timeout de socket, um `fetch` que estanca (mensagem grande, hiccup do servidor)
   **congela o run síncrono para sempre**. Com timeout, levanta `socket.timeout`, o e-mail é
   pulado/erra e o run segue. **Nunca** criar `IMAP4_SSL` sem `timeout`.
+- **IMAP com retry/backoff** (`_connect_and_search`, `IMAP_MAX_ATTEMPTS` default 3,
+  `IMAP_RETRY_BACKOFF` default 5s): connect + select + search são uma **unidade resiliente** —
+  uma falha transitória (timeout de socket, `imaplib.IMAP4.abort`) refaz a sequência (nova
+  conexão) com espera crescente. Erro de protocolo/login (`imaplib.IMAP4.error` puro) **não**
+  repete (retry ali é inútil). Esgotadas as tentativas, levanta `RuntimeError` → o caller HTTP
+  devolve `502`. `run_reader` monta o `criteria` **antes** de chamar `_connect_and_search`.
 - **Claude API com timeout** (`extract_pdf.py`, `CLAUDE_API_TIMEOUT_SECONDS`, env
   `CLAUDE_API_TIMEOUT` default 90s): mesma classe de falha do IMAP. Sem `timeout` explícito o
   SDK Anthropic usa ~10 min/request; num run síncrono que processa muitos PDFs, **um request
@@ -582,8 +601,9 @@ Proteções aprendidas "na dor" — manter:
   re-registra com `ignore-duplicates` e cria a conta) e só então faz `PATCH` do status. Apagar
   antes arriscava perder o e-mail se a extração falhasse.
 
-Testes: `tests/test_run_extraction.py`, `tests/test_imap_timeout.py`, `tests/test_status_for_result.py`,
-`tests/test_rfc822_fetch.py`, `tests/test_extract_pdf_timeout.py`.
+Testes: `tests/test_run_extraction.py`, `tests/test_imap_timeout.py`, `tests/test_imap_retry.py`,
+`tests/test_status_for_result.py`, `tests/test_rfc822_fetch.py`, `tests/test_extract_pdf_timeout.py`,
+`tests/test_pdf_amount_validation.py`.
 
 ### Deduplicação por `message_id`
 
@@ -718,7 +738,10 @@ captura) — ex.: honorários "pix p/ Wesley" + "Prof. Wesley S. Paixão". Depoi
 por remetente** (`_supplier_from_sender`/`_SENDER_SUPPLIER_MAP`: `correios.com.br` → `Correios`)
 e só então cai para `sender_email`. `amount` via `R$ ([\d.,]+)`; `payment_method='pix'` se o termo aparecer (ou
 sempre, p/ honorários). **Valida fornecedor+valor**: sem valor → não grava conta (vira
-`falha`). `email_body_excerpt` (migration 016) guarda o corpo completo.
+`falha`). `email_body_excerpt` (migration 016) guarda o corpo completo. O **barcode do corpo**
+é normalizado por `_normalize_body_barcode`, que reusa `extract_pdf.normalize_barcode` (import
+lazy) — mesma regra canônica do caminho de PDF (44/48 dígitos mantidos, 47 → 44, outros →
+None), em vez de um `re.sub` solto que aceitava qualquer sequência de 44-48 (F2).
 
 **Corpo SÓ-HTML** (ex.: Correios — `noreply_componentes@correios.com.br`, assunto "Pagamento
 Boleto Fatura"): quando o anexo não vem e o link é portal HTML sem PDF, `get_body_text()`
@@ -859,6 +882,12 @@ banco — ao alterar um CHECK, **atualizar o enum correspondente**. `due_status`
 O frontend consome os schemas de dados (`FinancialAccountControl`, `EmailControl`,
 `ProcessingError`) **apenas como `import type`** (sem `.parse()` em runtime — `services/supabase.ts`
 faz cast); só os schemas de **auth** rodam em runtime via `zodResolver`.
+
+**Schema base vs. criação manual:** `amount` é `nullable` no schema base (o pipeline pode
+gravar sem valor → vira erro `sem_valor`, não cria conta). A criação manual via API usa
+`financialAccountControlCreateSchema` (`= ...InputSchema.extend({ amount: money.positive() })`),
+que **exige valor > 0** — para o futuro `POST /api/contas`. Não relaxar o `.positive()` nesse
+schema: lançar conta a pagar de R$ 0 não é válido.
 
 RLS habilitado em todas as tabelas. Policies de leitura são `TO authenticated`
 (migrations 015/018/019); escrita em `financial_account_control` é `TO service_role`

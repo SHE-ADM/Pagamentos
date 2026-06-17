@@ -8,7 +8,9 @@
     "start": "next start -p 3002",
     "lint": "eslint",
     "typecheck": "tsc --noEmit",
-    "prune": "ts-prune --ignore \"next.config|\\.next|app.*(page|layout|route)\""
+    "prune": "ts-prune --ignore \"next.config|vitest.config|\\.next|app.*(page|layout|route)\"",
+    "test": "vitest run",
+    "test:watch": "vitest"
   },
   "dependencies": {
     "@sheild/shared": "*",
@@ -24,6 +26,7 @@
     "eslint": "^9",
     "eslint-config-next": "16.2.7",
     "tailwindcss": "^4",
-    "typescript": "^5"
+    "typescript": "^5",
+    "vitest": "^2.1.1"
   }
 }

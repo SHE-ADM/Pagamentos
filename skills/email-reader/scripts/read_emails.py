@@ -6,7 +6,7 @@ Deduplicação: tabela email_control no Supabase (message_id UNIQUE).
 Nunca reprocessa um e-mail já registrado, independente de onde o script rodar.
 """
 
-import os, sys, re, time, imaplib, email, argparse, logging, subprocess, csv, json, tempfile, faulthandler, unicodedata
+import os, sys, re, time, socket, imaplib, email, argparse, logging, subprocess, csv, json, tempfile, faulthandler, unicodedata
 import urllib.request, urllib.error, http.cookiejar
 from html import unescape as html_unescape
 from email.header import decode_header
@@ -62,6 +62,25 @@ PDF_INBOX      = BASE_DIR / "data" / "pdfs_inbox"
 CSV_OUTPUT     = BASE_DIR / "data" / "csv_output"
 EXTRACT_SCRIPT = BASE_DIR / "skills" / "pdf-contas-pagar" / "scripts" / "extract_pdf.py"
 EMAILS_LOG     = CSV_OUTPUT / "emails_log.csv"
+
+
+def _normalize_body_barcode(raw: str | None) -> str | None:
+    """Normaliza o barcode extraido do CORPO reusando a funcao canonica do
+    extract_pdf — mesma validacao do caminho de PDF (44/48 mantidos, 47 -> 44,
+    outros comprimentos -> None). Antes o corpo usava um re.sub solto que aceitava
+    qualquer sequencia de 44-48 digitos (ex.: 45/46), podendo gravar barcode
+    invalido. Import e lazy para nao carregar pdfplumber/pandas no import do
+    read_emails; em qualquer falha de import cai num fallback defensivo."""
+    if not raw:
+        return None
+    try:
+        if str(EXTRACT_SCRIPT.parent) not in sys.path:
+            sys.path.insert(0, str(EXTRACT_SCRIPT.parent))
+        from extract_pdf import normalize_barcode
+        return normalize_barcode(raw)
+    except Exception:
+        digits = re.sub(r"\D", "", raw)
+        return digits if 44 <= len(digits) <= 48 else None
 
 PDF_INBOX.mkdir(parents=True, exist_ok=True)
 CSV_OUTPUT.mkdir(parents=True, exist_ok=True)
@@ -1050,11 +1069,10 @@ def extract_from_email_body(body_text: str, received_at: str, message_id: str,
     if supplier_cpf and len(supplier_cpf) != 11:
         supplier_cpf = None
 
-    # Barcode: linha digitavel / codigo de barras (44-48 digitos apos limpeza).
+    # Barcode: linha digitavel / codigo de barras. Normalizacao canonica (mesma
+    # do caminho de PDF): 44/48 digitos mantidos, 47 -> 44, outros -> None.
     barcode_match = _BODY_BARCODE_RE.search(body_text)
-    barcode       = re.sub(r"\D", "", barcode_match.group(1)) if barcode_match else None
-    if barcode and not (44 <= len(barcode) <= 48):
-        barcode = None
+    barcode       = _normalize_body_barcode(barcode_match.group(1)) if barcode_match else None
 
     amount         = _extract_body_amount(body_text)
 
@@ -1903,6 +1921,17 @@ def process_message(mail, uid: bytes, keywords: list,
 # levanta socket.timeout, o e-mail é pulado/erra e o run segue em vez de congelar.
 IMAP_TIMEOUT_SECONDS = int(os.getenv("IMAP_TIMEOUT", "120"))
 
+# Retry/backoff para falhas TRANSITÓRIAS do IMAP (timeout de socket, conexão
+# derrubada). Sem isso, um hiccup de rede no connect/select/search derrubava o
+# run inteiro; com retry, a sequência é refeita com espera crescente.
+IMAP_MAX_ATTEMPTS  = int(os.getenv("IMAP_MAX_ATTEMPTS", "3"))
+IMAP_RETRY_BACKOFF = float(os.getenv("IMAP_RETRY_BACKOFF", "5"))
+
+# Falhas transitórias: socket.timeout é subclasse de OSError/TimeoutError;
+# imaplib.IMAP4.abort sinaliza conexão abortada pelo servidor. NÃO inclui
+# imaplib.IMAP4.error puro (login/mailbox inválidos) — retry ali é inútil.
+_IMAP_TRANSIENT = (socket.timeout, OSError, imaplib.IMAP4.abort)
+
 
 def _connect_imap() -> imaplib.IMAP4_SSL:
     """Conecta/autentica no IMAP com timeout de socket e seleciona a caixa."""
@@ -1914,6 +1943,57 @@ def _connect_imap() -> imaplib.IMAP4_SSL:
     mail.login(os.getenv("IMAP_USER"), os.getenv("IMAP_PASS"))
     mail.select(os.getenv("IMAP_MAILBOX", "INBOX"))
     return mail
+
+
+def _safe_logout(mail) -> None:
+    """Fecha a conexão IMAP ignorando erros (usado entre tentativas de retry)."""
+    if mail is None:
+        return
+    try:
+        mail.logout()
+    except Exception:
+        pass
+
+
+def _connect_and_search(criteria: str):
+    """Conecta no IMAP e roda o `search`, com retry/backoff em falha transitória.
+
+    Cobre connect + select + search numa única unidade resiliente: um timeout ou
+    queda em qualquer dessas etapas refaz a sequência (nova conexão) até
+    IMAP_MAX_ATTEMPTS, com espera de IMAP_RETRY_BACKOFF * tentativa. Erro de
+    protocolo/login (imaplib.IMAP4.error) NÃO é repetido. Retorna (mail, uids);
+    levanta RuntimeError ao esgotar (o chamador HTTP devolve 502)."""
+    last_err = None
+    for attempt in range(1, IMAP_MAX_ATTEMPTS + 1):
+        mail = None
+        try:
+            mail = _connect_imap()
+            _, uids_data = mail.uid("search", None, criteria)
+            uids = uids_data[0].split() if uids_data and uids_data[0] else []
+            log.info(f"IMAP conectado (tentativa {attempt}/{IMAP_MAX_ATTEMPTS})")
+            return mail, uids
+        except _IMAP_TRANSIENT as ex:
+            # Transitório (timeout/queda/abort) — refaz a sequência abaixo.
+            # _IMAP_TRANSIENT inclui IMAP4.abort, por isso vem ANTES de IMAP4.error.
+            last_err = ex
+        except imaplib.IMAP4.error as ex:
+            # Protocolo/login (credenciais, mailbox inválida): retry é inútil.
+            _safe_logout(mail)
+            raise RuntimeError(f"Falha na conexão IMAP: {ex}") from ex
+
+        _safe_logout(mail)
+        if attempt < IMAP_MAX_ATTEMPTS:
+            wait = IMAP_RETRY_BACKOFF * attempt
+            log.warning(
+                f"  IMAP transitório (tentativa {attempt}/{IMAP_MAX_ATTEMPTS}): "
+                f"{last_err} — novo try em {wait:.0f}s"
+            )
+            time.sleep(wait)
+
+    log.error(f"Falha IMAP após {IMAP_MAX_ATTEMPTS} tentativas: {last_err}")
+    raise RuntimeError(
+        f"Falha na conexão IMAP após {IMAP_MAX_ATTEMPTS} tentativas: {last_err}"
+    ) from last_err
 
 
 def run_reader(days: int = 0, all_: bool = False,
@@ -1946,14 +2026,7 @@ def run_reader(days: int = 0, all_: bool = False,
     log.info(f"  Modo     : {'dry-run' if dry_run else 'processamento completo'}")
     log.info("=" * 58)
 
-    try:
-        mail = _connect_imap()
-        log.info("IMAP conectado")
-    except Exception as e:
-        log.error(f"Falha IMAP: {e}")
-        raise RuntimeError(f"Falha na conexão IMAP: {e}") from e
-
-    # Critério de busca
+    # Critério de busca (montado antes de conectar p/ o retry cobrir o search).
     if all_:
         criteria = "ALL"
     elif days > 0:
@@ -1962,8 +2035,8 @@ def run_reader(days: int = 0, all_: bool = False,
     else:
         criteria = "UNSEEN"
 
-    _, uids_data = mail.uid("search", None, criteria)
-    uids = uids_data[0].split() if uids_data[0] else []
+    # connect + select + search com retry/backoff em falha transitória.
+    mail, uids = _connect_and_search(criteria)
     log.info(f"E-mails no servidor ({criteria}): {len(uids)}")
 
     processed = skipped_kw = skipped_dup = 0

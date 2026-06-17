@@ -151,7 +151,10 @@ class ExtractFromEmailBodyTest(unittest.TestCase):
             "boleto@smartwebservices.com.br",
         )
         self.assertIsNotNone(payload)
-        self.assertEqual(payload["barcode"], "07790001161205794159807275845787314770000469086")
+        # F2: o corpo agora usa a normalização canônica (extract_pdf.normalize_barcode),
+        # igual ao caminho de PDF — a linha digitável de 47 dígitos é convertida para
+        # o código de barras de 44 (reordenação FEBRABAN), em vez dos dígitos crus.
+        self.assertEqual(payload["barcode"], "07793147700004690860001112057941590727584578")
 
     def test_comprovante_recebido_retorna_none(self):
         """Comprovante de pix recebido (sem pedido de pagamento) nao e conta a pagar."""
