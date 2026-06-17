@@ -80,7 +80,10 @@ Estas regras se aplicam a **todo** código novo ou alterado neste projeto, sem e
   cobrindo renderização e a interação principal (ex.: submit, expand/collapse, validação).
 - **Suíte configurada (Vitest):** `apps/frontend-vite` (jsdom + Testing Library) e
   `apps/api-backend` (env node). Rode `npm test` na raiz (roda todos os workspaces) ou
-  `npm run test --workspace=apps/<app>`.
+  `npm run test --workspace=apps/<app>`. No `api-backend`, o `vitest.config.ts` resolve o
+  alias `@` (espelhando `@/*`→`./*` do tsconfig) e coleta testes em `lib/**` **e** `app/**`
+  (`*.test.ts`) — rotas têm teste co-locado (ex.: `app/api/emails/read/route.test.ts`
+  cobre 422/200/502 mockando `triggerReader`).
 - **Suíte Python (pytest):** `py -3 -m pytest tests/` (ex.: `test_link_extraction.py`,
   `test_email_body_extraction.py`, `test_body_amount.py`, `test_extract_pdf.py`). Cobre o
   pipeline de extração; rodar após mexer em `read_emails.py`/`extract_pdf.py` ou nos
@@ -340,9 +343,13 @@ py -3 skills\pdf-contas-pagar\scripts\extract_pdf.py --input data\pdfs_inbox\ --
 Dependências:
 
 ```powershell
-pip install pdfplumber pypdf anthropic pandas python-dotenv Pillow flask
-npm install   # na raiz do monorepo — instala todos os workspaces
+pip install -r server/requirements.txt   # deps Python do pipeline, pinadas com ~=
+npm install                              # na raiz do monorepo — instala todos os workspaces
 ```
+
+`server/requirements.txt` é a fonte de verdade das dependências Python (flask, python-dotenv,
+pdfplumber, pypdf, Pillow, anthropic, pandas), com versões fixadas em `~=` para dev/prod não
+divergirem — não rodar `pip install` solto sem atualizar o arquivo.
 
 ## Frontend — componentes e design system
 
@@ -541,12 +548,18 @@ chamam `run_reader()`. Edite só ali — nunca duplique lógica no Flask.
 
 ### Robustez da leitura e da extração (não regredir)
 
-Três proteções aprendidas "na dor" — manter:
+Proteções aprendidas "na dor" — manter:
 
 - **IMAP com timeout** (`_connect_imap`, `IMAP_TIMEOUT_SECONDS`, env `IMAP_TIMEOUT` default
   120s): sem timeout de socket, um `fetch` que estanca (mensagem grande, hiccup do servidor)
   **congela o run síncrono para sempre**. Com timeout, levanta `socket.timeout`, o e-mail é
   pulado/erra e o run segue. **Nunca** criar `IMAP4_SSL` sem `timeout`.
+- **Claude API com timeout** (`extract_pdf.py`, `CLAUDE_API_TIMEOUT_SECONDS`, env
+  `CLAUDE_API_TIMEOUT` default 90s): mesma classe de falha do IMAP. Sem `timeout` explícito o
+  SDK Anthropic usa ~10 min/request; num run síncrono que processa muitos PDFs, **um request
+  travado congela o pipeline inteiro**. As 3 instâncias `anthropic.Anthropic(...)`
+  (`_try_barcode_vision`, `extract_with_vision`, `extract_fields_with_claude`) **sempre** passam
+  `timeout=CLAUDE_API_TIMEOUT_SECONDS`. **Nunca** criar o client sem `timeout`.
 - **`run_extraction` resiliente**: retorna `(csv_path, motivo)`. `_run_extraction_once`
   classifica a falha — **transitória** (rc≠0, timeout, exceção de subprocesso → repete com
   backoff; `EXTRACTION_MAX_ATTEMPTS=3`/`EXTRACTION_RETRY_BACKOFF`) vs **definitiva** (rc=0 sem
@@ -570,7 +583,7 @@ Três proteções aprendidas "na dor" — manter:
   antes arriscava perder o e-mail se a extração falhasse.
 
 Testes: `tests/test_run_extraction.py`, `tests/test_imap_timeout.py`, `tests/test_status_for_result.py`,
-`tests/test_rfc822_fetch.py`.
+`tests/test_rfc822_fetch.py`, `tests/test_extract_pdf_timeout.py`.
 
 ### Deduplicação por `message_id`
 
