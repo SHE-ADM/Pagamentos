@@ -1674,6 +1674,22 @@ def status_for_result(has_attachment: bool, csv_generated: bool,
     return "falha"
 
 
+def _rfc822_from_fetch(data: list) -> "tuple[bytes | None, bytes]":
+    """Extrai (meta, raw) do retorno de um FETCH '(INTERNALDATE RFC822)'.
+
+    O imaplib pode INTERCALAR respostas (ex.: um FLAGS/UID isolado como item
+    `bytes`) no meio do resultado. Quando o primeiro item nao e a tupla
+    (meta, raw), `data[0][1]` indexa um `bytes` e devolve um INT — e
+    `email.message_from_bytes(int)` chama `.decode()` internamente, quebrando com
+    "'int' object has no attribute 'decode'". Por isso pegamos o primeiro item
+    que seja uma tupla cujo segundo elemento sejam bytes (o conteudo RFC822)."""
+    for item in data or []:
+        if (isinstance(item, tuple) and len(item) >= 2
+                and isinstance(item[1], (bytes, bytearray))):
+            return item[0], bytes(item[1])
+    raise ValueError("FETCH nao retornou conteudo RFC822")
+
+
 def process_message(mail, uid: bytes, keywords: list,
                     dry_run: bool, mark_seen: bool,
                     ctrl: SupabaseControl) -> dict | None:
@@ -1683,10 +1699,11 @@ def process_message(mail, uid: bytes, keywords: list,
 
     try:
         _, data = mail.uid("fetch", uid, "(INTERNALDATE RFC822)")
-        raw = data[0][1]
+        meta, raw = _rfc822_from_fetch(data)
         msg = email.message_from_bytes(raw)
 
-        message_id   = msg.get("Message-ID", f"no-id-{uid.decode()}").strip()
+        uid_str      = uid.decode() if isinstance(uid, (bytes, bytearray)) else str(uid)
+        message_id   = msg.get("Message-ID", f"no-id-{uid_str}").strip()
         subject      = decode_str(msg.get("Subject", "(sem assunto)"))
         from_raw     = msg.get("From", "")
         sender_name, sender_email = parseaddr(from_raw)
@@ -1697,7 +1714,7 @@ def process_message(mail, uid: bytes, keywords: list,
         # confiavel mesmo quando o header Date do remetente vem adulterado ou
         # com fuso errado. O header Date e fallback. Nunca aceitar data futura.
         now_dt = datetime.now(timezone.utc)
-        internal_iso = _parse_internaldate(data[0][0])
+        internal_iso = _parse_internaldate(meta)
         try:
             header_dt = parsedate_to_datetime(date_header).astimezone(timezone.utc)
         except Exception:

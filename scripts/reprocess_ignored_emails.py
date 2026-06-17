@@ -50,20 +50,20 @@ def _get(ctrl, path: str) -> list:
     return json.loads(urllib.request.urlopen(req, timeout=20).read())
 
 
-def _delete_email_control(ctrl, ec_id: int) -> None:
-    req = urllib.request.Request(
-        ctrl.base + f"/rest/v1/email_control?id=eq.{ec_id}",
-        method="DELETE", headers={**ctrl.headers, "Prefer": "return=minimal"})
-    urllib.request.urlopen(req, timeout=15)
-
-
-def _set_ignored(ctrl, ec_id: int, note: str) -> None:
-    body = json.dumps({"status": "ignorado", "notes": note}).encode()
+def _patch_status(ctrl, ec_id: int, status: str, note: "str | None" = None) -> None:
+    payload = {"status": status}
+    if note:
+        payload["notes"] = note
+    body = json.dumps(payload).encode()
     req = urllib.request.Request(
         ctrl.base + f"/rest/v1/email_control?id=eq.{ec_id}",
         data=body, method="PATCH",
         headers={**ctrl.headers, "Prefer": "return=minimal"})
     urllib.request.urlopen(req, timeout=15)
+
+
+def _set_ignored(ctrl, ec_id: int, note: str) -> None:
+    _patch_status(ctrl, ec_id, "ignorado", note)
 
 
 def _find_uid(mail, message_id: str) -> "bytes | None":
@@ -110,9 +110,14 @@ def _reprocess_hit(mail, ctrl, keywords: list, r: dict) -> None:
     if not uid:
         log.warning(f"    id={r['id']} — Message-ID nao encontrado no IMAP, pulado")
         return
-    _delete_email_control(ctrl, r["id"])                   # regrava com status real
+    # NAO apagar a linha antes: process_message re-registra com ignore-duplicates
+    # (nao toca a linha existente) e cria a conta; depois atualizamos so o status
+    # via PATCH. Assim a linha nunca se perde, mesmo se a extracao falhar.
     rec = R.process_message(mail, uid, keywords, False, False, ctrl)
-    log.info(f"    id={r['id']} -> status={rec.get('status') if rec else '?'}")
+    status = rec.get("status") if rec else None
+    if status:
+        _patch_status(ctrl, r["id"], status, rec.get("notes"))
+    log.info(f"    id={r['id']} -> status={status or '?'}")
 
 
 def phase_a(ctrl, keywords: list, dry_run: bool) -> None:
