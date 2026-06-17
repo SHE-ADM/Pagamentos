@@ -273,6 +273,26 @@ export async function getFinancialAccountControl({
   return { data, total };
 }
 
+// Flags de curadoria manual de uma conta ("Tem NF ?" / "Tem Boleto"), editáveis
+// como checkbox em /consulta. A migration 033 restringe o papel `authenticated`
+// a escrever SOMENTE estas duas colunas (column-level grant + policy de RLS).
+export type FinancialAccountFlag = 'has_invoice' | 'has_bank_slip';
+
+export async function setFinancialAccountFlag(
+  id: number,
+  field: FinancialAccountFlag,
+  value: boolean,
+): Promise<void> {
+  const url = new URL(`${BASE_URL}/rest/v1/financial_account_control`);
+  url.searchParams.set('id', `eq.${id}`);
+  const res = await fetch(url.toString(), {
+    method: 'PATCH',
+    headers: await authHeaders({ Prefer: 'return=minimal' }),
+    body: JSON.stringify({ [field]: value }),
+  });
+  if (!res.ok) throw new Error(`Supabase ${res.status}: ${await res.text()}`);
+}
+
 // Soma de `amount` para o filtro corrente — alimenta o card "Valor total" de
 // /consulta, que reflete o subconjunto filtrado (cards ou filtros manuais).
 // Busca só a coluna amount (sem paginar) e soma no cliente, como getFinancialStats.

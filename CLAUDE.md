@@ -409,8 +409,11 @@ apps/frontend-vite/src/components/
 Hooks em `src/hooks/`: `useContainerBreakpoint.ts` (faixa `sm`/`md`/`lg` pela largura
 **real do container** via `ResizeObserver` — não da janela; usado pelo `DataGrid` p/ ocultar
 colunas considerando sidebar/paddings) e `useGridColumns.ts` (metadados de coluna —
-`ColumnDef`, `CONSULTA_COLUMNS`, `getEmailColumns`; é módulo de **definições**, não um hook,
-apesar do nome). `useIdleLogout.ts` e `useAuth` cobrem sessão (ver Autenticação).
+`ColumnDef`, `getConsultaColumns`, `getEmailColumns`; é módulo de **definições**, não um hook,
+apesar do nome). `getConsultaColumns(onToggleFlag)` é factory porque as colunas "Tem NF" e
+"Tem Boleto" renderizam o atom `CheckToggle` (checkbox de curadoria) que escreve no banco —
+precisam do callback de toggle da página. `useIdleLogout.ts` e `useAuth` cobrem sessão (ver
+Autenticação).
 
 Tipos compartilhados vêm de `@sheild/shared` (ex.: `FinancialEmail`, `EmailControl`).
 Helpers em `src/lib/`: `getErrorMessage.ts` (erro em strict mode), `cn.ts` (merge de
@@ -882,7 +885,7 @@ faturas SIEG em `ignorado`; o handler A1 (baixar o boleto real) segue como melho
   `financial_account_control`, replicar esse padrão para não divergir.
 - **Grid compartilhado (responsivo, "à prova de mobile")**: `/consulta` (tema `default`) e
   `/emails` (tema `silver`) renderizam pelo mesmo `organisms/DataGrid.tsx`, com as colunas de
-  `useGridColumns.ts` (`CONSULTA_COLUMNS` / `getEmailColumns`). Estratégia em camadas:
+  `useGridColumns.ts` (`getConsultaColumns` / `getEmailColumns`). Estratégia em camadas:
   1. **breakpoint pela largura do container** (`useContainerBreakpoint`/`ResizeObserver`),
      não da janela — então oculta colunas (`hideOn`) e desce as `secondLine` para uma
      sub-linha conforme o espaço **real** (considera a sidebar);
@@ -950,7 +953,13 @@ RLS habilitado em todas as tabelas. Policies de leitura são `TO authenticated`
 **grant restrito à coluna** `reviewed_at` (`GRANT UPDATE (reviewed_at)`) — o frontend só
 consegue marcar "revisado", não alterar outras colunas. `reviewed_at` é setado em `/emails`
 ao abrir o card de detalhes de um e-mail com `status='falha'` (`markEmailReviewed`), exibindo
-um check verde ao lado do badge de status (compartilhado entre usuários).
+um check verde ao lado do badge de status (compartilhado entre usuários). **Exceção análoga
+(migration 033):** `financial_account_control` tem policy de UPDATE `TO authenticated` com
+**grant restrito às colunas** `has_invoice`/`has_bank_slip` (`GRANT UPDATE (has_invoice,
+has_bank_slip)`) — flags de curadoria "Tem NF ?"/"Tem Boleto" editadas como checkbox
+(`CheckToggle`) no grid de `/consulta` via `setFinancialAccountFlag` (update otimista). O
+frontend não pode alterar nenhuma outra coluna; o pipeline (`service_role`) escreve a tabela
+inteira.
 
 ### Limpeza / reset de dados (SEMPRE preservar os cadastros)
 
