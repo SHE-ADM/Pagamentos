@@ -912,6 +912,8 @@ _BODY_DOC_KEYWORDS: list[tuple[str, list[str]]] = [
     ("GARE",       ["gare"]),
     ("tributo",    ["guia de recolhimento", "guia de pagamento",
                     "documento de arrecadacao"]),
+    # Fatura generica (ex.: Correios "Valor da fatura") — fallback antes de 'outro'.
+    ("fatura",     ["fatura"]),
 ]
 
 
@@ -1118,6 +1120,7 @@ def extract_from_email_body(body_text: str, received_at: str, message_id: str,
         "due_date":          due_date,
         "issue_date":        issue_date,
         "invoice_number":    invoice_number,
+        # Sempre 'pendente' — a baixa/atualizacao do status e feita pelo usuario.
         "status":            "pendente",
         "extracted_at":      datetime.now(timezone.utc).isoformat(),
     })

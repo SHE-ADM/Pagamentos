@@ -20,7 +20,7 @@ import read_emails as R  # noqa: E402
 
 _CORREIOS_HTML = (
     "<html><body><p>Email Correios</p>"
-    "<div>Informamos que o pagamento da fatura abaixo relacionada foi realizado.</div>"
+    "<div>Informamos que o pagamento da fatura abaixo relacionada foi realizado com sucesso.</div>"
     "<table><tr><td>Fatura n&ordm;: 3918439</td></tr>"
     "<tr><td>M&ecirc;s de emiss&atilde;o: 05/2026</td></tr>"
     "<tr><td>Valor da fatura R$ 1.530,47</td></tr></table></body></html>"
@@ -59,6 +59,11 @@ class CorreiosBodyExtractionTest(unittest.TestCase):
         self.assertEqual(p["supplier_name"], "Correios")
         self.assertEqual(p["amount"], 1530.47)
         self.assertEqual(p["invoice_number"], "3918439")
+        # Item 1: tipo do documento = fatura.
+        self.assertEqual(p["document_type"], "fatura")
+        # Item 2: grava SEMPRE 'pendente' — a baixa/atualizacao do status e do usuario,
+        # mesmo quando o corpo diz "pagamento ... realizado com sucesso".
+        self.assertEqual(p["status"], "pendente")
 
 
 if __name__ == "__main__":
