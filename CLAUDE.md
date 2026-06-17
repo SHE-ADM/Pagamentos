@@ -117,8 +117,10 @@ Regras comuns a toda rota nova:
 | Sessão | Stateless — autenticação via `Authorization: Bearer <token>` no header |
 
 Rotas novas de CRUD/dados vão na **Next API** (envelope `{ success, ... }`, Repository →
-Service → Route, conforme `monorepo-crud-spec.md`). A exceção aceita: `POST /api/emails/read`
-usa POST + corpo de parâmetros porque é uma **ação de disparo**, não um recurso CRUD.
+Service → Route, conforme `monorepo-crud-spec.md`). A exceção aceita: a leitura de e-mails
+(`POST /api/emails/read` síncrono · `POST /api/emails/read/start` assíncrono ·
+`GET /api/emails/progress`) usa POST + corpo de parâmetros porque é uma **ação de disparo**,
+não um recurso CRUD.
 
 **Auth das rotas Next (`apps/api-backend/middleware.ts` + `lib/auth.ts`):** o middleware
 protege `/api/*` (matcher `/api/((?!health).*)` — `/api/health` fica público) exigindo
@@ -272,7 +274,7 @@ IMAP (Locaweb SSL)                  apps/frontend-vite (React+Vite TS, :5173)
       │                          │   fetch direto Supabase REST              │
       │                          │   (apikey: anon + Authorization: token)   │
       │                          └─────────────┼────────────────────────────┘
-      │                                        │ POST /api/emails/read
+      │                                        │ POST /read/start + GET /progress (poll)
       │                                        ▼  (proxy /api → Flask :8000)
 read_emails.run_reader() ◄───────── server/app.py (Flask, porta 8000)
       │                                        ▲
@@ -623,6 +625,15 @@ vencimento **mais recente**, chama `update_financial` para atualizar `due_date` 
 (`barcode`, `amount_charged`, `fine_interest`, `other_additions`) na conta existente — uma
 guia paga uma vez, sempre com o boleto válido. A trigger recalcula `due_status` no UPDATE.
 
+**Match de fornecedor por NOME é case/acento-insensitive** (`migration 032`): quando o
+documento não traz CNPJ/CPF, a impressão por nome usa a RPC `financial_dup_by_name`
+(`SupabaseControl._dup_by_name`), que compara `normalize_search(supplier_name) =
+normalize_search(<nome extraído>)` — "EFE Displays" casa "EFE DISPLAYS". O PostgREST não
+permite função na coluna dentro do filtro, por isso a comparação roda na RPC (mesmo padrão
+do trigger `resolve_supplier_id` para `legal_name`/`trade_name`). CNPJ/CPF são identificadores
+exatos e seguem o match direto. `normalize_search(txt) = lower(unaccent(txt))`. Teste:
+`tests/test_dup_by_name.py`.
+
 ### Duas chaves Supabase, dois papéis
 
 - **`anon`** (`VITE_SUPABASE_ANON_KEY`): frontend — leitura REST, respeita RLS `TO authenticated`.
@@ -771,9 +782,16 @@ espelha o webmail inteiro (o app substitui abrir a caixa). O filtro de keyword d
 - **Com keyword** → `process_message` (baixa + extrai) define o status via `status_for_result`,
   por **prioridade**: conta do PDF (`accounts_saved>0`) → `extraído` · **NF-e pura sem conta**
   (`subject_is_pure_nfe`) → `ignorado` · CSV do PDF → `extraído` · conta do corpo → `recebido`
-  (**vale mesmo com anexo** cujo PDF não gerou CSV — antes virava um falso `pendente`) · anexo
+  (**vale mesmo com anexo** cujo PDF não gerou CSV — antes virava um falso `pendente`) ·
+  **duplicidade** (pagável do corpo duplica conta já registrada) → `duplicidade` · anexo
   salvo sem conta → `pendente` · **notificação sem anexo/conta** (`subject_is_ignorable_notification`)
-  → `ignorado` · nada → `falha`. Ver migration 022 e `tests/test_status_for_result.py`.
+  → `ignorado` · nada → `falha`. Ver migrations 022/031 e `tests/test_status_for_result.py`.
+- **Regra de DUPLICIDADE** (`try_extract_from_body` → `BODY_CREATED`/`BODY_DUPLICATE`/`BODY_NONE`):
+  quando o pagável extraído do corpo casa uma conta já existente (`find_financial_duplicate`),
+  a conta **não** é recriada e o e-mail vira `duplicidade` (status próprio, migration 031) — não
+  `falha`. Cobre a thread original + seu `RES:`/encaminhamento. `email_rec['duplicate_of']` guarda
+  o id da conta; `notes` registra "Duplicata — conta já registrada (id N)". Vale no pipeline e no
+  `scripts/reprocess_body_emails.py`. Testes: `tests/test_body_duplicate.py`.
 - **Corpo é fallback só quando o anexo NÃO gera conta** (`accounts_saved==0`) — havendo
   conta de arquivo anexado válido, o corpo é ignorado (sem conflito).
 
@@ -806,9 +824,14 @@ agendamento") são marcados por **Message-ID** em `EXPLICIT_IGNORE_IDS`
 gatilho já exige ausência de anexo/conta (sem anexo nem dado no corpo ⇒ é só um aviso); com
 anexo, o PDF vira `pendente` (revisão), nunca `ignorado`. Reprocesso histórico (e Message-IDs
 avulsos marcados à mão, ex.: alerta de protesto SPC/Serasa) via
-`scripts/reprocess_ignored_emails.py`. **SIEG**: por decisão do responsável (2026-06-17),
-avisos da SIEG sem anexo/conta são `ignorado` — convive com o handler SIEG adiado (A1):
-faturas SIEG novas também ficam `ignorado` até o handler ser ativado.
+`scripts/reprocess_ignored_emails.py`. **SIEG** (atualizado 2026-06-17): avisos/confirmações
+da SIEG **sem pagável** (ex.: "identificamos o pagamento", NF-e) seguem `ignorado`; já as
+**faturas SIEG** (mensalidade R$ 426,80, link JS quebrado — ver A1) **geram conta `recebido`
+pelo corpo** (fornecedor SIEG, valor, vencimento). O `bill=NNN` do link SIEG
+(`_BODY_SIEG_BILL_RE`) vira `invoice_number` (`sieg_<bill>`), fazendo os dois lembretes
+("Vencimento Próximo" + "Hoje") da mesma fatura **deduplicarem** (antes geravam 2 contas/mês
+porque o nº saía de data relativa e divergia). Isso **revoga** a regra anterior de manter
+faturas SIEG em `ignorado`; o handler A1 (baixar o boleto real) segue como melhoria futura.
 
 ### Frontend — rotas e serviços
 
@@ -819,7 +842,15 @@ faturas SIEG novas também ficam `ignorado` até o handler ser ativado.
 | `/erros` | `Erros.tsx` | `email_processing_errors` |
 
 - `services/supabase.ts` — fetch direto REST, `Prefer: count=exact` + `Content-Range` para paginação.
-- `services/emailReader.ts` — `POST /api/emails/read` proxiado pelo Vite para Flask.
+- `services/emailReader.ts` — leitura IMAP **assíncrona com progresso** (proxy Vite → Flask):
+  `startEmailRead` faz `POST /api/emails/read/start` (Flask dispara `run_reader` numa **thread**
+  e responde na hora) e `getEmailReadProgress` faz `GET /api/emails/progress`. `Emails.handleRead`
+  faz **poll a cada ~1,5s** mostrando um banner com fase + barra `done/total` + contadores +
+  cronômetro (`elapsed`), e recarrega KPIs/tabela a cada ~5 polls. **Por que assíncrono:** o
+  modelo síncrono antigo segurava um request por minutos — o proxy derrubava a conexão e o botão
+  "voltava" antes do fim (parecia travado). `run_reader(on_progress=...)` é a fonte do progresso
+  (callback best-effort, não derruba o run); o estado vive em `server/app.py` (dict + lock, **um
+  job por vez**). O `POST /api/emails/read` síncrono permanece só para a ponte da Next API.
 - **`/consulta` — `cancelado` oculto por padrão (consistência grid ↔ KPIs):** `applyFinancialFilters`
   aplica `status=neq.cancelado` quando **não** há filtro de situação. `getFinancialStats` usa o
   **mesmo** filtro, então o rodapé "N registros", o KPI "Total de registros", o "Valor total" e
@@ -860,7 +891,7 @@ numérica (`001` → `030`). Não há migration automática.
 
 | Tabela | Propósito |
 |---|---|
-| `email_control` | Dedup/controle. `status` ∈ (`extraído`, `recebido`, `pendente`, `falha`, `ignorado`) — **migration 022**. `extraído`=PDF extraído (CSV gerado); `recebido`=sem PDF, conta via corpo; `pendente`=PDF salvo sem CSV (substitui `baixado`); `falha`=casou keyword mas sem PDF e sem conta no corpo; `ignorado`=não-financeiro (sem keyword) **ou NF-e pura sem conta a pagar** (`subject_is_pure_nfe`). O status é calculado em `process_message` pelo resultado real (conta/CSV/corpo), não por `pdf_extracted` |
+| `email_control` | Dedup/controle. `status` ∈ (`extraído`, `recebido`, `pendente`, `falha`, `ignorado`, `duplicidade`) — **migrations 022/031**. `extraído`=PDF extraído (CSV gerado); `recebido`=sem PDF, conta via corpo; `pendente`=PDF salvo sem CSV (substitui `baixado`); `falha`=casou keyword mas sem PDF e sem conta no corpo; `ignorado`=não-financeiro (sem keyword) **ou NF-e pura sem conta a pagar** (`subject_is_pure_nfe`); `duplicidade`=pagável do corpo duplica conta já registrada por outro e-mail (**migration 031**; card/filtro próprios em `/emails`). O status é calculado em `process_message` pelo resultado real (conta/CSV/corpo/duplicata), não por `pdf_extracted` |
 | `financial_account_control` | Tabela principal de contas a pagar — uma linha por documento; alimentada pelo pipeline de e-mail **e** por CRUD manual (baixas, consolidações, dashboards). Substitui a antiga `financial_emails` (dropada na migration 020). Tem `sender_email` (migration 023; backfill em 025) que o trigger usa p/ alinhar `supplier.email`, e `subject` (migration 025) — ambos com backfill SQL de `email_control` e exibidos/buscados em `/consulta` |
 | `email_processing_errors` | Log de falhas com `raw_payload` JSON |
 | `supplier` | Fornecedores. Auto-criados pelo trigger, mas **cadastro PRESERVADO** (curadoria manual de `email`/`email2`/`email3`/`email4`) — **nunca truncar** em limpezas (ver "Limpeza / reset de dados"). Reconhecimento por **e-mail** em `email`/`email2`/`email3`/`email4` (migrations 023/027/028) — ver "Auto-resolução de fornecedor" |

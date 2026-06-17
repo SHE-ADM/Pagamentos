@@ -58,6 +58,16 @@ describe('StatusBadge', () => {
     expect(screen.getByText('recebido').className).toContain('text-status-info-fg');
   });
 
+  it('mapeia "duplicidade" para teal com ponto (status, não ícone)', () => {
+    const { container } = render(<StatusBadge value="duplicidade" />);
+    const badge = screen.getByText('duplicidade');
+    // teal (variante source) para destacar de 'ignorado' (slate)…
+    expect(badge.className).toContain('text-status-source-fg');
+    // …mas com ponto de status (não ícone de origem).
+    expect(container.querySelector('span.rounded-full')).not.toBeNull();
+    expect(container.querySelector('svg')).toBeNull();
+  });
+
   it('mapeia "erro_api" para vermelho sólido (distinto do erro comum)', () => {
     render(<StatusBadge value="erro_api" />);
     const badge = screen.getByText('erro_api');

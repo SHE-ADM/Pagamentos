@@ -40,10 +40,9 @@ def fetch_falha_rows(ctrl) -> list:
     return json.loads(urllib.request.urlopen(req, timeout=20).read())
 
 
-def mark_recebido(ctrl, ec_id: int) -> None:
-    """falha -> recebido (conta gerada a partir do corpo, sem PDF)."""
-    body = json.dumps({"status": "recebido",
-                       "notes": "Conta extraída do corpo (reprocessamento)"}).encode()
+def set_email_status(ctrl, ec_id: int, status: str, notes: str) -> None:
+    """Atualiza status + notes de um e-mail (ex.: falha -> recebido / duplicidade)."""
+    body = json.dumps({"status": status, "notes": notes}).encode()
     req = urllib.request.Request(ctrl.base + f"/rest/v1/email_control?id=eq.{ec_id}",
                                  data=body, method="PATCH",
                                  headers={**ctrl.headers, "Prefer": "return=minimal"})
@@ -68,32 +67,42 @@ def _make_rec(ec: dict, body_text: str) -> dict:
             "keyword_matched": None, "has_attachment": False}
 
 
-def inspect_one(ec: dict, body_text: str) -> str:
-    """Dry-run: simula o caminho real (guardas de comprovante/NF-e) sem gravar.
-    Retorna a chave do tally."""
+def inspect_one(ctrl, ec: dict, body_text: str) -> str:
+    """Dry-run: simula o caminho real (guardas de comprovante/NF-e + dedup) sem
+    gravar. Retorna a chave do tally."""
     payload = R.extract_from_email_body(
         body_text or "", ec["received_at"], ec["message_id"], sender_email=ec.get("sender_email"))
     dtype  = (payload.get("document_type") or "").strip().lower() if payload else ""
     amount = payload.get("amount") if payload else None
-    if payload and amount and dtype not in R.SKIP_ACCOUNT_TYPES:
-        log.info(f"[{ec['id']}] {ec['subject'][:55]} — gravaria R$ {amount} ({dtype})")
-        return "resolvido"
-    motivo = f"{dtype} não gera conta" if (payload and amount) else "sem valor/sinal no corpo"
-    log.info(f"[{ec['id']}] {ec['subject'][:55]} — não gravaria ({motivo})")
-    return "sem_conta"
+    if not (payload and amount and dtype not in R.SKIP_ACCOUNT_TYPES):
+        motivo = f"{dtype} não gera conta" if (payload and amount) else "sem valor/sinal no corpo"
+        log.info(f"[{ec['id']}] {ec['subject'][:55]} — não gravaria ({motivo})")
+        return "sem_conta"
+    dup = ctrl.find_financial_duplicate(payload)
+    if dup:
+        log.info(f"[{ec['id']}] {ec['subject'][:55]} — DUPLICIDADE (conta id {dup.get('id')} já existe)")
+        return "duplicado"
+    log.info(f"[{ec['id']}] {ec['subject'][:55]} — gravaria R$ {amount} ({dtype})")
+    return "resolvido"
 
 
 def process_one(ctrl, ec: dict, body_text: str) -> str:
-    """Modo real: extrai do corpo e grava. Retorna a chave do tally."""
+    """Modo real: extrai do corpo e grava/classifica. Retorna a chave do tally."""
     rec = _make_rec(ec, body_text)
-    gravou = R.try_extract_from_body(
+    outcome = R.try_extract_from_body(
         rec, body_text or "", ec["received_at"], ec["message_id"], ctrl,
         sender_email=ec.get("sender_email"))
-    if gravou:
-        mark_recebido(ctrl, ec["id"])
+    if outcome == R.BODY_CREATED:
+        set_email_status(ctrl, ec["id"], "recebido", "Conta extraída do corpo (reprocessamento)")
         log.info(f"    ✓ conta gravada do corpo; email_control {ec['id']} -> recebido")
         return "resolvido"
-    # Mantém 'falha' e registra o motivo (TODA falha gera log).
+    if outcome == R.BODY_DUPLICATE:
+        # Pagável já registrado por outro e-mail — vira 'duplicidade', não 'falha'.
+        set_email_status(ctrl, ec["id"], "duplicidade",
+                         rec.get("notes") or "Duplicata — conta já registrada")
+        log.info(f"    ⊘ duplicidade ({rec.get('notes')}); email_control {ec['id']} -> duplicidade")
+        return "duplicado"
+    # BODY_NONE → mantém 'falha' e registra o motivo (TODA falha gera log).
     ctrl.register_error(
         rec, "falha_processamento",
         rec.get("notes") or "Corpo do e-mail não gerou conta a pagar",
@@ -119,7 +128,7 @@ def main():
     mail.login(os.getenv("IMAP_USER"), os.getenv("IMAP_PASS"))
     mail.select(os.getenv("IMAP_MAILBOX", "INBOX"))
 
-    tally = {"resolvido": 0, "sem_conta": 0, "imap_ausente": 0}
+    tally = {"resolvido": 0, "duplicado": 0, "sem_conta": 0, "imap_ausente": 0}
     for ec in rows:
         body_text = fetch_body_from_imap(mail, ec["message_id"])
         if body_text is None:
@@ -127,7 +136,7 @@ def main():
             tally["imap_ausente"] += 1
             continue
         try:
-            key = inspect_one(ec, body_text) if args.dry_run else process_one(ctrl, ec, body_text)
+            key = inspect_one(ctrl, ec, body_text) if args.dry_run else process_one(ctrl, ec, body_text)
         except R.ApiUnavailableError:
             log.exception("    API Anthropic indisponível — interrompendo")
             break
@@ -137,6 +146,7 @@ def main():
     log.info("=" * 60)
     pre = "(dry-run) " if args.dry_run else ""
     log.info(f"  {pre}Resolvidos (corpo→conta) : {tally['resolvido']}")
+    log.info(f"  Duplicidade (conta já existe): {tally['duplicado']}")
     log.info(f"  Sem conta no corpo        : {tally['sem_conta']}")
     log.info(f"  IMAP ausente              : {tally['imap_ausente']}")
     log.info("=" * 60)

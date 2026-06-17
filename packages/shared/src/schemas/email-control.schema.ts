@@ -1,7 +1,7 @@
 import { z } from 'zod';
 
 // Schema da tabela `email_control` — controle/deduplicação de e-mails lidos
-// via IMAP. Reflete as migrations 002, 019 e 022 (taxonomia de status pt-BR).
+// via IMAP. Reflete as migrations 002, 019, 022 e 031 (taxonomia de status pt-BR).
 
 export const EMAIL_CONTROL_STATUSES = [
   'extraído', // PDF extraído (CSV gerado) — conta de PDF ou erro logado à parte
@@ -9,6 +9,7 @@ export const EMAIL_CONTROL_STATUSES = [
   'pendente', // PDF salvo mas extração não gerou CSV (substitui 'baixado')
   'falha', // casou keyword mas sem PDF e sem conta no corpo
   'ignorado', // não-financeiro (assunto sem keyword)
+  'duplicidade', // pagável do corpo duplica conta já registrada (migration 031)
 ] as const;
 
 export const emailControlStatusSchema = z.enum(EMAIL_CONTROL_STATUSES);

@@ -148,18 +148,20 @@ export interface EmailStats {
   pendente: number;
   falha: number;
   ignorado: number;
+  duplicidade: number;
 }
 
 export async function getEmailStats(): Promise<EmailStats> {
   const byStatus = (s: string) =>
     query<{ id: number }[]>('email_control', { select: 'id', status: `eq.${s}`, limit: 2000 });
-  const [all, extraido, recebido, pendente, falha, ignorado] = await Promise.all([
+  const [all, extraido, recebido, pendente, falha, ignorado, duplicidade] = await Promise.all([
     query<{ id: number }[]>('email_control', { select: 'id', limit: 2000 }),
     byStatus('extraído'),
     byStatus('recebido'),
     byStatus('pendente'),
     byStatus('falha'),
     byStatus('ignorado'),
+    byStatus('duplicidade'),
   ]);
   return {
     total: all.length,
@@ -168,6 +170,7 @@ export async function getEmailStats(): Promise<EmailStats> {
     pendente: pendente.length,
     falha: falha.length,
     ignorado: ignorado.length,
+    duplicidade: duplicidade.length,
   };
 }
 
