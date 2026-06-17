@@ -820,7 +820,7 @@ faturas SIEG novas também ficam `ignorado` até o handler ser ativado.
 ## Banco de dados (Supabase)
 
 Migrations em `supabase/migrations/`, aplicadas **manualmente no SQL Editor** em ordem
-numérica (`001` → `029`). Não há migration automática.
+numérica (`001` → `030`). Não há migration automática.
 
 | Tabela | Propósito |
 |---|---|
@@ -849,7 +849,12 @@ faz cast); só os schemas de **auth** rodam em runtime via `zodResolver`.
 
 RLS habilitado em todas as tabelas. Policies de leitura são `TO authenticated`
 (migrations 015/018/019); escrita em `financial_account_control` é `TO service_role`
-(CRUD via Next API). Toda nova tabela deve seguir o mesmo padrão.
+(CRUD via Next API). Toda nova tabela deve seguir o mesmo padrão. **Exceção pontual
+(migration 030):** `email_control` tem policy de UPDATE `TO authenticated`, mas com
+**grant restrito à coluna** `reviewed_at` (`GRANT UPDATE (reviewed_at)`) — o frontend só
+consegue marcar "revisado", não alterar outras colunas. `reviewed_at` é setado em `/emails`
+ao abrir o card de detalhes de um e-mail com `status='falha'` (`markEmailReviewed`), exibindo
+um check verde ao lado do badge de status (compartilhado entre usuários).
 
 ### Limpeza / reset de dados (SEMPRE preservar os cadastros)
 
