@@ -1,9 +1,9 @@
 // src/pages/Emails.tsx
-import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
-import { RefreshCw, Mail, FileCheck, AlertCircle, CopyMinus, Inbox, Ban, CalendarDays, X, Eye } from 'lucide-react';
+import { useState, useEffect, useCallback, useMemo } from 'react';
+import { RefreshCw, Mail, FileCheck, AlertCircle, CopyMinus, Copy, Inbox, Ban, CalendarDays, X, Eye } from 'lucide-react';
 import type { EmailControl, FinancialAccountControl } from '@sheild/shared';
 import { getEmailControl, getEmailStats, getAccountsByMessageId, getInvoiceNumbersByMessageIds, markEmailReviewed, type EmailStats } from '../services/supabase';
-import { triggerEmailRead } from '../services/emailReader';
+import { startEmailRead, getEmailReadProgress, type ReadProgress } from '../services/emailReader';
 import { suspendIdleLogout, resumeIdleLogout } from '../hooks/useIdleLogout';
 import { getEmailColumns } from '../hooks/useGridColumns';
 import { getErrorMessage } from '../lib/getErrorMessage';
@@ -27,6 +27,19 @@ const fmt = (iso: string | null): string =>
 const fmtDate = (d: string | null): string => (d ? new Date(d + 'T00:00:00').toLocaleDateString('pt-BR') : '—');
 const fmtMoney = (v: number | null): string =>
   v == null ? '—' : Number(v).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
+
+// Tempo decorrido em mm:ss para o banner de progresso.
+const fmtElapsed = (s: number): string => {
+  const sec = Math.max(0, Math.floor(s));
+  return `${String(Math.floor(sec / 60)).padStart(2, '0')}:${String(sec % 60).padStart(2, '0')}`;
+};
+
+const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
+
+// Cadência do poll de progresso e da atualização do grid durante o processamento.
+const PROGRESS_POLL_MS = 1500;
+const GRID_REFRESH_EVERY = 5; // a cada ~7,5s recarrega KPIs/tabela
+const PROGRESS_MAX_ERRORS = 20; // ~30s sem contato com o backend → aborta o poll
 
 interface EmailFilters {
   status: string;
@@ -52,9 +65,8 @@ export default function Emails() {
   const [reading, setReading] = useState(false);
   const [readMode, setReadMode] = useState<'novos' | 'geral' | null>(null);
   const [readMsg, setReadMsg] = useState<string | null>(null);
-  const [readElapsed, setReadElapsed] = useState(0);
+  const [progress, setProgress] = useState<ReadProgress | null>(null);
   const [accounts, setAccounts] = useState<FinancialAccountControl[]>([]);
-  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const [filters, setFilters] = useState<EmailFilters>({ ...EMPTY_FILTERS });
   const [activeCard, setActiveCard] = useState<string | null>(null);
   const [readDays, setReadDays] = useState<number>(7);
@@ -103,9 +115,10 @@ export default function Emails() {
       .catch(() => setAccounts([]));
   }, [sel]);
 
-  // Dispara a leitura IMAP no backend.
-  // Como o processamento pode levar vários minutos, faz polling automático
-  // da tabela a cada 20 s enquanto aguarda a resposta do Flask.
+  // Dispara a leitura IMAP no backend e acompanha a PROGRESSÃO.
+  // O job roda em background no Flask (POST /start responde na hora) e o frontend
+  // faz poll de GET /progress a cada ~1,5s — mostra fase, X/Y e contadores ao vivo
+  // sem segurar um request HTTP por minutos (o que parecia "travar").
   // mode='novos' → IMAP UNSEEN (apenas não lidos)
   // mode='geral' → IMAP SINCE N dias (usa o filtro de período da tabela)
   const handleRead = async (mode: 'novos' | 'geral') => {
@@ -113,7 +126,7 @@ export default function Emails() {
     setReadMode(mode);
     setError(null);
     setReadMsg(null);
-    setReadElapsed(0);
+    setProgress(null);
     // Suspende o logout por inatividade enquanto processa — o usuário pode ficar
     // ocioso durante vários minutos de extração sem ser deslogado.
     suspendIdleLogout();
@@ -127,36 +140,58 @@ export default function Emails() {
       setFilters({ status: '', sender: '', days: readDays });
     }
 
-    const start = Date.now();
-    pollRef.current = setInterval(() => {
-      setReadElapsed(Math.floor((Date.now() - start) / 1000));
-      void load();
-    }, 20_000);
-
     try {
       const days = mode === 'novos' ? 0 : readDays;
       const all = mode === 'geral' && readDays === 0;
-      const s = await triggerEmailRead({ days, all });
-      let criterio = 'não lidos';
-      if (mode === 'geral') {
-        criterio = readDays === 0 ? 'todos os e-mails' : `últimos ${readDays} dias`;
+      await startEmailRead({ days, all });
+
+      // Poll do progresso até o job concluir (ou falhar).
+      let final: ReadProgress | null = null;
+      let ticks = 0;
+      let errors = 0;
+      let polling = true;
+      while (polling) {
+        await sleep(PROGRESS_POLL_MS);
+        let p: ReadProgress;
+        try {
+          p = await getEmailReadProgress();
+          errors = 0;
+        } catch {
+          // Falha transitória do poll — tolera alguns antes de desistir.
+          errors += 1;
+          if (errors >= PROGRESS_MAX_ERRORS) throw new Error('Perdi contato com o backend durante o processamento.');
+          continue;
+        }
+        setProgress(p);
+        ticks += 1;
+        if (ticks % GRID_REFRESH_EVERY === 0) void load(); // KPIs/tabela sobem ao vivo
+        if (!p.running) { final = p; polling = false; }
       }
-      const abortAviso = s.api_aborted
-        ? ' ⚠️ Processamento interrompido por limite da API — rode novamente para continuar.'
-        : '';
-      setReadMsg(
-        `Busca concluída (${criterio}) — ${s.found} no servidor · ` +
-          `${s.processed} financeiro(s) extraído(s) · ${s.skipped_keyword} ignorado(s) · ` +
-          `${s.skipped_dup} duplicado(s).${abortAviso}`,
-      );
+
+      if (final?.error) {
+        setError(final.error);
+      } else if (final?.summary) {
+        const s = final.summary;
+        let criterio = 'não lidos';
+        if (mode === 'geral') {
+          criterio = readDays === 0 ? 'todos os e-mails' : `últimos ${readDays} dias`;
+        }
+        const abortAviso = s.api_aborted
+          ? ' ⚠️ Processamento interrompido por limite da API — rode novamente para continuar.'
+          : '';
+        setReadMsg(
+          `Busca concluída (${criterio}) — ${s.found} no servidor · ` +
+            `${s.processed} financeiro(s) extraído(s) · ${s.skipped_keyword} ignorado(s) · ` +
+            `${s.skipped_dup} duplicado(s).${abortAviso}`,
+        );
+      }
     } catch (e) {
       setError(getErrorMessage(e));
     } finally {
-      if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; }
       resumeIdleLogout();
       setReading(false);
       setReadMode(null);
-      setReadElapsed(0);
+      setProgress(null);
       await load();
     }
   };
@@ -177,9 +212,23 @@ export default function Emails() {
   };
 
   // Rótulos extraídos para evitar ternários aninhados no JSX (SonarLint S3358/S4624).
-  const processingLabel = readElapsed > 0 ? `Processando (${readElapsed}s)` : 'Processando…';
+  const processingLabel =
+    progress && progress.total > 0 ? `Processando ${progress.done}/${progress.total}` : 'Processando…';
   const labelNovos = readMode === 'novos' ? processingLabel : 'Busca Novos';
   const labelGeralBtn = readMode === 'geral' ? processingLabel : 'Executar';
+
+  // Banner de progresso: fase legível + barra (determinada quando há total).
+  const hasTotal = progress != null && progress.total > 0;
+  const phaseLabel = hasTotal ? 'Processando e-mails' : 'Conectando ao servidor de e-mails…';
+  const pct = hasTotal ? Math.round((progress.done / progress.total) * 100) : 0;
+  const doneLabel = hasTotal ? ` — ${progress.done}/${progress.total} (${pct}%)` : '';
+  // Barra extraída para fora do JSX (SonarLint S3358 — sem ternário inline no JSX).
+  // width dinâmico via style inline: não há classe Tailwind para um % computado em runtime.
+  const progressBar = hasTotal ? (
+    <div className="h-full bg-brand transition-all" style={{ width: `${pct}%` }} />
+  ) : (
+    <div className="h-full w-1/3 animate-pulse bg-brand" />
+  );
 
   // Colunas do grid resolvidas com o mapa de nº documento (message_id → nº).
   const emailColumns = useMemo(() => getEmailColumns(invoiceMap), [invoiceMap]);
@@ -237,13 +286,37 @@ export default function Emails() {
           </Alert>
         )}
 
+        {reading && (
+          <Alert variant="info" className="mb-4">
+            <div className="flex items-center gap-3">
+              <RefreshCw size={16} className="animate-spin flex-shrink-0" />
+              <div className="min-w-0 flex-1">
+                <div className="flex items-baseline justify-between gap-2">
+                  <span className="font-medium">
+                    {phaseLabel}
+                    {doneLabel}
+                  </span>
+                  <span className="font-mono text-xs">{fmtElapsed(progress?.elapsed ?? 0)}</span>
+                </div>
+                <div className="mt-2 h-1.5 w-full overflow-hidden rounded-full bg-slate-200">
+                  {progressBar}
+                </div>
+                <div className="mt-1.5 text-xs">
+                  Extraídos {progress?.processed ?? 0} · Ignorados {progress?.skipped_keyword ?? 0} ·
+                  Duplicados {progress?.skipped_dup ?? 0} · os números atualizam sozinhos — não feche esta aba.
+                </div>
+              </div>
+            </div>
+          </Alert>
+        )}
+
         {readMsg && (
           <Alert variant="success" className="mb-4">
             {readMsg}
           </Alert>
         )}
 
-        <div className="grid grid-cols-6 gap-3 mb-5">
+        <div className="grid grid-cols-7 gap-3 mb-5">
           {[
             {
               icon: Mail,
@@ -293,6 +366,14 @@ export default function Emails() {
               cardId: 'ignorado',
               filter: { status: 'ignorado' },
             },
+            {
+              icon: Copy,
+              label: 'Duplicidades',
+              value: stats.duplicidade ?? 0,
+              sub: 'conta já registrada',
+              cardId: 'duplicidade',
+              filter: { status: 'duplicidade' },
+            },
           ].map(({ icon: Icon, label, value, sub, cardId, filter }) => {
             const isActive = activeCard === cardId;
             const cardRing = isActive ? 'ring-1 ring-brand/30 bg-brand/5' : '';
@@ -341,7 +422,7 @@ export default function Emails() {
           </div>
           <select id="emails-status" name="emails-status" aria-label="Filtrar por status" className="input w-40" value={filters.status} onChange={(e) => setF('status', e.target.value)}>
             <option value="">Todos os status</option>
-            {['extraído', 'recebido', 'pendente', 'falha', 'ignorado'].map((s) => (
+            {['extraído', 'recebido', 'pendente', 'falha', 'ignorado', 'duplicidade'].map((s) => (
               <option key={s} value={s}>
                 {s}
               </option>

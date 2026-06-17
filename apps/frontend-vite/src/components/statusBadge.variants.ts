@@ -50,6 +50,10 @@ const STATUS_VARIANT: Record<string, BadgeVariant> = {
   recebido: 'blue',
   extraído: 'emerald',
   ignorado: 'slate',
+  // duplicidade (migration 031): pagável já registrado por outro e-mail. Teal
+  // (variante 'source') para destacar e distinguir de 'ignorado' (slate); kind
+  // 'status' (ponto, não ícone) por estar no STATUS_VARIANT.
+  duplicidade: 'source',
   // email_processing_errors.error_type
   sem_valor: 'amber',
   sem_fornecedor: 'amber',

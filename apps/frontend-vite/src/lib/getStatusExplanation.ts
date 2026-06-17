@@ -47,5 +47,18 @@ export function getStatusExplanation(email: EmailControl): StatusExplanation | n
     };
   }
 
+  if (email.status === 'duplicidade') {
+    return {
+      variant: 'info',
+      title: 'Por que este e-mail é uma duplicidade:',
+      message:
+        'O pagamento descrito neste e-mail (fornecedor, valor e vencimento) já foi ' +
+        'registrado como conta a pagar a partir de outro e-mail — normalmente a mensagem ' +
+        'original e a sua resposta/encaminhamento. Para não duplicar a conta, o sistema ' +
+        'não a criou de novo; a referência da conta existente está em "Observações". ' +
+        'Não é um erro nem exige ação.',
+    };
+  }
+
   return null;
 }

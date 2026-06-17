@@ -892,10 +892,13 @@ def _supplier_from_signals(body_text: str) -> "str | None":
             if name:
                 return name
     return None
-# Comprovante de pagamento ja feito / "pix recebido" — NAO e conta a pagar.
+# Comprovante de pagamento ja feito / "pix recebido" / confirmacao — NAO e conta
+# a pagar. Inclui o aviso da SIEG "identificamos o pagamento da fatura" e
+# "pagamento processado" (confirma pagamento ja realizado, nao cobra).
 _BODY_RECEIPT_RE = re.compile(
     r"(?i)comprovante\s+de\s+(?:pix\s+)?recebido|pix\s+recebido\s+de|"
-    r"pagamento\s+(?:recebido|confirmado)"
+    r"pagamento\s+(?:recebido|confirmado|processado)|"
+    r"identificamos\s+o\s+pagamento"
 )
 # Sinais de que o e-mail PEDE um pagamento (afasta o falso positivo de comprovante).
 _BODY_PAYMENT_REQUEST_RE = re.compile(
@@ -947,10 +950,15 @@ def _classify_body_doc_type(body_text: str) -> str:
     Retorna o primeiro tipo cujo algum termo for encontrado (case-insensitive,
     sem acentos). Retorna 'outro' se nenhum termo corresponder.
     PIX sobrescreve este resultado — tratar no chamador.
+
+    Casa por PALAVRA inteira (_has_word), não substring: 'nfe' como substring
+    casaria 'co-nfe-ccoes' (CONFECCOES) e classificaria erroneamente uma FATURA
+    como NF-e (que é pulada em SKIP_ACCOUNT_TYPES) — bug real do e-mail da RTE,
+    endereçado a "TEXTIL E CONFECCOES". Mesma proteção já usada em subjects.
     """
     text = _ns_body(body_text)
     for doc_type, terms in _BODY_DOC_KEYWORDS:
-        if any(term in text for term in terms):
+        if any(_has_word(text, term) for term in terms):
             return doc_type
     return "outro"
 
@@ -1621,20 +1629,34 @@ def extract_and_store_accounts(saved_pdfs: list, message_id: str,
     return csvs_ok, accounts_saved
 
 
+# Resultado da extração pelo corpo (try_extract_from_body) — orienta o status do
+# e-mail. Distinguir DUPLICATE de NONE é a regra de negócio que evita marcar como
+# 'falha' um e-mail cujo pagável já foi registrado por outro e-mail (ex.: a
+# mensagem original e seu RES:/encaminhamento).
+BODY_CREATED   = "created"    # conta nova gravada            → 'recebido'
+BODY_DUPLICATE = "duplicate"  # pagável duplica conta existente → 'ignorado'
+BODY_NONE      = "none"       # sem pagável utilizável         → falha/notificação
+
+
 def try_extract_from_body(email_rec: dict, body_text: str, received_at: str,
                           message_id: str, ctrl: "SupabaseControl",
-                          sender_email: str | None = None) -> bool:
+                          sender_email: str | None = None) -> str:
     """Tenta gravar uma conta extraida do corpo do e-mail (sem PDF valido).
 
-    Retorna True se uma conta foi gravada; False caso contrario, anotando o
-    motivo em email_rec['notes']. O log em email_processing_errors e feito de
-    forma centralizada no chamador (process_message), para TODA falha.
+    Retorna um de:
+      BODY_CREATED   — conta NOVA gravada (chamador marca 'recebido');
+      BODY_DUPLICATE — o pagavel do corpo DUPLICA uma conta ja registrada: nao
+                       grava de novo, anota a referencia em email_rec['duplicate_of']
+                       e o chamador marca 'ignorado' (nao e falha — a conta existe);
+      BODY_NONE      — sem pagavel utilizavel (chamador segue p/ falha/notificacao).
+    Anota o motivo em email_rec['notes']. O log em email_processing_errors e feito
+    de forma centralizada no chamador (process_message), para TODA falha.
     """
     payload = extract_from_email_body(body_text, received_at, message_id, sender_email)
     if payload is None:
         # Sem sinal financeiro (sem valor nem documento) no corpo.
         email_rec["notes"] = "Corpo sem sinal financeiro (sem valor nem documento)"
-        return False
+        return BODY_NONE
 
     # Remetente do e-mail → o trigger alinha supplier.email (migration 023).
     payload["sender_email"] = sender_email
@@ -1647,28 +1669,34 @@ def try_extract_from_body(email_rec: dict, body_text: str, received_at: str,
     if dtype in SKIP_ACCOUNT_TYPES:
         log.info(f"    {dtype.upper()} (corpo do e-mail) ignorado — nao gera conta a pagar")
         email_rec["notes"] = f"{dtype.upper()} (corpo do e-mail) — nao gera conta a pagar"
-        return False
+        return BODY_NONE
 
     # Mesma validacao de valor do caminho de PDF (extract_and_store_accounts):
     # sem valor nao ha conta a pagar.
     if not payload.get("amount"):
         email_rec["notes"] = "Valor ausente ou zero no corpo do e-mail"
-        return False
+        return BODY_NONE
 
-    # Dedup de conteudo: mesmo pedido de pagamento reenviado em outro e-mail.
-    if ctrl.financial_duplicate_exists(payload):
-        log.info("    [DUP-DOC] conta do corpo do e-mail já existe — ignorada")
-        return False
+    # Dedup de conteudo: o MESMO pagavel ja registrado por outro e-mail (a
+    # mensagem original e seu RES:/encaminhamento, p.ex.). NAO e falha — a conta
+    # existe; sinaliza para o e-mail virar 'ignorado' (duplicata), nao 'falha'.
+    dup = ctrl.find_financial_duplicate(payload)
+    if dup:
+        dup_id = dup.get("id")
+        log.info(f"    [DUP-DOC] conta do corpo já registrada (id {dup_id}) — e-mail será 'ignorado'")
+        email_rec["notes"] = f"Duplicata — conta já registrada (id {dup_id})"
+        email_rec["duplicate_of"] = dup_id
+        return BODY_DUPLICATE
 
     if payload.get("invoice_number"):
         payload["invoice_number"] = ctrl.unique_invoice_number(payload["invoice_number"])
 
     if ctrl.register_financial(payload):
         log.info("    Conta extraída do corpo do e-mail e gravada em financial_account_control")
-        return True
+        return BODY_CREATED
 
     email_rec["notes"] = "Falha ao gravar conta extraida do corpo do e-mail"
-    return False
+    return BODY_NONE
 
 # ---------------------------------------------------------------------------
 # Processar um e-mail
@@ -1695,7 +1723,8 @@ def _parse_internaldate(fetch_meta: bytes | None) -> str | None:
 
 def status_for_result(has_attachment: bool, csv_generated: bool,
                        body_created: bool, pure_nfe: bool = False,
-                       accounts_saved: int = 0, notification: bool = False) -> str:
+                       accounts_saved: int = 0, notification: bool = False,
+                       duplicate: bool = False) -> str:
     """Deriva email_control.status a partir do resultado real do processamento.
 
     Prioridade (CHECK migration 022): conta do PDF > conta do corpo > NF-e pura
@@ -1705,7 +1734,8 @@ def status_for_result(has_attachment: bool, csv_generated: bool,
       - pure_nfe       -> 'ignorado'  (assunto NF-e/NFS-e puro, sem pagavel e sem
                                        conta: notificacao fiscal, nao e conta a pagar)
       - csv_generated  -> 'extraído'  (PDF lido — conta nova ou reemissao deduplicada)
-      - body_created   -> 'recebido'  (conta extraida do corpo do e-mail)
+      - body_created   -> 'recebido'     (conta extraida do corpo do e-mail)
+      - duplicate      -> 'duplicidade'  (pagavel do corpo duplica conta ja registrada)
       - has_attachment -> 'pendente'  (PDF salvo, aguardando reprocessamento)
       - notification   -> 'ignorado'  (sem anexo/conta: notificacao/aviso, nao pagavel)
       - nenhum         -> 'falha'     (casou keyword, mas nada foi gerado)
@@ -1726,6 +1756,11 @@ def status_for_result(has_attachment: bool, csv_generated: bool,
         return "extraído"
     if body_created:
         return "recebido"
+    # Pagável do corpo duplica conta já registrada por outro e-mail: a conta
+    # existe, então NÃO é falha — vira 'duplicidade' (status próprio). Vem antes
+    # de 'has_attachment' porque "já registrada" descreve melhor que "pendente".
+    if duplicate:
+        return "duplicidade"
     if has_attachment:
         return "pendente"
     if notification:
@@ -1858,22 +1893,24 @@ def process_message(mail, uid: bytes, keywords: list,
         # (accounts_saved == 0). Assim os dados do corpo nunca conflitam com um
         # arquivo anexado válido (reconhecido como conta a pagar) — havendo conta
         # do anexo, o corpo é ignorado. try_extract_from_body valida fornecedor+valor.
-        body_created = False
+        body_outcome = BODY_NONE
         if accounts_saved == 0:
-            body_created = try_extract_from_body(rec, body_text, received_at, message_id, ctrl,
+            body_outcome = try_extract_from_body(rec, body_text, received_at, message_id, ctrl,
                                                  sender_email=sender_email)
-            if body_created:
+            if body_outcome == BODY_CREATED:
                 rec["pdf_extracted"] = True
                 rec["notes"]         = "Conta extraída do corpo do e-mail"
+        body_created = body_outcome == BODY_CREATED
 
-        # Status (CHECK migration 022): conta do PDF > conta do corpo > anexo sem
-        # conta. A conta vinda do corpo (body_created) prevalece sobre o anexo que
-        # nao gerou CSV — assim um e-mail com anexo cuja conta saiu do corpo fica
-        # 'recebido', e nao um falso 'pendente'.
+        # Status (CHECK migration 022): conta do PDF > conta do corpo > duplicata >
+        # anexo sem conta. A conta vinda do corpo (body_created) prevalece sobre o
+        # anexo que nao gerou CSV; uma duplicata do corpo (pagavel ja registrado
+        # por outro e-mail) vira 'ignorado' em vez de 'falha'.
         rec["status"] = status_for_result(
             has_att, csv_generated, body_created,
             pure_nfe=subject_is_pure_nfe(subject), accounts_saved=accounts_saved,
-            notification=subject_is_ignorable_notification(subject))
+            notification=subject_is_ignorable_notification(subject),
+            duplicate=(body_outcome == BODY_DUPLICATE))
 
         # Regra: TODA falha gera log em email_processing_errors para revisão —
         # inclusive o corpo sem sinal financeiro, que antes saía silencioso.
@@ -1997,13 +2034,19 @@ def _connect_and_search(criteria: str):
 
 
 def run_reader(days: int = 0, all_: bool = False,
-               dry_run: bool = False, mark_seen: bool = False) -> dict:
+               dry_run: bool = False, mark_seen: bool = False,
+               on_progress=None) -> dict:
     """
     Lê a caixa IMAP, filtra/deduplica e processa os e-mails financeiros.
 
     Reutilizável tanto pelo CLI (main) quanto pelo backend HTTP (server/app.py).
     Retorna um dicionário-resumo da execução. Lança RuntimeError em falha de IMAP
     (em vez de sys.exit) para que o chamador HTTP possa devolver um erro tratado.
+
+    on_progress: callback opcional `(dict) -> None` chamado a cada e-mail com o
+    progresso atual ({phase, total, done, processed, skipped_keyword, skipped_dup}).
+    Best-effort — exceções no callback são engolidas e nunca derrubam o run. Usado
+    pelo Flask para servir GET /api/emails/progress; o CLI não passa callback.
     """
     kw_env   = os.getenv("EMAIL_KEYWORDS", "")
     keywords = [k.strip() for k in kw_env.split(",")] if kw_env else KEYWORDS_DEFAULT
@@ -2042,8 +2085,24 @@ def run_reader(days: int = 0, all_: bool = False,
     processed = skipped_kw = skipped_dup = 0
     new_subjects = []
     api_aborted = False
+    total = len(uids)
 
-    for uid in uids:
+    def _emit(phase: str, done: int) -> None:
+        """Reporta progresso ao callback (best-effort — nunca derruba o run)."""
+        if not on_progress:
+            return
+        try:
+            on_progress({
+                "phase": phase, "total": total, "done": done,
+                "processed": processed, "skipped_keyword": skipped_kw,
+                "skipped_dup": skipped_dup,
+            })
+        except Exception:  # noqa: BLE001 — progresso é informativo, não crítico
+            pass
+
+    _emit("lendo", 0)
+    for idx, uid in enumerate(uids, 1):
+        _emit("lendo", idx - 1)  # done = e-mails já concluídos antes deste
         try:
             # Header enxuto para filtrar/registrar rapidamente (inclui remetente e
             # data, necessários para registrar também os e-mails 'ignorado').
@@ -2107,6 +2166,7 @@ def run_reader(days: int = 0, all_: bool = False,
         processed += 1
         new_subjects.append(subject[:120])
 
+    _emit("concluído", total)
     mail.logout()
 
     log.info("=" * 58)

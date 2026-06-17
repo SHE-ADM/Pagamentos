@@ -26,7 +26,7 @@ const falhaRow = {
   status: 'falha', notes: null, processed_at: '2026-06-10T12:00:00Z',
   updated_at: '2026-06-10T12:00:00Z', reviewed_at: null,
 };
-vi.mock('../services/emailReader', () => ({ triggerEmailRead: vi.fn() }));
+vi.mock('../services/emailReader', () => ({ startEmailRead: vi.fn(), getEmailReadProgress: vi.fn() }));
 vi.mock('../hooks/useIdleLogout', () => ({ suspendIdleLogout: vi.fn(), resumeIdleLogout: vi.fn() }));
 
 import Emails from './Emails';

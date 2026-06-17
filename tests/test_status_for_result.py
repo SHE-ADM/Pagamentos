@@ -101,6 +101,32 @@ class StatusForResultTest(unittest.TestCase):
             "pendente",
         )
 
+    def test_duplicata_do_corpo_resulta_duplicidade(self):
+        # Pagável do corpo duplica conta já registrada por outro e-mail:
+        # status próprio 'duplicidade' (não 'falha' nem 'recebido').
+        self.assertEqual(
+            read_emails.status_for_result(has_attachment=False, csv_generated=False,
+                                          body_created=False, duplicate=True),
+            "duplicidade",
+        )
+
+    def test_duplicata_tem_precedencia_sobre_anexo_e_notificacao(self):
+        # Mesmo com anexo/notificação, "já registrada" descreve melhor → duplicidade.
+        self.assertEqual(
+            read_emails.status_for_result(has_attachment=True, csv_generated=False,
+                                          body_created=False, notification=True,
+                                          duplicate=True),
+            "duplicidade",
+        )
+
+    def test_conta_nova_do_corpo_tem_precedencia_sobre_duplicata(self):
+        # body_created (conta nova gravada) vem antes de duplicate.
+        self.assertEqual(
+            read_emails.status_for_result(has_attachment=False, csv_generated=False,
+                                          body_created=True, duplicate=True),
+            "recebido",
+        )
+
     def test_nfe_com_conta_resulta_extraido(self):
         # NF-e + boleto: conta foi gravada (accounts_saved>0) → 'extraído' prevalece
         # sobre pure_nfe, para nao esconder a conta a pagar.

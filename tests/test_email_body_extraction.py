@@ -40,6 +40,10 @@ class FakeControl:
     def financial_duplicate_exists(self, payload):
         return self.duplicate
 
+    def find_financial_duplicate(self, payload):
+        # try_extract_from_body usa o id da conta existente na nota de duplicidade.
+        return {"id": 999} if self.duplicate else None
+
 
 # Corpo real (resumido) da notificacao de NF-e da Editora Globo S.A.
 # Inclui a chave de acesso de 44 digitos — o que tornava o payload nao-nulo e
@@ -110,6 +114,20 @@ class ClassifyBodyDocTypeTest(unittest.TestCase):
             read_emails._classify_body_doc_type("Cobranca avulsa sem tipo definido"),
             "outro",
         )
+
+    def test_confeccoes_nao_vira_nfe(self):
+        # Regressão (e-mail da RTE): 'nfe' como substring casava "CONFECCOES" e
+        # classificava uma FATURA como NF-e (pulada). Agora casa palavra inteira:
+        # o destinatário "TEXTIL E CONFECCOES OTIMOTEX" não vira nfe, e o termo
+        # 'fatura' do corpo prevalece — gerando conta a pagar.
+        body = "Olá TEXTIL E CONFECCOES OTIMOTEX LTDA, aqui está sua fatura 13647248-26"
+        self.assertEqual(read_emails._classify_body_doc_type(body), "fatura")
+
+    def test_substring_curta_nao_dispara_tipo_errado(self):
+        # 'das' não pode casar "vendas"; 'gru' não pode casar "grupo";
+        # 'iss' não pode casar "emissao" — todos viram 'outro'.
+        for txt in ("relatorio de vendas", "nosso grupo de clientes", "data de emissao"):
+            self.assertEqual(read_emails._classify_body_doc_type(txt), "outro", txt)
 
     def test_classifica_container(self):
         self.assertEqual(
@@ -227,16 +245,42 @@ class ExtractFromEmailBodyTest(unittest.TestCase):
         self.assertEqual(payload["supplier_name"], "João Silva")
 
 
+class SiegBodyTest(unittest.TestCase):
+    """Caso SIEG: o aviso de fatura (link quebrado) é pagável pelo corpo, mas a
+    confirmação de pagamento já feito não pode virar conta."""
+
+    FATURA = ("TEXTIL E CONFECÇÕES OTIMOTEX LTDA, Estamos enviando esse e-mail apenas "
+              "para lembrar que a cobrança referente a utilização das SOLUÇÕES SIEG no "
+              "valor de R$ 426,80 vence hoje. Clique aqui para visualizar a sua fatura.")
+    CONFIRMACAO = ("TEXTIL E CONFECÇÕES OTIMOTEX LTDA, Essa mensagem é só para informar "
+                   "que identificamos o pagamento da fatura R$ 426,80 vencimento 15/05/2026. "
+                   "Mais uma vez, obrigado por escolher a SIEG!")
+
+    def test_fatura_sieg_link_quebrado_extrai_do_corpo(self):
+        # 'CONFECÇÕES' não pode mais classificar como nfe; 'fatura' → pagável.
+        p = read_emails.extract_from_email_body(
+            self.FATURA, "2026-06-16T00:00:00+00:00", "<sieg-fat>", sender_email="financeiro@sieg.com")
+        self.assertIsNotNone(p)
+        self.assertEqual(p["amount"], 426.80)
+        self.assertEqual(p["document_type"], "fatura")
+
+    def test_confirmacao_sieg_nao_gera_conta(self):
+        # "identificamos o pagamento" = comprovante de pagamento já feito → None.
+        p = read_emails.extract_from_email_body(
+            self.CONFIRMACAO, "2026-06-16T00:00:00+00:00", "<sieg-conf>", sender_email="financeiro@sieg.com")
+        self.assertIsNone(p)
+
+
 class TryExtractFromBodyTest(unittest.TestCase):
     def test_nfe_nao_gera_conta_a_pagar(self):
         """Regressao do bug: NF-e nao pode ser gravada em financial_account_control."""
         ctrl = FakeControl()
-        gravou = read_emails.try_extract_from_body(
+        outcome = read_emails.try_extract_from_body(
             {"message_id": "<msg-nfe>"}, NFE_BODY,
             "2026-06-10T14:23:39+00:00", "<msg-nfe>", ctrl,
             sender_email="nfe@edglobo.com.br",
         )
-        self.assertFalse(gravou)
+        self.assertEqual(outcome, read_emails.BODY_NONE)
         self.assertEqual(ctrl.financial_calls, [])  # nada gravado
         self.assertEqual(ctrl.error_calls, [])      # skip silencioso, nao e erro
 
@@ -245,10 +289,10 @@ class TryExtractFromBodyTest(unittest.TestCase):
         # Corpo com numero de documento (sinal financeiro) mas sem valor R$.
         body = "Fatura n. 9876 referente ao servico prestado."
         rec = {"message_id": "<msg-sem-valor>"}
-        gravou = read_emails.try_extract_from_body(
+        outcome = read_emails.try_extract_from_body(
             rec, body, "2026-06-10T00:00:00+00:00", "<msg-sem-valor>", ctrl,
         )
-        self.assertFalse(gravou)
+        self.assertEqual(outcome, read_emails.BODY_NONE)
         self.assertEqual(ctrl.financial_calls, [])
         # O log de erro agora e centralizado em process_message (TODA falha).
         # Aqui a funcao apenas anota o motivo em rec["notes"].
@@ -258,24 +302,28 @@ class TryExtractFromBodyTest(unittest.TestCase):
     def test_pedido_pix_legitimo_continua_gravando(self):
         """Garante que a correcao nao quebrou o caminho feliz (pagamento PIX)."""
         ctrl = FakeControl()
-        gravou = read_emails.try_extract_from_body(
+        outcome = read_emails.try_extract_from_body(
             {"message_id": "<msg-pix>"}, PIX_BODY,
             "2026-06-10T00:00:00+00:00", "<msg-pix>", ctrl,
         )
-        self.assertTrue(gravou)
+        self.assertEqual(outcome, read_emails.BODY_CREATED)
         self.assertEqual(len(ctrl.financial_calls), 1)
         self.assertEqual(ctrl.financial_calls[0]["payment_method"], "pix")
         self.assertEqual(ctrl.error_calls, [])
 
-    def test_documento_duplicado_e_ignorado(self):
-        """Conteudo ja existente no banco (remetente reenviou) nao grava de novo."""
+    def test_documento_duplicado_vira_duplicidade(self):
+        """Conteudo ja existente no banco (remetente reenviou) nao grava de novo:
+        retorna BODY_DUPLICATE e referencia o id da conta existente."""
         ctrl = FakeControl()
-        ctrl.duplicate = True  # financial_duplicate_exists -> True
-        gravou = read_emails.try_extract_from_body(
-            {"message_id": "<msg-pix-2>"}, PIX_BODY,
+        ctrl.duplicate = True  # find_financial_duplicate -> {"id": 999}
+        rec = {"message_id": "<msg-pix-2>"}
+        outcome = read_emails.try_extract_from_body(
+            rec, PIX_BODY,
             "2026-06-10T00:00:00+00:00", "<msg-pix-2>", ctrl,
         )
-        self.assertFalse(gravou)
+        self.assertEqual(outcome, read_emails.BODY_DUPLICATE)
+        self.assertEqual(rec.get("duplicate_of"), 999)
+        self.assertIn("999", rec.get("notes", ""))
         self.assertEqual(ctrl.financial_calls, [])  # nada gravado
         self.assertEqual(ctrl.error_calls, [])      # duplicata e skip, nao erro
 
