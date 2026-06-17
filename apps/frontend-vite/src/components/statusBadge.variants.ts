@@ -32,7 +32,7 @@ type BadgeVariant = NonNullable<VariantProps<typeof badgeVariants>['variant']>;
 // Valores de status/situação — recebem ponto colorido à esquerda.
 const STATUS_VARIANT: Record<string, BadgeVariant> = {
   // financial_account_control.status (ciclo de vida do pagamento — migration 018)
-  pendente: 'amber',
+  pendente: 'slate',
   'a vencer': 'blue',
   vencido: 'red',
   prorrogado: 'blue',
@@ -45,15 +45,12 @@ const STATUS_VARIANT: Record<string, BadgeVariant> = {
   'não pago': 'red',
   cancelado: 'slate',
   falha: 'red',
-  // email_control.status (migration 022) — 'pendente' e 'falha' já mapeados acima.
-  // recebido = conta via corpo (sucesso); extraído = conta de PDF; ignorado = não-financeiro.
-  recebido: 'blue',
+  // email_control.status (migration 022). Esquema simplificado (decisão de UI):
+  // extraído + recebido = VERDE (sucesso); pendente + ignorado + duplicidade = CINZA.
+  recebido: 'emerald',
   extraído: 'emerald',
   ignorado: 'slate',
-  // duplicidade (migration 031): pagável já registrado por outro e-mail. Teal
-  // (variante 'source') para destacar e distinguir de 'ignorado' (slate); kind
-  // 'status' (ponto, não ícone) por estar no STATUS_VARIANT.
-  duplicidade: 'source',
+  duplicidade: 'slate',
   // email_processing_errors.error_type
   sem_valor: 'amber',
   sem_fornecedor: 'amber',

@@ -14,7 +14,10 @@ vi.mock('../services/supabase', () => ({
   getAccountsByMessageId: (...a: unknown[]) => getAccountsByMessageId(...a),
   getInvoiceNumbersByMessageIds: (...a: unknown[]) => getInvoiceNumbersByMessageIds(...a),
 }));
-vi.mock('../services/emailReader', () => ({ startEmailRead: vi.fn(), getEmailReadProgress: vi.fn() }));
+vi.mock('../services/emailReader', () => ({
+  startEmailRead: vi.fn(),
+  getEmailReadProgress: vi.fn(() => Promise.resolve({ running: false })),
+}));
 vi.mock('../hooks/useIdleLogout', () => ({ suspendIdleLogout: vi.fn(), resumeIdleLogout: vi.fn() }));
 
 import Emails from './Emails';

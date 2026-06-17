@@ -32,7 +32,7 @@ export default {
           warning: { bg: '#fffbeb', fg: '#b45309', border: '#fde68a' },
           info: { bg: '#eff6ff', fg: '#1d4ed8', border: '#bfdbfe' },
           source: { bg: '#f0fdfa', fg: '#0f766e', border: '#99f6e4' }, // teal — origem da extração
-          neutral: { bg: '#f8fafc', fg: '#64748b', border: '#e2e8f0' }, // slate — neutro/cancelado
+          neutral: { bg: '#f8fafc', fg: '#475569', border: '#e2e8f0' }, // slate-600 — neutro/cancelado/pendente/ignorado/duplicidade (um pouco mais escuro)
         },
         ink: {
           primary: '#0f172a', // texto principal
