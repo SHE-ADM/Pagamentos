@@ -66,6 +66,51 @@ class StatusForResultTest(unittest.TestCase):
             "extraído",
         )
 
+    def test_nfe_pura_sem_conta_resulta_ignorado(self):
+        # Assunto NF-e puro, PDF gerou CSV (NF-e e SKIP_ACCOUNT_TYPES → sem conta):
+        # nao e conta a pagar, vira 'ignorado' em vez do antigo 'extraído'.
+        self.assertEqual(
+            read_emails.status_for_result(has_attachment=True, csv_generated=True,
+                                          body_created=False, pure_nfe=True,
+                                          accounts_saved=0),
+            "ignorado",
+        )
+
+    def test_nfe_pura_sem_anexo_resulta_ignorado(self):
+        # Notificacao de NF-e sem anexo/sem conta — nao polui /erros como 'falha'.
+        self.assertEqual(
+            read_emails.status_for_result(has_attachment=False, csv_generated=False,
+                                          body_created=False, pure_nfe=True),
+            "ignorado",
+        )
+
+    def test_notificacao_sem_anexo_resulta_ignorado(self):
+        # Sem anexo, sem CSV, sem conta no corpo, mas assunto de notificacao
+        # (aviso/confirmacao/informe/SIEG): 'ignorado' em vez de 'falha'.
+        self.assertEqual(
+            read_emails.status_for_result(has_attachment=False, csv_generated=False,
+                                          body_created=False, notification=True),
+            "ignorado",
+        )
+
+    def test_notificacao_com_anexo_continua_pendente(self):
+        # Notificacao mas COM anexo (PDF salvo) -> revisar (pendente), nao ignorar.
+        self.assertEqual(
+            read_emails.status_for_result(has_attachment=True, csv_generated=False,
+                                          body_created=False, notification=True),
+            "pendente",
+        )
+
+    def test_nfe_com_conta_resulta_extraido(self):
+        # NF-e + boleto: conta foi gravada (accounts_saved>0) → 'extraído' prevalece
+        # sobre pure_nfe, para nao esconder a conta a pagar.
+        self.assertEqual(
+            read_emails.status_for_result(has_attachment=True, csv_generated=True,
+                                          body_created=False, pure_nfe=True,
+                                          accounts_saved=1),
+            "extraído",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

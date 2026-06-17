@@ -46,12 +46,27 @@ describe('Consulta', () => {
     const user = userEvent.setup();
     render(<Consulta />);
 
-    const supplier = screen.getByPlaceholderText('Fornecedor, CNPJ, Nº doc, assunto ou remetente…');
+    const supplier = screen.getByPlaceholderText('Fornecedor, CNPJ, Nº doc, assunto, remetente ou e-mail…');
     await user.type(supplier, 'ACME');
     expect(supplier).toHaveValue('ACME');
 
-    await user.click(screen.getByRole('button', { name: /Limpar/ }));
+    await user.click(screen.getByRole('button', { name: 'Limpar' }));
     expect(supplier).toHaveValue('');
+  });
+
+  it('o ícone de limpar aparece com texto e zera a busca', async () => {
+    const user = userEvent.setup();
+    render(<Consulta />);
+
+    const supplier = screen.getByPlaceholderText('Fornecedor, CNPJ, Nº doc, assunto, remetente ou e-mail…');
+    // sem texto, o ícone de limpar não é renderizado
+    expect(screen.queryByRole('button', { name: 'Limpar busca' })).not.toBeInTheDocument();
+
+    await user.type(supplier, 'ACME');
+    await user.click(screen.getByRole('button', { name: 'Limpar busca' }));
+
+    expect(supplier).toHaveValue('');
+    expect(screen.queryByRole('button', { name: 'Limpar busca' })).not.toBeInTheDocument();
   });
 
   it('atualiza o card "Valor total" conforme o filtro do card Pendentes', async () => {

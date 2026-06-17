@@ -24,11 +24,18 @@ export default function ForgotPasswordForm() {
 
   const onSubmit = async (data: ForgotPasswordInput) => {
     setLoading(true);
-    await supabase.auth.resetPasswordForEmail(data.email, {
-      redirectTo: `${globalThis.location.origin}/auth/reset-password`,
-    });
-    setLoading(false);
-    setSent(true);
+    try {
+      await supabase.auth.resetPasswordForEmail(data.email, {
+        redirectTo: `${globalThis.location.origin}/auth/reset-password`,
+      });
+    } catch {
+      // Mensagem sempre genérica: não revelar se o e-mail existe nem o erro
+      // (regra de segurança). O catch apenas evita unhandled rejection e o
+      // loading preso; o estado de "enviado" é exibido de qualquer forma.
+    } finally {
+      setLoading(false);
+      setSent(true);
+    }
   };
 
   if (sent) {

@@ -124,6 +124,22 @@ export async function getEmailControl({
   return merged.sort((a, b) => (b.received_at ?? '').localeCompare(a.received_at ?? ''));
 }
 
+// Marca um e-mail como revisado (reviewed_at = agora) — usado em /emails ao abrir
+// o card de detalhes de um e-mail com falha. A migration 030 restringe o papel
+// `authenticated` a escrever SOMENTE a coluna reviewed_at. Retorna o ISO gravado.
+export async function markEmailReviewed(id: number): Promise<string> {
+  const reviewedAt = new Date().toISOString();
+  const url = new URL(`${BASE_URL}/rest/v1/email_control`);
+  url.searchParams.set('id', `eq.${id}`);
+  const res = await fetch(url.toString(), {
+    method: 'PATCH',
+    headers: await authHeaders({ Prefer: 'return=minimal' }),
+    body: JSON.stringify({ reviewed_at: reviewedAt }),
+  });
+  if (!res.ok) throw new Error(`Supabase ${res.status}: ${await res.text()}`);
+  return reviewedAt;
+}
+
 // Contagens por status (taxonomia da migration 022) — uma KPI por status.
 export interface EmailStats {
   total: number;
@@ -178,16 +194,41 @@ interface Paginated<T> {
 
 // Aplica os filtros de financial_account_control nos search params — compartilhado
 // entre a listagem paginada e a soma do card "Valor total".
+// Pré-resolve os supplier_id cujos e-mails cadastrados (email/email2/email3/email4)
+// casam com o termo. O resultado alimenta o filtro `supplier_id IN (...)` da busca de
+// contas — assim a pesquisa por e-mail do fornecedor funciona sem JOIN no PostgREST.
+// Os índices GIN trigram (migration 029) suportam o ILIKE '%termo%'.
+async function findSupplierIdsByEmail(term: string): Promise<number[]> {
+  const url = new URL(`${BASE_URL}/rest/v1/supplier`);
+  url.searchParams.set('select', 'supplier_id');
+  url.searchParams.set(
+    'or',
+    `(email.ilike.*${term}*,email2.ilike.*${term}*,email3.ilike.*${term}*,email4.ilike.*${term}*)`,
+  );
+  url.searchParams.set('limit', '1000');
+  const res = await fetch(url.toString(), { headers: await authHeaders() });
+  if (!res.ok) return [];
+  const data = (await res.json()) as { supplier_id: number }[];
+  return data.map((r) => r.supplier_id);
+}
+
 function applyFinancialFilters(
   params: URLSearchParams,
   { supplier, docType, status, dueStatuses, paymentMethod, dateFrom, dateTo }: FinancialAccountControlFilters,
+  supplierIds: number[] = [],
 ): void {
-  // or= em cinco colunas: nome, CNPJ/CPF, nº documento, assunto e remetente
+  // or= em cinco colunas (nome, CNPJ/CPF, nº documento, assunto e remetente) mais,
+  // quando o termo casa e-mail cadastrado do fornecedor, os supplier_id resolvidos.
   if (supplier) {
-    params.set(
-      'or',
-      `(supplier_name.ilike.*${supplier}*,supplier_cnpj.ilike.*${supplier}*,invoice_number.ilike.*${supplier}*,subject.ilike.*${supplier}*,sender_email.ilike.*${supplier}*)`,
-    );
+    const clauses = [
+      `supplier_name.ilike.*${supplier}*`,
+      `supplier_cnpj.ilike.*${supplier}*`,
+      `invoice_number.ilike.*${supplier}*`,
+      `subject.ilike.*${supplier}*`,
+      `sender_email.ilike.*${supplier}*`,
+    ];
+    if (supplierIds.length) clauses.push(`supplier_id.in.(${supplierIds.join(',')})`);
+    params.set('or', `(${clauses.join(',')})`);
   }
   if (docType) params.set('document_type', `eq.${docType}`);
   // Sem filtro de status → exclui cancelado por padrão; filtro explícito sobrescreve.
@@ -218,7 +259,8 @@ export async function getFinancialAccountControl({
   url.searchParams.set('order', sortCol ? `${sortCol}.${sortDir ?? 'asc'}` : 'issue_date.desc');
   url.searchParams.set('limit', String(pageSize));
   url.searchParams.set('offset', String(offset));
-  applyFinancialFilters(url.searchParams, { supplier, docType, status, dueStatuses, paymentMethod, dateFrom, dateTo });
+  const supplierIds = supplier ? await findSupplierIdsByEmail(supplier) : [];
+  applyFinancialFilters(url.searchParams, { supplier, docType, status, dueStatuses, paymentMethod, dateFrom, dateTo }, supplierIds);
   const reqHeaders = await authHeaders({ Prefer: 'count=exact' });
   const res = await fetch(url.toString(), { headers: reqHeaders });
   if (!res.ok) throw new Error(`Supabase ${res.status}: ${await res.text()}`);
@@ -237,7 +279,8 @@ export async function getFinancialAccountTotalValue(
   const url = new URL(`${BASE_URL}/rest/v1/financial_account_control`);
   url.searchParams.set('select', 'amount');
   url.searchParams.set('limit', '10000');
-  applyFinancialFilters(url.searchParams, filters);
+  const supplierIds = filters.supplier ? await findSupplierIdsByEmail(filters.supplier) : [];
+  applyFinancialFilters(url.searchParams, filters, supplierIds);
   const res = await fetch(url.toString(), { headers: await authHeaders() });
   if (!res.ok) throw new Error(`Supabase ${res.status}: ${await res.text()}`);
   const data = (await res.json()) as { amount: number | null }[];

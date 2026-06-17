@@ -1,4 +1,5 @@
 import { createElement, type ReactNode } from 'react';
+import { CheckCircle2 } from 'lucide-react';
 import type { FinancialAccountControl, EmailControl } from '@sheild/shared';
 import StatusBadge from '../components/StatusBadge';
 
@@ -188,7 +189,25 @@ export function getEmailColumns(invoiceMap: Record<string, string>): ColumnDef<E
     {
       key: 'status',
       header: 'Status',
-      render: (r) => createElement(StatusBadge, { value: r.status }),
+      // E-mail 'falha' já revisado (card de detalhes aberto) ganha um check verde
+      // ao lado do badge — sinaliza visualmente o que o usuário já triou.
+      render: (r) => {
+        const badge = createElement(StatusBadge, { value: r.status });
+        if (r.status !== 'falha' || !r.reviewed_at) return badge;
+        return createElement(
+          'span',
+          {
+            className: 'inline-flex items-center gap-1',
+            title: `Revisado em ${fmtDateTime(r.reviewed_at)}`,
+          },
+          badge,
+          createElement(CheckCircle2, {
+            size: 14,
+            className: 'text-status-success-fg shrink-0',
+            'aria-label': 'Revisado',
+          }),
+        );
+      },
     },
   ];
 }

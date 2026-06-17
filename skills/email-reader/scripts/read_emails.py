@@ -74,9 +74,13 @@ KEYWORDS_DEFAULT = [
     "boleto", "nota fiscal", "nf-e", "nfe", "fatura",
     "cobrança", "vencimento", "pagamento", "pagamentos",
     "pagamento fornecedor", "pagamentos fornecedores", "duplicata",
-    "recibo", "nfs-e", "danfe",
-    # Guias de tributos federais/estaduais/municipais
-    "simples nacional", "simei", "darf", "gps", "gare",
+    "recibo", "nfs-e", "nfse", "notas fiscais", "danfe",
+    # Guias de tributos federais/estaduais/municipais. Os acronimos curtos
+    # (darf, das, dae, dam, duam, gru, gnre, gare, ipva, iptu, iss, itbi) casam
+    # por PALAVRA INTEIRA — ver WORD_KEYWORDS/match_keyword — para nao casarem
+    # dentro de palavras comuns ('das' em 'cadastro', 'iss' em 'emissao').
+    "simples nacional", "simei", "darf", "das", "dae", "dam", "duam",
+    "gps", "gru", "gnre", "gare", "ipva", "iptu", "iss", "itbi",
     "guia", "guia de pagamento", "guia de recolhimento",
     # Conhecimento de Transporte Eletronico
     "ct-e", "cte", "dacte", "transporte", "transportadora", "conhecimento de transporte",
@@ -84,6 +88,8 @@ KEYWORDS_DEFAULT = [
     "fechamento",
     # Seguro
     "seguro",
+    # Operacoes de cambio (le 'cambio' ou 'câmbio'; gravado como 'câmbio')
+    "câmbio",
     # Honorários (serviços profissionais — geralmente pagos via PIX)
     "honorário", "honorários", "honorario", "honorarios",
     # Container (frete/demurrage/movimentação de contêineres)
@@ -529,6 +535,41 @@ def get_body_html(msg) -> str:
     return html
 
 
+def _html_to_text(html: str) -> str:
+    """Converte HTML em texto plano para a extracao de corpo de e-mails SO-HTML
+    (ex.: Correios), onde get_body_text() volta vazio. Remove script/style, troca
+    quebras de bloco por '\\n', tira as demais tags, desescapa entidades e colapsa
+    espacos — preservando rotulos como 'Fatura nº: 3918439' e 'R$ 1.530,47'."""
+    if not html:
+        return ""
+    text = re.sub(r"(?is)<(script|style)\b.*?</\1>", " ", html)
+    text = re.sub(r"(?i)<br\s*/?>", "\n", text)
+    text = re.sub(r"(?i)</(p|div|tr|li|h[1-6]|table)>", "\n", text)
+    text = re.sub(r"<[^>]+>", " ", text)
+    text = html_unescape(text)
+    text = re.sub(r"[ \t ]+", " ", text)
+    text = re.sub(r"\n\s*\n+", "\n", text)
+    return text.strip()
+
+
+# Remetente (dominio) -> nome de fornecedor conhecido. Usado na extracao de corpo
+# quando NAO ha rotulo ("Fornecedor:") nem CNPJ/CPF: para esses remetentes o nome
+# real e estavel e o corpo nao o traz. Ex.: Correios envia de
+# noreply_componentes@correios.com.br e o corpo so diz "Email Correios".
+_SENDER_SUPPLIER_MAP = {"correios.com.br": "Correios"}
+
+
+def _supplier_from_sender(sender_email: str | None) -> "str | None":
+    """Nome de fornecedor conhecido a partir do dominio do remetente, ou None."""
+    domain = (sender_email or "").split("@")[-1].lower().strip()
+    if not domain:
+        return None
+    for known, name in _SENDER_SUPPLIER_MAP.items():
+        if domain == known or domain.endswith("." + known):
+            return name
+    return None
+
+
 def safe_filename(text: str, max_len: int = 40) -> str:
     # Remove acentos e caracteres nao-ASCII (ex.: º, ª, ç, ã). O nome vira a
     # chave do objeto no Supabase Storage, que rejeita chaves com esses
@@ -540,12 +581,94 @@ def safe_filename(text: str, max_len: int = 40) -> str:
     return text[:max_len]
 
 
+# Acronimos de guias/tributos + cambio: casam como PALAVRA inteira (fronteira
+# \b), nao substring — evita falsos positivos ('das' em 'cadastro'/'vendas',
+# 'iss' em 'emissao', 'gru' em 'grupo', 'cambio' em 'intercambio'). A comparacao
+# remove acentos e baixa a caixa, entao a chave 'cambio' casa 'cambio'/'câmbio'/
+# 'CÂMBIO' e a forma gramatical correta 'câmbio' fica gravada como keyword.
+WORD_KEYWORDS = frozenset({
+    "darf", "das", "dae", "dam", "duam", "gps", "gru", "gnre", "gare",
+    "ipva", "iptu", "iss", "itbi", "cambio",
+})
+
+# Termos de NF-e/NFS-e no assunto. Um e-mail "puro" de NF-e (so notificacao de
+# documento fiscal, sem indicio de pagavel) que nao gera conta vira 'ignorado'.
+NFE_SUBJECT_TERMS = ("notas fiscais", "nota fiscal", "nfe", "nf-e", "nfse", "nfs-e")
+
+# Indicios de que o e-mail traz algo PAGAVEL. Se aparecerem junto da NF-e no
+# assunto (ex.: 'Boleto e NFS-e', 'NFSe e FATURA'), NAO classificar como
+# 'ignorado' — pode ser um boleto/fatura cuja extracao falhou e precisa revisao.
+PAYABLE_HINT_TERMS = ("boleto", "fatura", "cobranca", "guia", "pix", "duplicata",
+                      "vencimento", "vencer", "pagar", "darf", "das", "dae",
+                      "dam", "duam", "gps", "gru", "gnre", "gare", "ipva",
+                      "iptu", "iss", "itbi", "tributo", "imposto", "taxa")
+
+
+def _strip_accents_lower(s: str) -> str:
+    """NFD + drop non-ASCII + lower — base da comparacao de keyword (sem acento)."""
+    return unicodedata.normalize("NFD", s or "").encode("ascii", "ignore").decode().lower()
+
+
+def _has_word(s_norm: str, term_norm: str) -> bool:
+    """True se term_norm aparece como PALAVRA inteira em s_norm (ambos ja sem acento)."""
+    return bool(term_norm) and re.search(rf"\b{re.escape(term_norm)}\b", s_norm) is not None
+
+
 def match_keyword(subject: str, keywords: list) -> str | None:
-    s = subject.lower()
+    """Retorna a keyword casada (forma original) ou None. Comparacao sem acento;
+    acronimos de tributo/cambio (WORD_KEYWORDS) exigem palavra inteira, o resto
+    e substring."""
+    s = _strip_accents_lower(subject)
     for kw in keywords:
-        if kw.lower() in s:
+        kw_norm = _strip_accents_lower(kw)
+        if not kw_norm:
+            continue
+        if kw_norm in WORD_KEYWORDS:
+            if re.search(rf"\b{re.escape(kw_norm)}\b", s):
+                return kw
+        elif kw_norm in s:
             return kw
     return None
+
+
+def subject_is_pure_nfe(subject: str) -> bool:
+    """True se o assunto e de NF-e/NFS-e SEM nenhum indicio de pagavel — usado
+    para classificar como 'ignorado' quando nenhuma conta a pagar e gerada.
+
+    Os termos casam por PALAVRA inteira: 'nfe' como substring casaria 'co-nfe-ccoes'
+    (CONFECCOES), classificando erroneamente um aviso de transporte como NF-e pura.
+    """
+    s = _strip_accents_lower(subject)
+    has_nfe = any(_has_word(s, _strip_accents_lower(t)) for t in NFE_SUBJECT_TERMS)
+    if not has_nfe:
+        return False
+    return not any(_has_word(s, _strip_accents_lower(t)) for t in PAYABLE_HINT_TERMS)
+
+
+# Termos de NOTIFICACAO: e-mails de aviso/confirmacao que, SEM anexo e SEM conta
+# no corpo (i.e., nenhuma conta a pagar gerada), sao 'ignorado' em vez de 'falha'
+# — sao notificacoes, nao contas a pagar. Diferente do PAYABLE_HINT do pure_nfe:
+# aqui NAO ha exclusao por boleto/fatura, porque o gatilho ja exige ausencia de
+# anexo/conta — se nao veio anexo nem dado no corpo, e so um aviso.
+#   - palavra inteira (curtos/sigla): evita casar dentro de outras palavras.
+#   - frase (substring): expressoes inequivocas de notificacao.
+NOTIFICATION_WORD_TERMS = frozenset({"nfe", "nf-e", "informe", "sieg"})
+NOTIFICATION_PHRASE_TERMS = (
+    "informativo", "confirmado o pagamento", "confirmado pagamento",
+    "confirmacao de pagamento", "confirmacao do pagamento", "pagamento confirmado",
+    "pagamento processado", "aviso de vencimento",
+    "titulo a vencer", "lembrete de vencimento", "titulos proximos do vencimento",
+    "comprovante de pix", "protesto", "protestado", "cartorio", "comunicado",
+)
+
+
+def subject_is_ignorable_notification(subject: str) -> bool:
+    """True se o assunto e de uma NOTIFICACAO (aviso/confirmacao/informe/SIEG/NF-e)
+    que, sem anexo e sem conta no corpo, deve virar 'ignorado' em vez de 'falha'."""
+    s = _strip_accents_lower(subject)
+    if any(_has_word(s, t) for t in NOTIFICATION_WORD_TERMS):
+        return True
+    return any(_strip_accents_lower(t) in s for t in NOTIFICATION_PHRASE_TERMS)
 
 
 def append_log_csv(record: dict):
@@ -789,6 +912,8 @@ _BODY_DOC_KEYWORDS: list[tuple[str, list[str]]] = [
     ("GARE",       ["gare"]),
     ("tributo",    ["guia de recolhimento", "guia de pagamento",
                     "documento de arrecadacao"]),
+    # Fatura generica (ex.: Correios "Valor da fatura") — fallback antes de 'outro'.
+    ("fatura",     ["fatura"]),
 ]
 
 
@@ -941,10 +1066,13 @@ def extract_from_email_body(body_text: str, received_at: str, message_id: str,
         return None
 
     # Fornecedor sem rotulo nem identificador: tenta sinais (destinatario do pix
-    # "p/ <Nome>" / assinatura "Prof. <Nome>") antes de cair no e-mail do
-    # remetente. Havendo CNPJ/CPF, deixa o nome vazio (a trigger resolve pelo doc).
+    # "p/ <Nome>" / assinatura "Prof. <Nome>"), depois o mapa por remetente
+    # (ex.: correios.com.br -> "Correios") e, por fim, o e-mail do remetente.
+    # Havendo CNPJ/CPF, deixa o nome vazio (a trigger resolve pelo doc).
     if not supplier_name and not supplier_cnpj and not supplier_cpf:
-        supplier_name = _supplier_from_signals(body_text) or sender_email or "desconhecido"
+        supplier_name = (_supplier_from_signals(body_text)
+                         or _supplier_from_sender(sender_email)
+                         or sender_email or "desconhecido")
 
     has_pix = bool(_BODY_PIX_RE.search(body_text))
 
@@ -992,6 +1120,7 @@ def extract_from_email_body(body_text: str, received_at: str, message_id: str,
         "due_date":          due_date,
         "issue_date":        issue_date,
         "invoice_number":    invoice_number,
+        # Sempre 'pendente' — a baixa/atualizacao do status e feita pelo usuario.
         "status":            "pendente",
         "extracted_at":      datetime.now(timezone.utc).isoformat(),
     })
@@ -1547,26 +1676,59 @@ def _parse_internaldate(fetch_meta: bytes | None) -> str | None:
 
 
 def status_for_result(has_attachment: bool, csv_generated: bool,
-                       body_created: bool) -> str:
+                       body_created: bool, pure_nfe: bool = False,
+                       accounts_saved: int = 0, notification: bool = False) -> str:
     """Deriva email_control.status a partir do resultado real do processamento.
 
-    Prioridade (CHECK migration 022): conta do PDF > conta do corpo > anexo sem
-    conta. A conta criada pelo corpo vale MESMO com anexo presente — o anexo,
-    nesse caso, nao gerou conta valida (csv_generated=False), entao 'recebido'
-    reflete a origem real (corpo), evitando o falso 'pendente'.
+    Prioridade (CHECK migration 022): conta do PDF > conta do corpo > NF-e pura
+    sem conta > CSV sem conta nova > anexo sem conta.
 
-      - csv_generated  -> 'extraído'  (PDF extraido, CSV gerado)
+      - accounts_saved -> 'extraído'  (conta(s) a pagar gravada(s) do PDF)
+      - pure_nfe       -> 'ignorado'  (assunto NF-e/NFS-e puro, sem pagavel e sem
+                                       conta: notificacao fiscal, nao e conta a pagar)
+      - csv_generated  -> 'extraído'  (PDF lido — conta nova ou reemissao deduplicada)
       - body_created   -> 'recebido'  (conta extraida do corpo do e-mail)
       - has_attachment -> 'pendente'  (PDF salvo, aguardando reprocessamento)
+      - notification   -> 'ignorado'  (sem anexo/conta: notificacao/aviso, nao pagavel)
       - nenhum         -> 'falha'     (casou keyword, mas nada foi gerado)
+
+    'accounts_saved' vem primeiro para nao esconder conta real de um e-mail cujo
+    assunto parece NF-e pura mas que de fato gerou conta (NF-e + boleto). NF-e/
+    NFS-e estao em SKIP_ACCOUNT_TYPES (nunca viram conta), entao 'pure_nfe' vem
+    antes do 'csv_generated' que o PDF de NF-e sempre produz. 'csv_generated'
+    segue tendo precedencia sobre 'body_created' (comportamento da migration 022).
+    'notification' fica no lugar do antigo 'falha' (sem anexo, sem CSV, sem conta):
+    avisos/confirmacoes/informes sem pagavel viram 'ignorado' em vez de 'falha'.
     """
+    if accounts_saved > 0:
+        return "extraído"
+    if pure_nfe:
+        return "ignorado"
     if csv_generated:
         return "extraído"
     if body_created:
         return "recebido"
     if has_attachment:
         return "pendente"
+    if notification:
+        return "ignorado"
     return "falha"
+
+
+def _rfc822_from_fetch(data: list) -> "tuple[bytes | None, bytes]":
+    """Extrai (meta, raw) do retorno de um FETCH '(INTERNALDATE RFC822)'.
+
+    O imaplib pode INTERCALAR respostas (ex.: um FLAGS/UID isolado como item
+    `bytes`) no meio do resultado. Quando o primeiro item nao e a tupla
+    (meta, raw), `data[0][1]` indexa um `bytes` e devolve um INT — e
+    `email.message_from_bytes(int)` chama `.decode()` internamente, quebrando com
+    "'int' object has no attribute 'decode'". Por isso pegamos o primeiro item
+    que seja uma tupla cujo segundo elemento sejam bytes (o conteudo RFC822)."""
+    for item in data or []:
+        if (isinstance(item, tuple) and len(item) >= 2
+                and isinstance(item[1], (bytes, bytearray))):
+            return item[0], bytes(item[1])
+    raise ValueError("FETCH nao retornou conteudo RFC822")
 
 
 def process_message(mail, uid: bytes, keywords: list,
@@ -1578,10 +1740,11 @@ def process_message(mail, uid: bytes, keywords: list,
 
     try:
         _, data = mail.uid("fetch", uid, "(INTERNALDATE RFC822)")
-        raw = data[0][1]
+        meta, raw = _rfc822_from_fetch(data)
         msg = email.message_from_bytes(raw)
 
-        message_id   = msg.get("Message-ID", f"no-id-{uid.decode()}").strip()
+        uid_str      = uid.decode() if isinstance(uid, (bytes, bytearray)) else str(uid)
+        message_id   = msg.get("Message-ID", f"no-id-{uid_str}").strip()
         subject      = decode_str(msg.get("Subject", "(sem assunto)"))
         from_raw     = msg.get("From", "")
         sender_name, sender_email = parseaddr(from_raw)
@@ -1592,7 +1755,7 @@ def process_message(mail, uid: bytes, keywords: list,
         # confiavel mesmo quando o header Date do remetente vem adulterado ou
         # com fuso errado. O header Date e fallback. Nunca aceitar data futura.
         now_dt = datetime.now(timezone.utc)
-        internal_iso = _parse_internaldate(data[0][0])
+        internal_iso = _parse_internaldate(meta)
         try:
             header_dt = parsedate_to_datetime(date_header).astimezone(timezone.utc)
         except Exception:
@@ -1613,6 +1776,10 @@ def process_message(mail, uid: bytes, keywords: list,
             received_at = now
 
         body_text    = get_body_text(msg)
+        # E-mail SO-HTML (ex.: Correios): sem texto plano, extrai do HTML para que
+        # o fallback de corpo (try_extract_from_body) encontre valor/fatura/etc.
+        if not body_text:
+            body_text = _html_to_text(get_body_html(msg))
         keyword_hit  = match_keyword(subject, keywords)
 
         rec.update({
@@ -1685,7 +1852,10 @@ def process_message(mail, uid: bytes, keywords: list,
         # conta. A conta vinda do corpo (body_created) prevalece sobre o anexo que
         # nao gerou CSV — assim um e-mail com anexo cuja conta saiu do corpo fica
         # 'recebido', e nao um falso 'pendente'.
-        rec["status"] = status_for_result(has_att, csv_generated, body_created)
+        rec["status"] = status_for_result(
+            has_att, csv_generated, body_created,
+            pure_nfe=subject_is_pure_nfe(subject), accounts_saved=accounts_saved,
+            notification=subject_is_ignorable_notification(subject))
 
         # Regra: TODA falha gera log em email_processing_errors para revisão —
         # inclusive o corpo sem sinal financeiro, que antes saía silencioso.

@@ -80,7 +80,10 @@ Estas regras se aplicam a **todo** código novo ou alterado neste projeto, sem e
   cobrindo renderização e a interação principal (ex.: submit, expand/collapse, validação).
 - **Suíte configurada (Vitest):** `apps/frontend-vite` (jsdom + Testing Library) e
   `apps/api-backend` (env node). Rode `npm test` na raiz (roda todos os workspaces) ou
-  `npm run test --workspace=apps/<app>`.
+  `npm run test --workspace=apps/<app>`. No `api-backend`, o `vitest.config.ts` resolve o
+  alias `@` (espelhando `@/*`→`./*` do tsconfig) e coleta testes em `lib/**` **e** `app/**`
+  (`*.test.ts`) — rotas têm teste co-locado (ex.: `app/api/emails/read/route.test.ts`
+  cobre 422/200/502 mockando `triggerReader`).
 - **Suíte Python (pytest):** `py -3 -m pytest tests/` (ex.: `test_link_extraction.py`,
   `test_email_body_extraction.py`, `test_body_amount.py`, `test_extract_pdf.py`). Cobre o
   pipeline de extração; rodar após mexer em `read_emails.py`/`extract_pdf.py` ou nos
@@ -323,6 +326,14 @@ py -3 scripts\reprocess_link_emails.py --dry-run   # boleto por link (BRASPRESS/
 py -3 scripts\reprocess_body_emails.py --dry-run   # conta no corpo do e-mail (sem anexo/link)
 ```
 
+Reprocessar após **ampliar o filtro de assunto** (acrônimos de tributo) ou ajustar a regra
+de NF-e. Fase A: `ignorado` que passou a casar keyword → rebusca no IMAP e extrai. Fase B:
+NF-e pura sem conta a pagar → reclassifica para `ignorado` (só status, sem IMAP):
+
+```powershell
+py -3 scripts\reprocess_ignored_emails.py --dry-run
+```
+
 Extração isolada:
 
 ```powershell
@@ -332,9 +343,13 @@ py -3 skills\pdf-contas-pagar\scripts\extract_pdf.py --input data\pdfs_inbox\ --
 Dependências:
 
 ```powershell
-pip install pdfplumber pypdf anthropic pandas python-dotenv Pillow flask
-npm install   # na raiz do monorepo — instala todos os workspaces
+pip install -r server/requirements.txt   # deps Python do pipeline, pinadas com ~=
+npm install                              # na raiz do monorepo — instala todos os workspaces
 ```
+
+`server/requirements.txt` é a fonte de verdade das dependências Python (flask, python-dotenv,
+pdfplumber, pypdf, Pillow, anthropic, pandas), com versões fixadas em `~=` para dev/prod não
+divergirem — não rodar `pip install` solto sem atualizar o arquivo.
 
 ## Frontend — componentes e design system
 
@@ -533,12 +548,18 @@ chamam `run_reader()`. Edite só ali — nunca duplique lógica no Flask.
 
 ### Robustez da leitura e da extração (não regredir)
 
-Três proteções aprendidas "na dor" — manter:
+Proteções aprendidas "na dor" — manter:
 
 - **IMAP com timeout** (`_connect_imap`, `IMAP_TIMEOUT_SECONDS`, env `IMAP_TIMEOUT` default
   120s): sem timeout de socket, um `fetch` que estanca (mensagem grande, hiccup do servidor)
   **congela o run síncrono para sempre**. Com timeout, levanta `socket.timeout`, o e-mail é
   pulado/erra e o run segue. **Nunca** criar `IMAP4_SSL` sem `timeout`.
+- **Claude API com timeout** (`extract_pdf.py`, `CLAUDE_API_TIMEOUT_SECONDS`, env
+  `CLAUDE_API_TIMEOUT` default 90s): mesma classe de falha do IMAP. Sem `timeout` explícito o
+  SDK Anthropic usa ~10 min/request; num run síncrono que processa muitos PDFs, **um request
+  travado congela o pipeline inteiro**. As 3 instâncias `anthropic.Anthropic(...)`
+  (`_try_barcode_vision`, `extract_with_vision`, `extract_fields_with_claude`) **sempre** passam
+  `timeout=CLAUDE_API_TIMEOUT_SECONDS`. **Nunca** criar o client sem `timeout`.
 - **`run_extraction` resiliente**: retorna `(csv_path, motivo)`. `_run_extraction_once`
   classifica a falha — **transitória** (rc≠0, timeout, exceção de subprocesso → repete com
   backoff; `EXTRACTION_MAX_ATTEMPTS=3`/`EXTRACTION_RETRY_BACKOFF`) vs **definitiva** (rc=0 sem
@@ -550,8 +571,19 @@ Três proteções aprendidas "na dor" — manter:
   **derrubava a extração em massa** mesmo com o PDF extraído. `subprocess.run` usa
   `encoding='utf-8', errors='replace'` (parent) + `env PYTHONUTF8=1/PYTHONIOENCODING=utf-8`
   (filho). **Não remover.**
+- **FETCH RFC822 robusto** (`_rfc822_from_fetch`): o `imaplib` pode **intercalar** respostas
+  (um `FLAGS`/`UID` isolado como item `bytes`) no retorno do `fetch`. Aí `data[0]` não é a
+  tupla `(meta, raw)` e `data[0][1]` indexa um `bytes`, devolvendo um **int** — e
+  `email.message_from_bytes(int)` quebra com `'int' object has no attribute 'decode'`
+  (crash intermitente). `process_message` usa `_rfc822_from_fetch(data)`, que varre `data`
+  e pega a primeira tupla cujo 2º elemento sejam bytes. **Nunca** voltar a `data[0][1]` direto.
+- **Reprocesso sem perda de dado** (`scripts/reprocess_ignored_emails.py`): a Fase A **não
+  apaga** a linha de `email_control` antes de reprocessar — roda `process_message` (que
+  re-registra com `ignore-duplicates` e cria a conta) e só então faz `PATCH` do status. Apagar
+  antes arriscava perder o e-mail se a extração falhasse.
 
-Testes: `tests/test_run_extraction.py`, `tests/test_imap_timeout.py`, `tests/test_status_for_result.py`.
+Testes: `tests/test_run_extraction.py`, `tests/test_imap_timeout.py`, `tests/test_status_for_result.py`,
+`tests/test_rfc822_fetch.py`, `tests/test_extract_pdf_timeout.py`.
 
 ### Deduplicação por `message_id`
 
@@ -652,6 +684,13 @@ passa por `upload_attachment` dentro de `extract_and_store_accounts`, anexo ou l
   (`JSESSIONID`) — por isso `download_pdf_from_url` usa um `http.cookiejar`/opener
   compartilhado entre a página e o download (`_fetch_url` aceita `opener`). Outros portais
   com link de PDF montado por JS seguem esse padrão (handler dedicado).
+- **Lmed/mdnet (portal ScriptCase) — adiado por CAPTCHA (decisão do usuário, 2026-06-17):**
+  `srv2.mdnet.com.br/lmedseg/vExternoFatura` pede os "primeiros 3 dígitos do CPF/CNPJ"
+  (campo `m_veri`) **e um CAPTCHA com imagem**. O prefixo do CNPJ viria de `company.cnpj`
+  (`company_id=1`, tentar 5 e depois 3 primeiros dígitos), mas o captcha bloqueia o download
+  automático → fatura fica em `falha` p/ download manual. **Regra de prefixo de CNPJ ainda
+  não implementada** — fazer quando houver um portal que peça só o prefixo (sem captcha).
+  Detalhes na memória `link-boleto-pipeline`.
 - **Links suspeitos são ignorados** (`_is_suspicious_link`, regra Locaweb): redirecionadores/
   rastreadores ofuscados — `bing.com/ck/a?…&u=a1<base64>`, Microsoft SafeLinks, Proofpoint
   URL Defense — **nunca** viram candidatos a download (evita baixar malware de phishing).
@@ -675,10 +714,22 @@ conta válida) — assim o corpo nunca conflita com um arquivo anexado válido.
 (`Fornecedor`/`Favorecido`/`Nome`/`Responsável`…) ou CNPJ/CPF. **Sem rótulo nem documento**,
 tenta sinais (`_supplier_from_signals`) antes do remetente: assinatura titulada (`Prof./Dr.
 <Nome>`) e destinatário do pagamento (`pix/pagar p/|para <Nome>`, com stopwords cortando a
-captura) — ex.: honorários "pix p/ Wesley" + "Prof. Wesley S. Paixão". Só então cai para
-`sender_email`. `amount` via `R$ ([\d.,]+)`; `payment_method='pix'` se o termo aparecer (ou
+captura) — ex.: honorários "pix p/ Wesley" + "Prof. Wesley S. Paixão". Depois tenta o **mapa
+por remetente** (`_supplier_from_sender`/`_SENDER_SUPPLIER_MAP`: `correios.com.br` → `Correios`)
+e só então cai para `sender_email`. `amount` via `R$ ([\d.,]+)`; `payment_method='pix'` se o termo aparecer (ou
 sempre, p/ honorários). **Valida fornecedor+valor**: sem valor → não grava conta (vira
 `falha`). `email_body_excerpt` (migration 016) guarda o corpo completo.
+
+**Corpo SÓ-HTML** (ex.: Correios — `noreply_componentes@correios.com.br`, assunto "Pagamento
+Boleto Fatura"): quando o anexo não vem e o link é portal HTML sem PDF, `get_body_text()`
+volta vazio. `process_message` então usa `_html_to_text(get_body_html(msg))` (remove tags,
+desescapa, colapsa espaços) para alimentar a extração — recupera "Fatura nº: 3918439"
+(→ `invoice_number`), "Valor da fatura R$ 1.530,47" (→ `amount`) e classifica
+`document_type='fatura'` (keyword `fatura` em `_BODY_DOC_KEYWORDS`, fallback antes de
+`outro`). Prioridade segue **anexo → link → corpo**. O status da conta do corpo é **sempre
+`pendente`** — a baixa/atualização é feita pelo usuário, mesmo quando o corpo diz "pagamento
+realizado com sucesso". Dedup do corpo (`financial_duplicate_exists`) evita duplicar conta já
+registrada. Testes: `tests/test_body_html_extraction.py`.
 
 **Fallbacks de campo (corpo E PDF — `build_financial_payload`):** `issue_date` vazio →
 data do e-mail (`received_at`); `due_date` vazio → `issue_date` → hoje; `invoice_number`
@@ -695,17 +746,46 @@ espelha o webmail inteiro (o app substitui abrir a caixa). O filtro de keyword d
 - **Sem keyword** no assunto → `ctrl.register({... status:'ignorado'})` sem baixar/
   extrair (`has_attachment` fica NULL). Respeita `--dry-run` (não grava).
 - **Com keyword** → `process_message` (baixa + extrai) define o status via `status_for_result`,
-  por **prioridade**: CSV do PDF → `extraído` · conta do corpo → `recebido` (**vale mesmo com
-  anexo** cujo PDF não gerou CSV — antes virava um falso `pendente`) · anexo salvo sem conta →
-  `pendente` · nada → `falha`. Ver migration 022 e `tests/test_status_for_result.py`.
+  por **prioridade**: conta do PDF (`accounts_saved>0`) → `extraído` · **NF-e pura sem conta**
+  (`subject_is_pure_nfe`) → `ignorado` · CSV do PDF → `extraído` · conta do corpo → `recebido`
+  (**vale mesmo com anexo** cujo PDF não gerou CSV — antes virava um falso `pendente`) · anexo
+  salvo sem conta → `pendente` · **notificação sem anexo/conta** (`subject_is_ignorable_notification`)
+  → `ignorado` · nada → `falha`. Ver migration 022 e `tests/test_status_for_result.py`.
 - **Corpo é fallback só quando o anexo NÃO gera conta** (`accounts_saved==0`) — havendo
   conta de arquivo anexado válido, o corpo é ignorado (sem conflito).
 
-Match é **substring** case-insensitive (`match_keyword`, ~linha 494): `transporte`
-pega "conhecimento de transporte". Lista padrão em `KEYWORDS_DEFAULT` (~linha 72),
-**sobrescrita por `EMAIL_KEYWORDS` no `.env`** (fonte de verdade usada hoje — ampliada
-com `transporte, conhecimento de transporte, frete, honorá, título, vencer, unimed,
-tributo, taxa, gnre`, etc.). Evitar tokens curtos ambíguos (`das` casaria "vendas").
+**Matching de keyword (`match_keyword`, `tests/test_match_keyword.py`)** — comparação
+**sem acento** (NFD + lowercase). Dois modos:
+- **Acrônimos de tributo/câmbio** (`WORD_KEYWORDS`: `darf, das, dae, dam, duam, gps, gru,
+  gnre, gare, ipva, iptu, iss, itbi, cambio`) casam por **palavra inteira** (`\b…\b`) —
+  evita falso positivo de substring (`das` em "ca**das**tro"/"executa**das**", `iss` em
+  "em**iss**ão", `gru` em "**gru**po", `cambio` em "inter**câmbio**").
+- **Demais termos** (frases e siglas distintivas: `boleto, nota fiscal, nf-e, conhecimento
+  de transporte, dacte`…) seguem **substring**.
+- **Câmbio**: lê `cambio` **ou** `câmbio` (sem acento), mas a keyword gravada/retornada é
+  sempre `câmbio` (forma gramatical correta na lista).
+
+Lista padrão em `KEYWORDS_DEFAULT`, **sobrescrita por `EMAIL_KEYWORDS` no `.env`** (fonte de
+verdade usada hoje). **NF-e "pura"** (`subject_is_pure_nfe`): assunto com `nota fiscal/nfe/
+nf-e/nfse/nfs-e` **por palavra inteira** (não casa "co**nfe**cções") e **sem** indício de
+pagável (`boleto/fatura/vencimento/`acrônimos…) que **não** gera conta a pagar vira
+`ignorado` em vez de `falha` — notificação fiscal não é conta a pagar.
+
+**Notificações → `ignorado`** (`subject_is_ignorable_notification`, `tests/test_match_keyword.py`):
+e-mails de aviso/confirmação **sem anexo e sem conta no corpo** (gatilho no lugar do antigo
+`falha`) viram `ignorado`. Termos: palavra inteira `nfe, nf-e, informe, sieg`; frases
+`informativo, confirmado (o) pagamento, confirmação de/do pagamento, pagamento confirmado,
+pagamento processado, aviso de vencimento, título a vencer, lembrete de vencimento, títulos
+próximos do vencimento, comprovante de pix, protesto, protestado, cartório, comunicado`.
+Avisos sem termo generalizável (oferta de frete, "nova área do cliente", "taxa de
+agendamento") são marcados por **Message-ID** em `EXPLICIT_IGNORE_IDS`
+(`scripts/reprocess_ignored_emails.py`). **Não** há exclusão por boleto/fatura aqui — o
+gatilho já exige ausência de anexo/conta (sem anexo nem dado no corpo ⇒ é só um aviso); com
+anexo, o PDF vira `pendente` (revisão), nunca `ignorado`. Reprocesso histórico (e Message-IDs
+avulsos marcados à mão, ex.: alerta de protesto SPC/Serasa) via
+`scripts/reprocess_ignored_emails.py`. **SIEG**: por decisão do responsável (2026-06-17),
+avisos da SIEG sem anexo/conta são `ignorado` — convive com o handler SIEG adiado (A1):
+faturas SIEG novas também ficam `ignorado` até o handler ser ativado.
 
 ### Frontend — rotas e serviços
 
@@ -753,11 +833,11 @@ tributo, taxa, gnre`, etc.). Evitar tokens curtos ambíguos (`das` casaria "vend
 ## Banco de dados (Supabase)
 
 Migrations em `supabase/migrations/`, aplicadas **manualmente no SQL Editor** em ordem
-numérica (`001` → `028`). Não há migration automática.
+numérica (`001` → `030`). Não há migration automática.
 
 | Tabela | Propósito |
 |---|---|
-| `email_control` | Dedup/controle. `status` ∈ (`extraído`, `recebido`, `pendente`, `falha`, `ignorado`) — **migration 022**. `extraído`=PDF extraído (CSV gerado); `recebido`=sem PDF, conta via corpo; `pendente`=PDF salvo sem CSV (substitui `baixado`); `falha`=casou keyword mas sem PDF e sem conta no corpo; `ignorado`=não-financeiro. O status é calculado em `process_message` pelo resultado real (CSV gerado/corpo), não por `pdf_extracted` |
+| `email_control` | Dedup/controle. `status` ∈ (`extraído`, `recebido`, `pendente`, `falha`, `ignorado`) — **migration 022**. `extraído`=PDF extraído (CSV gerado); `recebido`=sem PDF, conta via corpo; `pendente`=PDF salvo sem CSV (substitui `baixado`); `falha`=casou keyword mas sem PDF e sem conta no corpo; `ignorado`=não-financeiro (sem keyword) **ou NF-e pura sem conta a pagar** (`subject_is_pure_nfe`). O status é calculado em `process_message` pelo resultado real (conta/CSV/corpo), não por `pdf_extracted` |
 | `financial_account_control` | Tabela principal de contas a pagar — uma linha por documento; alimentada pelo pipeline de e-mail **e** por CRUD manual (baixas, consolidações, dashboards). Substitui a antiga `financial_emails` (dropada na migration 020). Tem `sender_email` (migration 023; backfill em 025) que o trigger usa p/ alinhar `supplier.email`, e `subject` (migration 025) — ambos com backfill SQL de `email_control` e exibidos/buscados em `/consulta` |
 | `email_processing_errors` | Log de falhas com `raw_payload` JSON |
 | `supplier` | Fornecedores auto-criados pelo trigger. Reconhecimento por **e-mail** em `email`/`email2`/`email3`/`email4` (migrations 023/027/028) — ver "Auto-resolução de fornecedor" |
@@ -782,7 +862,12 @@ faz cast); só os schemas de **auth** rodam em runtime via `zodResolver`.
 
 RLS habilitado em todas as tabelas. Policies de leitura são `TO authenticated`
 (migrations 015/018/019); escrita em `financial_account_control` é `TO service_role`
-(CRUD via Next API). Toda nova tabela deve seguir o mesmo padrão.
+(CRUD via Next API). Toda nova tabela deve seguir o mesmo padrão. **Exceção pontual
+(migration 030):** `email_control` tem policy de UPDATE `TO authenticated`, mas com
+**grant restrito à coluna** `reviewed_at` (`GRANT UPDATE (reviewed_at)`) — o frontend só
+consegue marcar "revisado", não alterar outras colunas. `reviewed_at` é setado em `/emails`
+ao abrir o card de detalhes de um e-mail com `status='falha'` (`markEmailReviewed`), exibindo
+um check verde ao lado do badge de status (compartilhado entre usuários).
 
 ### Limpeza / reset de dados (SEMPRE preservar os cadastros)
 
@@ -790,6 +875,7 @@ Ao limpar a base para uma nova busca geral, **SEMPRE preserve estas tabelas de
 cadastro/configuração** — não são alimentadas pelo pipeline e nunca devem ser apagadas:
 
 - `company`
+- `supplier` (cadastro com curadoria manual — `email`/`email2`/`email3`/`email4` usados na busca de `/consulta`; truncá-lo destruiria os e-mails cadastrados à mão)
 - `financial_account`
 - `financial_bank`
 - `financial_chart_of_account`
@@ -798,10 +884,13 @@ cadastro/configuração** — não são alimentadas pelo pipeline e nunca devem 
 - `financial_cost_center`
 
 **Alvos da limpeza** (truncar com `RESTART IDENTITY CASCADE`): `email_control`,
-`financial_account_control`, `email_processing_errors`, `supplier` e `audit_log` — mais o
+`financial_account_control`, `email_processing_errors`, `audit_log` — mais o
 bucket **`attachments`** do Storage e o cache local (`data/pdfs_inbox`, `data/csv_output`).
-`supplier` é recriado automaticamente pelo trigger de resolução no reprocessamento; a
-`company` preservada continua resolvendo `company_id` das novas contas.
+`supplier` **não** é mais alvo: embora seja auto-criado pelo trigger, acumula curadoria
+manual (e-mails `email2`/`email3`/`email4`) que seria perdida na truncagem; no
+reprocessamento o `resolve_supplier_id` reutiliza os fornecedores existentes (casa por
+CNPJ/CPF/e-mail/nome) sem duplicar. A `company` e o `supplier` preservados continuam
+resolvendo `company_id`/`supplier_id` das novas contas.
 
 > **Storage:** `DELETE` direto em `storage.objects` é bloqueado (`protect_delete`). Esvaziar
 > o bucket via **Storage API** (`POST object/list/attachments` → `DELETE object/attachments`
