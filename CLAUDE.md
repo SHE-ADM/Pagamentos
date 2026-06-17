@@ -387,8 +387,9 @@ Helpers em `src/lib/`: `getErrorMessage.ts` (erro em strict mode), `cn.ts` (merg
 classes Tailwind — `clsx` + `tailwind-merge`, base do padrão CVA), `supabaseClient.ts`
 (SDK oficial, só para auth), `authStorage.ts` (storage híbrido da sessão +
 `setRememberPreference`/`getRememberPreference` — preferência "Lembrar-me"; ver
-seção Autenticação) e `getFailureReason.ts` (texto pt-BR explicando por que um e-mail
-ficou em `falha`, exibido no `Alert` do card de `/emails`).
+seção Autenticação) e `getStatusExplanation.ts` (texto pt-BR no `Alert` do card de `/emails`
+explicando por que um e-mail ficou em `falha` (error), `pendente` (warning) ou `ignorado`
+(info); reusa `getFailureReason.ts` para o caso `falha`).
 
 Infra de teste a11y em `tests/`: `setup.ts` (matcher `toHaveNoViolations`), `axe.ts`
 (runner AA + `color-contrast` desligado) e `contrast.a11y.test.ts` (guarda de contraste
@@ -530,6 +531,28 @@ chamam `run_reader()`. Edite só ali — nunca duplique lógica no Flask.
 `read_emails.py` carrega o `.env` da raiz (`load_dotenv(parents[3]/".env")`).
 `server/app.py` insere o caminho no `sys.path` e importa o módulo.
 
+### Robustez da leitura e da extração (não regredir)
+
+Três proteções aprendidas "na dor" — manter:
+
+- **IMAP com timeout** (`_connect_imap`, `IMAP_TIMEOUT_SECONDS`, env `IMAP_TIMEOUT` default
+  120s): sem timeout de socket, um `fetch` que estanca (mensagem grande, hiccup do servidor)
+  **congela o run síncrono para sempre**. Com timeout, levanta `socket.timeout`, o e-mail é
+  pulado/erra e o run segue. **Nunca** criar `IMAP4_SSL` sem `timeout`.
+- **`run_extraction` resiliente**: retorna `(csv_path, motivo)`. `_run_extraction_once`
+  classifica a falha — **transitória** (rc≠0, timeout, exceção de subprocesso → repete com
+  backoff; `EXTRACTION_MAX_ATTEMPTS=3`/`EXTRACTION_RETRY_BACKOFF`) vs **definitiva** (rc=0 sem
+  CSV → não repete). O `motivo` (rc/stderr) é gravado em `email_processing_errors.raw_payload`
+  (`detalhe`) e fica **visível em `/erros`** — antes só ia para o console do Flask, fazendo um
+  blip transitório parecer "tudo quebrado".
+- **UTF-8 forçado no subprocesso de extração**: o `extract_pdf` emite Unicode (`✓`, `→`) nos
+  logs; em console Windows (cp1252) a captura com `text=True` lançava `UnicodeDecodeError` e
+  **derrubava a extração em massa** mesmo com o PDF extraído. `subprocess.run` usa
+  `encoding='utf-8', errors='replace'` (parent) + `env PYTHONUTF8=1/PYTHONIOENCODING=utf-8`
+  (filho). **Não remover.**
+
+Testes: `tests/test_run_extraction.py`, `tests/test_imap_timeout.py`, `tests/test_status_for_result.py`.
+
 ### Deduplicação por `message_id`
 
 Gravado em `email_control.message_id` (UNIQUE). `register()` usa
@@ -612,9 +635,16 @@ passa por `upload_attachment` dentro de `extract_and_store_accounts`, anexo ou l
 - **Página HTML intermediária** (`download_pdf_from_url`): se o link abre uma landing/portal
   HTML, varre os `<a>` (1 nível) atrás de um link de boleto (âncora/URL de cobrança ou
   `.pdf`) e baixa o PDF. Hrefs são **desescapados** (`html.unescape`, `&amp;`→`&`) para os
-  parâmetros não quebrarem. Cobre **SIEG genericamente** (a página `app.sieg.com/faturas`
-  tem `<a id="hlBoleto">Gerar Boleto</a>` apontando para o PDF na Vindi — sem handler
-  dedicado). Faturas SIEG já **pagas** não trazem boleto (corretamente não geram conta).
+  parâmetros não quebrarem.
+- **SIEG — QUEBROU em 2026-06-16 (handler deferido — decisão A1):** a SIEG migrou
+  `app.sieg.com/faturas` para **ASP.NET WebForms com boleto gerado por JS/ajax**
+  (`financeiro.min.js`). O scan genérico (sem JS) não acha mais o PDF → loop em HTML +
+  `TimeoutError` → cai no corpo (NFE) → `falha`. **Não foi regressão nossa** (caminho de link
+  intocado). Mecanismo mapeado p/ o futuro handler: `POST /ajax/BillsDetails.aspx/GetDetailsBills`
+  body `{bill:'<bill>',companyid:''}` → `d.Charges[0].PrintUrl` quando `PaymentMethod.Code`
+  contém `bank_slip` (`bill`/`branchid` vêm da query da URL). Reprodução server-side dá HTTP 500
+  (exige sessão/JS do navegador). **Adiado até entrar uma fatura SIEG em aberto** para validar o
+  download de verdade (as atuais estão "Pago"). Detalhes na memória `link-boleto-pipeline`.
 - **Portal BRASPRESS** (`download_pdf_from_url` + `_braspress_download_url`): caso que o scan
   genérico não cobre, pois o link do PDF é montado por JS. O link do e-mail
   (`/protocoloweb?protocolo=CHAVE`) abre uma página cujo botão chama `faturaPDF(chave)`, que
@@ -664,9 +694,10 @@ espelha o webmail inteiro (o app substitui abrir a caixa). O filtro de keyword d
 - **Dedup primeiro** (`message_id` em `known_ids`) → pula.
 - **Sem keyword** no assunto → `ctrl.register({... status:'ignorado'})` sem baixar/
   extrair (`has_attachment` fica NULL). Respeita `--dry-run` (não grava).
-- **Com keyword** → `process_message` (baixa + extrai) define o status pelo resultado:
-  `extraído` (CSV gerado) · `pendente` (PDF salvo sem CSV) · `recebido` (sem PDF, conta
-  via corpo) · `falha` (casou keyword mas sem PDF e sem conta no corpo). Ver migration 022.
+- **Com keyword** → `process_message` (baixa + extrai) define o status via `status_for_result`,
+  por **prioridade**: CSV do PDF → `extraído` · conta do corpo → `recebido` (**vale mesmo com
+  anexo** cujo PDF não gerou CSV — antes virava um falso `pendente`) · anexo salvo sem conta →
+  `pendente` · nada → `falha`. Ver migration 022 e `tests/test_status_for_result.py`.
 - **Corpo é fallback só quando o anexo NÃO gera conta** (`accounts_saved==0`) — havendo
   conta de arquivo anexado válido, o corpo é ignorado (sem conflito).
 
