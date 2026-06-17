@@ -535,6 +535,41 @@ def get_body_html(msg) -> str:
     return html
 
 
+def _html_to_text(html: str) -> str:
+    """Converte HTML em texto plano para a extracao de corpo de e-mails SO-HTML
+    (ex.: Correios), onde get_body_text() volta vazio. Remove script/style, troca
+    quebras de bloco por '\\n', tira as demais tags, desescapa entidades e colapsa
+    espacos — preservando rotulos como 'Fatura nº: 3918439' e 'R$ 1.530,47'."""
+    if not html:
+        return ""
+    text = re.sub(r"(?is)<(script|style)\b.*?</\1>", " ", html)
+    text = re.sub(r"(?i)<br\s*/?>", "\n", text)
+    text = re.sub(r"(?i)</(p|div|tr|li|h[1-6]|table)>", "\n", text)
+    text = re.sub(r"<[^>]+>", " ", text)
+    text = html_unescape(text)
+    text = re.sub(r"[ \t ]+", " ", text)
+    text = re.sub(r"\n\s*\n+", "\n", text)
+    return text.strip()
+
+
+# Remetente (dominio) -> nome de fornecedor conhecido. Usado na extracao de corpo
+# quando NAO ha rotulo ("Fornecedor:") nem CNPJ/CPF: para esses remetentes o nome
+# real e estavel e o corpo nao o traz. Ex.: Correios envia de
+# noreply_componentes@correios.com.br e o corpo so diz "Email Correios".
+_SENDER_SUPPLIER_MAP = {"correios.com.br": "Correios"}
+
+
+def _supplier_from_sender(sender_email: str | None) -> "str | None":
+    """Nome de fornecedor conhecido a partir do dominio do remetente, ou None."""
+    domain = (sender_email or "").split("@")[-1].lower().strip()
+    if not domain:
+        return None
+    for known, name in _SENDER_SUPPLIER_MAP.items():
+        if domain == known or domain.endswith("." + known):
+            return name
+    return None
+
+
 def safe_filename(text: str, max_len: int = 40) -> str:
     # Remove acentos e caracteres nao-ASCII (ex.: º, ª, ç, ã). O nome vira a
     # chave do objeto no Supabase Storage, que rejeita chaves com esses
@@ -1029,10 +1064,13 @@ def extract_from_email_body(body_text: str, received_at: str, message_id: str,
         return None
 
     # Fornecedor sem rotulo nem identificador: tenta sinais (destinatario do pix
-    # "p/ <Nome>" / assinatura "Prof. <Nome>") antes de cair no e-mail do
-    # remetente. Havendo CNPJ/CPF, deixa o nome vazio (a trigger resolve pelo doc).
+    # "p/ <Nome>" / assinatura "Prof. <Nome>"), depois o mapa por remetente
+    # (ex.: correios.com.br -> "Correios") e, por fim, o e-mail do remetente.
+    # Havendo CNPJ/CPF, deixa o nome vazio (a trigger resolve pelo doc).
     if not supplier_name and not supplier_cnpj and not supplier_cpf:
-        supplier_name = _supplier_from_signals(body_text) or sender_email or "desconhecido"
+        supplier_name = (_supplier_from_signals(body_text)
+                         or _supplier_from_sender(sender_email)
+                         or sender_email or "desconhecido")
 
     has_pix = bool(_BODY_PIX_RE.search(body_text))
 
@@ -1735,6 +1773,10 @@ def process_message(mail, uid: bytes, keywords: list,
             received_at = now
 
         body_text    = get_body_text(msg)
+        # E-mail SO-HTML (ex.: Correios): sem texto plano, extrai do HTML para que
+        # o fallback de corpo (try_extract_from_body) encontre valor/fatura/etc.
+        if not body_text:
+            body_text = _html_to_text(get_body_html(msg))
         keyword_hit  = match_keyword(subject, keywords)
 
         rec.update({
