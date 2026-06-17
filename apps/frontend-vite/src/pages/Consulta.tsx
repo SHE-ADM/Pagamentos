@@ -311,29 +311,46 @@ export default function Consulta() {
             Filtros
           </span>
           <div className="flex gap-2 flex-wrap pt-4">
-            <input
-              id="consulta-supplier"
-              name="consulta-supplier"
-              aria-label="Buscar por fornecedor, CNPJ, número do documento, assunto ou remetente"
-              className="input w-44"
-              placeholder="Fornecedor, CNPJ, Nº doc, assunto ou remetente…"
-              value={f.supplier}
-              onChange={(e) => {
-                const val = e.target.value;
-                sf('supplier', val);
-                if (supplierDebounce.current) clearTimeout(supplierDebounce.current);
-                supplierDebounce.current = setTimeout(() => {
-                  setApplied((prev) => ({ ...prev, supplier: val }));
-                  setPage(1);
-                }, 350);
-              }}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter') {
+            <div className="relative w-[22.5rem] max-w-full">
+              <input
+                id="consulta-supplier"
+                name="consulta-supplier"
+                aria-label="Buscar por fornecedor, CNPJ, número do documento, assunto, remetente ou e-mail do fornecedor"
+                className="input w-full pr-8"
+                placeholder="Fornecedor, CNPJ, Nº doc, assunto, remetente ou e-mail…"
+                value={f.supplier}
+                onChange={(e) => {
+                  const val = e.target.value;
+                  sf('supplier', val);
                   if (supplierDebounce.current) clearTimeout(supplierDebounce.current);
-                  handleSearch();
-                }
-              }}
-            />
+                  supplierDebounce.current = setTimeout(() => {
+                    setApplied((prev) => ({ ...prev, supplier: val }));
+                    setPage(1);
+                  }, 350);
+                }}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') {
+                    if (supplierDebounce.current) clearTimeout(supplierDebounce.current);
+                    handleSearch();
+                  }
+                }}
+              />
+              {f.supplier && (
+                <button
+                  type="button"
+                  aria-label="Limpar busca"
+                  onClick={() => {
+                    if (supplierDebounce.current) clearTimeout(supplierDebounce.current);
+                    sf('supplier', '');
+                    setApplied((prev) => ({ ...prev, supplier: '' }));
+                    setPage(1);
+                  }}
+                  className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600"
+                >
+                  <X size={14} />
+                </button>
+              )}
+            </div>
             <select id="consulta-doc-type" name="consulta-doc-type" aria-label="Filtrar por tipo de documento" className="input w-40" value={f.docType} onChange={(e) => sf('docType', e.target.value)}>
               <option value="">Tipo Documento</option>
               {['darf','das','dae','dam / duam','gare','gnre','gps','gru','iss','iptu','ipva','itbi','pix','tributo','boleto','cte','nfe','nfse','recibo','seguro','outro'].map((t) => (
