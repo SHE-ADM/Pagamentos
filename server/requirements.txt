@@ -1,5 +1,18 @@
 # Backend local do pagamentos (server/app.py)
-# A lógica de leitura vive em skills/email-reader/scripts/read_emails.py,
-# que também depende de python-dotenv (já listado no README do projeto).
-flask>=3.0
-python-dotenv>=1.0
+# A lógica de leitura vive em skills/email-reader/scripts/read_emails.py e a
+# extração em skills/pdf-contas-pagar/scripts/extract_pdf.py — por isso o
+# pipeline depende de todos os pacotes abaixo, não só do Flask.
+# Versões fixadas com ~= (compatível no minor) para dev/prod não divergirem.
+
+# Servidor HTTP + carregamento do .env
+flask~=3.1
+python-dotenv~=1.2
+
+# Extração de PDF (texto nativo + manipulação)
+pdfplumber~=0.11.9
+pypdf~=6.13
+Pillow~=12.2
+
+# Extração via Claude API + montagem de CSV
+anthropic~=0.105.2
+pandas~=3.0
