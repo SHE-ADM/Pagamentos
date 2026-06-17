@@ -387,8 +387,9 @@ Helpers em `src/lib/`: `getErrorMessage.ts` (erro em strict mode), `cn.ts` (merg
 classes Tailwind — `clsx` + `tailwind-merge`, base do padrão CVA), `supabaseClient.ts`
 (SDK oficial, só para auth), `authStorage.ts` (storage híbrido da sessão +
 `setRememberPreference`/`getRememberPreference` — preferência "Lembrar-me"; ver
-seção Autenticação) e `getFailureReason.ts` (texto pt-BR explicando por que um e-mail
-ficou em `falha`, exibido no `Alert` do card de `/emails`).
+seção Autenticação) e `getStatusExplanation.ts` (texto pt-BR no `Alert` do card de `/emails`
+explicando por que um e-mail ficou em `falha` (error), `pendente` (warning) ou `ignorado`
+(info); reusa `getFailureReason.ts` para o caso `falha`).
 
 Infra de teste a11y em `tests/`: `setup.ts` (matcher `toHaveNoViolations`), `axe.ts`
 (runner AA + `color-contrast` desligado) e `contrast.a11y.test.ts` (guarda de contraste
@@ -530,6 +531,28 @@ chamam `run_reader()`. Edite só ali — nunca duplique lógica no Flask.
 `read_emails.py` carrega o `.env` da raiz (`load_dotenv(parents[3]/".env")`).
 `server/app.py` insere o caminho no `sys.path` e importa o módulo.
 
+### Robustez da leitura e da extração (não regredir)
+
+Três proteções aprendidas "na dor" — manter:
+
+- **IMAP com timeout** (`_connect_imap`, `IMAP_TIMEOUT_SECONDS`, env `IMAP_TIMEOUT` default
+  120s): sem timeout de socket, um `fetch` que estanca (mensagem grande, hiccup do servidor)
+  **congela o run síncrono para sempre**. Com timeout, levanta `socket.timeout`, o e-mail é
+  pulado/erra e o run segue. **Nunca** criar `IMAP4_SSL` sem `timeout`.
+- **`run_extraction` resiliente**: retorna `(csv_path, motivo)`. `_run_extraction_once`
+  classifica a falha — **transitória** (rc≠0, timeout, exceção de subprocesso → repete com
+  backoff; `EXTRACTION_MAX_ATTEMPTS=3`/`EXTRACTION_RETRY_BACKOFF`) vs **definitiva** (rc=0 sem
+  CSV → não repete). O `motivo` (rc/stderr) é gravado em `email_processing_errors.raw_payload`
+  (`detalhe`) e fica **visível em `/erros`** — antes só ia para o console do Flask, fazendo um
+  blip transitório parecer "tudo quebrado".
+- **UTF-8 forçado no subprocesso de extração**: o `extract_pdf` emite Unicode (`✓`, `→`) nos
+  logs; em console Windows (cp1252) a captura com `text=True` lançava `UnicodeDecodeError` e
+  **derrubava a extração em massa** mesmo com o PDF extraído. `subprocess.run` usa
+  `encoding='utf-8', errors='replace'` (parent) + `env PYTHONUTF8=1/PYTHONIOENCODING=utf-8`
+  (filho). **Não remover.**
+
+Testes: `tests/test_run_extraction.py`, `tests/test_imap_timeout.py`, `tests/test_status_for_result.py`.
+
 ### Deduplicação por `message_id`
 
 Gravado em `email_control.message_id` (UNIQUE). `register()` usa
@@ -572,11 +595,22 @@ pagamento é forçado a `pix` tanto no corpo (`extract_from_email_body`) quanto 
 ### Auto-resolução de fornecedor
 
 Trigger `trg_fe_supplier_id` (BEFORE INSERT OR UPDATE em `financial_account_control`) chama
-`resolve_supplier_id(cnpj, cpf, name)`: busca exata por CNPJ/CPF → fallback por nome
-normalizado → auto-insert em `supplier`. Função `normalize_search()` é SECURITY DEFINER.
-O mesmo trigger **alinha `supplier.email` com o remetente** (`migration 023`): a extração
-grava `financial_account_control.sender_email` (de `email_control.sender_email`) e o trigger
-o propaga para `supplier.email` ao resolver/criar o fornecedor.
+`resolve_supplier_id(cnpj, cpf, name, email)`. Ordem de busca (`migration 027`/`028`):
+**CNPJ → CPF → e-mail exato → nome normalizado → auto-insert** em `supplier`. Função
+`normalize_search()` é SECURITY DEFINER.
+
+- **Reconhecimento por e-mail** (`027`): na falta de CNPJ/CPF, o **remetente** (`sender_email`)
+  é a chave — regra de negócio: o e-mail é estável por fornecedor e raramente um fornecedor
+  tem o e-mail como `trade_name`/`legal_name`. Por isso, ao casar, um nome cadastrado em
+  formato de e-mail é **promovido** ao nome real quando este chega (`_enrich_supplier_name`).
+  Match por **e-mail exato** (case-insensitive) — seguro até em domínios públicos; match por
+  **domínio** foi deliberadamente evitado (risco com `gmail.com`/`hotmail.com`).
+- **Múltiplos e-mails** (`028`): `supplier` tem `email`, `email2`, `email3`, `email4` e o
+  match considera os quatro. O trigger **acrescenta** o remetente no primeiro campo vazio
+  (`_add_supplier_email`) em vez de sobrescrever `email` — sem duplicar (dedup case-insensitive);
+  com os 4 cheios, o excedente é ignorado. A extração grava
+  `financial_account_control.sender_email` (de `email_control.sender_email`) e o trigger o
+  propaga ao resolver/criar o fornecedor.
 
 ### `extraction_source` — origem dos dados
 
@@ -601,9 +635,16 @@ passa por `upload_attachment` dentro de `extract_and_store_accounts`, anexo ou l
 - **Página HTML intermediária** (`download_pdf_from_url`): se o link abre uma landing/portal
   HTML, varre os `<a>` (1 nível) atrás de um link de boleto (âncora/URL de cobrança ou
   `.pdf`) e baixa o PDF. Hrefs são **desescapados** (`html.unescape`, `&amp;`→`&`) para os
-  parâmetros não quebrarem. Cobre **SIEG genericamente** (a página `app.sieg.com/faturas`
-  tem `<a id="hlBoleto">Gerar Boleto</a>` apontando para o PDF na Vindi — sem handler
-  dedicado). Faturas SIEG já **pagas** não trazem boleto (corretamente não geram conta).
+  parâmetros não quebrarem.
+- **SIEG — QUEBROU em 2026-06-16 (handler deferido — decisão A1):** a SIEG migrou
+  `app.sieg.com/faturas` para **ASP.NET WebForms com boleto gerado por JS/ajax**
+  (`financeiro.min.js`). O scan genérico (sem JS) não acha mais o PDF → loop em HTML +
+  `TimeoutError` → cai no corpo (NFE) → `falha`. **Não foi regressão nossa** (caminho de link
+  intocado). Mecanismo mapeado p/ o futuro handler: `POST /ajax/BillsDetails.aspx/GetDetailsBills`
+  body `{bill:'<bill>',companyid:''}` → `d.Charges[0].PrintUrl` quando `PaymentMethod.Code`
+  contém `bank_slip` (`bill`/`branchid` vêm da query da URL). Reprodução server-side dá HTTP 500
+  (exige sessão/JS do navegador). **Adiado até entrar uma fatura SIEG em aberto** para validar o
+  download de verdade (as atuais estão "Pago"). Detalhes na memória `link-boleto-pipeline`.
 - **Portal BRASPRESS** (`download_pdf_from_url` + `_braspress_download_url`): caso que o scan
   genérico não cobre, pois o link do PDF é montado por JS. O link do e-mail
   (`/protocoloweb?protocolo=CHAVE`) abre uma página cujo botão chama `faturaPDF(chave)`, que
@@ -653,9 +694,10 @@ espelha o webmail inteiro (o app substitui abrir a caixa). O filtro de keyword d
 - **Dedup primeiro** (`message_id` em `known_ids`) → pula.
 - **Sem keyword** no assunto → `ctrl.register({... status:'ignorado'})` sem baixar/
   extrair (`has_attachment` fica NULL). Respeita `--dry-run` (não grava).
-- **Com keyword** → `process_message` (baixa + extrai) define o status pelo resultado:
-  `extraído` (CSV gerado) · `pendente` (PDF salvo sem CSV) · `recebido` (sem PDF, conta
-  via corpo) · `falha` (casou keyword mas sem PDF e sem conta no corpo). Ver migration 022.
+- **Com keyword** → `process_message` (baixa + extrai) define o status via `status_for_result`,
+  por **prioridade**: CSV do PDF → `extraído` · conta do corpo → `recebido` (**vale mesmo com
+  anexo** cujo PDF não gerou CSV — antes virava um falso `pendente`) · anexo salvo sem conta →
+  `pendente` · nada → `falha`. Ver migration 022 e `tests/test_status_for_result.py`.
 - **Corpo é fallback só quando o anexo NÃO gera conta** (`accounts_saved==0`) — havendo
   conta de arquivo anexado válido, o corpo é ignorado (sem conflito).
 
@@ -711,14 +753,15 @@ tributo, taxa, gnre`, etc.). Evitar tokens curtos ambíguos (`das` casaria "vend
 ## Banco de dados (Supabase)
 
 Migrations em `supabase/migrations/`, aplicadas **manualmente no SQL Editor** em ordem
-numérica (`001` → `026`). Não há migration automática.
+numérica (`001` → `028`). Não há migration automática.
 
 | Tabela | Propósito |
 |---|---|
 | `email_control` | Dedup/controle. `status` ∈ (`extraído`, `recebido`, `pendente`, `falha`, `ignorado`) — **migration 022**. `extraído`=PDF extraído (CSV gerado); `recebido`=sem PDF, conta via corpo; `pendente`=PDF salvo sem CSV (substitui `baixado`); `falha`=casou keyword mas sem PDF e sem conta no corpo; `ignorado`=não-financeiro. O status é calculado em `process_message` pelo resultado real (CSV gerado/corpo), não por `pdf_extracted` |
 | `financial_account_control` | Tabela principal de contas a pagar — uma linha por documento; alimentada pelo pipeline de e-mail **e** por CRUD manual (baixas, consolidações, dashboards). Substitui a antiga `financial_emails` (dropada na migration 020). Tem `sender_email` (migration 023; backfill em 025) que o trigger usa p/ alinhar `supplier.email`, e `subject` (migration 025) — ambos com backfill SQL de `email_control` e exibidos/buscados em `/consulta` |
 | `email_processing_errors` | Log de falhas com `raw_payload` JSON |
-| `supplier` | Fornecedores auto-criados pelo trigger. `email` alinhado com `email_control.sender_email` (migration 023) |
+| `supplier` | Fornecedores auto-criados pelo trigger. Reconhecimento por **e-mail** em `email`/`email2`/`email3`/`email4` (migrations 023/027/028) — ver "Auto-resolução de fornecedor" |
+| `company` | Empresa pagadora (**cadastro**, tem campo `email`). Auto-resolvida pelo trigger `resolve_company_id` a partir de `payer_cnpj`/`payer_name`. **Preservada em limpezas** (ver abaixo) |
 
 `financial_account_control.status` (ciclo de vida do pagamento, default `pendente`) e
 `due_status` (situação de vencimento, gravada pela trigger) compartilham o mesmo domínio
@@ -740,6 +783,29 @@ faz cast); só os schemas de **auth** rodam em runtime via `zodResolver`.
 RLS habilitado em todas as tabelas. Policies de leitura são `TO authenticated`
 (migrations 015/018/019); escrita em `financial_account_control` é `TO service_role`
 (CRUD via Next API). Toda nova tabela deve seguir o mesmo padrão.
+
+### Limpeza / reset de dados (SEMPRE preservar os cadastros)
+
+Ao limpar a base para uma nova busca geral, **SEMPRE preserve estas tabelas de
+cadastro/configuração** — não são alimentadas pelo pipeline e nunca devem ser apagadas:
+
+- `company`
+- `financial_account`
+- `financial_bank`
+- `financial_chart_of_account`
+- `financial_chart_of_account_group`
+- `financial_chart_of_account_subgroup`
+- `financial_cost_center`
+
+**Alvos da limpeza** (truncar com `RESTART IDENTITY CASCADE`): `email_control`,
+`financial_account_control`, `email_processing_errors`, `supplier` e `audit_log` — mais o
+bucket **`attachments`** do Storage e o cache local (`data/pdfs_inbox`, `data/csv_output`).
+`supplier` é recriado automaticamente pelo trigger de resolução no reprocessamento; a
+`company` preservada continua resolvendo `company_id` das novas contas.
+
+> **Storage:** `DELETE` direto em `storage.objects` é bloqueado (`protect_delete`). Esvaziar
+> o bucket via **Storage API** (`POST object/list/attachments` → `DELETE object/attachments`
+> com `{prefixes:[…]}`), usando `SUPABASE_SERVICE_KEY` do `.env` da raiz.
 
 ## Windows Task Scheduler
 

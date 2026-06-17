@@ -7,7 +7,7 @@ import { triggerEmailRead } from '../services/emailReader';
 import { suspendIdleLogout, resumeIdleLogout } from '../hooks/useIdleLogout';
 import { getEmailColumns } from '../hooks/useGridColumns';
 import { getErrorMessage } from '../lib/getErrorMessage';
-import { getFailureReason } from '../lib/getFailureReason';
+import { getStatusExplanation } from '../lib/getStatusExplanation';
 import StatusBadge from '../components/StatusBadge';
 import Alert from '../components/atoms/Alert';
 import AttachmentViewer from '../components/AttachmentViewer';
@@ -367,7 +367,9 @@ export default function Emails() {
             emptyMessage={loading ? 'Buscando registros…' : 'Nenhum e-mail encontrado com os filtros aplicados'}
             ariaLabel="Recebimento de e-mails"
             variant="silver"
-            renderDetail={(r) => (
+            renderDetail={(r) => {
+                          const explanation = getStatusExplanation(r);
+                          return (
                           <div className="relative bg-zinc-50/60 border-l-2 border-brand p-4">
                             <button
                               onClick={(e) => { e.stopPropagation(); setSel(null); }}
@@ -379,9 +381,9 @@ export default function Emails() {
                             <p className="text-xs font-semibold text-zinc-500 mb-3 uppercase tracking-wide pr-8">
                               Detalhes — {r.sender_name || r.sender_email} · {fmt(r.received_at)}
                             </p>
-                            {r.status === 'falha' && (
-                              <Alert variant="error" className="mb-3 text-xs">
-                                <strong>Por que este e-mail falhou:</strong> {getFailureReason(r)}
+                            {explanation && (
+                              <Alert variant={explanation.variant} className="mb-3 text-xs">
+                                <strong>{explanation.title}</strong> {explanation.message}
                               </Alert>
                             )}
                             {r.has_attachment && r.attachment_names && (
@@ -456,7 +458,8 @@ export default function Emails() {
                               </div>
                             )}
                           </div>
-            )}
+                          );
+            }}
           />
         </div>
 

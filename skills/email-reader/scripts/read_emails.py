@@ -1271,38 +1271,81 @@ def download_pdf_from_url(url: str, sender_email: str, subject: str,
 # ---------------------------------------------------------------------------
 # Acionar extract_pdf.py
 # ---------------------------------------------------------------------------
-def run_extraction(pdf_path: Path) -> str | None:
-    """Executa extract_pdf.py em subprocesso e retorna o CSV gerado por ESTE run.
+# Robustez da extração: uma falha transitória (crash do subprocesso, timeout) não
+# deve derrubar o PDF — repete com backoff. Falha definitiva (rc=0 sem CSV = nada a
+# extrair) não repete. O motivo é propagado para gravar em email_processing_errors.
+EXTRACTION_MAX_ATTEMPTS = 3
+EXTRACTION_RETRY_BACKOFF = (2, 5)  # segundos de espera entre tentativas
 
-    Usa um diretório de saída temporário exclusivo por chamada, evitando que um
-    run com falha retorne um CSV obsoleto de execução anterior.
+
+def _run_extraction_once(pdf_path: Path) -> tuple[str | None, str | None, bool]:
+    """Uma tentativa de extração. Retorna (csv_path, motivo_falha, transitorio).
+
+    `transitorio=True` indica que vale repetir (rc≠0, timeout, exceção de
+    subprocesso); `False` é falha definitiva (rc=0 sem CSV — repetir não muda).
+    Usa diretório de saída temporário exclusivo, evitando CSV obsoleto de run anterior.
     """
-    if not EXTRACT_SCRIPT.exists():
-        log.warning(f"extract_pdf.py não encontrado: {EXTRACT_SCRIPT}")
-        return None
     try:
         with tempfile.TemporaryDirectory(dir=CSV_OUTPUT) as tmp_out:
+            # UTF-8 nos DOIS lados: o extract_pdf emite Unicode (✓, →) nos logs.
+            # Em console Windows (cp1252) isso quebra a captura — o parent lança
+            # UnicodeDecodeError ao decodificar a saída do filho, derrubando a
+            # extração mesmo com o PDF já extraído. Parent: encoding utf-8 +
+            # errors='replace' (nunca quebra). Filho: env PYTHONUTF8/PYTHONIOENCODING
+            # garante que ele escreva utf-8 independente do code page do console.
+            child_env = {**os.environ, "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"}
             result = subprocess.run(
                 [sys.executable, str(EXTRACT_SCRIPT),
                  "--input", str(pdf_path),
                  "--output", tmp_out],
-                capture_output=True, text=True, timeout=180
+                capture_output=True, text=True, timeout=180,
+                encoding="utf-8", errors="replace", env=child_env,
             )
             if result.returncode != 0:
-                log.error(f"    Erro extração (rc={result.returncode}): {result.stderr[:300]}")
-                return None
+                return None, f"rc={result.returncode}: {(result.stderr or '').strip()[:300]}", True
             csvs = sorted(Path(tmp_out).glob("*_extracted.csv"),
                           key=lambda p: p.stat().st_mtime, reverse=True)
             if not csvs:
-                log.warning(f"    extract_pdf concluiu sem CSV: {result.stdout[-200:]}")
-                return None
+                return None, f"rc=0 sem CSV: {(result.stdout or '').strip()[-200:]}", False
             # Move o CSV para o diretório definitivo antes que o tempdir seja removido
             final = CSV_OUTPUT / csvs[0].name
             csvs[0].replace(final)
-            return str(final)
+            return str(final), None, False
+    except subprocess.TimeoutExpired:
+        return None, "timeout (>180s) na extração", True
     except Exception as e:
-        log.error(f"    Falha extract_pdf: {e}")
-        return None
+        return None, f"exceção no subprocesso: {e}", True
+
+
+def run_extraction(pdf_path: Path) -> tuple[str | None, str | None]:
+    """Executa extract_pdf.py em subprocesso e retorna (csv_path, motivo_falha).
+
+    Em sucesso: (caminho_do_csv, None). Em falha: (None, motivo). Repete falhas
+    transitórias com backoff — um blip de subprocesso/timeout não perde o PDF. O
+    motivo final é gravado em email_processing_errors (observável em /erros), em
+    vez de só no console do Flask.
+    """
+    if not EXTRACT_SCRIPT.exists():
+        msg = f"extract_pdf.py não encontrado: {EXTRACT_SCRIPT}"
+        log.warning(msg)
+        return None, msg
+
+    reason = None
+    for attempt in range(1, EXTRACTION_MAX_ATTEMPTS + 1):
+        csv_path, reason, transient = _run_extraction_once(pdf_path)
+        if csv_path:
+            return csv_path, None
+        if not transient or attempt == EXTRACTION_MAX_ATTEMPTS:
+            break
+        wait = EXTRACTION_RETRY_BACKOFF[min(attempt - 1, len(EXTRACTION_RETRY_BACKOFF) - 1)]
+        log.warning(
+            f"    extração falhou (tentativa {attempt}/{EXTRACTION_MAX_ATTEMPTS}): "
+            f"{reason} — repetindo em {wait}s"
+        )
+        time.sleep(wait)
+
+    log.error(f"    extração falhou definitivamente: {reason}")
+    return None, reason
 
 
 def extract_and_store_accounts(saved_pdfs: list, message_id: str,
@@ -1324,12 +1367,13 @@ def extract_and_store_accounts(saved_pdfs: list, message_id: str,
         # Nao-fatal: se o upload falhar, a extracao segue normalmente.
         ctrl.upload_attachment(pdf_path)
 
-        csv_path = run_extraction(pdf_path)
+        csv_path, extract_err = run_extraction(pdf_path)
         if not csv_path:
             ctrl.register_error(
                 {**err_ctx, "source_file": pdf_path.name},
                 "extracao_falhou",
-                f"extract_pdf nao gerou CSV para {pdf_path.name}"
+                f"extract_pdf nao gerou CSV para {pdf_path.name}",
+                raw_payload={"source_file": pdf_path.name, "detalhe": extract_err},
             )
             continue
 
@@ -1502,6 +1546,29 @@ def _parse_internaldate(fetch_meta: bytes | None) -> str | None:
         return None
 
 
+def status_for_result(has_attachment: bool, csv_generated: bool,
+                       body_created: bool) -> str:
+    """Deriva email_control.status a partir do resultado real do processamento.
+
+    Prioridade (CHECK migration 022): conta do PDF > conta do corpo > anexo sem
+    conta. A conta criada pelo corpo vale MESMO com anexo presente — o anexo,
+    nesse caso, nao gerou conta valida (csv_generated=False), entao 'recebido'
+    reflete a origem real (corpo), evitando o falso 'pendente'.
+
+      - csv_generated  -> 'extraído'  (PDF extraido, CSV gerado)
+      - body_created   -> 'recebido'  (conta extraida do corpo do e-mail)
+      - has_attachment -> 'pendente'  (PDF salvo, aguardando reprocessamento)
+      - nenhum         -> 'falha'     (casou keyword, mas nada foi gerado)
+    """
+    if csv_generated:
+        return "extraído"
+    if body_created:
+        return "recebido"
+    if has_attachment:
+        return "pendente"
+    return "falha"
+
+
 def process_message(mail, uid: bytes, keywords: list,
                     dry_run: bool, mark_seen: bool,
                     ctrl: SupabaseControl) -> dict | None:
@@ -1614,12 +1681,11 @@ def process_message(mail, uid: bytes, keywords: list,
                 rec["pdf_extracted"] = True
                 rec["notes"]         = "Conta extraída do corpo do e-mail"
 
-        # Status (CHECK migration 022): CSV gerado=extraído; PDF salvo sem CSV=pendente;
-        # conta via corpo=recebido; senão (sem anexo e sem conta no corpo)=falha.
-        if has_att:
-            rec["status"] = "extraído" if csv_generated else "pendente"
-        else:
-            rec["status"] = "recebido" if body_created else "falha"
+        # Status (CHECK migration 022): conta do PDF > conta do corpo > anexo sem
+        # conta. A conta vinda do corpo (body_created) prevalece sobre o anexo que
+        # nao gerou CSV — assim um e-mail com anexo cuja conta saiu do corpo fica
+        # 'recebido', e nao um falso 'pendente'.
+        rec["status"] = status_for_result(has_att, csv_generated, body_created)
 
         # Regra: TODA falha gera log em email_processing_errors para revisão —
         # inclusive o corpo sem sinal financeiro, que antes saía silencioso.
@@ -1660,6 +1726,26 @@ def process_message(mail, uid: bytes, keywords: list,
 # ---------------------------------------------------------------------------
 # Execução reutilizável (CLI + API)
 # ---------------------------------------------------------------------------
+
+# Timeout de socket do IMAP (segundos). SEM ele, um fetch que estanca (mensagem
+# muito grande, hiccup do servidor) bloqueia o run inteiro indefinidamente — foi
+# o que travou um run no e-mail de 3 faturas + XMLs. Com timeout, a operação
+# levanta socket.timeout, o e-mail é pulado/erra e o run segue em vez de congelar.
+IMAP_TIMEOUT_SECONDS = int(os.getenv("IMAP_TIMEOUT", "120"))
+
+
+def _connect_imap() -> imaplib.IMAP4_SSL:
+    """Conecta/autentica no IMAP com timeout de socket e seleciona a caixa."""
+    mail = imaplib.IMAP4_SSL(
+        os.getenv("IMAP_HOST"),
+        int(os.getenv("IMAP_PORT", 993)),
+        timeout=IMAP_TIMEOUT_SECONDS,
+    )
+    mail.login(os.getenv("IMAP_USER"), os.getenv("IMAP_PASS"))
+    mail.select(os.getenv("IMAP_MAILBOX", "INBOX"))
+    return mail
+
+
 def run_reader(days: int = 0, all_: bool = False,
                dry_run: bool = False, mark_seen: bool = False) -> dict:
     """
@@ -1691,12 +1777,7 @@ def run_reader(days: int = 0, all_: bool = False,
     log.info("=" * 58)
 
     try:
-        mail = imaplib.IMAP4_SSL(
-            os.getenv("IMAP_HOST"),
-            int(os.getenv("IMAP_PORT", 993))
-        )
-        mail.login(os.getenv("IMAP_USER"), os.getenv("IMAP_PASS"))
-        mail.select(os.getenv("IMAP_MAILBOX", "INBOX"))
+        mail = _connect_imap()
         log.info("IMAP conectado")
     except Exception as e:
         log.error(f"Falha IMAP: {e}")
