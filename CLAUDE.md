@@ -824,9 +824,14 @@ agendamento") são marcados por **Message-ID** em `EXPLICIT_IGNORE_IDS`
 gatilho já exige ausência de anexo/conta (sem anexo nem dado no corpo ⇒ é só um aviso); com
 anexo, o PDF vira `pendente` (revisão), nunca `ignorado`. Reprocesso histórico (e Message-IDs
 avulsos marcados à mão, ex.: alerta de protesto SPC/Serasa) via
-`scripts/reprocess_ignored_emails.py`. **SIEG**: por decisão do responsável (2026-06-17),
-avisos da SIEG sem anexo/conta são `ignorado` — convive com o handler SIEG adiado (A1):
-faturas SIEG novas também ficam `ignorado` até o handler ser ativado.
+`scripts/reprocess_ignored_emails.py`. **SIEG** (atualizado 2026-06-17): avisos/confirmações
+da SIEG **sem pagável** (ex.: "identificamos o pagamento", NF-e) seguem `ignorado`; já as
+**faturas SIEG** (mensalidade R$ 426,80, link JS quebrado — ver A1) **geram conta `recebido`
+pelo corpo** (fornecedor SIEG, valor, vencimento). O `bill=NNN` do link SIEG
+(`_BODY_SIEG_BILL_RE`) vira `invoice_number` (`sieg_<bill>`), fazendo os dois lembretes
+("Vencimento Próximo" + "Hoje") da mesma fatura **deduplicarem** (antes geravam 2 contas/mês
+porque o nº saía de data relativa e divergia). Isso **revoga** a regra anterior de manter
+faturas SIEG em `ignorado`; o handler A1 (baixar o boleto real) segue como melhoria futura.
 
 ### Frontend — rotas e serviços
 

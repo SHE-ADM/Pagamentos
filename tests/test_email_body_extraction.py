@@ -270,6 +270,20 @@ class SiegBodyTest(unittest.TestCase):
             self.CONFIRMACAO, "2026-06-16T00:00:00+00:00", "<sieg-conf>", sender_email="financeiro@sieg.com")
         self.assertIsNone(p)
 
+    def test_lembretes_sieg_do_mesmo_bill_geram_mesmo_numero(self):
+        # "Vencimento Próximo" (dia 14) e "Hoje" (dia 15) da MESMA fatura (bill=486729741)
+        # devem produzir o MESMO invoice_number (sieg_<bill>) — base p/ a dedup casar e
+        # não criar 2 contas/mês. Antes o nº saía de data relativa e divergia.
+        link = " Clique aqui <https://app.sieg.com/faturas?bill=486729741&name=TEXTIL>."
+        proximo = ("Estamos enviando esse e-mail apenas para lembrar que a cobrança "
+                   "das SOLUÇÕES SIEG no valor de R$ 426,80 vence em breve." + link)
+        hoje = ("Estamos enviando esse e-mail apenas para lembrar que a cobrança "
+                "das SOLUÇÕES SIEG no valor de R$ 426,80 vence hoje." + link)
+        p1 = read_emails.extract_from_email_body(proximo, "2026-06-14T00:00:00+00:00", "<sieg-prox>", sender_email="financeiro@sieg.com")
+        p2 = read_emails.extract_from_email_body(hoje, "2026-06-15T00:00:00+00:00", "<sieg-hoje>", sender_email="financeiro@sieg.com")
+        self.assertEqual(p1["invoice_number"], "sieg_486729741")
+        self.assertEqual(p1["invoice_number"], p2["invoice_number"])
+
 
 class TryExtractFromBodyTest(unittest.TestCase):
     def test_nfe_nao_gera_conta_a_pagar(self):

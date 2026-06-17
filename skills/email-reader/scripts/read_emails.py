@@ -879,6 +879,11 @@ _BODY_PIX_RE     = re.compile(r"\bpix\b", re.IGNORECASE)
 _BODY_DUE_RE     = re.compile(r"(?i)venc(?:imento|to)?\D{0,15}?(\d{2}/\d{2}/\d{2,4})")
 _BODY_ISSUE_RE   = re.compile(r"(?i)emiss[aã]o\D{0,10}?(\d{2}/\d{2}/\d{2,4})")
 _BODY_INVOICE_RE = re.compile(r"(?i)\b(?:nf(?:[- ]?e)?|nota\s+fiscal|fatura\s+n[º°.]?)\s*[n°.:]?\s*(\d{3,})")
+# ID estável da fatura no link da SIEG (app.sieg.com/faturas?bill=NNN). Sem nº de
+# documento no texto, é o identificador que faz os DOIS lembretes da mesma fatura
+# ("Vencimento Próximo" + "Hoje") deduplicarem — antes geravam 2 contas/mês porque
+# o corpo só tinha data relativa ("vence hoje") → nº fabricado por data divergia.
+_BODY_SIEG_BILL_RE = re.compile(r"app\.sieg\.com/faturas\?bill=(\d+)", re.IGNORECASE)
 # CNPJ: o "/NNNN-NN" e altamente distintivo — baixo risco de falso positivo.
 _BODY_CNPJ_RE    = re.compile(r"\b\d{2}\.?\d{3}\.?\d{3}/\d{4}-?\d{2}\b")
 # CPF: so quando rotulado, para nao casar outros numeros de 11 digitos.
@@ -1120,6 +1125,13 @@ def extract_from_email_body(body_text: str, received_at: str, message_id: str,
 
     inv_match      = _BODY_INVOICE_RE.search(body_text)
     invoice_number = inv_match.group(1).strip() if inv_match else None
+    # Sem nº no texto, mas com link de fatura SIEG: usa o bill como nº estável, para
+    # os dois lembretes ("Vencimento Próximo" + "Hoje") da MESMA fatura deduplicarem
+    # (a dedup por nome+nº+valor casa; antes o nº saía de data relativa e divergia).
+    if not invoice_number:
+        bill = _BODY_SIEG_BILL_RE.search(body_text)
+        if bill:
+            invoice_number = f"sieg_{bill.group(1)}"
 
     # Sem sinal financeiro (valor ou numero de documento) — ignorar silenciosamente
     if not amount and not invoice_number:
