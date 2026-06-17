@@ -694,10 +694,18 @@ conta válida) — assim o corpo nunca conflita com um arquivo anexado válido.
 (`Fornecedor`/`Favorecido`/`Nome`/`Responsável`…) ou CNPJ/CPF. **Sem rótulo nem documento**,
 tenta sinais (`_supplier_from_signals`) antes do remetente: assinatura titulada (`Prof./Dr.
 <Nome>`) e destinatário do pagamento (`pix/pagar p/|para <Nome>`, com stopwords cortando a
-captura) — ex.: honorários "pix p/ Wesley" + "Prof. Wesley S. Paixão". Só então cai para
-`sender_email`. `amount` via `R$ ([\d.,]+)`; `payment_method='pix'` se o termo aparecer (ou
+captura) — ex.: honorários "pix p/ Wesley" + "Prof. Wesley S. Paixão". Depois tenta o **mapa
+por remetente** (`_supplier_from_sender`/`_SENDER_SUPPLIER_MAP`: `correios.com.br` → `Correios`)
+e só então cai para `sender_email`. `amount` via `R$ ([\d.,]+)`; `payment_method='pix'` se o termo aparecer (ou
 sempre, p/ honorários). **Valida fornecedor+valor**: sem valor → não grava conta (vira
 `falha`). `email_body_excerpt` (migration 016) guarda o corpo completo.
+
+**Corpo SÓ-HTML** (ex.: Correios — `noreply_componentes@correios.com.br`, assunto "Pagamento
+Boleto Fatura"): quando o anexo não vem e o link é portal HTML sem PDF, `get_body_text()`
+volta vazio. `process_message` então usa `_html_to_text(get_body_html(msg))` (remove tags,
+desescapa, colapsa espaços) para alimentar a extração — recupera "Fatura nº: 3918439"
+(→ `invoice_number`) e "Valor da fatura R$ 1.530,47" (→ `amount`). Prioridade segue
+**anexo → link → corpo**. Testes: `tests/test_body_html_extraction.py`.
 
 **Fallbacks de campo (corpo E PDF — `build_financial_payload`):** `issue_date` vazio →
 data do e-mail (`received_at`); `due_date` vazio → `issue_date` → hoje; `invoice_number`
