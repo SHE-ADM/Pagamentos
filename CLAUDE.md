@@ -625,6 +625,15 @@ vencimento **mais recente**, chama `update_financial` para atualizar `due_date` 
 (`barcode`, `amount_charged`, `fine_interest`, `other_additions`) na conta existente — uma
 guia paga uma vez, sempre com o boleto válido. A trigger recalcula `due_status` no UPDATE.
 
+**Match de fornecedor por NOME é case/acento-insensitive** (`migration 032`): quando o
+documento não traz CNPJ/CPF, a impressão por nome usa a RPC `financial_dup_by_name`
+(`SupabaseControl._dup_by_name`), que compara `normalize_search(supplier_name) =
+normalize_search(<nome extraído>)` — "EFE Displays" casa "EFE DISPLAYS". O PostgREST não
+permite função na coluna dentro do filtro, por isso a comparação roda na RPC (mesmo padrão
+do trigger `resolve_supplier_id` para `legal_name`/`trade_name`). CNPJ/CPF são identificadores
+exatos e seguem o match direto. `normalize_search(txt) = lower(unaccent(txt))`. Teste:
+`tests/test_dup_by_name.py`.
+
 ### Duas chaves Supabase, dois papéis
 
 - **`anon`** (`VITE_SUPABASE_ANON_KEY`): frontend — leitura REST, respeita RLS `TO authenticated`.

@@ -400,6 +400,12 @@ class SupabaseControl:
         if not supplier_col:
             return None  # sem fornecedor identificavel — nao deduplica
 
+        # Fornecedor por NOME (sem CNPJ/CPF): comparacao case/acento-insensitive via
+        # RPC financial_dup_by_name (normalize_search nos dois lados) — "EFE Displays"
+        # casa "EFE DISPLAYS". CNPJ/CPF sao identificadores exatos: match direto.
+        if supplier_col == "supplier_name":
+            return self._dup_by_name(payload)
+
         supplier_clause = f"{supplier_col}=eq.{urllib.parse.quote(str(supplier_val), safe='')}"
 
         # 2. fornecedor + numero do documento + valor (numero substancial).
@@ -418,6 +424,34 @@ class SupabaseControl:
             _eq_clause(col, payload.get(col))
             for col in ("amount", "due_date", "document_type")
         ])
+
+    def _dup_by_name(self, payload: dict) -> dict | None:
+        """Dedup pelo NOME do fornecedor via RPC financial_dup_by_name (migration 032):
+        normalize_search(supplier_name) = normalize_search(nome extraido), nos dois lados.
+        O PostgREST nao permite funcao na coluna dentro do filtro, por isso a comparacao
+        case/acento-insensitive roda na RPC. Retorna a conta existente (id, due_date,
+        barcode...) ou None. Em erro de consulta, None (nao bloqueia a insercao)."""
+        if not self._available:
+            return None
+        amount = payload.get("amount")
+        body = json.dumps({
+            "p_name":    payload.get("supplier_name"),
+            "p_amount":  float(amount) if amount not in (None, "") else None,
+            "p_invoice": (str(payload.get("invoice_number") or "").strip() or None),
+            "p_due":     payload.get("due_date") or None,
+            "p_doc":     payload.get("document_type") or None,
+        }).encode()
+        try:
+            req = urllib.request.Request(
+                f"{self.base}/rest/v1/rpc/financial_dup_by_name",
+                data=body, headers=self.headers, method="POST",
+            )
+            with urllib.request.urlopen(req, timeout=5) as r:
+                rows = json.loads(r.read())
+                return rows[0] if rows else None
+        except Exception as e:
+            log.warning(f"Falha na checagem de duplicidade por nome (RPC): {e}")
+            return None
 
     def financial_duplicate_exists(self, payload: dict) -> bool:
         """Compat: True se ja existe documento equivalente (ver find_financial_duplicate)."""
