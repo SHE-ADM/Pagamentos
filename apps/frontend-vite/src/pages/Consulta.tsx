@@ -194,23 +194,15 @@ export default function Consulta() {
     };
   }, [applied]);
 
-  // Carrega as opções do dropdown de status uma vez no mount (tabela de dimensão).
-  // Reordena por STATUS_LIFECYCLE_ORDER (ignora a ordem do banco, onde status_id
-  // tem vencido=2 / a_vencer=3 por inserção histórica). Fallback estático se falhar.
+  // Carrega os labels do banco (status_short_name) e monta as opções na ordem
+  // definida por STATUS_LIFECYCLE_ORDER — ignora a ordem do banco (status_id tem
+  // vencido=2 / a_vencer=3 por inserção histórica). Fallback estático se falhar.
   useEffect(() => {
-    const sortByLifecycle = <T extends { status_name: string }>(arr: T[]): T[] =>
-      [...arr].sort((a, b) => {
-        const ai = STATUS_LIFECYCLE_ORDER.indexOf(a.status_name as typeof STATUS_LIFECYCLE_ORDER[number]);
-        const bi = STATUS_LIFECYCLE_ORDER.indexOf(b.status_name as typeof STATUS_LIFECYCLE_ORDER[number]);
-        return (ai === -1 ? 999 : ai) - (bi === -1 ? 999 : bi);
-      });
-
     void getStatusOptions()
-      .then((opts) =>
-        setStatusOptions(
-          sortByLifecycle(opts).map((o) => ({ value: o.status_name, label: o.status_short_name ?? o.status_name })),
-        ),
-      )
+      .then((opts) => {
+        const labelMap = new Map(opts.map((o) => [o.status_name, o.status_short_name ?? o.status_name]));
+        setStatusOptions(STATUS_LIFECYCLE_ORDER.map((s) => ({ value: s, label: labelMap.get(s) ?? s })));
+      })
       .catch(() =>
         setStatusOptions(STATUS_LIFECYCLE_ORDER.map((s) => ({ value: s, label: s }))),
       );
