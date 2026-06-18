@@ -2,7 +2,7 @@
 import { useState, type ReactNode } from 'react';
 import { NavLink } from 'react-router-dom';
 import { cva } from 'class-variance-authority';
-import { Mail, Search, BarChart2, Edit3, Receipt, AlertTriangle, LogOut, Menu, X } from 'lucide-react';
+import { Mail, Wallet, BarChart2, Edit3, Receipt, AlertTriangle, LogOut, Menu, X } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
 import { cn } from '../lib/cn';
 
@@ -74,7 +74,7 @@ export default function Layout({ children }: Readonly<{ children: ReactNode }>) 
             <Mail size={16} /> E-mails
           </NavLink>
           <NavLink to="/consulta" onClick={closeNav} className={({ isActive }) => navLink({ active: isActive })}>
-            <Search size={16} /> Consulta
+            <Wallet size={16} /> Consulta contas
           </NavLink>
           <NavLink to="/erros" onClick={closeNav} className={({ isActive }) => navLink({ active: isActive })}>
             <AlertTriangle size={16} /> Log de Erros
@@ -84,7 +84,7 @@ export default function Layout({ children }: Readonly<{ children: ReactNode }>) 
             Em breve
           </p>
           <span className="nav-link is-disabled">
-            <Edit3 size={16} /> CRUD Contas
+            <Edit3 size={16} /> Edição de contas
             <span className="ml-auto text-xs bg-slate-800 text-slate-500 rounded px-1">soon</span>
           </span>
           <span className="nav-link is-disabled">

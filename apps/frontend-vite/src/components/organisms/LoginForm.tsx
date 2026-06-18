@@ -39,7 +39,7 @@ export default function LoginForm() {
       setServerError('E-mail ou senha incorretos.');
       return;
     }
-    navigate('/emails');
+    navigate('/consulta');
   };
 
   return (

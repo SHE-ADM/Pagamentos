@@ -40,9 +40,6 @@ const STATUS_VARIANT: Record<string, BadgeVariant> = {
   protestado: 'red',
   cartório: 'amber',
   pago: 'emerald',
-  'pago protesto': 'emerald',
-  'pago cartório': 'emerald',
-  'não pago': 'red',
   cancelado: 'slate',
   falha: 'red',
   // email_control.status (migration 022). Esquema simplificado (decisão de UI):

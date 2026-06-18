@@ -644,7 +644,8 @@ número e vencimento novo; (3) fornecedor + valor + vencimento + tipo. Quando en
 duplicata, `extract_and_store_accounts` **não cria outra conta**: se a reemissão tem
 vencimento **mais recente**, chama `update_financial` para atualizar `due_date` + boleto
 (`barcode`, `amount_charged`, `fine_interest`, `other_additions`) na conta existente — uma
-guia paga uma vez, sempre com o boleto válido. A trigger recalcula `due_status` no UPDATE.
+guia paga uma vez, sempre com o boleto válido. A trigger recalcula a situação em `status` no
+UPDATE (só quando em aberto — migration 034).
 
 **Match de fornecedor por NOME é case/acento-insensitive** (`migration 032`): quando o
 documento não traz CNPJ/CPF, a impressão por nome usa a RPC `financial_dup_by_name`
@@ -952,7 +953,7 @@ faturas SIEG em `ignorado`; o handler A1 (baixar o boleto real) segue como melho
 ## Banco de dados (Supabase)
 
 Migrations em `supabase/migrations/`, aplicadas **manualmente no SQL Editor** em ordem
-numérica (`001` → `030`). Não há migration automática.
+numérica (`001` → `035`). Não há migration automática.
 
 | Tabela | Propósito |
 |---|---|
@@ -961,20 +962,29 @@ numérica (`001` → `030`). Não há migration automática.
 | `email_processing_errors` | Log de falhas com `raw_payload` JSON |
 | `supplier` | Fornecedores. Auto-criados pelo trigger, mas **cadastro PRESERVADO** (curadoria manual de `email`/`email2`/`email3`/`email4`) — **nunca truncar** em limpezas (ver "Limpeza / reset de dados"). Reconhecimento por **e-mail** em `email`/`email2`/`email3`/`email4` (migrations 023/027/028) — ver "Auto-resolução de fornecedor" |
 | `company` | Empresa pagadora (**cadastro**, tem campo `email`). Auto-resolvida pelo trigger `resolve_company_id` a partir de `payer_cnpj`/`payer_name`. **Preservada em limpezas** (ver abaixo) |
+| `status` | **Dimensão** de situação (`status_id`, `status_name`, `status_short_name`, `has_opened`/`has_closed`/`has_invoiced`). 10 linhas = domínio de `financial_account_control.status`. A trigger resolve `financial_account_control.status_id` por `status_name` (migration 035). **Cadastro/configuração — preservar em limpezas** |
 
-`financial_account_control.status` (ciclo de vida do pagamento, default `pendente`) e
-`due_status` (situação de vencimento, gravada pela trigger) compartilham o mesmo domínio
-pt-BR de 13 valores: `pendente, vencido, a vencer, prorrogado, baixado, protestado,
-cartório, pago, pago protesto, pago cartório, não pago, cancelado, falha` (migration 018).
-`payment_method` aceita `boleto, pix, ted, cartão, depósito, duplicata, bancário, carteira,
-vale, crédito, débito, dinheiro, transferência, cheque, outro`; `extraction_source` ∈
-(`email_body, pdf_text, pdf_vision, falha`).
+`financial_account_control.status` é a **coluna única de situação/ciclo de vida** (migration
+**034** fundiu o antigo `due_status` aqui). Default `pendente`; domínio pt-BR de **10 valores**
+(migration **035** alinhou o CHECK à tabela de dimensão `status` — removeu `pago protesto`,
+`pago cartório`, `não pago`): `pendente, vencido, a vencer, prorrogado, baixado, protestado,
+cartório, pago, cancelado, falha`. A coluna **`status_id`** (smallint, FK `fk_fac_status` →
+`status.status_id`) é mantida em sincronia pela mesma trigger, que resolve
+`status_id = status.status_id WHERE status_name = status` (035). A trigger
+**`fn_set_status_from_due_date`** (`trg_fe_status_vencimento`, BEFORE INSERT/UPDATE) grava
+`'a vencer'`/`'vencido'` a partir de `due_date` **apenas quando o status está em aberto**
+(`NULL`/`pendente`/`a vencer`/`vencido`) — preserva `falha` (extração) e baixas/CRUD manual
+(`pago`/`baixado`/`cancelado`/`prorrogado`/…). Antes da 034 havia `due_status` separado e o
+grid mostrava `due_status` enquanto o filtro filtrava `status` (inconsistente); agora ambos
+usam `status`. `payment_method` aceita `boleto, pix, ted, cartão, depósito, duplicata,
+bancário, carteira, vale, crédito, débito, dinheiro, transferência, cheque, outro`;
+`extraction_source` ∈ (`email_body, pdf_text, pdf_vision, falha`).
 
 **Schemas Zod (`packages/shared`) = fonte única de tipos.** Os tipos TS são `z.infer` dos
 schemas (não há tipo escrito à mão para divergir); os `z.enum` espelham 1:1 os CHECK do
-banco — ao alterar um CHECK, **atualizar o enum correspondente**. `due_status` reutiliza
-`ACCOUNT_STATUSES` (o domínio completo de 13 valores, idêntico a `status`), não só os
-`'a vencer'/'vencido'` que a trigger grava hoje — baixas/CRUD manual podem usar os demais.
+banco — ao alterar um CHECK, **atualizar o enum correspondente**. `status` usa
+`ACCOUNT_STATUSES` (domínio completo de 13 valores) — a trigger grava `'a vencer'/'vencido'`
+e baixas/CRUD manual definem os demais (`pago`/`baixado`/`cancelado`/…).
 O frontend consome os schemas de dados (`FinancialAccountControl`, `EmailControl`,
 `ProcessingError`) **apenas como `import type`** (sem `.parse()` em runtime — `services/supabase.ts`
 faz cast); só os schemas de **auth** rodam em runtime via `zodResolver`.
@@ -1006,6 +1016,7 @@ Ao limpar a base para uma nova busca geral, **SEMPRE preserve estas tabelas de
 cadastro/configuração** — não são alimentadas pelo pipeline e nunca devem ser apagadas:
 
 - `company`
+- `status` (dimensão de situação — domínio de `status` + alvo da FK `status_id`)
 - `supplier` (cadastro com curadoria manual — `email`/`email2`/`email3`/`email4` usados na busca de `/consulta`; truncá-lo destruiria os e-mails cadastrados à mão)
 - `financial_account`
 - `financial_bank`

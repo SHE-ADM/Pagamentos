@@ -166,11 +166,11 @@ export function getConsultaColumns(onToggleFlag: ToggleFlag): ColumnDef<Financia
       }),
   },
   {
-    key: 'due_status',
+    key: 'status',
     header: 'Situação',
     size: 130,
-    sortKey: 'due_status',
-    render: (r) => createElement(StatusBadge, { value: r.due_status }),
+    sortKey: 'status',
+    render: (r) => createElement(StatusBadge, { value: r.status }),
   },
   {
     key: 'extraction_source',

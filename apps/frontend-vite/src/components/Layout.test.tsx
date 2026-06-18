@@ -25,7 +25,7 @@ describe('Layout (sidebar)', () => {
   it('renderiza os links ativos e o conteúdo filho', () => {
     renderLayout();
     expect(screen.getByText('E-mails')).toBeInTheDocument();
-    expect(screen.getByText('Consulta')).toBeInTheDocument();
+    expect(screen.getByText('Consulta contas')).toBeInTheDocument();
     expect(screen.getByText('conteúdo')).toBeInTheDocument();
   });
 

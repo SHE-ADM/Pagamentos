@@ -63,8 +63,12 @@ export const PAYMENT_METHODS = [
   'outro',
 ] as const;
 
-// Status do ciclo de vida do pagamento (status e due_status compartilham o
-// mesmo domínio no banco; a trigger só grava 'a vencer'/'vencido' em due_status).
+// Situação/ciclo de vida da conta — coluna única `status` (migration 034 fundiu o
+// antigo `due_status` aqui). A trigger `fn_set_status_from_due_date` grava
+// 'a vencer'/'vencido' a partir de `due_date` quando o status está em aberto
+// (pendente/a vencer/vencido); 'falha' e baixas/CRUD manual (pago/baixado/cancelado/…)
+// são preservados. Domínio (10 valores) = tabela de dimensão `status` (migration 035,
+// que também resolve `status_id` por `status_name`):
 export const ACCOUNT_STATUSES = [
   'pendente',
   'vencido',
@@ -74,24 +78,14 @@ export const ACCOUNT_STATUSES = [
   'protestado',
   'cartório',
   'pago',
-  'pago protesto',
-  'pago cartório',
-  'não pago',
   'cancelado',
   'falha',
 ] as const;
-
-// Situação de vencimento (coluna due_status). Compartilha o MESMO domínio de 13
-// valores de `status` no banco (CHECK idêntico). A trigger trg_fe_due_status hoje
-// só grava 'a vencer'/'vencido', mas baixas/CRUD manual podem definir os demais —
-// por isso o enum reflete o domínio completo, não só os 2 valores da trigger.
-export const DUE_STATUSES = ACCOUNT_STATUSES;
 
 export const documentTypeSchema = z.enum(DOCUMENT_TYPES);
 export const extractionSourceSchema = z.enum(EXTRACTION_SOURCES);
 export const paymentMethodSchema = z.enum(PAYMENT_METHODS);
 export const accountStatusSchema = z.enum(ACCOUNT_STATUSES);
-export const dueStatusSchema = z.enum(DUE_STATUSES);
 
 // Valor monetário: aceita number ou string numérica vinda da REST.
 const money = z.coerce.number();
@@ -136,9 +130,10 @@ export const financialAccountControlSchema = z.object({
   other_additions: money.default(0),
   amount_charged: money.default(0),
 
-  // Status
+  // Situação/ciclo de vida (coluna única — migration 034)
   status: accountStatusSchema.default('pendente'),
-  due_status: dueStatusSchema.nullable(),
+  // FK para a dimensão `status` — resolvido pela trigger a partir de `status` (035)
+  status_id: z.number().int().nullable(),
 
   // Flags de curadoria manual (checkbox em /consulta — migration 033).
   // NOT NULL DEFAULT FALSE no banco; editados pelo usuário, não pelo pipeline.
@@ -173,7 +168,7 @@ export const financialAccountControlInputSchema = financialAccountControlSchema.
   id: true,
   supplier_id: true,
   company_id: true,
-  due_status: true,
+  status_id: true,
   created_at: true,
   updated_at: true,
 });
@@ -194,4 +189,3 @@ export type DocumentType = (typeof DOCUMENT_TYPES)[number];
 export type ExtractionSource = (typeof EXTRACTION_SOURCES)[number];
 export type PaymentMethod = (typeof PAYMENT_METHODS)[number];
 export type AccountStatus = (typeof ACCOUNT_STATUSES)[number];
-export type DueStatus = (typeof DUE_STATUSES)[number];

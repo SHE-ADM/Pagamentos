@@ -43,7 +43,7 @@ const makeRow = (over: Partial<FinancialAccountControl> = {}): FinancialAccountC
     supplier_cpf: null,
     document_type: 'boleto',
     payment_method: 'boleto',
-    due_status: 'a vencer',
+    status: 'a vencer',
     extraction_source: 'pdf_text',
     has_invoice: false,
     has_bank_slip: false,
@@ -55,7 +55,7 @@ describe('Consulta', () => {
     getFinancialAccountControl.mockResolvedValue({ data: [], total: 0 });
     getFinancialStats.mockResolvedValue({
       totalRecords: 0,
-      pending: 0,
+      aVencer: 0,
       totalValue: 0,
       vencendo: 0,
       vencidas: 0,
@@ -145,21 +145,21 @@ describe('Consulta', () => {
     expect(screen.queryByRole('button', { name: 'Limpar busca' })).not.toBeInTheDocument();
   });
 
-  it('atualiza o card "Valor total" conforme o filtro do card Pendentes', async () => {
+  it('atualiza o card "Valor total" conforme o filtro do card "A vencer"', async () => {
     const user = userEvent.setup();
-    // 1ª soma (sem filtro) = global; após clicar Pendentes = subconjunto filtrado.
+    // 1ª soma (sem filtro) = global; após clicar "A vencer" = subconjunto filtrado.
     getFinancialAccountTotalValue.mockResolvedValueOnce(5000).mockResolvedValueOnce(1234);
     render(<Consulta />);
 
     // valor global é exibido
     await waitFor(() => expect(screen.getByText(/5\.000,00/)).toBeInTheDocument());
 
-    await user.click(screen.getByText('Pendentes'));
+    await user.click(screen.getByText('A vencer'));
 
     // a soma é refeita com o filtro do card...
     await waitFor(() =>
       expect(getFinancialAccountTotalValue).toHaveBeenLastCalledWith(
-        expect.objectContaining({ status: 'pendente' }),
+        expect.objectContaining({ status: 'a vencer' }),
       ),
     );
     // ...e o card passa a refletir o valor filtrado
