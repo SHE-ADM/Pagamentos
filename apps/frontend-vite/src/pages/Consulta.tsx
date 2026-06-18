@@ -6,8 +6,8 @@ import {
   AlertCircle,
   TrendingUp,
   Clock,
-  DollarSign,
   FileText,
+  CheckCircle2,
   Search,
   X,
   Eye,
@@ -19,11 +19,10 @@ import {
   getFinancialStats,
   getFinancialAccountTotalValue,
   setFinancialAccountFlag,
-  getStatusOptions,
   setFinancialAccountStatus,
+  setFinancialAccountStatusBulk,
   type FinancialStats,
 } from '../services/supabase';
-import type { StatusOption } from '../components/atoms/StatusSelectCell';
 import { startEmailRead, getEmailReadProgress, type ReadProgress } from '../services/emailReader';
 import { suspendIdleLogout, resumeIdleLogout } from '../hooks/useIdleLogout';
 import { getErrorMessage } from '../lib/getErrorMessage';
@@ -31,8 +30,7 @@ import Alert from '../components/atoms/Alert';
 import ExpandableText from '../components/ExpandableText';
 import AttachmentViewer from '../components/AttachmentViewer';
 import DataGrid from '../components/organisms/DataGrid';
-import { getConsultaColumns, type ToggleFlag, type StatusChangeCallback } from '../hooks/useGridColumns';
-import { badgeLabel } from '../components/statusBadge.variants';
+import { getConsultaColumns, STATUS_OPTIONS, type ToggleFlag, type StatusChangeCallback } from '../hooks/useGridColumns';
 
 const fmtDate = (d: string | null): string => (d ? new Date(d + 'T00:00:00').toLocaleDateString('pt-BR') : '—');
 const fmtMoney = (v: number | null): string =>
@@ -41,14 +39,6 @@ const fmtCnpj = (c: string | null): string =>
   c?.length === 14 ? `${c.slice(0, 2)}.${c.slice(2, 5)}.${c.slice(5, 8)}/${c.slice(8, 12)}-${c.slice(12)}` : c || '—';
 
 const PAGE_SIZE = 20;
-
-// Ordem de ciclo de vida exibida no dropdown de status.
-// O banco tem status_id com vencido=2 / a_vencer=3 (inserção histórica), então
-// não usamos a ordem do banco — definimos aqui a sequência lógica correta.
-const STATUS_LIFECYCLE_ORDER = [
-  'pendente', 'a vencer', 'vencido', 'prorrogado', 'baixado',
-  'protestado', 'cartório', 'pago', 'cancelado', 'falha',
-] as const;
 
 // "Atualizar" em /consulta dispara a leitura IMAP dos últimos 7 dias (mesmo motor
 // de /emails) — assim o usuário traz e-mails novos sem sair da consulta.
@@ -72,7 +62,6 @@ const CSV_COLS: (keyof FinancialAccountControl)[] = [
   'other_additions',
   'payment_method',
   'nosso_numero',
-  'extraction_source',
   'invoice_number',
   'barcode',
   'description',
@@ -115,7 +104,12 @@ interface MetricCard {
   label: string;
   value: number;
   fmt: (v: number) => string | number;
+  /** Valor monetário exibido abaixo do número principal (null = não exibir). */
+  amount?: number | null;
   danger?: boolean;
+  success?: boolean;
+  /** Tom atenuado — valor/count em cinza médio (text-slate-600), diferenciando do total em preto forte. */
+  muted?: boolean;
   cardId?: string;
   onCardClick?: () => void;
 }
@@ -139,9 +133,6 @@ export default function Consulta() {
   const [reading, setReading] = useState(false);
   const [progress, setProgress] = useState<ReadProgress | null>(null);
   const readingRef = useRef(false);
-  // Opções do dropdown inline de status — carregadas uma vez da tabela de dimensão.
-  const [statusOptions, setStatusOptions] = useState<StatusOption[]>([]);
-  const supplierDebounce = useRef<ReturnType<typeof setTimeout> | null>(null);
   const sf = <K extends keyof ConsultaFilters>(k: K, v: ConsultaFilters[K]) =>
     setF((x) => ({ ...x, [k]: v }));
 
@@ -162,6 +153,10 @@ export default function Consulta() {
         getFinancialStats(),
       ]);
       setRows(result.data);
+      // `result.total` pode ser estimativa quando o PostgREST não devolve contagem exata
+      // (result.totalIsEstimate=true). A paginação a trata de forma transparente: a
+      // estimativa projeta "há mais páginas" e habilita/desabilita "Próxima" corretamente,
+      // sem leitura do flag aqui nem mudança visual no footer.
       setTotal(result.total);
       setStats(st);
     } catch (e) {
@@ -174,6 +169,19 @@ export default function Consulta() {
   useEffect(() => {
     void load();
   }, [load]);
+
+  // Debounce da busca por fornecedor (fonte única — sem ref): 350ms após a última tecla,
+  // congela f.supplier em applied. O cleanup cancela o timeout pendente quando f.supplier
+  // muda OU quando applied.supplier muda por outra via (Enter/Buscar, card, Limpar) —
+  // eliminando a corrida em que um timeout antigo sobrescreveria o valor recém-aplicado.
+  useEffect(() => {
+    if (f.supplier === applied.supplier) return; // já sincronizado (inclui o 1º mount)
+    const t = setTimeout(() => {
+      setApplied((prev) => ({ ...prev, supplier: f.supplier }));
+      setPage(1);
+    }, 350);
+    return () => clearTimeout(t);
+  }, [f.supplier, applied.supplier]);
 
   // "Valor total" reflete o filtro aplicado (cards ou filtros manuais). Depende
   // só de `applied` — não re-soma ao paginar/ordenar. O flag `cancelled` descarta
@@ -194,20 +202,6 @@ export default function Consulta() {
     };
   }, [applied]);
 
-  // Carrega os labels do banco (status_short_name) e monta as opções na ordem
-  // definida por STATUS_LIFECYCLE_ORDER — ignora a ordem do banco (status_id tem
-  // vencido=2 / a_vencer=3 por inserção histórica). Fallback estático se falhar.
-  useEffect(() => {
-    void getStatusOptions()
-      .then((opts) => {
-        const labelMap = new Map(opts.map((o) => [o.status_name, o.status_short_name ?? o.status_name]));
-        setStatusOptions(STATUS_LIFECYCLE_ORDER.map((s) => ({ value: s, label: labelMap.get(s) ?? s })));
-      })
-      .catch(() =>
-        setStatusOptions(STATUS_LIFECYCLE_ORDER.map((s) => ({ value: s, label: s }))),
-      );
-  }, []);
-
   // Marca/desmarca uma flag de curadoria ("Tem NF" / "Tem Boleto") com update
   // otimista no estado local + persistência via REST; reverte se a gravação falhar.
   const handleToggleFlag = useCallback<ToggleFlag>((row, field, value) => {
@@ -218,17 +212,32 @@ export default function Consulta() {
     });
   }, []);
 
+  const refreshStats = useCallback(async () => {
+    const st = await getFinancialStats();
+    setStats(st);
+  }, []);
+
   // Altera o status de uma conta no dropdown inline com update otimista.
   // O pai (Consulta) atualiza `rows` após confirmação da API para manter consistência
   // entre a célula editada e o painel de detalhe lateral.
   const handleStatusChange = useCallback<StatusChangeCallback>(async (rowId, newStatus) => {
     await setFinancialAccountStatus(rowId, newStatus);
     setRows((prev) => prev.map((r) => (r.id === rowId ? { ...r, status: newStatus as FinancialAccountControl['status'] } : r)));
-  }, []);
+    void refreshStats();
+  }, [refreshStats]);
+
+  const handleBulkStatusChange = useCallback(async (selected: FinancialAccountControl[], newStatus: string) => {
+    const ids = selected.map((r) => r.id);
+    await setFinancialAccountStatusBulk(ids, newStatus);
+    setRows((prev) =>
+      prev.map((r) => (ids.includes(r.id) ? { ...r, status: newStatus as FinancialAccountControl['status'] } : r)),
+    );
+    void refreshStats();
+  }, [refreshStats]);
 
   const columns = useMemo(
-    () => getConsultaColumns(handleToggleFlag, handleStatusChange, statusOptions),
-    [handleToggleFlag, handleStatusChange, statusOptions],
+    () => getConsultaColumns(handleToggleFlag, handleStatusChange),
+    [handleToggleFlag, handleStatusChange],
   );
 
   // "Atualizar": dispara a leitura IMAP dos últimos 7 dias (job em background no
@@ -334,13 +343,30 @@ export default function Consulta() {
 
   const vencidasCount = stats.vencidas ?? 0;
   const cards: MetricCard[] = [
-    { icon: DollarSign, label: 'Valor total', value: filteredValue ?? stats.totalValue ?? 0, fmt: fmtMoney },
-    { icon: FileText, label: 'Total de registros', value: stats.totalRecords ?? 0, fmt: (v) => v },
+    {
+      icon: FileText,
+      label: 'Total de registros',
+      value: stats.totalRecords ?? 0,
+      fmt: (v) => v,
+      amount: filteredValue ?? stats.totalValue ?? null,
+    },
+    {
+      icon: CheckCircle2,
+      label: 'Pagos',
+      value: stats.pago ?? 0,
+      fmt: (v) => v,
+      amount: stats.pagoValue ?? null,
+      success: true,
+      cardId: 'pago',
+      onCardClick: () => handleCardFilter('pago', { status: 'pago' }),
+    },
     {
       icon: Clock,
       label: 'A vencer',
       value: stats.aVencer ?? 0,
       fmt: (v) => v,
+      amount: stats.aVencerValue ?? null,
+      muted: true,
       cardId: 'avencer',
       onCardClick: () => handleCardFilter('avencer', { status: 'a vencer' }),
     },
@@ -349,6 +375,8 @@ export default function Consulta() {
       label: 'A vencer em 7 dias',
       value: stats.vencendo ?? 0,
       fmt: (v) => v,
+      amount: stats.vencendoValue ?? null,
+      muted: true,
       cardId: 'avencer7',
       onCardClick: () => {
         const t = new Date().toISOString().slice(0, 10);
@@ -361,6 +389,7 @@ export default function Consulta() {
       label: 'Vencidas',
       value: vencidasCount,
       fmt: (v) => v,
+      amount: stats.vencidasValue ?? null,
       danger: vencidasCount > 0,
       cardId: 'vencidas',
       onCardClick: () => handleCardFilter('vencidas', { status: 'vencido' }),
@@ -407,16 +436,20 @@ export default function Consulta() {
         )}
 
         <div className="flex gap-3 mb-5 flex-wrap">
-          {cards.map(({ icon: Icon, label, value, fmt, danger, cardId, onCardClick }) => {
+          {cards.map(({ icon: Icon, label, value, fmt, amount, danger, success, muted, cardId, onCardClick }) => {
             const isActive = !!cardId && activeCard === cardId;
-            const borderLeft = danger ? 'border-l-status-error-solid' : 'border-l-brand';
+            const borderLeft = danger ? 'border-l-status-error-solid' : success ? 'border-l-status-success-fg' : 'border-l-brand';
             let cardBg = 'bg-white';
             if (isActive) {
-              cardBg = danger ? 'bg-status-error-bg ring-1 ring-status-error-border/40' : 'bg-brand/5 ring-1 ring-brand/30';
+              cardBg = danger
+                ? 'bg-status-error-bg ring-1 ring-status-error-border/40'
+                : success
+                  ? 'bg-status-success-bg ring-1 ring-status-success-border/40'
+                  : 'bg-brand/5 ring-1 ring-brand/30';
             }
             const interactive = onCardClick ? 'cursor-pointer hover:shadow-md hover:scale-[1.01]' : '';
-            const iconCls = danger ? 'bg-status-error-solid/10 text-status-error-fg' : 'bg-brand/10 text-brand';
-            const valueCls = danger ? 'text-status-error-fg' : 'text-slate-800';
+            const iconCls = danger ? 'bg-status-error-solid/10 text-status-error-fg' : success ? 'bg-status-success-bg text-status-success-fg' : 'bg-brand/10 text-brand';
+            const valueCls = danger ? 'text-status-error-fg' : success ? 'text-status-success-fg' : muted ? 'text-slate-500' : 'text-slate-800';
             return (
               <div
                 key={label}
@@ -430,10 +463,16 @@ export default function Consulta() {
                   <Icon size={18} />
                 </div>
                 <div className="min-w-0">
-                  <div className={`text-2xl font-bold leading-tight ${valueCls}`}>
+                  {amount != null && (
+                    <div className={`text-2xl font-bold leading-tight truncate ${valueCls}`}>
+                      {fmtMoney(amount)}
+                    </div>
+                  )}
+                  <div className={`text-base font-semibold leading-tight ${valueCls}`}>
                     {fmt(value)}
+                    <span className="text-sm font-normal text-slate-400 ml-1">conta(s)</span>
                   </div>
-                  <div className="text-xs text-slate-500 truncate">{label}</div>
+                  <div className="text-base text-slate-500 truncate">{label}</div>
                 </div>
               </div>
             );
@@ -453,32 +492,16 @@ export default function Consulta() {
                 className="input w-full pr-8"
                 placeholder="Fornecedor, CNPJ, Nº doc, assunto, remetente ou e-mail…"
                 value={f.supplier}
-                onChange={(e) => {
-                  const val = e.target.value;
-                  sf('supplier', val);
-                  if (supplierDebounce.current) clearTimeout(supplierDebounce.current);
-                  supplierDebounce.current = setTimeout(() => {
-                    setApplied((prev) => ({ ...prev, supplier: val }));
-                    setPage(1);
-                  }, 350);
-                }}
+                onChange={(e) => sf('supplier', e.target.value)}
                 onKeyDown={(e) => {
-                  if (e.key === 'Enter') {
-                    if (supplierDebounce.current) clearTimeout(supplierDebounce.current);
-                    handleSearch();
-                  }
+                  if (e.key === 'Enter') handleSearch();
                 }}
               />
               {f.supplier && (
                 <button
                   type="button"
                   aria-label="Limpar busca"
-                  onClick={() => {
-                    if (supplierDebounce.current) clearTimeout(supplierDebounce.current);
-                    sf('supplier', '');
-                    setApplied((prev) => ({ ...prev, supplier: '' }));
-                    setPage(1);
-                  }}
+                  onClick={() => sf('supplier', '')}
                   className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600"
                 >
                   <X size={14} />
@@ -546,6 +569,8 @@ export default function Consulta() {
             enableColumnManagement
             enableSelection
             onExportSelected={exportCsv}
+            bulkStatusOptions={STATUS_OPTIONS}
+            onBulkStatusChange={handleBulkStatusChange}
             maxBodyHeight="62vh"
             loading={loading}
             emptyMessage={loading ? 'Buscando registros…' : 'Nenhum registro encontrado — ajuste os filtros e clique em Buscar'}
@@ -599,7 +624,6 @@ export default function Consulta() {
                                   ['Nosso número', r.nosso_numero || '—'],
                                   ['Forma de pag.', r.payment_method],
                                   ['Código de barras', r.barcode || '—'],
-                                  ['Extração', r.extraction_source ? badgeLabel(r.extraction_source) : null],
                                   ['Origem', r.source_file],
                                   ['Observações', r.processing_notes || '—'],
                                 ] as [string, string | null][]

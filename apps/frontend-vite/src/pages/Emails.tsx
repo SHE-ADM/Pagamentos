@@ -87,6 +87,9 @@ export default function Emails() {
   const [readDays, setReadDays] = useState<number>(7);
   const [viewing, setViewing] = useState<string | null>(null);
   const [invoiceMap, setInvoiceMap] = useState<Record<string, string>>({});
+  // Valor digitado na busca por remetente (formulário) — separado de filters.sender
+  // (valor aplicado que alimenta o load). Commitado por debounce/Enter/Buscar.
+  const [senderInput, setSenderInput] = useState('');
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -109,6 +112,16 @@ export default function Emails() {
   useEffect(() => {
     void load();
   }, [load]);
+
+  // Debounce da busca por remetente: 350ms após a última tecla, commita senderInput em
+  // filters.sender (que dispara o load). O cleanup cancela o timeout pendente quando
+  // senderInput muda OU quando filters.sender muda por outra via (Enter/Buscar, card,
+  // leitura) — sem refetch por caractere e sem corrida de valor obsoleto.
+  useEffect(() => {
+    if (senderInput === filters.sender) return; // sincronizado (inclui o 1º mount)
+    const t = setTimeout(() => setFilters((f) => ({ ...f, sender: senderInput })), 350);
+    return () => clearTimeout(t);
+  }, [senderInput, filters.sender]);
 
   // Popula o mapa de nº documento para todas as linhas da página atual.
   useEffect(() => {
@@ -206,6 +219,7 @@ export default function Emails() {
     // Alinha a janela da tabela ao período buscado (readDays=0 → todos).
     if (mode === 'geral') {
       setActiveCard(null);
+      setSenderInput('');
       setFilters({ status: '', sender: '', days: readDays });
     }
 
@@ -246,9 +260,14 @@ export default function Emails() {
   const setF = <K extends keyof EmailFilters>(k: K, v: EmailFilters[K]) =>
     setFilters((f) => ({ ...f, [k]: v }));
 
+  // Submit da busca por remetente (Enter/Buscar): commita senderInput em filters.sender.
+  // Novo objeto filters → load recompõe → recarrega (é o "submit").
+  const handleSearch = () => setFilters((f) => ({ ...f, sender: senderInput }));
+
   // Ciclo de toggle: clique no mesmo card limpa o filtro; clique diferente aplica.
   // days: 0 mostra todos os períodos, alinhando com os totais dos KPIs (all-time).
   const handleCardFilter = (cardId: string, filterOverride: Partial<EmailFilters>) => {
+    setSenderInput(''); // mantém o input em sincronia (cards resetam filters.sender)
     if (activeCard === cardId) {
       setActiveCard(null);
       setFilters({ ...EMPTY_FILTERS });
@@ -454,15 +473,17 @@ export default function Emails() {
               aria-label="Buscar por remetente, assunto ou número do documento"
               className="input w-full pr-8"
               placeholder="Remetente, assunto ou Nº doc…"
-              value={filters.sender}
-              onChange={(e) => setF('sender', e.target.value)}
-              onKeyDown={(e) => e.key === 'Enter' && load()}
+              value={senderInput}
+              onChange={(e) => setSenderInput(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') handleSearch();
+              }}
             />
-            {filters.sender && (
+            {senderInput && (
               <button
                 type="button"
                 aria-label="Limpar busca"
-                onClick={() => setF('sender', '')}
+                onClick={() => setSenderInput('')}
                 className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600"
               >
                 <X size={14} />
@@ -490,7 +511,7 @@ export default function Emails() {
             <option value={90}>90 dias</option>
             <option value={0}>Todos</option>
           </select>
-          <button onClick={load} className="btn btn-primary">
+          <button onClick={handleSearch} className="btn btn-primary">
             Buscar
           </button>
         </div>

@@ -77,6 +77,10 @@ interface DataGridProps<T> {
   enableSelection?: boolean;
   /** Ação da barra de seleção — recebe as linhas selecionadas (ex.: exportar CSV). */
   onExportSelected?: (rows: T[]) => void;
+  /** Opções de status para ação em lote — exibe select + botão "Aplicar" na barra de seleção. */
+  bulkStatusOptions?: readonly { value: string; label: string }[];
+  /** Callback disparado ao aplicar status em lote — recebe as linhas selecionadas e o novo status. */
+  onBulkStatusChange?: (rows: T[], status: string) => Promise<void>;
   /** Altura máxima do corpo rolável (habilita cabeçalho fixo). px ou string CSS. */
   maxBodyHeight?: number | string;
 }
@@ -204,13 +208,16 @@ function SortableHeaderCell<T>({
             type="button"
             title={titleVal}
             onClick={() => onSort(sortKey)}
-            className="inline-flex flex-1 items-center gap-1 text-left"
+            className={cn(
+              'inline-flex flex-1 items-center gap-1',
+              meta.align === 'right' ? 'justify-end' : 'text-left',
+            )}
           >
             {headerText}
             <SortIcon size={11} className={sortIcon({ active })} />
           </button>
         ) : (
-          <span className="flex-1">{headerText}</span>
+          <span className={cn('flex-1', meta.align === 'right' && 'text-right')}>{headerText}</span>
         )}
       </div>
       {column.getCanResize() && (
@@ -256,10 +263,13 @@ export default function DataGrid<T>({
   enableColumnManagement = false,
   enableSelection = false,
   onExportSelected,
+  bulkStatusOptions,
+  onBulkStatusChange,
   maxBodyHeight,
 }: Readonly<DataGridProps<T>>) {
   const { ref, breakpoint } = useContainerBreakpoint<HTMLDivElement>();
   const [rowSelection, setRowSelection] = useState<Record<string, boolean>>({});
+  const [bulkStatus, setBulkStatus] = useState('');
 
   const columnIds = useMemo(() => columns.map((c) => String(c.key)), [columns]);
   const { prefs, setColumnSizing, setColumnVisibility, setColumnPinning, setColumnOrder, setDensity, reset } =
@@ -339,6 +349,7 @@ export default function DataGrid<T>({
       columnPinning,
       rowSelection,
     },
+    onColumnOrderChange: setColumnOrder,
     onColumnSizingChange: setColumnSizing,
     onRowSelectionChange: setRowSelection,
   });
@@ -355,10 +366,13 @@ export default function DataGrid<T>({
   // Estilo (largura + offset de fixação) das células no modo gerenciável.
   const cellStyle = (column: Column<T, unknown>): CSSProperties | undefined =>
     managed ? { width: column.getSize(), ...pinOffsetStyle(column) } : undefined;
-  const pinClass = (column: Column<T, unknown>, kind: 'header' | 'body'): string => {
+  const pinClass = (column: Column<T, unknown>, kind: 'header' | 'body', selected = false): string => {
     const pinned = column.getIsPinned();
-    return managed && pinned ? pinnedCell({ variant, kind, side: pinned }) : '';
+    return managed && pinned ? pinnedCell({ variant, kind, side: pinned, selected }) : '';
   };
+  // Id da 1ª coluna fixada à esquerda (com seleção é SELECT_ID; senão, a fixada pelo
+  // usuário) — é a única célula que recebe o acento brand da linha selecionada.
+  const firstLeftPinnedId = columnPinning.left?.[0];
 
   // ── Cabeçalho ───────────────────────────────────────────────────────────────
   const sensors = useSensors(
@@ -501,11 +515,12 @@ export default function DataGrid<T>({
             {mainCells.map((cell) => {
               const column = cell.column;
               const m = colMeta(column);
+              const accent = isSelected && column.id === firstLeftPinnedId;
               const cls = cn(
                 bodyCell({ variant, align: m.align ?? 'left', dense: column.id !== SELECT_ID, density }),
                 managed && m.truncate && 'max-w-[14rem]',
                 m.className,
-                pinClass(column, 'body'),
+                pinClass(column, 'body', accent),
               );
               if (column.id === SELECT_ID) {
                 return (
@@ -616,6 +631,36 @@ export default function DataGrid<T>({
               : undefined
           }
           onClearSelection={enableSelection ? () => table.resetRowSelection() : undefined}
+          selectionActions={
+            enableSelection && bulkStatusOptions && onBulkStatusChange ? (
+              <>
+                <select
+                  value={bulkStatus}
+                  onChange={(e) => setBulkStatus(e.target.value)}
+                  aria-label="Selecionar nova situação"
+                  className="h-7 rounded border border-brand/30 bg-white px-2 text-xs text-slate-700 focus:outline-none focus:ring-1 focus:ring-brand"
+                >
+                  <option value="">Alterar situação...</option>
+                  {bulkStatusOptions.map((o) => (
+                    <option key={o.value} value={o.value}>{o.label}</option>
+                  ))}
+                </select>
+                <button
+                  type="button"
+                  disabled={!bulkStatus}
+                  onClick={async () => {
+                    const rows = selectedRows.map((r) => r.original);
+                    await onBulkStatusChange(rows, bulkStatus);
+                    setBulkStatus('');
+                    table.resetRowSelection();
+                  }}
+                  className="btn btn-primary disabled:opacity-40 disabled:cursor-not-allowed"
+                >
+                  Aplicar
+                </button>
+              </>
+            ) : undefined
+          }
         />
       )}
       {managed ? (

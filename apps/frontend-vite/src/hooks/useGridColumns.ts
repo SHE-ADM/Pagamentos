@@ -6,6 +6,22 @@ import CheckToggle from '../components/atoms/CheckToggle';
 import StatusSelectCell, { type StatusOption } from '../components/atoms/StatusSelectCell';
 import type { FinancialAccountFlag } from '../services/supabase';
 
+// Opções do dropdown inline de status — ordem de ciclo de vida, definida aqui como
+// constante de módulo para evitar qualquer dependência de fetch ou timing de estado.
+// Os labels usam capitalização padrão; 'cartório' preserva o acento do valor no banco.
+export const STATUS_OPTIONS: readonly StatusOption[] = [
+  { value: 'pendente',    label: 'Pendente' },
+  { value: 'a vencer',   label: 'A Vencer' },
+  { value: 'vencido',    label: 'Vencido' },
+  { value: 'prorrogado', label: 'Prorrogado' },
+  { value: 'baixado',    label: 'Baixado' },
+  { value: 'protestado', label: 'Protestado' },
+  { value: 'cartório',   label: 'Cartório' },
+  { value: 'pago',       label: 'Pago' },
+  { value: 'cancelado',  label: 'Cancelado' },
+  { value: 'falha',      label: 'Falha' },
+];
+
 /** Callback acionado ao marcar/desmarcar um checkbox de flag na célula do grid. */
 export type ToggleFlag = (
   row: FinancialAccountControl,
@@ -77,13 +93,12 @@ export interface ColumnDef<T> {
 export function getConsultaColumns(
   onToggleFlag: ToggleFlag,
   onStatusChange: StatusChangeCallback,
-  statusOptions: Readonly<StatusOption[]>,
 ): ColumnDef<FinancialAccountControl>[] {
   return [
   {
     key: 'invoice_number',
     header: 'Nº Documento',
-    size: 140,
+    size: 130,
     sortKey: 'invoice_number',
     hideOn: ['sm'],
     render: (r) => r.invoice_number ?? '—',
@@ -91,7 +106,7 @@ export function getConsultaColumns(
   {
     key: 'issue_date',
     header: 'Emissão',
-    size: 110,
+    size: 100,
     sortKey: 'issue_date',
     hideOn: ['sm', 'md'],
     render: (r) => fmtDate(r.issue_date),
@@ -99,7 +114,7 @@ export function getConsultaColumns(
   {
     key: 'supplier_name',
     header: 'Fornecedor',
-    size: 240,
+    size: 200,
     sortKey: 'supplier_name',
     truncate: true,
     render: (r) => r.supplier_name ?? '—',
@@ -107,17 +122,18 @@ export function getConsultaColumns(
   {
     key: 'supplier_cnpj',
     header: 'CNPJ / CPF',
-    size: 150,
+    size: 165,
     sortKey: 'supplier_cnpj',
     hideOn: ['sm'],
     secondLine: true,
     secondLineLabel: 'CNPJ',
+    truncate: true,
     render: (r) => fmtCnpjOrCpf(r.supplier_cnpj, r.supplier_cpf),
   },
   {
     key: 'document_type',
-    header: 'Tipo Doc.',
-    size: 120,
+    header: 'Tipo Documento',
+    size: 100,
     sortKey: 'document_type',
     hideOn: ['sm', 'md'],
     secondLine: true,
@@ -126,8 +142,8 @@ export function getConsultaColumns(
   },
   {
     key: 'payment_method',
-    header: 'Pagamento',
-    size: 130,
+    header: 'Tipo Pagamento',
+    size: 110,
     sortKey: 'payment_method',
     hideOn: ['sm', 'md'],
     secondLine: true,
@@ -137,14 +153,14 @@ export function getConsultaColumns(
   {
     key: 'due_date',
     header: 'Vencimento',
-    size: 120,
+    size: 110,
     sortKey: 'due_date',
     render: (r) => fmtDate(r.due_date),
   },
   {
     key: 'amount',
     header: 'Valor',
-    size: 130,
+    size: 120,
     sortKey: 'amount',
     align: 'right',
     render: (r) => fmtMoney(r.amount),
@@ -152,7 +168,7 @@ export function getConsultaColumns(
   {
     key: 'has_invoice',
     header: 'NF',
-    size: 72,
+    size: 56,
     align: 'center',
     render: (r) =>
       createElement(CheckToggle, {
@@ -164,7 +180,7 @@ export function getConsultaColumns(
   {
     key: 'has_bank_slip',
     header: 'BOL',
-    size: 72,
+    size: 56,
     align: 'center',
     render: (r) =>
       createElement(CheckToggle, {
@@ -176,20 +192,26 @@ export function getConsultaColumns(
   {
     key: 'status',
     header: 'Situação',
-    size: 160,
-    sortKey: 'status_id',
+    size: 148,
+    // Ordenação de "Situação" é ALFABÉTICA pelo nome (equivale a ORDER BY status_name na
+    // dimensão `status`). Decisão de negócio: o ciclo de vida não é estritamente linear —
+    // de "a vencer" pode-se ir direto para "cancelado", "falha" etc. —, então a ordem por
+    // `status_id` não representa uma sequência real e a alfabética é mais previsível.
+    // sortKey usa `status` (coluna de texto da financial_account_control); `status_name`
+    // só existe na dimensão `status` e não é uma coluna ordenável deste endpoint.
+    sortKey: 'status',
     render: (r) =>
       createElement(StatusSelectCell, {
         rowId: r.id,
         value: r.status ?? 'pendente',
-        options: statusOptions,
+        options: STATUS_OPTIONS,
         onSave: onStatusChange,
       }),
   },
   {
     key: 'extraction_source',
     header: 'Extração',
-    size: 150,
+    size: 120,
     sortKey: 'extraction_source',
     hideOn: ['sm', 'md'],
     render: (r) => createElement(StatusBadge, { value: r.extraction_source }),

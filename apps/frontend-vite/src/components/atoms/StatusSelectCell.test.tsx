@@ -1,7 +1,8 @@
 import { describe, it, expect, vi } from 'vitest';
-import { render, screen } from '@testing-library/react';
+import { render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import StatusSelectCell, { type StatusOption } from './StatusSelectCell';
+import { STATUS_OPTIONS } from '../../hooks/useGridColumns';
 
 const OPTIONS: StatusOption[] = [
   { value: 'pendente', label: 'Pendente' },
@@ -88,5 +89,34 @@ describe('StatusSelectCell', () => {
     for (const opt of OPTIONS) {
       expect(screen.getByRole('option', { name: opt.label })).toBeInTheDocument();
     }
+  });
+});
+
+describe('STATUS_OPTIONS — ordem de ciclo de vida', () => {
+  const LIFECYCLE_ORDER = [
+    'pendente', 'a vencer', 'vencido', 'prorrogado', 'baixado',
+    'protestado', 'cartório', 'pago', 'cancelado', 'falha',
+  ];
+
+  it('contém exatamente 10 opções na sequência de ciclo de vida', () => {
+    expect(STATUS_OPTIONS).toHaveLength(10);
+    STATUS_OPTIONS.forEach((opt, i) => {
+      expect(opt.value).toBe(LIFECYCLE_ORDER[i]);
+    });
+  });
+
+  it('dropdown renderiza opções na ordem de ciclo de vida', async () => {
+    const user = userEvent.setup();
+    render(
+      <StatusSelectCell rowId={1} value="pendente" options={STATUS_OPTIONS} onSave={vi.fn()} />,
+    );
+    await user.click(screen.getByRole('button'));
+
+    const select = screen.getByRole('combobox', { name: /alterar situação/i });
+    const rendered = within(select)
+      .getAllByRole('option')
+      .map((el) => el.getAttribute('value'));
+
+    expect(rendered).toEqual(LIFECYCLE_ORDER);
   });
 });

@@ -40,11 +40,13 @@ export const sortIcon = cva('', {
 export const bodyRow = cva('cursor-pointer transition-colors', {
   variants: {
     variant: { default: '', silver: '' },
-    selected: { true: 'bg-brand/5 border-l-2 border-brand', false: '' },
+    // Selecionada: tom brand mais forte que o hover + acento de borda. Hover é cinza
+    // neutro (transitório) para contrastar com o verde da linha selecionada (fixa).
+    selected: { true: 'bg-brand/10 border-l-2 border-brand', false: '' },
   },
   compoundVariants: [
-    { variant: 'default', selected: false, class: 'hover:bg-slate-50/60' },
-    { variant: 'silver', selected: false, class: 'bg-zinc-100 hover:bg-zinc-200/60' },
+    { variant: 'default', selected: false, class: 'hover:bg-slate-100' },
+    { variant: 'silver', selected: false, class: 'bg-zinc-100 hover:bg-zinc-200' },
   ],
   defaultVariants: { variant: 'default', selected: false },
 });
@@ -74,19 +76,29 @@ export const pinnedCell = cva('sticky', {
   variants: {
     variant: { default: '', silver: '' },
     kind: { header: 'z-30', body: 'z-20' },
-    side: {
-      left: 'shadow-[1px_0_2px_rgba(15,23,42,0.08)]',
-      right: 'shadow-[-1px_0_2px_rgba(15,23,42,0.08)]',
-      none: '',
-    },
+    // `side` é só matcher — as sombras de borda vivem nos compoundVariants para poderem
+    // combinar com o acento de seleção num único box-shadow (twMerge colapsaria dois).
+    side: { left: '', right: '', none: '' },
+    // Linha selecionada (detalhe aberto): acento de borda esquerda interna que aparece
+    // mesmo sob a célula fixada opaca, que cobriria o border-l do <tr>.
+    selected: { true: '', false: '' },
   },
   compoundVariants: [
     { variant: 'default', kind: 'header', class: 'bg-slate-50' },
     { variant: 'default', kind: 'body', class: 'bg-white' },
     { variant: 'silver', kind: 'header', class: 'bg-zinc-50' },
     { variant: 'silver', kind: 'body', class: 'bg-zinc-100' },
+    // Sombra de borda interna por lado; à esquerda + selecionada combina o acento brand
+    // (inset) com a sombra de borda num único shadow-[…] (compatível com twMerge/JIT).
+    { side: 'left', selected: false, class: 'shadow-[1px_0_2px_rgba(15,23,42,0.08)]' },
+    {
+      side: 'left',
+      selected: true,
+      class: 'shadow-[inset_2px_0_0_theme(colors.brand.DEFAULT),1px_0_2px_rgba(15,23,42,0.08)]',
+    },
+    { side: 'right', class: 'shadow-[-1px_0_2px_rgba(15,23,42,0.08)]' },
   ],
-  defaultVariants: { variant: 'default', kind: 'body', side: 'none' },
+  defaultVariants: { variant: 'default', kind: 'body', side: 'none', selected: false },
 });
 
 /** Alça de redimensionamento na borda direita do cabeçalho (cursor col-resize). */

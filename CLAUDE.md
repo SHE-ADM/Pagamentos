@@ -417,13 +417,23 @@ ordem/visibilidade/larguras/fixação/densidade — persistido em `localStorage`
 setters no formato `OnChangeFn` do TanStack + `reset()`; ver seção do DataGrid) e
 `useGridColumns.ts` (metadados de coluna — `ColumnDef` com `size?` opcional, `getConsultaColumns`,
 `getEmailColumns`; é módulo de **definições**, não um hook,
-apesar do nome). `getConsultaColumns(onToggleFlag)` é factory porque as colunas "NF" e
-"BOL" (curadoria) renderizam o atom `CheckToggle` (checkbox que escreve no banco) — precisam
-do callback de toggle da página. Os cabeçalhos são abreviados (`NF`/`BOL`) para poupar
+apesar do nome). `getConsultaColumns(onToggleFlag, onStatusChange)` é factory porque as colunas
+"NF" e "BOL" (curadoria) renderizam o atom `CheckToggle` (checkbox que escreve no banco) e a
+coluna "Situação" renderiza o `StatusSelectCell` (dropdown inline que altera o status) — precisam
+dos callbacks da página. Os cabeçalhos são abreviados (`NF`/`BOL`) para poupar
 largura, mas o `aria-label` do checkbox continua descritivo (`Tem NF`/`Tem Boleto`). Ordem
 das colunas finais de `/consulta`: **… Valor → NF → BOL → Situação → Extração** (`Extração`
-por último, `Situação` logo antes dela). `useIdleLogout.ts` e `useAuth` cobrem sessão (ver
-Autenticação).
+por último, após `Situação`). A coluna `Extração` mostra `extraction_source` (badge), mas foi
+removida do painel de detalhe e da exportação CSV — aparece **apenas** como coluna do grid.
+A coluna **"Situação" ordena alfabeticamente pelo texto** (`sortKey: 'status'`), **não** por
+`status_id`: decisão de negócio — o ciclo de vida não é linear (de `a vencer` pode-se ir direto a
+`cancelado`/`falha`), então a ordem alfabética é mais previsível (`status_name` só existe na
+dimensão `status`, não é coluna ordenável deste endpoint). As **larguras (`size`) das colunas de
+`/consulta` foram ajustadas** (soma ~1.459px, de ~1.673px) para caber no viewport desktop sem
+estourar scroll horizontal (descontando a sidebar de 208px + padding `px-6`); o ajuste foi só nos
+tamanhos — as regras `hideOn` (responsividade mobile/tablet) permanecem como o mecanismo de
+ocultação por breakpoint.
+`useIdleLogout.ts` e `useAuth` cobrem sessão (ver Autenticação).
 
 Tipos compartilhados vêm de `@sheild/shared` (ex.: `FinancialEmail`, `EmailControl`).
 Helpers em `src/lib/`: `getErrorMessage.ts` (erro em strict mode), `cn.ts` (merge de
@@ -507,9 +517,14 @@ que vale só para **estados semânticos**). Dois temas via `variant`:
 | `default` | `/consulta` | `slate-*` | `.table-header` / `.table-cell` |
 | `silver` | `/emails` | `zinc-*` | `.table-header-silver` / `.table-cell-silver` |
 
-Linha selecionada usa o acento `brand` (`bg-brand/5 border-l-2 border-brand`); o `StatusBadge`
-dentro das células continua na paleta `status`. Cada slot (header, row, cell, skeleton, empty,
-sub-linha de detalhe) é um `cva` próprio com a base + o neutro do tema — string literal completa.
+Linha selecionada usa o acento `brand` (`bg-brand/10 border-l-2 border-brand`); o **hover** é
+cinza neutro (`hover:bg-slate-100` no tema `default`, `hover:bg-zinc-200` no `silver`) para
+contrastar com o verde da selecionada. Quando há coluna **fixada à esquerda** (ex.: a de
+seleção), a 1ª célula fixada opaca cobriria o `border-l` do `<tr>`, então o acento é repintado
+nela via box-shadow inset brand (variante `selected` do `pinnedCell`, aplicada só à primeira
+célula left-pinned da linha selecionada). O `StatusBadge` dentro das células continua na paleta
+`status`. Cada slot (header, row, cell, skeleton, empty, sub-linha de detalhe) é um `cva`
+próprio com a base + o neutro do tema — string literal completa.
 
 ### Guia de tamanhos — tokens Tailwind em uso
 
@@ -878,6 +893,10 @@ faturas SIEG em `ignorado`; o handler A1 (baixar o boleto real) segue como melho
 | `/erros` | `Erros.tsx` | `email_processing_errors` |
 
 - `services/supabase.ts` — fetch direto REST, `Prefer: count=exact` + `Content-Range` para paginação.
+  O total é parseado por `parsePaginationTotal` (resiliente): quando o PostgREST devolve a contagem
+  indisponível (`*/*` ou `0-19/*`), **não zera** — estima `offset + itens + (página cheia ? pageSize : 0)`
+  e marca `totalIsEstimate` em `Paginated<T>` (evita prender o usuário na página 1). `Consulta.tsx`
+  trata a estimativa de forma transparente (sem mudança visual no footer).
 - `services/emailReader.ts` — leitura IMAP **assíncrona com progresso** (proxy Vite → Flask):
   `startEmailRead` faz `POST /api/emails/read/start` (Flask dispara `run_reader` numa **thread**
   e responde na hora) e `getEmailReadProgress` faz `GET /api/emails/progress`. `Emails.handleRead`
@@ -899,6 +918,14 @@ faturas SIEG em `ignorado`; o handler A1 (baixar o boleto real) segue como melho
   suspende/retoma o logout por inatividade) — assim traz e-mails novos **sem abrir `/emails`**.
   O **label permanece "Atualizar"** (só ganha spinner + disabled enquanto processa); a guarda
   `readingRef` evita disparos concorrentes. Não há reconexão ao job aqui (escopo do `/emails`).
+- **Busca textual com debounce (form vs. aplicado) — padrão em `/consulta` e `/emails`:** o input de
+  busca escreve num estado de **formulário** (`f.supplier` / `senderInput`), separado do valor
+  **aplicado** que dispara o fetch (`applied.supplier` / `filters.sender`). Um `useEffect` com debounce
+  de **350ms** e `cleanup` (`clearTimeout`) commita form→aplicado — **fonte única, sem `ref`** — com
+  guarda `if (form === aplicado) return` (cobre o mount). Enter/Buscar commitam na hora; o `cleanup`
+  cancela o timeout pendente quando o aplicado muda por outra via (Enter, card, limpar), eliminando a
+  corrida em que um debounce antigo sobrescreveria o valor recém-aplicado. Isso evita o refetch a cada
+  tecla (antes `/emails` recarregava por caractere porque `load` dependia de `filters` inteiro).
 - **`/consulta` — `cancelado` oculto por padrão (consistência grid ↔ KPIs):** `applyFinancialFilters`
   aplica `status=neq.cancelado` quando **não** há filtro de situação. `getFinancialStats` usa o
   **mesmo** filtro, então o rodapé "N registros", o KPI "Total de registros", o "Valor total" e
@@ -930,9 +957,12 @@ faturas SIEG em `ignorado`; o handler A1 (baixar o boleto real) segue como melho
     `column.getStart/ getAfter`) funcionarem; sem gestão, mantém o layout `w-full` antigo.
   - **Seleção múltipla (opt-in `enableSelection`)**: coluna de checkbox (`SelectCheckbox`, sempre 1ª e
     fixada à esquerda) + barra de ações com **"Exportar selecionadas"** (`onExportSelected` — em
-    `/consulta` reusa o `exportCsv`). A coluna de seleção (`__select__`) é injetada na ordem/fixação
-    efetivas mas **nunca** gravada nas preferências (que ficam data-only) — evita duplicar o id.
-    `/emails` **não** liga seleção (sem ação em lote de e-mail).
+    `/consulta` reusa o `exportCsv`) e **alteração de situação em lote** (`bulkStatusOptions` +
+    `onBulkStatusChange` → select de situação + botão **"Aplicar"**; em `/consulta` chama
+    `setFinancialAccountStatusBulk` (PATCH com filtro `id=in.(…)`, uma requisição) + update otimista
+    das linhas e `refreshStats()` dos KPIs). A coluna de seleção (`__select__`) é injetada na
+    ordem/fixação efetivas mas **nunca** gravada nas preferências (que ficam data-only) — evita
+    duplicar o id. `/emails` **não** liga seleção (sem ação em lote de e-mail).
   - **Render das células sem `flexRender`**: o renderer do `cell` é chamado direto (helper
     `cellValue`) para preservar o **valor cru** (string) que o `title` da truncagem exige — `flexRender`
     o envolveria num componente. Não regredir.
@@ -983,7 +1013,7 @@ bancário, carteira, vale, crédito, débito, dinheiro, transferência, cheque, 
 **Schemas Zod (`packages/shared`) = fonte única de tipos.** Os tipos TS são `z.infer` dos
 schemas (não há tipo escrito à mão para divergir); os `z.enum` espelham 1:1 os CHECK do
 banco — ao alterar um CHECK, **atualizar o enum correspondente**. `status` usa
-`ACCOUNT_STATUSES` (domínio completo de 13 valores) — a trigger grava `'a vencer'/'vencido'`
+`ACCOUNT_STATUSES` (domínio completo de 10 valores — migration 035 removeu `pago protesto`, `pago cartório`, `não pago`) — a trigger grava `'a vencer'/'vencido'`
 e baixas/CRUD manual definem os demais (`pago`/`baixado`/`cancelado`/…).
 O frontend consome os schemas de dados (`FinancialAccountControl`, `EmailControl`,
 `ProcessingError`) **apenas como `import type`** (sem `.parse()` em runtime — `services/supabase.ts`

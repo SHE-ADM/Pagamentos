@@ -19,8 +19,15 @@ interface GridPreferences {
   density: GridDensity;
 }
 
-const STORAGE_VERSION = 'v1';
+const STORAGE_VERSION = 'v3';
 const storageKey = (gridId: string): string => `pag:grid:${gridId}:${STORAGE_VERSION}`;
+
+// Remove chaves de versões anteriores para não deixar dados obsoletos acumularem.
+const purgeOldVersions = (gridId: string) => {
+  ['v1', 'v2'].forEach((v) => {
+    try { localStorage.removeItem(`pag:grid:${gridId}:${v}`); } catch { /* noop */ }
+  });
+};
 
 const defaultPrefs = (order: string[]): GridPreferences => ({
   order,
@@ -55,6 +62,7 @@ export function useGridPreferences(gridId: string | undefined, columnIds: string
   const [prefs, setPrefs] = useState<GridPreferences>(() => {
     const base = defaultPrefs(columnIds);
     if (!gridId || typeof localStorage === 'undefined') return base;
+    purgeOldVersions(gridId);
     try {
       const raw = localStorage.getItem(storageKey(gridId));
       if (!raw) return base;
