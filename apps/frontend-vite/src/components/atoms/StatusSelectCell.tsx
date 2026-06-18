@@ -77,9 +77,9 @@ export default function StatusSelectCell({ rowId, value, options, onSave }: Read
         onClick={stopProp}
         aria-label="Alterar situação"
         className={cn(
-          'w-full rounded border border-brand/40 bg-white',
-          'px-2 py-0.5 text-xs text-slate-700 shadow-sm',
-          'focus:outline-none focus:ring-1 focus:ring-brand',
+          'w-full rounded-sm border border-brand/40 bg-white',
+          'px-2 py-0.5 text-xs text-slate-700 shadow-xs',
+          'focus:outline-hidden focus:ring-1 focus:ring-brand',
         )}
       >
         {options.map((opt) => (
@@ -99,7 +99,7 @@ export default function StatusSelectCell({ rowId, value, options, onSave }: Read
       title="Clique para alterar a situação"
       aria-label={`Situação: ${current}. Clique para alterar.`}
       className={cn(
-        'group flex items-center gap-1.5 rounded px-1 -mx-1',
+        'group flex items-center gap-1.5 rounded-sm px-1 -mx-1',
         'transition-colors hover:bg-slate-100',
         saving ? 'cursor-wait opacity-60' : 'cursor-pointer',
       )}
@@ -108,13 +108,13 @@ export default function StatusSelectCell({ rowId, value, options, onSave }: Read
       {saving ? (
         <span
           aria-label="Salvando…"
-          className="h-3 w-3 flex-shrink-0 animate-spin rounded-full border border-slate-400 border-t-transparent"
+          className="h-3 w-3 shrink-0 animate-spin rounded-full border border-slate-400 border-t-transparent"
         />
       ) : (
         <Pencil
           size={10}
           aria-hidden="true"
-          className="flex-shrink-0 text-slate-400 opacity-0 transition-opacity group-hover:opacity-100"
+          className="shrink-0 text-slate-400 opacity-0 transition-opacity group-hover:opacity-100"
         />
       )}
     </button>

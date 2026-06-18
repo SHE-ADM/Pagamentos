@@ -102,7 +102,7 @@ export default function GridToolbar({
               type="button"
               aria-label="Limpar seleção"
               onClick={onClearSelection}
-              className="flex h-6 w-6 items-center justify-center rounded text-brand hover:bg-brand/10"
+              className="flex h-6 w-6 items-center justify-center rounded-sm text-brand hover:bg-brand/10"
             >
               <X size={14} />
             </button>

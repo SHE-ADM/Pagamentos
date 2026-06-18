@@ -521,7 +521,7 @@ export default function DataGrid<T>({
               const accent = isSelected && column.id === firstLeftPinnedId;
               const cls = cn(
                 bodyCell({ variant, align: m.align ?? 'left', dense: column.id !== SELECT_ID, density }),
-                managed && m.truncate && 'max-w-[14rem]',
+                managed && m.truncate && 'max-w-56',
                 m.className,
                 pinClass(column, 'body', accent),
               );
@@ -641,7 +641,7 @@ export default function DataGrid<T>({
                   value={bulkStatus}
                   onChange={(e) => setBulkStatus(e.target.value)}
                   aria-label="Selecionar nova situação"
-                  className="h-7 rounded border border-brand/30 bg-white px-2 text-xs text-slate-700 focus:outline-none focus:ring-1 focus:ring-brand"
+                  className="h-7 rounded-sm border border-brand/30 bg-white px-2 text-xs text-slate-700 focus:outline-hidden focus:ring-1 focus:ring-brand"
                 >
                   <option value="">Alterar situação...</option>
                   {bulkStatusOptions.map((o) => (

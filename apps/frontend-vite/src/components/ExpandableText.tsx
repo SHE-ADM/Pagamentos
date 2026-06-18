@@ -33,7 +33,7 @@ export default function ExpandableText({
 
   return (
     <div>
-      <p className="text-xs text-gray-600 whitespace-pre-wrap break-words">
+      <p className="text-xs text-gray-600 whitespace-pre-wrap wrap-break-word">
         {expanded || !isLong ? text : `${preview}…`}
       </p>
       {isLong && (

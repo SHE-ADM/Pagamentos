@@ -1,17 +1,32 @@
 // Guarda automatizada de contraste WCAG 2.1 AA para as paletas do projeto.
 // Complementa os testes *.a11y.test.tsx: o axe em jsdom NÃO avalia color-contrast
 // (sem layout/render), então esta suíte calcula os ratios diretamente dos tokens
-// reais (lidos de tailwind.config.ts) e falha se algum par cair abaixo do mínimo AA.
+// reais e falha se algum par cair abaixo do mínimo AA.
+// Fonte de verdade (Tailwind v4 CSS-first): as variáveis `--color-*` do bloco @theme
+// em src/index.css — lidas do arquivo para não depender do formato do config.
 // Thresholds AA: texto normal ≥4.5:1 · texto grande/componentes de UI ≥3:1.
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { describe, it, expect } from 'vitest';
-import config from '../tailwind.config';
 
-// `satisfies Config` preserva o tipo literal — acesso direto, sem casts.
-const lg = config.theme.extend.colors.loginGreen;
-const status = config.theme.extend.colors.status;
+// cwd do vitest = raiz do workspace (apps/frontend-vite); o @theme vive em src/index.css.
+const css = readFileSync(resolve(process.cwd(), 'src/index.css'), 'utf8');
 
-const channel = (c: number): number => {
-  const s = c / 255;
+// Mapa token → valor a partir das declarações `--color-NAME: #hex;` do @theme.
+const colorVars = new Map<string, string>();
+for (const m of css.matchAll(/--color-([\w-]+):\s*(#[0-9a-fA-F]{3,8})\s*;/g)) {
+  colorVars.set(m[1], m[2]);
+}
+
+// Acesso por nome de token; lança (falha o teste) se o token sumir do @theme.
+const c = (token: string): string => {
+  const v = colorVars.get(token);
+  if (!v) throw new Error(`token --color-${token} não encontrado em src/index.css (@theme)`);
+  return v;
+};
+
+const channel = (ch: number): number => {
+  const s = ch / 255;
   return s <= 0.03928 ? s / 12.92 : ((s + 0.055) / 1.055) ** 2.4;
 };
 
@@ -31,31 +46,31 @@ const WHITE = '#ffffff';
 
 describe('Contraste WCAG AA — paleta loginGreen (tela de auth)', () => {
   it.each([
-    ['ink / branco', lg.ink, WHITE, 4.5],
-    ['ink / campo', lg.ink, lg.field, 4.5],
-    ['inkMid / branco (lembrar-me)', lg.inkMid, WHITE, 4.5],
-    ['inkMuted / branco (links sociais)', lg.inkMuted, WHITE, 4.5],
-    ['accent / branco (link)', lg.accent, WHITE, 4.5],
-    ['branco / accent (botão)', WHITE, lg.accent, 4.5],
-    ['placeholder / campo (texto)', lg.placeholder, lg.field, 4.5],
-    ['placeholder / campo em foco', lg.placeholder, lg.fieldFocus, 4.5],
-    ['inkFaint (ícone olho) / campo (UI 1.4.11)', lg.inkFaint, lg.field, 3.0],
-    ['inkFaint (ícone olho) / campo em foco', lg.inkFaint, lg.fieldFocus, 3.0],
+    ['ink / branco', 'loginGreen-ink', WHITE, 4.5],
+    ['ink / campo', 'loginGreen-ink', 'loginGreen-field', 4.5],
+    ['inkMid / branco (lembrar-me)', 'loginGreen-inkMid', WHITE, 4.5],
+    ['inkMuted / branco (links sociais)', 'loginGreen-inkMuted', WHITE, 4.5],
+    ['accent / branco (link)', 'loginGreen-accent', WHITE, 4.5],
+    ['branco / accent (botão)', WHITE, 'loginGreen-accent', 4.5],
+    ['placeholder / campo (texto)', 'loginGreen-placeholder', 'loginGreen-field', 4.5],
+    ['placeholder / campo em foco', 'loginGreen-placeholder', 'loginGreen-fieldFocus', 4.5],
+    ['inkFaint (ícone olho) / campo (UI 1.4.11)', 'loginGreen-inkFaint', 'loginGreen-field', 3.0],
+    ['inkFaint (ícone olho) / campo em foco', 'loginGreen-inkFaint', 'loginGreen-fieldFocus', 3.0],
   ])('%s', (_label, fg, bg, min) => {
-    expect(ratio(fg, bg)).toBeGreaterThanOrEqual(min);
+    expect(ratio(fg.startsWith('#') ? fg : c(fg), bg.startsWith('#') ? bg : c(bg))).toBeGreaterThanOrEqual(min);
   });
 });
 
 describe('Contraste WCAG AA — paleta status (badges/banners)', () => {
   it.each([
-    ['error fg / bg', status.error.fg, status.error.bg, 4.5],
-    ['success fg / bg', status.success.fg, status.success.bg, 4.5],
-    ['warning fg / bg', status.warning.fg, status.warning.bg, 4.5],
-    ['info fg / bg', status.info.fg, status.info.bg, 4.5],
-    ['source fg / bg', status.source.fg, status.source.bg, 4.5],
-    ['neutral fg / bg', status.neutral.fg, status.neutral.bg, 4.5],
-    ['branco / error solid (badge crítico)', WHITE, status.error.solid, 4.5],
+    ['error fg / bg', 'status-error-fg', 'status-error-bg', 4.5],
+    ['success fg / bg', 'status-success-fg', 'status-success-bg', 4.5],
+    ['warning fg / bg', 'status-warning-fg', 'status-warning-bg', 4.5],
+    ['info fg / bg', 'status-info-fg', 'status-info-bg', 4.5],
+    ['source fg / bg', 'status-source-fg', 'status-source-bg', 4.5],
+    ['neutral fg / bg', 'status-neutral-fg', 'status-neutral-bg', 4.5],
+    ['branco / error solid (badge crítico)', WHITE, 'status-error-solid', 4.5],
   ])('%s', (_label, fg, bg, min) => {
-    expect(ratio(fg, bg)).toBeGreaterThanOrEqual(min);
+    expect(ratio(fg.startsWith('#') ? fg : c(fg), bg.startsWith('#') ? bg : c(bg))).toBeGreaterThanOrEqual(min);
   });
 });

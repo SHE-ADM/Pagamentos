@@ -41,7 +41,7 @@ export default function Alert({ variant = 'error', children, className }: Readon
   const Icon = ICONS[variant];
   return (
     <div role="alert" className={cn(alertVariants({ variant }), className)}>
-      <Icon size={16} aria-hidden="true" className="flex-shrink-0 mt-0.5" />
+      <Icon size={16} aria-hidden="true" className="shrink-0 mt-0.5" />
       <span>{children}</span>
     </div>
   );

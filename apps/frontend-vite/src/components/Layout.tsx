@@ -39,7 +39,7 @@ export default function Layout({ children }: Readonly<{ children: ReactNode }>) 
 
       <aside
         className={cn(
-          'fixed inset-y-0 left-0 z-40 w-[var(--sidebar-width)] bg-sidebar text-slate-300',
+          'fixed inset-y-0 left-0 z-40 w-(--sidebar-width) bg-sidebar text-slate-300',
           'border-r border-sidebar-border flex flex-col transition-transform duration-200',
           'lg:static lg:translate-x-0',
           navOpen ? 'translate-x-0' : '-translate-x-full',
@@ -47,7 +47,7 @@ export default function Layout({ children }: Readonly<{ children: ReactNode }>) 
       >
         <div className="px-4 py-4 border-b border-sidebar-border flex items-center justify-between">
           <div className="flex items-center gap-2.5">
-            <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-gradient-to-br from-brand to-brand-dark shadow-sm shadow-brand/30">
+            <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-linear-to-br from-brand to-brand-dark shadow-xs shadow-brand/30">
               <Receipt size={16} className="text-white" />
             </div>
             <div className="leading-tight">
@@ -85,11 +85,11 @@ export default function Layout({ children }: Readonly<{ children: ReactNode }>) 
           </p>
           <span className="nav-link is-disabled">
             <Edit3 size={16} /> Edição de contas
-            <span className="ml-auto text-xs bg-slate-800 text-slate-500 rounded px-1">soon</span>
+            <span className="ml-auto text-xs bg-slate-800 text-slate-500 rounded-sm px-1">soon</span>
           </span>
           <span className="nav-link is-disabled">
             <BarChart2 size={16} /> Dashboard
-            <span className="ml-auto text-xs bg-slate-800 text-slate-500 rounded px-1">soon</span>
+            <span className="ml-auto text-xs bg-slate-800 text-slate-500 rounded-sm px-1">soon</span>
           </span>
         </nav>
 
@@ -97,7 +97,7 @@ export default function Layout({ children }: Readonly<{ children: ReactNode }>) 
           {user && (
             <div className="flex items-center justify-between gap-2">
               <div className="flex items-center gap-2 min-w-0">
-                <div className="flex h-7 w-7 flex-shrink-0 items-center justify-center rounded-full bg-brand/20 text-brand text-xs font-bold">
+                <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-brand/20 text-brand text-xs font-bold">
                   {initials}
                 </div>
                 <span className="text-xs text-slate-400 truncate" title={email}>

@@ -94,7 +94,7 @@ export const pinnedCell = cva('sticky', {
     {
       side: 'left',
       selected: true,
-      class: 'shadow-[inset_2px_0_0_theme(colors.brand.DEFAULT),1px_0_2px_rgba(15,23,42,0.08)]',
+      class: 'shadow-[inset_2px_0_0_var(--color-brand),1px_0_2px_rgba(15,23,42,0.08)]',
     },
     { side: 'right', class: 'shadow-[-1px_0_2px_rgba(15,23,42,0.08)]' },
   ],
@@ -121,7 +121,7 @@ export const gripHandle = cva(
 );
 
 /** Barra pulsante do skeleton de carregamento. */
-export const skeletonBar = cva('h-3 rounded', {
+export const skeletonBar = cva('h-3 rounded-sm', {
   variants: { variant: { default: 'bg-slate-100', silver: 'bg-zinc-100' } },
   defaultVariants: { variant: 'default' },
 });
