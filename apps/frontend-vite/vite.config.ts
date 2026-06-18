@@ -19,9 +19,16 @@ export default defineConfig({
       output: {
         // Vendors estáveis em chunks próprios — melhora cache e download paralelo.
         // O código das rotas é dividido via React.lazy (ver App.tsx).
-        manualChunks: {
-          'react-vendor': ['react', 'react-dom', 'react-router-dom'],
-          supabase: ['@supabase/supabase-js'],
+        // Vite 8 (Rolldown) só aceita `manualChunks` como função — o regex casa os
+        // pacotes exatos por segmento de `node_modules` (não pega react-hook-form,
+        // lucide-react nem @tanstack/react-table).
+        manualChunks: (id) => {
+          if (!id.includes('node_modules')) return undefined;
+          if (/[\\/]node_modules[\\/](react|react-dom|react-router|react-router-dom|@remix-run[\\/]router|scheduler)[\\/]/.test(id)) {
+            return 'react-vendor';
+          }
+          if (id.includes('@supabase')) return 'supabase';
+          return undefined;
         },
       },
     },
