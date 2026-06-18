@@ -35,10 +35,10 @@ describe('StatusBadge', () => {
     expect(container.querySelector('svg')).not.toBeNull();
   });
 
-  it('origem da extração usa variante teal com ícone de origem', () => {
+  it('origem da extração usa variante teal com ícone de origem e rótulo pt-BR', () => {
     const { container } = render(<StatusBadge value="email_body" />);
-    expect(screen.getByText('email_body')).toBeInTheDocument();
-    const badge = screen.getByText('email_body');
+    expect(screen.getByText('corpo email')).toBeInTheDocument();
+    const badge = screen.getByText('corpo email');
     expect(badge.className).toContain('text-status-source-fg');
     expect(container.querySelector('svg')).not.toBeNull();
   });
