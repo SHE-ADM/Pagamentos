@@ -29,7 +29,8 @@ gravação no Supabase → consulta/exportação pela interface web.
 > **Stack atualizado (upgrade em 5 fases, 2026-06-18):** Vite **8** (Rolldown) · Vitest **4** ·
 > React **19** (unificado em todo o monorepo) · TypeScript **6** · ESLint **10** no
 > frontend-vite (apps Next em ESLint **9** — carve-out, ver `eslint10-next-carveout` na
-> memória) · **regras do React Compiler** ativas (`eslint-plugin-react-hooks@7`) · Tailwind
+> memória) · **React Compiler** ativo — regras (`eslint-plugin-react-hooks@7`) **e transform
+> de build** (`@rolldown/plugin-babel` + `reactCompilerPreset`) · Tailwind
 > **v4 CSS-first** (`@theme`/`@utility` em `src/index.css`; **não há mais `tailwind.config.ts`**) ·
 > Zod **4** (+ `@hookform/resolvers@5`, `react-hook-form@7.79`) · `tailwind-merge@3` ·
 > `lucide-react@1`.
@@ -173,8 +174,14 @@ Escopo = área afetada: `login`, `email-reader`, `consulta`, `scheduler`, `migra
   react-hooks/...`) onde o effect é a ferramenta correta — `void load()` (fetch-on-change em
   `Consulta`/`Emails`/`Erros`), reconcile de prefs (`useGridPreferences`) e `incompatible-library`
   do `@tanstack/react-table` (`DataGrid`). Padrões corrigidos de verdade: sincronizar prop no
-  render (não em effect) e não chamar funções impuras (`Date.now`) no escopo de render. O
-  **transform de build** do React Compiler ainda **não** está habilitado (só as regras).
+  render (não em effect) e não chamar funções impuras (`Date.now`) no escopo de render.
+- **Transform de build do React Compiler HABILITADO** (`vite.config.ts`): memoiza
+  componentes/hooks automaticamente. No `@vitejs/plugin-react@6` (oxc/Rolldown) entra via
+  `@rolldown/plugin-babel` + `reactCompilerPreset()` (peers: `@rolldown/plugin-babel`,
+  `@babel/core`, `babel-plugin-react-compiler@1`, `@types/babel__core`) — **não** pelo antigo
+  `babel` option do plugin. Alvo React 19 (runtime embutido `react/compiler-runtime`); o
+  compiler faz "bail out" seguro em código incompatível (ex.: `useReactTable` no `DataGrid`).
+  Confirma-se no bundle pela presença de `useMemoCache`.
 - **`frontend-vite`** usa flat config type-aware (`typescript-eslint` + `react-hooks` +
   `react-refresh`). Ajustes deliberados, **manter**: `no-misused-promises` com
   `checksVoidReturn: { attributes: false }` (handlers async em `onClick`/`onSubmit` são
