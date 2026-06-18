@@ -402,7 +402,7 @@ apps/frontend-vite/src/components/
 ├── Layout.tsx (+ Layout.test.tsx)   # sidebar; navLink = cva local (estado active)
 ├── ProtectedRoute.tsx
 ├── StatusBadge.tsx (+ StatusBadge.test.tsx)   # componente; variantes em statusBadge.variants.ts
-├── statusBadge.variants.ts    # cva(badgeVariants) + resolveBadge + mapas de tipo/status
+├── statusBadge.variants.ts    # cva(badgeVariants) + resolveBadge + badgeLabel + mapas de tipo/status
 └── ExpandableText.tsx         # expansível "ver mais/ver menos" (+ ExpandableText.test.tsx)
 ```
 
@@ -410,9 +410,12 @@ Hooks em `src/hooks/`: `useContainerBreakpoint.ts` (faixa `sm`/`md`/`lg` pela la
 **real do container** via `ResizeObserver` — não da janela; usado pelo `DataGrid` p/ ocultar
 colunas considerando sidebar/paddings) e `useGridColumns.ts` (metadados de coluna —
 `ColumnDef`, `getConsultaColumns`, `getEmailColumns`; é módulo de **definições**, não um hook,
-apesar do nome). `getConsultaColumns(onToggleFlag)` é factory porque as colunas "Tem NF" e
-"Tem Boleto" renderizam o atom `CheckToggle` (checkbox de curadoria) que escreve no banco —
-precisam do callback de toggle da página. `useIdleLogout.ts` e `useAuth` cobrem sessão (ver
+apesar do nome). `getConsultaColumns(onToggleFlag)` é factory porque as colunas "NF" e
+"BOL" (curadoria) renderizam o atom `CheckToggle` (checkbox que escreve no banco) — precisam
+do callback de toggle da página. Os cabeçalhos são abreviados (`NF`/`BOL`) para poupar
+largura, mas o `aria-label` do checkbox continua descritivo (`Tem NF`/`Tem Boleto`). Ordem
+das colunas finais de `/consulta`: **… Valor → NF → BOL → Situação → Extração** (`Extração`
+por último, `Situação` logo antes dela). `useIdleLogout.ts` e `useAuth` cobrem sessão (ver
 Autenticação).
 
 Tipos compartilhados vêm de `@sheild/shared` (ex.: `FinancialEmail`, `EmailControl`).
@@ -688,12 +691,17 @@ Trigger `trg_fe_supplier_id` (BEFORE INSERT OR UPDATE em `financial_account_cont
 
 ### `extraction_source` — origem dos dados
 
-| Valor | Origem |
-|---|---|
-| `pdf_text` | PDF digital (pdfplumber) |
-| `pdf_vision` | PDF escaneado (Claude Vision via base64 — não exige poppler) |
-| `email_body` | Corpo do e-mail (sem PDF válido) |
-| `falha` | Falha na extração |
+| Valor (banco) | Origem | Rótulo exibido (badge/UI) |
+|---|---|---|
+| `pdf_text` | PDF digital (pdfplumber) | `pdf anexado` |
+| `pdf_vision` | PDF escaneado (Claude Vision via base64 — não exige poppler) | `pdf anexado` |
+| `email_body` | Corpo do e-mail (sem PDF válido) | `corpo email` |
+| `falha` | Falha na extração | `falha` |
+
+> O rótulo amigável em pt-BR é resolvido por `badgeLabel()` (`statusBadge.variants.ts`),
+> usado pelo `StatusBadge` e pelo painel de detalhe de `/consulta` — `pdf_text` e `pdf_vision`
+> compartilham "pdf anexado" (para o usuário ambos são um PDF anexado; a distinção é interna).
+> Valores não mapeados caem no próprio texto.
 
 ### Boleto por link (sem anexo) — prioridade anexo → link → corpo
 
