@@ -12,6 +12,7 @@ vi.mock('../services/supabase', () => ({
   getFinancialStats: (...args: unknown[]) => getFinancialStats(...args),
   getFinancialAccountTotalValue: (...args: unknown[]) => getFinancialAccountTotalValue(...args),
   setFinancialAccountFlag: vi.fn(),
+  setFinancialAccountStatus: vi.fn(),
 }));
 
 import Consulta from './Consulta';

@@ -8,12 +8,14 @@ const getFinancialAccountControl = vi.fn();
 const getFinancialStats = vi.fn();
 const getFinancialAccountTotalValue = vi.fn();
 const setFinancialAccountFlag = vi.fn();
+const setFinancialAccountStatus = vi.fn();
 
 vi.mock('../services/supabase', () => ({
   getFinancialAccountControl: (...args: unknown[]) => getFinancialAccountControl(...args),
   getFinancialStats: (...args: unknown[]) => getFinancialStats(...args),
   getFinancialAccountTotalValue: (...args: unknown[]) => getFinancialAccountTotalValue(...args),
   setFinancialAccountFlag: (...args: unknown[]) => setFinancialAccountFlag(...args),
+  setFinancialAccountStatus: (...args: unknown[]) => setFinancialAccountStatus(...args),
 }));
 
 // Mocka o leitor IMAP — o teste cobre o disparo pelo botão "Atualizar", não a rede.
@@ -55,13 +57,19 @@ describe('Consulta', () => {
     getFinancialAccountControl.mockResolvedValue({ data: [], total: 0 });
     getFinancialStats.mockResolvedValue({
       totalRecords: 0,
-      aVencer: 0,
       totalValue: 0,
+      pago: 0,
+      pagoValue: 0,
+      aVencer: 0,
+      aVencerValue: 0,
       vencendo: 0,
+      vencendoValue: 0,
       vencidas: 0,
+      vencidasValue: 0,
     });
     getFinancialAccountTotalValue.mockResolvedValue(0);
     setFinancialAccountFlag.mockReset().mockResolvedValue(undefined);
+    setFinancialAccountStatus.mockReset().mockResolvedValue(undefined);
     startEmailRead.mockReset().mockResolvedValue({ started: true, alreadyRunning: false });
     getEmailReadProgress.mockReset().mockResolvedValue({
       running: false,

@@ -1,3 +1,4 @@
+import { type ReactNode } from 'react';
 import { RotateCcw, Download, X } from 'lucide-react';
 import ColumnVisibilityMenu, { type ColumnMenuItem, type PinSide } from './ColumnVisibilityMenu';
 import type { GridDensity } from '../../hooks/useGridPreferences';
@@ -13,6 +14,8 @@ interface GridToolbarProps {
   selectedCount?: number;
   onExportSelected?: () => void;
   onClearSelection?: () => void;
+  /** Ações extras renderizadas dentro da barra de seleção, ao lado do botão de exportar. */
+  selectionActions?: ReactNode;
 }
 
 interface DensityButtonProps {
@@ -52,6 +55,7 @@ export default function GridToolbar({
   selectedCount = 0,
   onExportSelected,
   onClearSelection,
+  selectionActions,
 }: Readonly<GridToolbarProps>) {
   const hasSelection = selectedCount > 0;
 
@@ -82,14 +86,17 @@ export default function GridToolbar({
       </div>
 
       {/* Barra de seleção à direita (só quando há linhas selecionadas). */}
-      {hasSelection && onExportSelected && (
+      {hasSelection && (onExportSelected || selectionActions) && (
         <div className="flex items-center gap-2 rounded-lg bg-brand/5 px-3 py-1.5">
           <span className="text-xs font-medium text-brand">
             {selectedCount} selecionada{selectedCount > 1 ? 's' : ''}
           </span>
-          <button type="button" onClick={onExportSelected} className="btn btn-primary">
-            <Download size={14} /> Exportar selecionadas
-          </button>
+          {selectionActions}
+          {onExportSelected && (
+            <button type="button" onClick={onExportSelected} className="btn btn-primary">
+              <Download size={14} /> Exportar selecionadas
+            </button>
+          )}
           {onClearSelection && (
             <button
               type="button"

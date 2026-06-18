@@ -31,7 +31,7 @@ describe('useGridPreferences', () => {
 
   it('reconcilia a ordem salva (mantém conhecidas, anexa novas, descarta removidas)', () => {
     localStorage.setItem(
-      'pag:grid:g1:v1',
+      'pag:grid:g1:v3',
       JSON.stringify({
         order: ['c', 'a', 'x'],
         visibility: {},

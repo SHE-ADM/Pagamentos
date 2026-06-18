@@ -3,7 +3,24 @@ import { CheckCircle2 } from 'lucide-react';
 import type { FinancialAccountControl, EmailControl } from '@sheild/shared';
 import StatusBadge from '../components/StatusBadge';
 import CheckToggle from '../components/atoms/CheckToggle';
+import StatusSelectCell, { type StatusOption } from '../components/atoms/StatusSelectCell';
 import type { FinancialAccountFlag } from '../services/supabase';
+
+// Opções do dropdown inline de status — ordem de ciclo de vida, definida aqui como
+// constante de módulo para evitar qualquer dependência de fetch ou timing de estado.
+// Os labels usam capitalização padrão; 'cartório' preserva o acento do valor no banco.
+export const STATUS_OPTIONS: readonly StatusOption[] = [
+  { value: 'pendente',    label: 'Pendente' },
+  { value: 'a vencer',   label: 'A Vencer' },
+  { value: 'vencido',    label: 'Vencido' },
+  { value: 'prorrogado', label: 'Prorrogado' },
+  { value: 'baixado',    label: 'Baixado' },
+  { value: 'protestado', label: 'Protestado' },
+  { value: 'cartório',   label: 'Cartório' },
+  { value: 'pago',       label: 'Pago' },
+  { value: 'cancelado',  label: 'Cancelado' },
+  { value: 'falha',      label: 'Falha' },
+];
 
 /** Callback acionado ao marcar/desmarcar um checkbox de flag na célula do grid. */
 export type ToggleFlag = (
@@ -11,6 +28,9 @@ export type ToggleFlag = (
   field: FinancialAccountFlag,
   value: boolean,
 ) => void;
+
+/** Callback acionado ao alterar o status de uma conta no dropdown inline. */
+export type StatusChangeCallback = (rowId: number, newStatus: string) => Promise<void>;
 
 // Formatters — cópia das implementações de Consulta.tsx. A consolidação num
 // módulo único (src/lib) é follow-up de quando Consulta.tsx for migrado ao hook.
@@ -66,16 +86,19 @@ export interface ColumnDef<T> {
 
 /**
  * Definição de todas as colunas do grid de /consulta, na ordem de exibição.
- * É uma **factory** (não constante) porque as colunas "Tem NF" e "Tem Boleto"
- * renderizam um checkbox que escreve no banco — precisam do callback `onToggleFlag`
- * fornecido pela página (que faz o update otimista + persistência via REST).
+ * É uma **factory** (não constante) porque as colunas "Tem NF", "Tem Boleto" e
+ * "Situação" renderizam células interativas que escrevem no banco — precisam dos
+ * callbacks fornecidos pela página (que fazem o update otimista + persistência REST).
  */
-export function getConsultaColumns(onToggleFlag: ToggleFlag): ColumnDef<FinancialAccountControl>[] {
+export function getConsultaColumns(
+  onToggleFlag: ToggleFlag,
+  onStatusChange: StatusChangeCallback,
+): ColumnDef<FinancialAccountControl>[] {
   return [
   {
     key: 'invoice_number',
     header: 'Nº Documento',
-    size: 140,
+    size: 130,
     sortKey: 'invoice_number',
     hideOn: ['sm'],
     render: (r) => r.invoice_number ?? '—',
@@ -83,7 +106,7 @@ export function getConsultaColumns(onToggleFlag: ToggleFlag): ColumnDef<Financia
   {
     key: 'issue_date',
     header: 'Emissão',
-    size: 110,
+    size: 100,
     sortKey: 'issue_date',
     hideOn: ['sm', 'md'],
     render: (r) => fmtDate(r.issue_date),
@@ -91,7 +114,7 @@ export function getConsultaColumns(onToggleFlag: ToggleFlag): ColumnDef<Financia
   {
     key: 'supplier_name',
     header: 'Fornecedor',
-    size: 240,
+    size: 200,
     sortKey: 'supplier_name',
     truncate: true,
     render: (r) => r.supplier_name ?? '—',
@@ -99,17 +122,18 @@ export function getConsultaColumns(onToggleFlag: ToggleFlag): ColumnDef<Financia
   {
     key: 'supplier_cnpj',
     header: 'CNPJ / CPF',
-    size: 150,
+    size: 165,
     sortKey: 'supplier_cnpj',
     hideOn: ['sm'],
     secondLine: true,
     secondLineLabel: 'CNPJ',
+    truncate: true,
     render: (r) => fmtCnpjOrCpf(r.supplier_cnpj, r.supplier_cpf),
   },
   {
     key: 'document_type',
-    header: 'Tipo Doc.',
-    size: 120,
+    header: 'Tipo Documento',
+    size: 100,
     sortKey: 'document_type',
     hideOn: ['sm', 'md'],
     secondLine: true,
@@ -118,8 +142,8 @@ export function getConsultaColumns(onToggleFlag: ToggleFlag): ColumnDef<Financia
   },
   {
     key: 'payment_method',
-    header: 'Pagamento',
-    size: 130,
+    header: 'Tipo Pagamento',
+    size: 110,
     sortKey: 'payment_method',
     hideOn: ['sm', 'md'],
     secondLine: true,
@@ -129,14 +153,14 @@ export function getConsultaColumns(onToggleFlag: ToggleFlag): ColumnDef<Financia
   {
     key: 'due_date',
     header: 'Vencimento',
-    size: 120,
+    size: 110,
     sortKey: 'due_date',
     render: (r) => fmtDate(r.due_date),
   },
   {
     key: 'amount',
     header: 'Valor',
-    size: 130,
+    size: 120,
     sortKey: 'amount',
     align: 'right',
     render: (r) => fmtMoney(r.amount),
@@ -144,7 +168,7 @@ export function getConsultaColumns(onToggleFlag: ToggleFlag): ColumnDef<Financia
   {
     key: 'has_invoice',
     header: 'NF',
-    size: 72,
+    size: 56,
     align: 'center',
     render: (r) =>
       createElement(CheckToggle, {
@@ -156,7 +180,7 @@ export function getConsultaColumns(onToggleFlag: ToggleFlag): ColumnDef<Financia
   {
     key: 'has_bank_slip',
     header: 'BOL',
-    size: 72,
+    size: 56,
     align: 'center',
     render: (r) =>
       createElement(CheckToggle, {
@@ -168,14 +192,26 @@ export function getConsultaColumns(onToggleFlag: ToggleFlag): ColumnDef<Financia
   {
     key: 'status',
     header: 'Situação',
-    size: 130,
+    size: 148,
+    // Ordenação de "Situação" é ALFABÉTICA pelo nome (equivale a ORDER BY status_name na
+    // dimensão `status`). Decisão de negócio: o ciclo de vida não é estritamente linear —
+    // de "a vencer" pode-se ir direto para "cancelado", "falha" etc. —, então a ordem por
+    // `status_id` não representa uma sequência real e a alfabética é mais previsível.
+    // sortKey usa `status` (coluna de texto da financial_account_control); `status_name`
+    // só existe na dimensão `status` e não é uma coluna ordenável deste endpoint.
     sortKey: 'status',
-    render: (r) => createElement(StatusBadge, { value: r.status }),
+    render: (r) =>
+      createElement(StatusSelectCell, {
+        rowId: r.id,
+        value: r.status ?? 'pendente',
+        options: STATUS_OPTIONS,
+        onSave: onStatusChange,
+      }),
   },
   {
     key: 'extraction_source',
     header: 'Extração',
-    size: 150,
+    size: 120,
     sortKey: 'extraction_source',
     hideOn: ['sm', 'md'],
     render: (r) => createElement(StatusBadge, { value: r.extraction_source }),

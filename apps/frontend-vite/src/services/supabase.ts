@@ -192,6 +192,27 @@ interface FinancialAccountControlFilters {
 interface Paginated<T> {
   data: T[];
   total: number;
+  /** true quando `total` é estimativa (PostgREST não devolveu contagem exata). */
+  totalIsEstimate: boolean;
+}
+
+// Content-Range do PostgREST: "0-19/247" (count=exact) ou "*/*" / "0-19/*" quando a
+// contagem é indisponível. Indisponível → NÃO zera a paginação: estima "há mais páginas"
+// por offset + itens recebidos (+ pageSize se a página veio cheia), evitando prender o
+// usuário na página 1. Mantém o caminho count=exact intacto.
+// ts-prune-ignore-next
+export function parsePaginationTotal(
+  cr: string | null,
+  offset: number,
+  pageSize: number,
+  dataLength: number,
+): { total: number; totalIsEstimate: boolean } {
+  const exact = Number.parseInt(cr?.split('/')[1] ?? '', 10);
+  if (Number.isFinite(exact)) return { total: exact, totalIsEstimate: false };
+  return {
+    total: offset + dataLength + (dataLength === pageSize ? pageSize : 0),
+    totalIsEstimate: true,
+  };
 }
 
 // Aplica os filtros de financial_account_control nos search params — compartilhado
@@ -265,8 +286,8 @@ export async function getFinancialAccountControl({
   if (!res.ok) throw new Error(`Supabase ${res.status}: ${await res.text()}`);
   const data = (await res.json()) as FinancialAccountControl[];
   const cr = res.headers.get('Content-Range');
-  const total = cr ? Number.parseInt(cr.split('/')[1]) || 0 : data.length;
-  return { data, total };
+  const { total, totalIsEstimate } = parsePaginationTotal(cr, offset, pageSize, data.length);
+  return { data, total, totalIsEstimate };
 }
 
 // Flags de curadoria manual de uma conta ("Tem NF ?" / "Tem Boleto"), editáveis
@@ -285,6 +306,31 @@ export async function setFinancialAccountFlag(
     method: 'PATCH',
     headers: await authHeaders({ Prefer: 'return=minimal' }),
     body: JSON.stringify({ [field]: value }),
+  });
+  if (!res.ok) throw new Error(`Supabase ${res.status}: ${await res.text()}`);
+}
+
+// Permite ao usuário autenticado alterar a situação de uma conta em /consulta.
+// A migration 036 concede GRANT UPDATE (status) TO authenticated.
+// A trigger fn_set_status_from_due_date (SECURITY DEFINER) sincroniza status_id.
+export async function setFinancialAccountStatus(id: number, status: string): Promise<void> {
+  const url = new URL(`${BASE_URL}/rest/v1/financial_account_control`);
+  url.searchParams.set('id', `eq.${id}`);
+  const res = await fetch(url.toString(), {
+    method: 'PATCH',
+    headers: await authHeaders({ Prefer: 'return=minimal' }),
+    body: JSON.stringify({ status }),
+  });
+  if (!res.ok) throw new Error(`Supabase ${res.status}: ${await res.text()}`);
+}
+
+export async function setFinancialAccountStatusBulk(ids: number[], status: string): Promise<void> {
+  const url = new URL(`${BASE_URL}/rest/v1/financial_account_control`);
+  url.searchParams.set('id', `in.(${ids.join(',')})`);
+  const res = await fetch(url.toString(), {
+    method: 'PATCH',
+    headers: await authHeaders({ Prefer: 'return=minimal' }),
+    body: JSON.stringify({ status }),
   });
   if (!res.ok) throw new Error(`Supabase ${res.status}: ${await res.text()}`);
 }
@@ -340,8 +386,8 @@ export async function getProcessingErrors({
   if (!res.ok) throw new Error(`Supabase ${res.status}: ${await res.text()}`);
   const data = (await res.json()) as ProcessingError[];
   const cr = res.headers.get('Content-Range');
-  const total = cr ? Number.parseInt(cr.split('/')[1]) || 0 : data.length;
-  return { data, total };
+  const { total, totalIsEstimate } = parsePaginationTotal(cr, offset, pageSize, data.length);
+  return { data, total, totalIsEstimate };
 }
 
 export interface ProcessingErrorStats {
@@ -400,30 +446,46 @@ export async function getInvoiceNumbersByMessageIds(
 
 export interface FinancialStats {
   totalRecords: number;
-  aVencer: number;
   totalValue: number;
+  pago: number;
+  pagoValue: number;
+  aVencer: number;
+  aVencerValue: number;
   vencendo: number;
+  vencendoValue: number;
   vencidas: number;
+  vencidasValue: number;
 }
 
 export async function getFinancialStats(): Promise<FinancialStats> {
   // `neq.cancelado` espelha o padrão da listagem (applyFinancialFilters): contas
-  // canceladas ficam fora dos KPIs (Total de registros, Valor total, A vencer,
-  // Vencidas) a menos que o usuário filtre explicitamente por situação. Mantém o
-  // KPI "Total de registros" consistente com o rodapé do grid.
-  // Coluna única `status` (migration 034): situação de vencimento mora aqui.
+  // canceladas ficam fora dos KPIs a menos que o usuário filtre explicitamente.
   const all = await query<Pick<FinancialAccountControl, 'amount' | 'status' | 'due_date'>[]>(
     'financial_account_control',
     { select: 'amount,status,due_date', status: 'neq.cancelado', limit: 1000 },
   );
-  const total = all.reduce((s, r) => s + (Number(r.amount) || 0), 0);
+  const sum = (rows: typeof all) => rows.reduce((s, r) => s + (Number(r.amount) || 0), 0);
   const today = new Date();
   const todayStr = today.toISOString().slice(0, 10);
   const in7 = new Date(today.getTime() + 7 * 86400000).toISOString().slice(0, 10);
-  const aVencer = all.filter((r) => r.status === 'a vencer').length;
-  const vencendo = all.filter(
-    (r) => r.status === 'a vencer' && r.due_date !== null && r.due_date >= todayStr && r.due_date <= in7,
-  ).length;
-  const vencidas = all.filter((r) => r.status === 'vencido').length;
-  return { totalRecords: all.length, aVencer, totalValue: total, vencendo, vencidas };
+
+  const pagoRows = all.filter((r) => r.status === 'pago');
+  const aVencerRows = all.filter((r) => r.status === 'a vencer');
+  const vencendoRows = aVencerRows.filter(
+    (r) => r.due_date !== null && r.due_date >= todayStr && r.due_date <= in7,
+  );
+  const vencidasRows = all.filter((r) => r.status === 'vencido');
+
+  return {
+    totalRecords: all.length,
+    totalValue: sum(all),
+    pago: pagoRows.length,
+    pagoValue: sum(pagoRows),
+    aVencer: aVencerRows.length,
+    aVencerValue: sum(aVencerRows),
+    vencendo: vencendoRows.length,
+    vencendoValue: sum(vencendoRows),
+    vencidas: vencidasRows.length,
+    vencidasValue: sum(vencidasRows),
+  };
 }
