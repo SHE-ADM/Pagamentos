@@ -10,9 +10,8 @@ export default defineConfig({
   resolve: {
     dedupe: ['react', 'react-dom'],
   },
-  esbuild: {
-    jsx: 'automatic', // injeta react/jsx-runtime (tsconfig usa jsx: react-jsx)
-  },
+  // Vite 8 (Rolldown/oxc) removeu `jsx` de `esbuild` (ESBuildOptions) e já infere o
+  // runtime automático do tsconfig (`jsx: react-jsx`) — não é mais preciso configurar aqui.
   test: {
     environment: 'node',
     globals: true,

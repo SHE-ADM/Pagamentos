@@ -8,6 +8,13 @@ import tsconfigPaths from 'vite-tsconfig-paths';
 // independente e não intercepta este caminho.
 export default defineConfig({
   plugins: [react(), tsconfigPaths()],
+  // Força uma ÚNICA cópia do React no bundle/teste: o monorepo ainda tem react@18
+  // hoisted na raiz (puxado pelo next dos apps Next), e libs vizinhas (@dnd-kit etc.)
+  // dariam dedupe para ele — gerando dois React. `dedupe` resolve tudo para o react 19
+  // do frontend-vite. Mesmo padrão já usado em apps/portal-next.
+  resolve: {
+    dedupe: ['react', 'react-dom'],
+  },
   server: {
     port: 5173,
     proxy: {
