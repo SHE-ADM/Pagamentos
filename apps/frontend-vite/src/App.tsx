@@ -16,7 +16,7 @@ const Erros = lazy(() => import('./pages/Erros'));
 
 function RouteFallback() {
   return (
-    <div className="flex h-full min-h-[12rem] items-center justify-center text-sm text-ink-secondary">
+    <div className="flex h-full min-h-48 items-center justify-center text-sm text-ink-secondary">
       Carregando…
     </div>
   );

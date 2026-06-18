@@ -38,7 +38,7 @@ function PinButton({ active, label, onClick, children }: Readonly<PinButtonProps
       aria-pressed={active}
       title={label}
       onClick={onClick}
-      className={`flex h-6 w-6 items-center justify-center rounded border transition-colors ${tone}`}
+      className={`flex h-6 w-6 items-center justify-center rounded-sm border transition-colors ${tone}`}
     >
       {children}
     </button>
@@ -103,7 +103,7 @@ export default function ColumnVisibilityMenu({
           </p>
           <ul className="max-h-72 overflow-y-auto">
             {items.map((item) => (
-              <li key={item.id} className="flex items-center gap-2 rounded px-2 py-1 hover:bg-slate-50">
+              <li key={item.id} className="flex items-center gap-2 rounded-sm px-2 py-1 hover:bg-slate-50">
                 <label className="flex flex-1 cursor-pointer items-center gap-2 text-sm text-slate-700">
                   <input
                     type="checkbox"

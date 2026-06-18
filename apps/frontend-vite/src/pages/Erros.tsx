@@ -276,7 +276,7 @@ export default function Erros() {
                 ] as [string, string | null][]
               ).map(([k, v]) => (
                 <div key={k} className="flex gap-3">
-                  <dt className="w-36 flex-shrink-0 text-gray-400 text-xs">{k}</dt>
+                  <dt className="w-36 shrink-0 text-gray-400 text-xs">{k}</dt>
                   <dd className="text-gray-700 text-xs break-all">{v ?? '—'}</dd>
                 </div>
               ))}

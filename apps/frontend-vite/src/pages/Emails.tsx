@@ -310,7 +310,7 @@ export default function Emails() {
 
   return (
     <div className="flex flex-col h-full">
-      <div className="h-0.5 bg-gradient-to-r from-brand to-brand-dark" />
+      <div className="h-0.5 bg-linear-to-r from-brand to-brand-dark" />
       <div className="px-6 py-4 border-b border-slate-200 bg-white flex items-center justify-between">
         <div>
           <h1 className="text-base font-semibold text-slate-800">Recebimento de e-mails</h1>
@@ -364,7 +364,7 @@ export default function Emails() {
         {reading && (
           <Alert variant="info" className="mb-4">
             <div className="flex items-center gap-3">
-              <RefreshCw size={16} className="animate-spin flex-shrink-0" />
+              <RefreshCw size={16} className="animate-spin shrink-0" />
               <div className="min-w-0 flex-1">
                 <div className="flex items-baseline justify-between gap-2">
                   <span className="font-medium">
@@ -475,7 +475,7 @@ export default function Emails() {
         </div>
 
         <div className="flex gap-2 mb-4">
-          <div className="relative w-[22.5rem] max-w-full">
+          <div className="relative w-90 max-w-full">
             <input
               id="emails-search"
               name="emails-search"
@@ -606,7 +606,7 @@ export default function Emails() {
                                     Math.floor(i / 2) % 2 === 0 ? 'bg-zinc-50/40' : 'bg-white'
                                   }`}
                                 >
-                                  <dt className="w-28 flex-shrink-0 text-zinc-400 text-xs">{k}</dt>
+                                  <dt className="w-28 shrink-0 text-zinc-400 text-xs">{k}</dt>
                                   <dd className="text-zinc-600 text-xs break-all">{v ?? '—'}</dd>
                                 </div>
                               ))}

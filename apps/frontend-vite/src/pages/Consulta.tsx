@@ -409,7 +409,7 @@ export default function Consulta() {
   return (
     <div className="flex flex-col h-full">
       {/* Barra superior em gradiente (2px) — acento de marca */}
-      <div className="h-0.5 bg-gradient-to-r from-brand to-brand-dark" />
+      <div className="h-0.5 bg-linear-to-r from-brand to-brand-dark" />
       <div className="px-6 py-4 border-b border-slate-200 bg-white flex items-center justify-between">
         <div>
           <h1 className="text-base font-semibold text-slate-800">Consulta de movimentações</h1>
@@ -467,9 +467,9 @@ export default function Consulta() {
                 tabIndex={onCardClick ? 0 : undefined}
                 onClick={onCardClick}
                 onKeyDown={onCardClick ? (e: React.KeyboardEvent) => { if (e.key === 'Enter' || e.key === ' ') onCardClick(); } : undefined}
-                className={`flex-1 min-w-[160px] flex items-center gap-3 rounded-xl shadow-sm border border-slate-100 border-l-4 px-4 py-3 animate-fade-in-up transition-all ${borderLeft} ${cardBg} ${interactive}`}
+                className={`flex-1 min-w-[160px] flex items-center gap-3 rounded-xl shadow-xs border border-slate-100 border-l-4 px-4 py-3 animate-fade-in-up transition-all ${borderLeft} ${cardBg} ${interactive}`}
               >
-                <div className={`flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-full ${iconCls}`}>
+                <div className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-full ${iconCls}`}>
                   <Icon size={18} />
                 </div>
                 <div className="min-w-0">
@@ -489,12 +489,12 @@ export default function Consulta() {
           })}
         </div>
 
-        <div className="relative bg-white rounded-xl shadow-sm border border-slate-100 p-4 mb-4">
+        <div className="relative bg-white rounded-xl shadow-xs border border-slate-100 p-4 mb-4">
           <span className="absolute left-4 top-2 text-xs uppercase tracking-widest text-slate-400">
             Filtros
           </span>
           <div className="flex gap-2 flex-wrap pt-4">
-            <div className="relative w-[22.5rem] max-w-full">
+            <div className="relative w-90 max-w-full">
               <input
                 id="consulta-supplier"
                 name="consulta-supplier"
@@ -644,7 +644,7 @@ export default function Consulta() {
                                     Math.floor(i / 2) % 2 === 0 ? 'bg-slate-50/30' : 'bg-white'
                                   }`}
                                 >
-                                  <dt className="w-36 flex-shrink-0 text-slate-400 text-xs">{k}</dt>
+                                  <dt className="w-36 shrink-0 text-slate-400 text-xs">{k}</dt>
                                   <dd className="text-slate-700 text-xs break-all">{v ?? '—'}</dd>
                                 </div>
                               ))}

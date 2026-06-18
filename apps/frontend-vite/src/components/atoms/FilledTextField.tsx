@@ -46,7 +46,7 @@ const FilledTextField = forwardRef<HTMLInputElement, FilledTextFieldProps>(
               setFocused(false);
               inputProps.onBlur?.(e);
             }}
-            className="flex-1 bg-transparent border-0 outline-none text-sm font-medium text-loginGreen-ink placeholder:text-loginGreen-placeholder min-w-0"
+            className="flex-1 bg-transparent border-0 outline-hidden text-sm font-medium text-loginGreen-ink placeholder:text-loginGreen-placeholder min-w-0"
           />
           {endAdornment}
         </div>

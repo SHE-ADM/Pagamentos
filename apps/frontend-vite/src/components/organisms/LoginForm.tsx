@@ -83,7 +83,7 @@ export default function LoginForm() {
                 type="button"
                 onClick={() => setShowPassword((prev) => !prev)}
                 aria-label={showPassword ? 'Ocultar senha' : 'Mostrar senha'}
-                className="text-loginGreen-inkFaint hover:text-loginGreen-borderFocus flex items-center flex-shrink-0 transition-colors"
+                className="text-loginGreen-inkFaint hover:text-loginGreen-borderFocus flex items-center shrink-0 transition-colors"
               >
                 {showPassword ? <EyeOff size={20} /> : <Eye size={20} />}
               </button>
@@ -99,7 +99,7 @@ export default function LoginForm() {
             type="checkbox"
             checked={remember}
             onChange={(e) => setRemember(e.target.checked)}
-            className="w-4 h-4 accent-loginGreen-borderFocus cursor-pointer flex-shrink-0"
+            className="w-4 h-4 accent-loginGreen-borderFocus cursor-pointer shrink-0"
           />
           <span>Lembrar-me</span>
         </label>

@@ -1,6 +1,232 @@
-@tailwind base;
-@tailwind components;
-@tailwind utilities;
+@import 'tailwindcss';
+
+@theme {
+  --color-brand: #1d9e75;
+  --color-brand-dark: #0f6e56;
+  --color-brand-light: #e1f5ee;
+  --color-brand-glow: rgba(29, 158, 117, 0.15);
+
+  --color-sidebar: #0f1623;
+  --color-sidebar-hover: #1a2333;
+  --color-sidebar-active: #ffffff14;
+  --color-sidebar-border: #ffffff08;
+
+  --color-surface: #ffffff;
+  --color-surface-page: #f8fafc;
+
+  --color-danger: #ef4444;
+  --color-warning: #f59e0b;
+  --color-info: #3b82f6;
+
+  --color-status-error-bg: #fef2f2;
+  --color-status-error-fg: #b91c1c;
+  --color-status-error-border: #fecaca;
+  --color-status-error-solid: #dc2626;
+  --color-status-error-solidBorder: #b91c1c;
+
+  --color-status-success-bg: #f0fdf4;
+  --color-status-success-fg: #15803d;
+  --color-status-success-border: #bbf7d0;
+
+  --color-status-warning-bg: #fffbeb;
+  --color-status-warning-fg: #b45309;
+  --color-status-warning-border: #fde68a;
+
+  --color-status-info-bg: #eff6ff;
+  --color-status-info-fg: #1d4ed8;
+  --color-status-info-border: #bfdbfe;
+
+  --color-status-source-bg: #f0fdfa;
+  --color-status-source-fg: #0f766e;
+  --color-status-source-border: #99f6e4;
+
+  --color-status-neutral-bg: #f8fafc;
+  --color-status-neutral-fg: #475569;
+  --color-status-neutral-border: #e2e8f0;
+
+  --color-ink-primary: #0f172a;
+  --color-ink-secondary: #64748b;
+  --color-ink-muted: #94a3b8;
+
+  --color-auth-navy: #5b5fa8;
+  --color-auth-teal: #57bfb6;
+
+  --color-loginGreen-ink: #0c1e14;
+  --color-loginGreen-inkMid: #2a3d30;
+  --color-loginGreen-inkMuted: #4a6b55;
+  --color-loginGreen-inkFaint: #558a6d;
+  --color-loginGreen-placeholder: #437355;
+  --color-loginGreen-surface: #e6f5ec;
+  --color-loginGreen-field: #eef9f3;
+  --color-loginGreen-fieldFocus: #e4f6ec;
+  --color-loginGreen-socialBg: #f4fcf7;
+  --color-loginGreen-border: #94d0ae;
+  --color-loginGreen-borderLight: #c6e8d3;
+  --color-loginGreen-borderField: #b8dfc8;
+  --color-loginGreen-borderFocus: #2d8a52;
+  --color-loginGreen-accent: #1e7a40;
+  --color-loginGreen-accentHover: #165c30;
+  --color-loginGreen-accentMuted: #6aaa85;
+  --color-loginGreen-accentDark: #165c30;
+
+  --background-image-gradient-auth: linear-gradient(
+    135deg,
+    #5b5fa8 0%,
+    #57bfb6 100%
+  );
+  --background-image-gradient-login-green: linear-gradient(
+    180deg,
+    #e6f5ec 0%,
+    #ffffff 100%
+  );
+
+  --font-sans: Inter, system-ui, sans-serif;
+  --font-mono: JetBrains Mono, monospace;
+  --font-jakarta: 'Plus Jakarta Sans', system-ui, sans-serif;
+
+  --animate-fade-in-up: fadeInUp 0.2s ease-out both;
+
+  @keyframes fadeInUp {
+    from {
+      opacity: 0;
+      transform: translateY(6px);
+    }
+    to {
+      opacity: 1;
+      transform: translateY(0);
+    }
+  }
+}
+
+/*
+  The default border color has changed to `currentcolor` in Tailwind CSS v4,
+  so we've added these compatibility styles to make sure everything still
+  looks the same as it did with Tailwind CSS v3.
+
+  If we ever want to remove these styles, we need to add an explicit border
+  color utility to any element that depends on these defaults.
+*/
+@layer base {
+  *,
+  ::after,
+  ::before,
+  ::backdrop,
+  ::file-selector-button {
+    border-color: var(--color-gray-200, currentcolor);
+  }
+}
+
+@utility badge {
+  @apply inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium;
+}
+
+@utility btn {
+  @apply inline-flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium
+           border border-slate-200 rounded-lg bg-white shadow-xs
+           hover:bg-slate-50 transition-all duration-150 active:scale-95 cursor-pointer;
+}
+
+@utility btn-primary {
+  @apply bg-linear-to-br from-brand to-brand-dark text-white border-brand
+           shadow-xs hover:shadow-md hover:shadow-brand/25 active:scale-95;
+}
+
+@utility btn-ghost {
+  /* uso dentro do sidebar escuro */
+  @apply bg-transparent border-transparent shadow-none text-slate-300
+           hover:bg-white/10 hover:text-white;
+}
+
+@utility input {
+  @apply w-full px-3 py-1.5 text-sm border border-slate-200 rounded-lg bg-white
+           transition-all focus:outline-hidden focus:ring-2 focus:ring-brand/20 focus:border-brand;
+}
+
+@utility card {
+  @apply bg-surface border border-slate-200/80 rounded-xl shadow-xs
+           hover:shadow-md transition-shadow;
+  animation: fadeInUp 0.2s ease-out both;
+}
+
+@utility metric-card {
+  @apply bg-surface rounded-lg p-3 border-l-2 border-brand shadow-xs
+           hover:shadow-sm transition-shadow;
+  animation: fadeInUp 0.2s ease-out both;
+}
+
+@utility table-header {
+  @apply text-xs font-medium text-slate-500 uppercase tracking-widest
+           bg-slate-50 px-3 py-2 border-b border-slate-200 text-left;
+}
+
+@utility table-cell {
+  @apply px-3 py-2.5 text-sm text-slate-700 border-b border-slate-100;
+}
+
+@utility table-cell-secondary {
+  /* Linha secundária do DataGrid (md/sm): campos ocultos em formato denso.
+     font-size cru (0.65rem) — auto-contido, sem depender de token no @apply. */
+  @apply px-3 py-1 text-slate-400 border-b border-slate-100 bg-slate-50/30;
+  font-size: 0.65rem;
+  line-height: 1rem;
+}
+
+@utility table-cell-secondary-silver {
+  /* Linha secundária — variante prata (zinc) para o grid de /emails. */
+  @apply px-3 py-1 text-zinc-400 border-b border-zinc-100 bg-zinc-50/30;
+  font-size: 0.65rem;
+  line-height: 1rem;
+}
+
+@utility table-header-silver {
+  /* Variante prata — usada em /emails para diferenciar visualmente de /consulta */
+  @apply text-xs font-medium text-zinc-400 uppercase tracking-widest
+           bg-zinc-50 px-3 py-2 border-b border-zinc-200 text-left;
+}
+
+@utility table-cell-silver {
+  @apply px-3 py-2.5 text-sm text-zinc-500 border-b border-zinc-300/60;
+}
+
+@utility table-row-hover {
+  /* preparada para a futura passada de estilo das páginas */
+  @apply hover:bg-slate-50/80 transition-colors duration-100;
+}
+
+@utility nav-link {
+  @apply flex items-center gap-2 px-3 py-2 text-sm text-slate-400 rounded-lg
+           border-l-2 border-transparent transition-all duration-150
+           hover:bg-white/8 hover:text-white;
+  & > svg {
+    @apply opacity-70; /* ícone com leve opacidade no estado default */
+  }
+  &.active {
+    @apply bg-brand/15 text-brand font-medium border-brand;
+  }
+  &.active > svg {
+    @apply opacity-100;
+  }
+  &.is-disabled {
+    /* itens "Em breve": não clicáveis, sem realce de hover */
+    @apply cursor-not-allowed hover:bg-transparent hover:text-slate-400;
+  }
+}
+
+@utility active {
+  &.nav-link {
+    @apply bg-brand/15 text-brand font-medium border-brand;
+  }
+  &.nav-link > svg {
+    @apply opacity-100;
+  }
+}
+
+@utility is-disabled {
+  &.nav-link {
+    /* itens "Em breve": não clicáveis, sem realce de hover */
+    @apply cursor-not-allowed hover:bg-transparent hover:text-slate-400;
+  }
+}
 
 @layer base {
   :root {
@@ -12,90 +238,6 @@
   }
   * {
     @apply box-border;
-  }
-}
-
-@layer components {
-  .badge {
-    @apply inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium;
-  }
-  .btn {
-    @apply inline-flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium
-           border border-slate-200 rounded-lg bg-white shadow-sm
-           hover:bg-slate-50 transition-all duration-150 active:scale-95 cursor-pointer;
-  }
-  .btn-primary {
-    @apply bg-gradient-to-br from-brand to-brand-dark text-white border-brand
-           shadow-sm hover:shadow-md hover:shadow-brand/25 active:scale-95;
-  }
-  .btn-ghost {
-    /* uso dentro do sidebar escuro */
-    @apply bg-transparent border-transparent shadow-none text-slate-300
-           hover:bg-white/10 hover:text-white;
-  }
-  .input {
-    @apply w-full px-3 py-1.5 text-sm border border-slate-200 rounded-lg bg-white
-           transition-all focus:outline-none focus:ring-2 focus:ring-brand/20 focus:border-brand;
-  }
-  .card {
-    @apply bg-surface border border-slate-200/80 rounded-xl shadow-sm
-           hover:shadow-md transition-shadow;
-    animation: fadeInUp 0.2s ease-out both;
-  }
-  .metric-card {
-    @apply bg-surface rounded-lg p-3 border-l-2 border-brand shadow-sm
-           hover:shadow transition-shadow;
-    animation: fadeInUp 0.2s ease-out both;
-  }
-  .table-header {
-    @apply text-xs font-medium text-slate-500 uppercase tracking-widest
-           bg-slate-50 px-3 py-2 border-b border-slate-200 text-left;
-  }
-  .table-cell {
-    @apply px-3 py-2.5 text-sm text-slate-700 border-b border-slate-100;
-  }
-  /* Linha secundária do DataGrid (md/sm): campos ocultos em formato denso.
-     font-size cru (0.65rem) — auto-contido, sem depender de token no @apply. */
-  .table-cell-secondary {
-    @apply px-3 py-1 text-slate-400 border-b border-slate-100 bg-slate-50/30;
-    font-size: 0.65rem;
-    line-height: 1rem;
-  }
-  /* Linha secundária — variante prata (zinc) para o grid de /emails. */
-  .table-cell-secondary-silver {
-    @apply px-3 py-1 text-zinc-400 border-b border-zinc-100 bg-zinc-50/30;
-    font-size: 0.65rem;
-    line-height: 1rem;
-  }
-  /* Variante prata — usada em /emails para diferenciar visualmente de /consulta */
-  .table-header-silver {
-    @apply text-xs font-medium text-zinc-400 uppercase tracking-widest
-           bg-zinc-50 px-3 py-2 border-b border-zinc-200 text-left;
-  }
-  .table-cell-silver {
-    @apply px-3 py-2.5 text-sm text-zinc-500 border-b border-zinc-300/60;
-  }
-  .table-row-hover {
-    /* preparada para a futura passada de estilo das páginas */
-    @apply hover:bg-slate-50/80 transition-colors duration-100;
-  }
-  .nav-link {
-    @apply flex items-center gap-2 px-3 py-2 text-sm text-slate-400 rounded-lg
-           border-l-2 border-transparent transition-all duration-150
-           hover:bg-white/[0.08] hover:text-white;
-  }
-  .nav-link > svg {
-    @apply opacity-70; /* ícone com leve opacidade no estado default */
-  }
-  .nav-link.active {
-    @apply bg-brand/[0.15] text-brand font-medium border-brand;
-  }
-  .nav-link.active > svg {
-    @apply opacity-100;
-  }
-  .nav-link.is-disabled {
-    /* itens "Em breve": não clicáveis, sem realce de hover */
-    @apply cursor-not-allowed hover:bg-transparent hover:text-slate-400;
   }
 }
 

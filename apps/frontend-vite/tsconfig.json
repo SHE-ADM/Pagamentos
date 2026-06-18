@@ -26,5 +26,5 @@
       "@shared/*": ["../../packages/shared/src/*"]
     }
   },
-  "include": ["src", "tests", "vite.config.ts", "tailwind.config.ts"]
+  "include": ["src", "tests", "vite.config.ts"]
 }
