@@ -28,12 +28,16 @@ export default function StatusSelectCell({ rowId, value, options, onSave }: Read
   const [editing, setEditing] = useState(false);
   const [saving, setSaving] = useState(false);
   const [current, setCurrent] = useState(value);
+  const [lastValue, setLastValue] = useState(value);
   const selectRef = useRef<HTMLSelectElement>(null);
 
-  // Sincroniza quando o pai recarrega dados (reload completo ou filtro novo).
-  useEffect(() => {
-    if (!editing && !saving) setCurrent(value);
-  }, [value, editing, saving]);
+  // Sincroniza com o valor do pai (reload completo ou filtro novo) ajustando o estado
+  // DURANTE O RENDER quando `value` muda e não estamos editando/salvando — padrão
+  // "you might not need an effect" (compiler-friendly; sem setState dentro de effect).
+  if (value !== lastValue && !editing && !saving) {
+    setLastValue(value);
+    setCurrent(value);
+  }
 
   // Foca o select assim que o modo de edição abre.
   useEffect(() => {

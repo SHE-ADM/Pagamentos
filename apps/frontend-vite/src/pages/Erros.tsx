@@ -76,6 +76,9 @@ export default function Erros() {
   }, [applied, page]);
 
   useEffect(() => {
+    // load() é fetch-on-change (seta `loading` no início) — o effect é a ferramenta certa
+    // para buscar quando applied/page mudam. Regra do React Compiler conservadora aqui.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     void load();
   }, [load]);
 

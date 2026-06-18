@@ -4,7 +4,7 @@ import tseslint from 'typescript-eslint';
 import reactHooks from 'eslint-plugin-react-hooks';
 import reactRefresh from 'eslint-plugin-react-refresh';
 
-// Flat config type-aware do app interno (Vite + React 18).
+// Flat config type-aware do app interno (Vite + React 19).
 // `tsconfigRootDir` ancora o parser e elimina o erro
 // "Parsing error: No tsconfigRootDir was set" nos componentes .tsx.
 export default tseslint.config(
@@ -25,6 +25,8 @@ export default tseslint.config(
       'react-refresh': reactRefresh,
     },
     rules: {
+      // react-hooks 7 `recommended` inclui as regras do React Compiler (pureza de render,
+      // setState em effect, deps etc.) — adotadas para deixar o app compiler-ready.
       ...reactHooks.configs.recommended.rules,
       'react-refresh/only-export-components': ['warn', { allowConstantExport: true }],
       // Handlers async em atributos JSX (onClick/onSubmit) são idiomáticos em
