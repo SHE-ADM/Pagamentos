@@ -132,6 +132,28 @@ export function getConsultaColumns(onToggleFlag: ToggleFlag): ColumnDef<Financia
     render: (r) => fmtMoney(r.amount),
   },
   {
+    key: 'has_invoice',
+    header: 'NF',
+    align: 'center',
+    render: (r) =>
+      createElement(CheckToggle, {
+        checked: r.has_invoice,
+        ariaLabel: `Tem NF — ${r.supplier_name ?? 'registro'}`,
+        onToggle: (v: boolean) => onToggleFlag(r, 'has_invoice', v),
+      }),
+  },
+  {
+    key: 'has_bank_slip',
+    header: 'BOL',
+    align: 'center',
+    render: (r) =>
+      createElement(CheckToggle, {
+        checked: r.has_bank_slip,
+        ariaLabel: `Tem Boleto — ${r.supplier_name ?? 'registro'}`,
+        onToggle: (v: boolean) => onToggleFlag(r, 'has_bank_slip', v),
+      }),
+  },
+  {
     key: 'due_status',
     header: 'Situação',
     sortKey: 'due_status',
@@ -143,28 +165,6 @@ export function getConsultaColumns(onToggleFlag: ToggleFlag): ColumnDef<Financia
     sortKey: 'extraction_source',
     hideOn: ['sm', 'md'],
     render: (r) => createElement(StatusBadge, { value: r.extraction_source }),
-  },
-  {
-    key: 'has_invoice',
-    header: 'Tem NF',
-    align: 'center',
-    render: (r) =>
-      createElement(CheckToggle, {
-        checked: r.has_invoice,
-        ariaLabel: `Tem NF — ${r.supplier_name ?? 'registro'}`,
-        onToggle: (v: boolean) => onToggleFlag(r, 'has_invoice', v),
-      }),
-  },
-  {
-    key: 'has_bank_slip',
-    header: 'Tem Boleto',
-    align: 'center',
-    render: (r) =>
-      createElement(CheckToggle, {
-        checked: r.has_bank_slip,
-        ariaLabel: `Tem Boleto — ${r.supplier_name ?? 'registro'}`,
-        onToggle: (v: boolean) => onToggleFlag(r, 'has_bank_slip', v),
-      }),
   },
   ];
 }

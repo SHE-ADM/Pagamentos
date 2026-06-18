@@ -70,6 +70,21 @@ const DOCUMENT_TYPES = new Set<string>(SCHEMA_DOCUMENT_TYPES);
 // Origem da extração (extraction_source) — teal + ícone de origem.
 const SOURCE_TYPES = new Set(['email_body', 'pdf_text', 'pdf_vision']);
 
+// Rótulos pt-BR exibidos no badge para a origem da extração — o valor cru do
+// banco (snake_case técnico) não é amigável ao usuário. pdf_text e pdf_vision
+// compartilham o rótulo: para o usuário ambos são um PDF anexado (a distinção
+// texto/escaneado é interna ao pipeline).
+const SOURCE_LABELS: Record<string, string> = {
+  email_body: 'corpo email',
+  pdf_text: 'pdf anexado',
+  pdf_vision: 'pdf anexado',
+};
+
+/** Rótulo de exibição do valor (traduz extraction_source); fallback = valor original. */
+export function badgeLabel(value: string): string {
+  return SOURCE_LABELS[value.toLowerCase()] ?? value;
+}
+
 /** Tipo de prefixo do badge — controla o ornamento (ponto vs. ícone). */
 export type BadgeKind = 'status' | 'document' | 'source';
 

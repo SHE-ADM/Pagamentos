@@ -27,6 +27,7 @@ import ExpandableText from '../components/ExpandableText';
 import AttachmentViewer from '../components/AttachmentViewer';
 import DataGrid from '../components/organisms/DataGrid';
 import { getConsultaColumns, type ToggleFlag } from '../hooks/useGridColumns';
+import { badgeLabel } from '../components/statusBadge.variants';
 
 const fmtDate = (d: string | null): string => (d ? new Date(d + 'T00:00:00').toLocaleDateString('pt-BR') : '—');
 const fmtMoney = (v: number | null): string =>
@@ -473,7 +474,7 @@ export default function Consulta() {
                                   ['Nosso número', r.nosso_numero || '—'],
                                   ['Forma de pag.', r.payment_method],
                                   ['Código de barras', r.barcode || '—'],
-                                  ['Extração', r.extraction_source],
+                                  ['Extração', r.extraction_source ? badgeLabel(r.extraction_source) : null],
                                   ['Origem', r.source_file],
                                   ['Observações', r.processing_notes || '—'],
                                 ] as [string, string | null][]

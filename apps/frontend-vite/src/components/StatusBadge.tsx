@@ -1,7 +1,7 @@
 // src/components/StatusBadge.tsx
 import { FileText, ScanLine } from 'lucide-react';
 import { cn } from '../lib/cn';
-import { badgeVariants, resolveBadge, type BadgeKind } from './statusBadge.variants';
+import { badgeLabel, badgeVariants, resolveBadge, type BadgeKind } from './statusBadge.variants';
 
 interface StatusBadgeProps {
   value: string | null | undefined;
@@ -24,7 +24,7 @@ export default function StatusBadge({ value }: Readonly<StatusBadgeProps>) {
       )}
       {kind === 'document' && <FileText size={11} className="opacity-70" aria-hidden="true" />}
       {kind === 'source' && <ScanLine size={11} className="opacity-70" aria-hidden="true" />}
-      {value}
+      {badgeLabel(value)}
     </span>
   );
 }
