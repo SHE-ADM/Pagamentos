@@ -21,6 +21,8 @@ import {
   setFinancialAccountFlag,
   type FinancialStats,
 } from '../services/supabase';
+import { startEmailRead, getEmailReadProgress, type ReadProgress } from '../services/emailReader';
+import { suspendIdleLogout, resumeIdleLogout } from '../hooks/useIdleLogout';
 import { getErrorMessage } from '../lib/getErrorMessage';
 import Alert from '../components/atoms/Alert';
 import ExpandableText from '../components/ExpandableText';
@@ -36,6 +38,14 @@ const fmtCnpj = (c: string | null): string =>
   c?.length === 14 ? `${c.slice(0, 2)}.${c.slice(2, 5)}.${c.slice(5, 8)}/${c.slice(8, 12)}-${c.slice(12)}` : c || '—';
 
 const PAGE_SIZE = 20;
+
+// "Atualizar" em /consulta dispara a leitura IMAP dos últimos 7 dias (mesmo motor
+// de /emails) — assim o usuário traz e-mails novos sem sair da consulta.
+const REFRESH_DAYS = 7;
+const PROGRESS_POLL_MS = 1500;
+const GRID_REFRESH_EVERY = 5; // a cada ~7,5s recarrega o grid durante o processamento
+const PROGRESS_MAX_ERRORS = 20; // ~30s sem contato com o backend → aborta o poll
+const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
 const CSV_COLS: (keyof FinancialAccountControl)[] = [
   'due_date',
@@ -116,6 +126,10 @@ export default function Consulta() {
   const [total, setTotal] = useState(0);
   const [activeCard, setActiveCard] = useState<string | null>(null);
   const [sort, setSort] = useState<{ col: string | null; dir: 'asc' | 'desc' | null }>({ col: null, dir: null });
+  // Leitura IMAP disparada pelo botão "Atualizar" (busca dos últimos 7 dias).
+  const [reading, setReading] = useState(false);
+  const [progress, setProgress] = useState<ReadProgress | null>(null);
+  const readingRef = useRef(false);
   const supplierDebounce = useRef<ReturnType<typeof setTimeout> | null>(null);
   const sf = <K extends keyof ConsultaFilters>(k: K, v: ConsultaFilters[K]) =>
     setF((x) => ({ ...x, [k]: v }));
@@ -180,6 +194,64 @@ export default function Consulta() {
   }, []);
 
   const columns = useMemo(() => getConsultaColumns(handleToggleFlag), [handleToggleFlag]);
+
+  // "Atualizar": dispara a leitura IMAP dos últimos 7 dias (job em background no
+  // Flask) e acompanha o progresso por poll, recarregando o grid ao vivo e no fim —
+  // permite trazer e-mails novos sem abrir a página /emails. Suspende o logout por
+  // inatividade durante o processamento (pode levar minutos).
+  const handleRefresh = useCallback(async () => {
+    if (readingRef.current) return; // já há uma leitura em andamento
+    readingRef.current = true;
+    setReading(true);
+    setError(null);
+    setProgress(null);
+    suspendIdleLogout();
+
+    try {
+      await startEmailRead({ days: REFRESH_DAYS });
+    } catch (e) {
+      setError(getErrorMessage(e));
+      readingRef.current = false;
+      setReading(false);
+      resumeIdleLogout();
+      return;
+    }
+
+    try {
+      let ticks = 0;
+      let errors = 0;
+      let polling = true;
+      let final: ReadProgress | null = null;
+      while (polling) {
+        await sleep(PROGRESS_POLL_MS);
+        let p: ReadProgress;
+        try {
+          p = await getEmailReadProgress();
+          errors = 0;
+        } catch {
+          errors += 1;
+          if (errors >= PROGRESS_MAX_ERRORS) throw new Error('Perdi contato com o backend durante o processamento.');
+          continue;
+        }
+        setProgress(p);
+        ticks += 1;
+        if (ticks % GRID_REFRESH_EVERY === 0) void load(); // grid sobe ao vivo
+        if (!p.running) {
+          final = p;
+          polling = false;
+        }
+      }
+      if (final?.error) setError(final.error);
+    } catch (e) {
+      setError(getErrorMessage(e));
+    } finally {
+      readingRef.current = false;
+      setReading(false);
+      setProgress(null);
+      resumeIdleLogout();
+      await load();
+    }
+  }, [load]);
 
   // Buscar: congela filtro atual em applied e volta para pagina 1.
   // React 18 faz batch dos dois setState — gera um unico load novo.
@@ -272,9 +344,14 @@ export default function Consulta() {
           <button onClick={() => exportCsv(rows)} className="btn" disabled={!rows.length}>
             <Download size={14} /> Exportar página ({rows.length})
           </button>
-          <button onClick={load} className="btn" disabled={loading}>
-            <RefreshCw size={14} className={loading ? 'animate-spin' : ''} />
-            {loading ? 'Carregando…' : 'Atualizar'}
+          <button
+            onClick={handleRefresh}
+            className="btn"
+            disabled={reading || loading}
+            title="Buscar e-mails dos últimos 7 dias e atualizar a consulta"
+          >
+            <RefreshCw size={14} className={reading || loading ? 'animate-spin' : ''} />
+            Atualizar
           </button>
         </div>
       </div>
@@ -283,6 +360,13 @@ export default function Consulta() {
         {error && (
           <Alert variant="error" className="mb-4">
             <strong>Erro:</strong> {error}
+          </Alert>
+        )}
+
+        {reading && (
+          <Alert variant="info" className="mb-4">
+            Buscando e-mails dos últimos 7 dias…
+            {progress && progress.total > 0 ? ` (${progress.done}/${progress.total})` : ''}
           </Alert>
         )}
 
@@ -422,6 +506,11 @@ export default function Consulta() {
             sortCol={sort.col}
             sortDir={sort.dir}
             onSort={handleSort}
+            gridId="consulta"
+            enableColumnManagement
+            enableSelection
+            onExportSelected={exportCsv}
+            maxBodyHeight="62vh"
             loading={loading}
             emptyMessage={loading ? 'Buscando registros…' : 'Nenhum registro encontrado — ajuste os filtros e clique em Buscar'}
             renderDetail={(r) => (

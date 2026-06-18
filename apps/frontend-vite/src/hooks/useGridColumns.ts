@@ -60,6 +60,8 @@ export interface ColumnDef<T> {
   /** Trunca texto longo na célula (com `title`) — evita estourar a largura no mobile. */
   truncate?: boolean;
   className?: string;
+  /** Largura inicial (px) da coluna no layout gerenciável (resize/pin). Default 160. */
+  size?: number;
 }
 
 /**
@@ -73,6 +75,7 @@ export function getConsultaColumns(onToggleFlag: ToggleFlag): ColumnDef<Financia
   {
     key: 'invoice_number',
     header: 'Nº Documento',
+    size: 140,
     sortKey: 'invoice_number',
     hideOn: ['sm'],
     render: (r) => r.invoice_number ?? '—',
@@ -80,6 +83,7 @@ export function getConsultaColumns(onToggleFlag: ToggleFlag): ColumnDef<Financia
   {
     key: 'issue_date',
     header: 'Emissão',
+    size: 110,
     sortKey: 'issue_date',
     hideOn: ['sm', 'md'],
     render: (r) => fmtDate(r.issue_date),
@@ -87,6 +91,7 @@ export function getConsultaColumns(onToggleFlag: ToggleFlag): ColumnDef<Financia
   {
     key: 'supplier_name',
     header: 'Fornecedor',
+    size: 240,
     sortKey: 'supplier_name',
     truncate: true,
     render: (r) => r.supplier_name ?? '—',
@@ -94,6 +99,7 @@ export function getConsultaColumns(onToggleFlag: ToggleFlag): ColumnDef<Financia
   {
     key: 'supplier_cnpj',
     header: 'CNPJ / CPF',
+    size: 150,
     sortKey: 'supplier_cnpj',
     hideOn: ['sm'],
     secondLine: true,
@@ -103,6 +109,7 @@ export function getConsultaColumns(onToggleFlag: ToggleFlag): ColumnDef<Financia
   {
     key: 'document_type',
     header: 'Tipo Doc.',
+    size: 120,
     sortKey: 'document_type',
     hideOn: ['sm', 'md'],
     secondLine: true,
@@ -112,6 +119,7 @@ export function getConsultaColumns(onToggleFlag: ToggleFlag): ColumnDef<Financia
   {
     key: 'payment_method',
     header: 'Pagamento',
+    size: 130,
     sortKey: 'payment_method',
     hideOn: ['sm', 'md'],
     secondLine: true,
@@ -121,12 +129,14 @@ export function getConsultaColumns(onToggleFlag: ToggleFlag): ColumnDef<Financia
   {
     key: 'due_date',
     header: 'Vencimento',
+    size: 120,
     sortKey: 'due_date',
     render: (r) => fmtDate(r.due_date),
   },
   {
     key: 'amount',
     header: 'Valor',
+    size: 130,
     sortKey: 'amount',
     align: 'right',
     render: (r) => fmtMoney(r.amount),
@@ -134,6 +144,7 @@ export function getConsultaColumns(onToggleFlag: ToggleFlag): ColumnDef<Financia
   {
     key: 'has_invoice',
     header: 'NF',
+    size: 72,
     align: 'center',
     render: (r) =>
       createElement(CheckToggle, {
@@ -145,6 +156,7 @@ export function getConsultaColumns(onToggleFlag: ToggleFlag): ColumnDef<Financia
   {
     key: 'has_bank_slip',
     header: 'BOL',
+    size: 72,
     align: 'center',
     render: (r) =>
       createElement(CheckToggle, {
@@ -156,12 +168,14 @@ export function getConsultaColumns(onToggleFlag: ToggleFlag): ColumnDef<Financia
   {
     key: 'due_status',
     header: 'Situação',
+    size: 130,
     sortKey: 'due_status',
     render: (r) => createElement(StatusBadge, { value: r.due_status }),
   },
   {
     key: 'extraction_source',
     header: 'Extração',
+    size: 150,
     sortKey: 'extraction_source',
     hideOn: ['sm', 'md'],
     render: (r) => createElement(StatusBadge, { value: r.extraction_source }),
@@ -180,12 +194,14 @@ export function getEmailColumns(invoiceMap: Record<string, string>): ColumnDef<E
     {
       key: 'message_id',
       header: 'Nº Documento',
+      size: 150,
       hideOn: ['sm'],
       render: (r) => invoiceMap[r.message_id ?? ''] || '—',
     },
     {
       key: 'received_at',
       header: 'Recebido',
+      size: 160,
       hideOn: ['sm', 'md'],
       secondLine: true,
       secondLineLabel: 'Recebido',
@@ -194,18 +210,21 @@ export function getEmailColumns(invoiceMap: Record<string, string>): ColumnDef<E
     {
       key: 'sender_email',
       header: 'Remetente',
+      size: 220,
       truncate: true,
       render: (r) => r.sender_name || r.sender_email || '—',
     },
     {
       key: 'subject',
       header: 'Assunto',
+      size: 300,
       truncate: true,
       render: (r) => r.subject ?? '—',
     },
     {
       key: 'keyword_matched',
       header: 'Tipo documento',
+      size: 150,
       hideOn: ['sm', 'md'],
       secondLine: true,
       secondLineLabel: 'Tipo documento',
@@ -214,6 +233,7 @@ export function getEmailColumns(invoiceMap: Record<string, string>): ColumnDef<E
     {
       key: 'has_attachment',
       header: 'PDF',
+      size: 64,
       align: 'center',
       hideOn: ['sm', 'md'],
       render: (r) => (r.has_attachment ? '✓' : '—'),
@@ -221,12 +241,14 @@ export function getEmailColumns(invoiceMap: Record<string, string>): ColumnDef<E
     {
       key: 'pdf_extracted',
       header: 'Extração',
+      size: 120,
       hideOn: ['sm', 'md'],
       render: (r) => (r.pdf_extracted ? createElement(StatusBadge, { value: 'extracted' }) : '—'),
     },
     {
       key: 'status',
       header: 'Status',
+      size: 150,
       // E-mail 'falha' já revisado (card de detalhes aberto) ganha um check verde
       // ao lado do badge — sinaliza visualmente o que o usuário já triou.
       render: (r) => {

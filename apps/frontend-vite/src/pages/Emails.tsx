@@ -516,6 +516,9 @@ export default function Emails() {
             sortCol={null}
             sortDir={null}
             onSort={() => undefined}
+            gridId="emails"
+            enableColumnManagement
+            maxBodyHeight="62vh"
             loading={loading}
             emptyMessage={loading ? 'Buscando registros…' : 'Nenhum e-mail encontrado com os filtros aplicados'}
             ariaLabel="Recebimento de e-mails"
