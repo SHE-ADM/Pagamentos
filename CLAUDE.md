@@ -17,7 +17,7 @@ gravação no Supabase → consulta/exportação pela interface web.
 > - **`apps/api-backend`** (Next.js 16 + TypeScript, porta 3000) é a camada nova de
 >   dados/CRUD. Aciona o pipeline Python via **ponte HTTP** (`lib/python-bridge.ts` →
 >   Flask), não por subprocess.
-> - **`apps/frontend-vite`** (React 18 + Vite, porta 5173) é o app interno, agora
+> - **`apps/frontend-vite`** (React 19 + Vite 8, porta 5173) é o app interno, agora
 >   **100% TypeScript** (`.tsx/.ts`), **sem shadcn/ui**. Continua lendo o Supabase via
 >   **REST direto com `fetch`** (`src/services/supabase.ts`); só a sessão de auth usa o
 >   SDK oficial (`src/lib/supabaseClient.ts`).
@@ -25,6 +25,14 @@ gravação no Supabase → consulta/exportação pela interface web.
 >   (scaffold).
 > - **`packages/shared`** (`@sheild/shared`) — schemas Zod, fonte de verdade de tipos
 >   entre frontends e API.
+>
+> **Stack atualizado (upgrade em 5 fases, 2026-06-18):** Vite **8** (Rolldown) · Vitest **4** ·
+> React **19** (unificado em todo o monorepo) · TypeScript **6** · ESLint **10** no
+> frontend-vite (apps Next em ESLint **9** — carve-out, ver `eslint10-next-carveout` na
+> memória) · **regras do React Compiler** ativas (`eslint-plugin-react-hooks@7`) · Tailwind
+> **v4 CSS-first** (`@theme`/`@utility` em `src/index.css`; **não há mais `tailwind.config.ts`**) ·
+> Zod **4** (+ `@hookform/resolvers@5`, `react-hook-form@7.79`) · `tailwind-merge@3` ·
+> `lucide-react@1`.
 >
 > Não aplique os templates Sheild Canvas nem shadcn aqui. O **fluxo de autenticação em
 > 3 etapas** e a **regra de não-autorregistro** (`auth-specs.md`) foram seguidos,
@@ -52,7 +60,7 @@ Estas regras se aplicam a **todo** código novo ou alterado neste projeto, sem e
   (feedback, badges e banners — ver guia abaixo) no restante do app. Nunca use hex
   hardcoded **nem cores default do Tailwind** (`red-*`, `amber-*`, `emerald-*`, `blue-*`,
   `teal-*`…) para estados semânticos — o token semântico é a fonte de verdade única
-  (paleta no `tailwind.config.ts`).
+  (paleta no bloco `@theme` de `src/index.css` — Tailwind v4 CSS-first).
 - **Tokens de tamanho**: usar os tokens Tailwind mais próximos em vez de valores
   arbitrários (ex.: `text-sm` em vez de `text-[15px]`). Valores sem token equivalente
   (ex.: `object-[center_25%]`) são aceitos como exceção justificada.
@@ -91,12 +99,13 @@ Estas regras se aplicam a **todo** código novo ou alterado neste projeto, sem e
 - Referência de granularidade: `frontend-vite/src/components/StatusBadge.test.tsx`,
   `ExpandableText.test.tsx`, `organisms/LoginForm.test.tsx`.
 - **`apps/portal-next`**: testado via **server rendering** (`react-dom/server`
-  `renderToStaticMarkup`) em vez de jsdom + `@testing-library/react` — isso **contorna o
-  conflito de duas versões do React** no monorepo (18 hoisted do frontend-vite vs 19 local
-  dos apps Next): renderizar um componente sem hooks no servidor não dispara "invalid hook
-  call". `vitest.config.ts` usa `resolve.dedupe: ['react','react-dom']`. Componentes com
-  estado/hooks ainda exigiriam alinhar as versões — usar server rendering enquanto o portal
-  for de páginas simples (ex.: `app/page.test.tsx`).
+  `renderToStaticMarkup`) em vez de jsdom + `@testing-library/react` (`app/page.test.tsx`).
+  O React agora é **unificado em 19** em todo o monorepo (Fase 2 do upgrade), então o
+  antigo conflito "duas versões do React" não existe mais; o `vitest.config.ts` ainda usa
+  `resolve.dedupe: ['react','react-dom']` (defensivo). O `frontend-vite` também aplica esse
+  dedupe no `vite.config.ts` — há `react@18` só como transitivo eventual, então o dedupe
+  garante uma única cópia no bundle/teste. (Follow-up: com o React unificado, o portal pode
+  voltar a usar jsdom + Testing Library — ainda não feito.)
 
 ### 3 — REST no backend
 
@@ -154,6 +163,18 @@ Escopo = área afetada: `login`, `email-reader`, `consulta`, `scheduler`, `migra
 
 - **`npm run lint` na raiz deve passar com 0 erros e 0 warnings** em todos os workspaces
   (cobre `frontend-vite`, `api-backend`, `portal-next` — cada um com seu `eslint.config.mjs`).
+- **Versões de ESLint divergem por workspace (intencional):** `frontend-vite` usa **ESLint 10**
+  (+ `typescript-eslint@8.61`); os apps Next ficam em **ESLint 9** porque o
+  `eslint-config-next` depende de um `eslint-plugin-react` que quebra no ESLint 10 (`getFilename`
+  removido). Carve-out documentado em `eslint10-next-carveout` (memória) — subir quando o
+  upstream suportar ESLint 10.
+- **Regras do React Compiler ativas** (`eslint-plugin-react-hooks@7` `recommended`): pureza de
+  render, `set-state-in-effect`, etc. Disables justificados (`// eslint-disable-next-line
+  react-hooks/...`) onde o effect é a ferramenta correta — `void load()` (fetch-on-change em
+  `Consulta`/`Emails`/`Erros`), reconcile de prefs (`useGridPreferences`) e `incompatible-library`
+  do `@tanstack/react-table` (`DataGrid`). Padrões corrigidos de verdade: sincronizar prop no
+  render (não em effect) e não chamar funções impuras (`Date.now`) no escopo de render. O
+  **transform de build** do React Compiler ainda **não** está habilitado (só as regras).
 - **`frontend-vite`** usa flat config type-aware (`typescript-eslint` + `react-hooks` +
   `react-refresh`). Ajustes deliberados, **manter**: `no-misused-promises` com
   `checksVoidReturn: { attributes: false }` (handlers async em `onClick`/`onSubmit` são
@@ -213,9 +234,10 @@ Alvo: **WCAG 2.1 Nível AA** em todas as telas. Regras práticas:
   `wcag2a/2aa/21a/21aa`). Todo componente/página relevante ganha um `*.a11y.test.tsx` com
   `expect(await axe(container)).toHaveNoViolations()`. Páginas com serviços mockam os
   serviços (ver `pages/Consulta.a11y.test.tsx`, `pages/Emails.a11y.test.tsx`).
-- **Contraste é travado por teste** em `tests/contrast.a11y.test.ts`: lê os tokens reais do
-  `tailwind.config.ts` e falha se algum par cair abaixo do mínimo AA. Cobre a lacuna do axe
-  em **jsdom**, que **não avalia `color-contrast`** (regra desligada em `tests/axe.ts`).
+- **Contraste é travado por teste** em `tests/contrast.a11y.test.ts`: lê os tokens reais das
+  variáveis `--color-*` do bloco `@theme` em `src/index.css` (fonte de verdade v4 CSS-first;
+  parse via regex do arquivo) e falha se algum par cair abaixo do mínimo AA. Cobre a lacuna do
+  axe em **jsdom**, que **não avalia `color-contrast`** (regra desligada em `tests/axe.ts`).
 - **Limitação conhecida (follow-up)**: contraste sob render real só por axe em navegador
   (Lighthouse/Playwright). O Lighthouse roda em Chrome e pega o que o jsdom não pega
   (contraste real, ordem de foco, autofill) — usar para auditoria periódica.
@@ -261,7 +283,7 @@ O acesso às rotas internas (`/emails`, `/consulta`, `/erros`) exige login.
 
 ## Arquitetura e fluxo de dados
 
-Monorepo (npm workspaces): `apps/frontend-vite` (SPA interno, React 18/TS, :5173),
+Monorepo (npm workspaces): `apps/frontend-vite` (SPA interno, React 19/Vite 8/TS 6, :5173),
 `apps/api-backend` (Next 16/TS, camada de dados, :3000), `apps/portal-next` (portal
 público, Next 16, :3002), `packages/shared` (Zod) + camada Python (`server/`, `skills/`).
 
@@ -448,7 +470,7 @@ Infra de teste a11y em `tests/`: `setup.ts` (matcher `toHaveNoViolations`), `axe
 (runner AA + `color-contrast` desligado) e `contrast.a11y.test.ts` (guarda de contraste
 dos tokens). Ver regra mandatória 6.
 
-### Guia de cores — paleta `loginGreen` (`apps/frontend-vite/tailwind.config.ts`)
+### Guia de cores — paleta `loginGreen` (`@theme` em `apps/frontend-vite/src/index.css`)
 
 Telas de auth usam **exclusivamente** estes tokens:
 
@@ -476,7 +498,7 @@ Paleta `brand` (verde dashboard) e `auth` (azul/petróleo) são usadas nas demai
 > cumprir AA sobre o campo verde (≥3:1 ícone / ≥4.5:1 placeholder). Não clarear sem
 > revalidar em `tests/contrast.a11y.test.ts`.
 
-### Guia de cores — paleta semântica `status` (`tailwind.config.ts`)
+### Guia de cores — paleta semântica `status` (`@theme` em `src/index.css`)
 
 Fonte de verdade para **feedback, badges e banners** em todo o app — usar estes tokens em
 vez de cores default do Tailwind. Cada grupo tem `bg` (fundo suave), `fg` (texto/ícone) e
@@ -978,7 +1000,11 @@ faturas SIEG em `ignorado`; o handler A1 (baixar o boleto real) segue como melho
   padrão** `lazy(() => import(...))`.
 - **`manualChunks`** (`vite.config.ts`): `react-vendor` (react/-dom/router) e `supabase`
   (SDK) em chunks próprios — melhora cache e download paralelo e elimina o aviso `>500 kB`
-  do Vite. O código de cada rota lazy vira um chunk à parte automaticamente.
+  do Vite. O código de cada rota lazy vira um chunk à parte automaticamente. **No Vite 8
+  (Rolldown) o `manualChunks` é uma FUNÇÃO** (o objeto não é mais aceito) — um regex casa os
+  pacotes exatos por segmento de `node_modules` (não pega `react-hook-form`/`lucide-react`/
+  `@tanstack/react-table`). O `vite.config.ts` também tem `resolve.dedupe: ['react','react-dom']`
+  para garantir uma única cópia do React.
 
 ## Banco de dados (Supabase)
 
@@ -1010,7 +1036,11 @@ usam `status`. `payment_method` aceita `boleto, pix, ted, cartão, depósito, du
 bancário, carteira, vale, crédito, débito, dinheiro, transferência, cheque, outro`;
 `extraction_source` ∈ (`email_body, pdf_text, pdf_vision, falha`).
 
-**Schemas Zod (`packages/shared`) = fonte única de tipos.** Os tipos TS são `z.infer` dos
+**Schemas Zod (`packages/shared`) = fonte única de tipos.** **Zod 4** (upgrade Fase 5):
+e-mail usa a API top-level `z.email('…')` (não mais `z.string().email()`); demais APIs
+(`z.enum`, `.refine`, `z.coerce.number`, `.default`, `.safeParse`, `error.issues`)
+inalteradas. O `zodResolver` vem do `@hookform/resolvers@5` (Standard Schema, compatível
+com Zod 4). Os tipos TS são `z.infer` dos
 schemas (não há tipo escrito à mão para divergir); os `z.enum` espelham 1:1 os CHECK do
 banco — ao alterar um CHECK, **atualizar o enum correspondente**. `status` usa
 `ACCOUNT_STATUSES` (domínio completo de 10 valores — migration 035 removeu `pago protesto`, `pago cartório`, `não pago`) — a trigger grava `'a vencer'/'vencido'`
