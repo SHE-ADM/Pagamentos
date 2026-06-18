@@ -177,7 +177,7 @@ export function getConsultaColumns(
     key: 'status',
     header: 'Situação',
     size: 160,
-    sortKey: 'status',
+    sortKey: 'status_id',
     render: (r) =>
       createElement(StatusSelectCell, {
         rowId: r.id,
