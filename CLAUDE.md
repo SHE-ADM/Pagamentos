@@ -26,7 +26,7 @@ gravação no Supabase → consulta/exportação pela interface web.
 > - **`packages/shared`** (`@sheild/shared`) — schemas Zod, fonte de verdade de tipos
 >   entre frontends e API.
 >
-> **Stack atualizado (upgrade em 5 fases, 2026-06-18):** Vite **8** (Rolldown) · Vitest **4** ·
+> **Stack atualizado (upgrade do stack — 5 fases + React Compiler transform, 2026-06-18):** Vite **8** (Rolldown) · Vitest **4** ·
 > React **19** (unificado em todo o monorepo) · TypeScript **6** · ESLint **10** no
 > frontend-vite (apps Next em ESLint **9** — carve-out, ver `eslint10-next-carveout` na
 > memória) · **React Compiler** ativo — regras (`eslint-plugin-react-hooks@7`) **e transform
