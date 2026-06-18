@@ -173,8 +173,8 @@ Migrations versionadas em `supabase/migrations/` — execute em ordem no SQL Edi
 ### `financial_account_control` — campos principais
 - `gmail_message_id` (UNIQUE) — identificador de deduplicação do pipeline de e-mail
 - `due_date`, `amount` (NUMERIC 15,2), `currency` (BRL)
-- `status` (pendente/vencido/a vencer/prorrogado/baixado/protestado/cartório/pago/pago protesto/pago cartório/não pago/cancelado/falha — default `pendente`)
-- `due_status` (a vencer/vencido — calculado pela trigger)
+- `status` — coluna única de situação/ciclo de vida (pendente/vencido/a vencer/prorrogado/baixado/protestado/cartório/pago/cancelado/falha — default `pendente`). A trigger grava `a vencer`/`vencido` a partir de `due_date` quando em aberto; preserva `falha`/baixas manuais (migration 034 fundiu o antigo `due_status` aqui)
+- `status_id` — FK para a dimensão `status` (`fk_fac_status`), sincronizado por `status_name` na trigger (migration 035)
 - `payment_method` (boleto/pix/ted/cartão/depósito/duplicata/bancário/carteira/vale/crédito/débito/dinheiro/transferência/cheque/outro)
 - `extraction_source` (email_body/pdf_text/pdf_vision/falha)
 

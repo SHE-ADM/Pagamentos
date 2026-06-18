@@ -248,9 +248,10 @@ class SupabaseControl:
     def register_financial(self, payload: dict) -> bool:
         """UPSERT de uma conta extraida em financial_account_control (service_role).
 
-        Deduplica/atualiza por gmail_message_id. O campo due_status NAO e
-        enviado: a trigger trg_fe_due_status o calcula no banco a partir de
-        due_date x extracted_at (migration 004/018).
+        Deduplica/atualiza por gmail_message_id. A situacao de vencimento vai na
+        coluna unica `status` (migration 034): enviamos status='pendente' e a trigger
+        trg_fe_status_vencimento sobrescreve com 'a vencer'/'vencido' a partir de
+        due_date x extracted_at quando o status esta em aberto (preserva 'falha').
         """
         if not self._available:
             return False
@@ -788,10 +789,10 @@ def build_financial_payload(row: dict, gmail_message_id: str,
     """Converte uma linha do CSV de extracao em payload para financial_account_control.
 
     Sanitiza os campos com restricao no schema (CHAR(14) do CNPJ e
-    NUMERIC do amount) para evitar rejeicao do INSERT. O due_status NAO
-    e calculado aqui — fica por conta da trigger no banco. Aplica os mesmos
-    fallbacks do caminho de corpo: emissao->data do e-mail (received_at);
-    vencimento->emissao; numero->"{tipo}_{ddmmyy}".
+    NUMERIC do amount) para evitar rejeicao do INSERT. A situacao de vencimento
+    NAO e calculada aqui — a trigger grava em `status` no banco (migration 034).
+    Aplica os mesmos fallbacks do caminho de corpo: emissao->data do e-mail
+    (received_at); vencimento->emissao; numero->"{tipo}_{ddmmyy}".
     """
     payload = {f: _none_if_blank(row.get(f)) for f in FINANCIAL_FIELDS}
 

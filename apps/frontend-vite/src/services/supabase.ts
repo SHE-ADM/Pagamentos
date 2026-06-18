@@ -180,7 +180,6 @@ interface FinancialAccountControlFilters {
   supplier?: string;
   docType?: string;
   status?: string;
-  dueStatuses?: string[];
   paymentMethod?: string;
   dateFrom?: string;
   dateTo?: string;
@@ -217,7 +216,7 @@ async function findSupplierIdsByEmail(term: string): Promise<number[]> {
 
 function applyFinancialFilters(
   params: URLSearchParams,
-  { supplier, docType, status, dueStatuses, paymentMethod, dateFrom, dateTo }: FinancialAccountControlFilters,
+  { supplier, docType, status, paymentMethod, dateFrom, dateTo }: FinancialAccountControlFilters,
   supplierIds: number[] = [],
 ): void {
   // or= em cinco colunas (nome, CNPJ/CPF, nº documento, assunto e remetente) mais,
@@ -234,10 +233,8 @@ function applyFinancialFilters(
     params.set('or', `(${clauses.join(',')})`);
   }
   if (docType) params.set('document_type', `eq.${docType}`);
-  // Sem filtro de status → exclui cancelado por padrão; filtro explícito sobrescreve.
+  // Sem filtro de situação → exclui cancelado por padrão; filtro explícito sobrescreve.
   params.set('status', status ? `eq.${status}` : 'neq.cancelado');
-  if (dueStatuses?.length === 1) params.set('due_status', `eq.${dueStatuses[0]}`);
-  else if (dueStatuses && dueStatuses.length > 1) params.set('due_status', `in.(${dueStatuses.join(',')})`);
   if (paymentMethod) params.set('payment_method', `eq.${paymentMethod}`);
   if (dateFrom) params.append('due_date', `gte.${dateFrom}`);
   if (dateTo) params.append('due_date', `lte.${dateTo}`);
@@ -247,7 +244,6 @@ export async function getFinancialAccountControl({
   supplier,
   docType,
   status,
-  dueStatuses,
   paymentMethod,
   dateFrom,
   dateTo,
@@ -263,7 +259,7 @@ export async function getFinancialAccountControl({
   url.searchParams.set('limit', String(pageSize));
   url.searchParams.set('offset', String(offset));
   const supplierIds = supplier ? await findSupplierIdsByEmail(supplier) : [];
-  applyFinancialFilters(url.searchParams, { supplier, docType, status, dueStatuses, paymentMethod, dateFrom, dateTo }, supplierIds);
+  applyFinancialFilters(url.searchParams, { supplier, docType, status, paymentMethod, dateFrom, dateTo }, supplierIds);
   const reqHeaders = await authHeaders({ Prefer: 'count=exact' });
   const res = await fetch(url.toString(), { headers: reqHeaders });
   if (!res.ok) throw new Error(`Supabase ${res.status}: ${await res.text()}`);
@@ -404,7 +400,7 @@ export async function getInvoiceNumbersByMessageIds(
 
 export interface FinancialStats {
   totalRecords: number;
-  pending: number;
+  aVencer: number;
   totalValue: number;
   vencendo: number;
   vencidas: number;
@@ -412,21 +408,22 @@ export interface FinancialStats {
 
 export async function getFinancialStats(): Promise<FinancialStats> {
   // `neq.cancelado` espelha o padrão da listagem (applyFinancialFilters): contas
-  // canceladas ficam fora dos KPIs (Total de registros, Valor total, Vencidas) a
-  // menos que o usuário filtre explicitamente por situação. Mantém o KPI "Total
-  // de registros" consistente com o rodapé do grid.
-  const [all, pending] = await Promise.all([
-    query<Pick<FinancialAccountControl, 'amount' | 'status' | 'due_date' | 'due_status'>[]>('financial_account_control', {
-      select: 'amount,status,due_date,due_status',
-      status: 'neq.cancelado',
-      limit: 1000,
-    }),
-    query<{ id: number }[]>('financial_account_control', { select: 'id', status: 'eq.pendente', limit: 1000 }),
-  ]);
+  // canceladas ficam fora dos KPIs (Total de registros, Valor total, A vencer,
+  // Vencidas) a menos que o usuário filtre explicitamente por situação. Mantém o
+  // KPI "Total de registros" consistente com o rodapé do grid.
+  // Coluna única `status` (migration 034): situação de vencimento mora aqui.
+  const all = await query<Pick<FinancialAccountControl, 'amount' | 'status' | 'due_date'>[]>(
+    'financial_account_control',
+    { select: 'amount,status,due_date', status: 'neq.cancelado', limit: 1000 },
+  );
   const total = all.reduce((s, r) => s + (Number(r.amount) || 0), 0);
   const today = new Date();
+  const todayStr = today.toISOString().slice(0, 10);
   const in7 = new Date(today.getTime() + 7 * 86400000).toISOString().slice(0, 10);
-  const vencendo = all.filter((r) => r.status === 'pendente' && r.due_date && r.due_date <= in7).length;
-  const vencidas = all.filter((r) => r.due_status === 'vencido').length;
-  return { totalRecords: all.length, pending: pending.length, totalValue: total, vencendo, vencidas };
+  const aVencer = all.filter((r) => r.status === 'a vencer').length;
+  const vencendo = all.filter(
+    (r) => r.status === 'a vencer' && r.due_date !== null && r.due_date >= todayStr && r.due_date <= in7,
+  ).length;
+  const vencidas = all.filter((r) => r.status === 'vencido').length;
+  return { totalRecords: all.length, aVencer, totalValue: total, vencendo, vencidas };
 }

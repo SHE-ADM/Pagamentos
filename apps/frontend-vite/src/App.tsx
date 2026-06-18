@@ -37,7 +37,7 @@ export default function App() {
                 <Layout>
                   <Suspense fallback={<RouteFallback />}>
                     <Routes>
-                      <Route path="/" element={<Navigate to="/emails" replace />} />
+                      <Route path="/" element={<Navigate to="/consulta" replace />} />
                       <Route path="/emails" element={<Emails />} />
                       <Route path="/consulta" element={<Consulta />} />
                       <Route path="/erros" element={<Erros />} />

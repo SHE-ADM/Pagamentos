@@ -49,7 +49,7 @@ const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms
 
 const CSV_COLS: (keyof FinancialAccountControl)[] = [
   'due_date',
-  'due_status',
+  'status',
   'supplier_name',
   'supplier_cnpj',
   'document_type',
@@ -62,7 +62,6 @@ const CSV_COLS: (keyof FinancialAccountControl)[] = [
   'payment_method',
   'nosso_numero',
   'extraction_source',
-  'status',
   'invoice_number',
   'barcode',
   'description',
@@ -89,7 +88,6 @@ interface ConsultaFilters {
   paymentMethod: string;
   dateFrom: string;
   dateTo: string;
-  dueStatuses?: string[];
 }
 
 const EMPTY_FILTERS: ConsultaFilters = {
@@ -302,11 +300,11 @@ export default function Consulta() {
     { icon: FileText, label: 'Total de registros', value: stats.totalRecords ?? 0, fmt: (v) => v },
     {
       icon: Clock,
-      label: 'Pendentes',
-      value: stats.pending ?? 0,
+      label: 'A vencer',
+      value: stats.aVencer ?? 0,
       fmt: (v) => v,
-      cardId: 'pendentes',
-      onCardClick: () => handleCardFilter('pendentes', { status: 'pendente' }),
+      cardId: 'avencer',
+      onCardClick: () => handleCardFilter('avencer', { status: 'a vencer' }),
     },
     {
       icon: TrendingUp,
@@ -327,7 +325,7 @@ export default function Consulta() {
       fmt: (v) => v,
       danger: vencidasCount > 0,
       cardId: 'vencidas',
-      onCardClick: () => handleCardFilter('vencidas', { dueStatuses: ['vencido'] }),
+      onCardClick: () => handleCardFilter('vencidas', { status: 'vencido' }),
     },
   ];
 
@@ -463,7 +461,7 @@ export default function Consulta() {
             </select>
             <select id="consulta-status" name="consulta-status" aria-label="Filtrar por situação" className="input w-32" value={f.status} onChange={(e) => sf('status', e.target.value)}>
               <option value="">Situação</option>
-              {['pendente', 'a vencer', 'vencido', 'prorrogado', 'baixado', 'protestado', 'cartório', 'pago', 'pago protesto', 'pago cartório', 'não pago', 'cancelado', 'falha'].map((s) => (
+              {['pendente', 'a vencer', 'vencido', 'prorrogado', 'baixado', 'protestado', 'cartório', 'pago', 'cancelado', 'falha'].map((s) => (
                 <option key={s}>{s}</option>
               ))}
             </select>
@@ -553,7 +551,7 @@ export default function Consulta() {
                                   ['Competência', r.competence_date],
                                   ['Emissão', fmtDate(r.issue_date)],
                                   ['Vencimento', fmtDate(r.due_date)],
-                                  ['Situação', r.due_status],
+                                  ['Situação', r.status],
                                   ['Valor do documento', fmtMoney(r.amount)],
                                   ['Valor cobrado', fmtMoney(r.amount_charged)],
                                   ['Desconto / abatimentos', fmtMoney(r.discount)],
