@@ -110,6 +110,9 @@ export default function Emails() {
   }, [filters]);
 
   useEffect(() => {
+    // load() é fetch-on-change (seta `loading` no início) — o effect é a ferramenta certa
+    // para buscar quando os filtros mudam. Regra do React Compiler conservadora aqui.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     void load();
   }, [load]);
 
@@ -123,24 +126,30 @@ export default function Emails() {
     return () => clearTimeout(t);
   }, [senderInput, filters.sender]);
 
-  // Popula o mapa de nº documento para todas as linhas da página atual.
+  // Popula o mapa de nº documento para todas as linhas da página atual. O estado só é
+  // escrito no callback assíncrono (não no corpo do effect) — sem cascata de render. Sem
+  // ids, mantém o último mapa (linhas vazias não o consultam). Guarda `active` evita
+  // gravar resposta obsoleta após troca de `rows`.
   useEffect(() => {
     const ids = rows.map((r) => r.message_id).filter((id): id is string => Boolean(id));
-    if (!ids.length) { setInvoiceMap({}); return; }
+    if (!ids.length) return;
+    let active = true;
     getInvoiceNumbersByMessageIds(ids)
-      .then(setInvoiceMap)
-      .catch(() => setInvoiceMap({}));
+      .then((m) => { if (active) setInvoiceMap(m); })
+      .catch(() => { if (active) setInvoiceMap({}); });
+    return () => { active = false; };
   }, [rows]);
 
-  // Carrega a(s) conta(s) registrada(s) ligada(s) ao e-mail selecionado.
+  // Carrega a(s) conta(s) ligada(s) ao e-mail selecionado. Sem seleção, o painel está
+  // fechado (não lê `accounts`), então não precisa limpar de forma síncrona. Guarda
+  // `active` descarta resposta de uma seleção já trocada.
   useEffect(() => {
-    if (!sel?.message_id) {
-      setAccounts([]);
-      return;
-    }
+    if (!sel?.message_id) return;
+    let active = true;
     getAccountsByMessageId(sel.message_id)
-      .then(setAccounts)
-      .catch(() => setAccounts([]));
+      .then((a) => { if (active) setAccounts(a); })
+      .catch(() => { if (active) setAccounts([]); });
+    return () => { active = false; };
   }, [sel]);
 
   // Acompanha o job de leitura (poll de GET /progress) até concluir/falhar.

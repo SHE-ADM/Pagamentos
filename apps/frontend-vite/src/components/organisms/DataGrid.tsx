@@ -332,6 +332,9 @@ export default function DataGrid<T>({
     [enableSelection, prefs.pinning],
   );
 
+  // @tanstack/react-table não é compilável pelo React Compiler (hook de lib de terceiros
+  // que retorna objeto não-memoizável) — aviso informativo, fora do nosso controle.
+  // eslint-disable-next-line react-hooks/incompatible-library
   const table = useReactTable<T>({
     data: rows,
     columns: tanstackColumns,

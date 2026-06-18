@@ -89,8 +89,11 @@ export function useGridPreferences(gridId: string | undefined, columnIds: string
     }
   }, [gridId, prefs]);
 
-  // Reconcilia a ordem quando o conjunto de colunas muda (coluna adicionada/removida).
+  // Reconcilia a ordem persistida com as colunas atuais quando o conjunto muda (coluna
+  // adicionada/removida). É sincronização de estado PERSISTIDO dirigida por prop externa,
+  // com guarda (retorna `prev` quando igual) — setState-in-effect é o padrão correto aqui.
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setPrefs((prev) => {
       const order = reconcileOrder(prev.order, columnIds);
       return sameOrder(order, prev.order) ? prev : { ...prev, order };

@@ -40,6 +40,16 @@ const fmtCnpj = (c: string | null): string =>
 
 const PAGE_SIZE = 20;
 
+// Intervalo [hoje, hoje+7d] em YYYY-MM-DD. Função de MÓDULO (fora do componente) para
+// não disparar a regra de pureza do React Compiler — Date.now/new Date são impuros e não
+// podem ser chamados no escopo de render do componente.
+function next7DaysRange(): { dateFrom: string; dateTo: string } {
+  return {
+    dateFrom: new Date().toISOString().slice(0, 10),
+    dateTo: new Date(Date.now() + 7 * 86400000).toISOString().slice(0, 10),
+  };
+}
+
 // "Atualizar" em /consulta dispara a leitura IMAP dos últimos 7 dias (mesmo motor
 // de /emails) — assim o usuário traz e-mails novos sem sair da consulta.
 const REFRESH_DAYS = 7;
@@ -167,6 +177,10 @@ export default function Consulta() {
   }, [applied, page, sort]);
 
   useEffect(() => {
+    // load() é fetch-on-change (seta `loading` no início) — o effect é a ferramenta certa
+    // para buscar quando applied/page/sort mudam. A regra do React Compiler é conservadora
+    // aqui; sem uma lib de dados (react-query) não há como evitar o setState síncrono.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     void load();
   }, [load]);
 
@@ -378,11 +392,7 @@ export default function Consulta() {
       amount: stats.vencendoValue ?? null,
       muted: true,
       cardId: 'avencer7',
-      onCardClick: () => {
-        const t = new Date().toISOString().slice(0, 10);
-        const t7 = new Date(Date.now() + 7 * 86400000).toISOString().slice(0, 10);
-        handleCardFilter('avencer7', { dateFrom: t, dateTo: t7 });
-      },
+      onCardClick: () => handleCardFilter('avencer7', next7DaysRange()),
     },
     {
       icon: AlertCircle,
