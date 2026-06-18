@@ -42,6 +42,14 @@ const fmtCnpj = (c: string | null): string =>
 
 const PAGE_SIZE = 20;
 
+// Ordem de ciclo de vida exibida no dropdown de status.
+// O banco tem status_id com vencido=2 / a_vencer=3 (inserção histórica), então
+// não usamos a ordem do banco — definimos aqui a sequência lógica correta.
+const STATUS_LIFECYCLE_ORDER = [
+  'pendente', 'a vencer', 'vencido', 'prorrogado', 'baixado',
+  'protestado', 'cartório', 'pago', 'cancelado', 'falha',
+] as const;
+
 // "Atualizar" em /consulta dispara a leitura IMAP dos últimos 7 dias (mesmo motor
 // de /emails) — assim o usuário traz e-mails novos sem sair da consulta.
 const REFRESH_DAYS = 7;
@@ -187,20 +195,24 @@ export default function Consulta() {
   }, [applied]);
 
   // Carrega as opções do dropdown de status uma vez no mount (tabela de dimensão).
-  // Fallback para lista estática se a query falhar (garante usabilidade offline).
+  // Reordena por STATUS_LIFECYCLE_ORDER (ignora a ordem do banco, onde status_id
+  // tem vencido=2 / a_vencer=3 por inserção histórica). Fallback estático se falhar.
   useEffect(() => {
+    const sortByLifecycle = <T extends { status_name: string }>(arr: T[]): T[] =>
+      [...arr].sort((a, b) => {
+        const ai = STATUS_LIFECYCLE_ORDER.indexOf(a.status_name as typeof STATUS_LIFECYCLE_ORDER[number]);
+        const bi = STATUS_LIFECYCLE_ORDER.indexOf(b.status_name as typeof STATUS_LIFECYCLE_ORDER[number]);
+        return (ai === -1 ? 999 : ai) - (bi === -1 ? 999 : bi);
+      });
+
     void getStatusOptions()
       .then((opts) =>
         setStatusOptions(
-          opts.map((o) => ({ value: o.status_name, label: o.status_short_name ?? o.status_name })),
+          sortByLifecycle(opts).map((o) => ({ value: o.status_name, label: o.status_short_name ?? o.status_name })),
         ),
       )
       .catch(() =>
-        setStatusOptions(
-          ['pendente', 'a vencer', 'vencido', 'prorrogado', 'baixado', 'protestado', 'cartório', 'pago', 'cancelado', 'falha'].map(
-            (s) => ({ value: s, label: s }),
-          ),
-        ),
+        setStatusOptions(STATUS_LIFECYCLE_ORDER.map((s) => ({ value: s, label: s }))),
       );
   }, []);
 
