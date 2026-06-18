@@ -3,6 +3,7 @@ import { CheckCircle2 } from 'lucide-react';
 import type { FinancialAccountControl, EmailControl } from '@sheild/shared';
 import StatusBadge from '../components/StatusBadge';
 import CheckToggle from '../components/atoms/CheckToggle';
+import StatusSelectCell, { type StatusOption } from '../components/atoms/StatusSelectCell';
 import type { FinancialAccountFlag } from '../services/supabase';
 
 /** Callback acionado ao marcar/desmarcar um checkbox de flag na célula do grid. */
@@ -11,6 +12,9 @@ export type ToggleFlag = (
   field: FinancialAccountFlag,
   value: boolean,
 ) => void;
+
+/** Callback acionado ao alterar o status de uma conta no dropdown inline. */
+export type StatusChangeCallback = (rowId: number, newStatus: string) => Promise<void>;
 
 // Formatters — cópia das implementações de Consulta.tsx. A consolidação num
 // módulo único (src/lib) é follow-up de quando Consulta.tsx for migrado ao hook.
@@ -66,11 +70,15 @@ export interface ColumnDef<T> {
 
 /**
  * Definição de todas as colunas do grid de /consulta, na ordem de exibição.
- * É uma **factory** (não constante) porque as colunas "Tem NF" e "Tem Boleto"
- * renderizam um checkbox que escreve no banco — precisam do callback `onToggleFlag`
- * fornecido pela página (que faz o update otimista + persistência via REST).
+ * É uma **factory** (não constante) porque as colunas "Tem NF", "Tem Boleto" e
+ * "Situação" renderizam células interativas que escrevem no banco — precisam dos
+ * callbacks fornecidos pela página (que fazem o update otimista + persistência REST).
  */
-export function getConsultaColumns(onToggleFlag: ToggleFlag): ColumnDef<FinancialAccountControl>[] {
+export function getConsultaColumns(
+  onToggleFlag: ToggleFlag,
+  onStatusChange: StatusChangeCallback,
+  statusOptions: Readonly<StatusOption[]>,
+): ColumnDef<FinancialAccountControl>[] {
   return [
   {
     key: 'invoice_number',
@@ -168,9 +176,15 @@ export function getConsultaColumns(onToggleFlag: ToggleFlag): ColumnDef<Financia
   {
     key: 'status',
     header: 'Situação',
-    size: 130,
+    size: 160,
     sortKey: 'status',
-    render: (r) => createElement(StatusBadge, { value: r.status }),
+    render: (r) =>
+      createElement(StatusSelectCell, {
+        rowId: r.id,
+        value: r.status ?? 'pendente',
+        options: statusOptions,
+        onSave: onStatusChange,
+      }),
   },
   {
     key: 'extraction_source',

@@ -289,6 +289,34 @@ export async function setFinancialAccountFlag(
   if (!res.ok) throw new Error(`Supabase ${res.status}: ${await res.text()}`);
 }
 
+// Dimensão de situação — 10 linhas fixas, carregadas uma vez no mount de /consulta.
+interface StatusDimension {
+  status_id: number;
+  status_name: string;
+  status_short_name: string | null;
+}
+
+export async function getStatusOptions(): Promise<StatusDimension[]> {
+  return query<StatusDimension[]>('status', {
+    select: 'status_id,status_name,status_short_name',
+    order: 'status_id.asc',
+  });
+}
+
+// Permite ao usuário autenticado alterar a situação de uma conta em /consulta.
+// A migration 036 concede GRANT UPDATE (status) TO authenticated.
+// A trigger fn_set_status_from_due_date (SECURITY DEFINER) sincroniza status_id.
+export async function setFinancialAccountStatus(id: number, status: string): Promise<void> {
+  const url = new URL(`${BASE_URL}/rest/v1/financial_account_control`);
+  url.searchParams.set('id', `eq.${id}`);
+  const res = await fetch(url.toString(), {
+    method: 'PATCH',
+    headers: await authHeaders({ Prefer: 'return=minimal' }),
+    body: JSON.stringify({ status }),
+  });
+  if (!res.ok) throw new Error(`Supabase ${res.status}: ${await res.text()}`);
+}
+
 // Soma de `amount` para o filtro corrente — alimenta o card "Valor total" de
 // /consulta, que reflete o subconjunto filtrado (cards ou filtros manuais).
 // Busca só a coluna amount (sem paginar) e soma no cliente, como getFinancialStats.

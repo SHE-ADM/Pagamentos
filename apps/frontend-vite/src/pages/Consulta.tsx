@@ -19,8 +19,11 @@ import {
   getFinancialStats,
   getFinancialAccountTotalValue,
   setFinancialAccountFlag,
+  getStatusOptions,
+  setFinancialAccountStatus,
   type FinancialStats,
 } from '../services/supabase';
+import type { StatusOption } from '../components/atoms/StatusSelectCell';
 import { startEmailRead, getEmailReadProgress, type ReadProgress } from '../services/emailReader';
 import { suspendIdleLogout, resumeIdleLogout } from '../hooks/useIdleLogout';
 import { getErrorMessage } from '../lib/getErrorMessage';
@@ -28,7 +31,7 @@ import Alert from '../components/atoms/Alert';
 import ExpandableText from '../components/ExpandableText';
 import AttachmentViewer from '../components/AttachmentViewer';
 import DataGrid from '../components/organisms/DataGrid';
-import { getConsultaColumns, type ToggleFlag } from '../hooks/useGridColumns';
+import { getConsultaColumns, type ToggleFlag, type StatusChangeCallback } from '../hooks/useGridColumns';
 import { badgeLabel } from '../components/statusBadge.variants';
 
 const fmtDate = (d: string | null): string => (d ? new Date(d + 'T00:00:00').toLocaleDateString('pt-BR') : '—');
@@ -128,6 +131,8 @@ export default function Consulta() {
   const [reading, setReading] = useState(false);
   const [progress, setProgress] = useState<ReadProgress | null>(null);
   const readingRef = useRef(false);
+  // Opções do dropdown inline de status — carregadas uma vez da tabela de dimensão.
+  const [statusOptions, setStatusOptions] = useState<StatusOption[]>([]);
   const supplierDebounce = useRef<ReturnType<typeof setTimeout> | null>(null);
   const sf = <K extends keyof ConsultaFilters>(k: K, v: ConsultaFilters[K]) =>
     setF((x) => ({ ...x, [k]: v }));
@@ -181,6 +186,24 @@ export default function Consulta() {
     };
   }, [applied]);
 
+  // Carrega as opções do dropdown de status uma vez no mount (tabela de dimensão).
+  // Fallback para lista estática se a query falhar (garante usabilidade offline).
+  useEffect(() => {
+    void getStatusOptions()
+      .then((opts) =>
+        setStatusOptions(
+          opts.map((o) => ({ value: o.status_name, label: o.status_short_name ?? o.status_name })),
+        ),
+      )
+      .catch(() =>
+        setStatusOptions(
+          ['pendente', 'a vencer', 'vencido', 'prorrogado', 'baixado', 'protestado', 'cartório', 'pago', 'cancelado', 'falha'].map(
+            (s) => ({ value: s, label: s }),
+          ),
+        ),
+      );
+  }, []);
+
   // Marca/desmarca uma flag de curadoria ("Tem NF" / "Tem Boleto") com update
   // otimista no estado local + persistência via REST; reverte se a gravação falhar.
   const handleToggleFlag = useCallback<ToggleFlag>((row, field, value) => {
@@ -191,7 +214,18 @@ export default function Consulta() {
     });
   }, []);
 
-  const columns = useMemo(() => getConsultaColumns(handleToggleFlag), [handleToggleFlag]);
+  // Altera o status de uma conta no dropdown inline com update otimista.
+  // O pai (Consulta) atualiza `rows` após confirmação da API para manter consistência
+  // entre a célula editada e o painel de detalhe lateral.
+  const handleStatusChange = useCallback<StatusChangeCallback>(async (rowId, newStatus) => {
+    await setFinancialAccountStatus(rowId, newStatus);
+    setRows((prev) => prev.map((r) => (r.id === rowId ? { ...r, status: newStatus as FinancialAccountControl['status'] } : r)));
+  }, []);
+
+  const columns = useMemo(
+    () => getConsultaColumns(handleToggleFlag, handleStatusChange, statusOptions),
+    [handleToggleFlag, handleStatusChange, statusOptions],
+  );
 
   // "Atualizar": dispara a leitura IMAP dos últimos 7 dias (job em background no
   // Flask) e acompanha o progresso por poll, recarregando o grid ao vivo e no fim —
