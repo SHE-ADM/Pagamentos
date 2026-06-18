@@ -10,16 +10,24 @@ export type GridVariant = 'default' | 'silver';
 /** Célula de cabeçalho (th) — tema + alinhamento + estado de ordenação.
  *  Sem `sticky`: a tabela vive num wrapper `overflow-x-auto` (rolagem horizontal),
  *  que seria um novo contexto de rolagem e quebraria o sticky vertical. */
-export const headerCell = cva('select-none transition-colors', {
+export const headerCell = cva('relative select-none transition-colors', {
   variants: {
     variant: { default: 'table-header', silver: 'table-header-silver' },
     align: { left: '', right: 'text-right', center: 'text-center' },
     sortable: { true: 'cursor-pointer', false: '' },
     active: { true: 'bg-slate-100', false: '' },
+    // Densidade: `compact` reduz o padding vertical (utility vence o @apply base).
+    density: { comfortable: '', compact: 'py-1' },
   },
   // Hover só em coluna ordenável que ainda não é a ativa.
   compoundVariants: [{ sortable: true, active: false, class: 'hover:bg-slate-100' }],
-  defaultVariants: { variant: 'default', align: 'left', sortable: false, active: false },
+  defaultVariants: {
+    variant: 'default',
+    align: 'left',
+    sortable: false,
+    active: false,
+    density: 'comfortable',
+  },
 });
 
 /** Ícone de ordenação no cabeçalho — destacado quando a coluna está ativa. */
@@ -50,9 +58,55 @@ export const bodyCell = cva('', {
     variant: { default: 'table-cell text-slate-600', silver: 'table-cell-silver text-zinc-600' },
     align: { left: '', right: 'text-right', center: 'text-center' },
     dense: { true: 'text-xs font-mono', false: '' },
+    // Densidade: `compact` reduz o padding vertical (utility vence o @apply base).
+    density: { comfortable: '', compact: 'py-1' },
   },
-  defaultVariants: { variant: 'default', align: 'left', dense: false },
+  defaultVariants: { variant: 'default', align: 'left', dense: false, density: 'comfortable' },
 });
+
+/**
+ * Célula fixada (pinned) — sticky horizontal com fundo opaco para cobrir o conteúdo
+ * que rola por baixo, sombra sutil na borda interna e z-index acima do normal.
+ * `kind` separa o fundo do cabeçalho (combina com o header) do corpo (combina com a
+ * linha). Offset (left/right em px) é aplicado via `style` inline no componente.
+ */
+export const pinnedCell = cva('sticky', {
+  variants: {
+    variant: { default: '', silver: '' },
+    kind: { header: 'z-30', body: 'z-20' },
+    side: {
+      left: 'shadow-[1px_0_2px_rgba(15,23,42,0.08)]',
+      right: 'shadow-[-1px_0_2px_rgba(15,23,42,0.08)]',
+      none: '',
+    },
+  },
+  compoundVariants: [
+    { variant: 'default', kind: 'header', class: 'bg-slate-50' },
+    { variant: 'default', kind: 'body', class: 'bg-white' },
+    { variant: 'silver', kind: 'header', class: 'bg-zinc-50' },
+    { variant: 'silver', kind: 'body', class: 'bg-zinc-100' },
+  ],
+  defaultVariants: { variant: 'default', kind: 'body', side: 'none' },
+});
+
+/** Alça de redimensionamento na borda direita do cabeçalho (cursor col-resize). */
+export const resizeHandle = cva(
+  'absolute right-0 top-0 h-full w-1 cursor-col-resize touch-none select-none ' +
+    'opacity-0 transition-opacity hover:opacity-100 group-hover/th:opacity-100',
+  {
+    variants: { active: { true: 'opacity-100 bg-brand', false: 'bg-slate-300' } },
+    defaultVariants: { active: false },
+  },
+);
+
+/** Alça de arraste (grip) para reordenar a coluna — separada do clique de ordenação. */
+export const gripHandle = cva(
+  'cursor-grab active:cursor-grabbing touch-none transition-colors',
+  {
+    variants: { variant: { default: 'text-slate-300 hover:text-slate-500', silver: 'text-zinc-300 hover:text-zinc-500' } },
+    defaultVariants: { variant: 'default' },
+  },
+);
 
 /** Barra pulsante do skeleton de carregamento. */
 export const skeletonBar = cva('h-3 rounded', {

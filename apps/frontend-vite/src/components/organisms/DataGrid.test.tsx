@@ -45,6 +45,7 @@ const setContainerWidth = (px: number): void => {
 
 afterEach(() => {
   delete (globalThis as { __roWidth?: number }).__roWidth;
+  localStorage.clear();
   vi.restoreAllMocks();
 });
 
@@ -104,5 +105,37 @@ describe('DataGrid', () => {
     expect(screen.queryByRole('columnheader', { name: /Tipo/ })).not.toBeInTheDocument();
     // ...e reaparece como rótulo da linha secundária (uma por registro).
     expect(screen.getAllByText('Tipo:')).toHaveLength(ROWS.length);
+  });
+
+  describe('modo gerenciável (enableColumnManagement)', () => {
+    it('renderiza a barra de ferramentas (botão Colunas)', () => {
+      render(<DataGrid {...baseProps} gridId="test-grid" enableColumnManagement />);
+      expect(screen.getByRole('button', { name: /Colunas/ })).toBeInTheDocument();
+    });
+
+    it('oculta uma coluna pelo menu de colunas', async () => {
+      render(<DataGrid {...baseProps} gridId="test-grid" enableColumnManagement />);
+      expect(screen.getByRole('columnheader', { name: /Nome/ })).toBeInTheDocument();
+      await userEvent.click(screen.getByRole('button', { name: /Colunas/ }));
+      await userEvent.click(screen.getByRole('checkbox', { name: 'Mostrar coluna Nome' }));
+      expect(screen.queryByRole('columnheader', { name: /Nome/ })).not.toBeInTheDocument();
+    });
+
+    it('seleção múltipla: "selecionar todos" marca as linhas e exporta as selecionadas', async () => {
+      const onExportSelected = vi.fn();
+      render(
+        <DataGrid
+          {...baseProps}
+          gridId="test-grid"
+          enableColumnManagement
+          enableSelection
+          onExportSelected={onExportSelected}
+        />,
+      );
+      await userEvent.click(screen.getByRole('checkbox', { name: 'Selecionar todas as linhas' }));
+      expect(screen.getByText(/2 selecionadas/)).toBeInTheDocument();
+      await userEvent.click(screen.getByRole('button', { name: /Exportar selecionadas/ }));
+      expect(onExportSelected).toHaveBeenCalledWith(ROWS);
+    });
   });
 });

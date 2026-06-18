@@ -16,6 +16,18 @@ vi.mock('../services/supabase', () => ({
   setFinancialAccountFlag: (...args: unknown[]) => setFinancialAccountFlag(...args),
 }));
 
+// Mocka o leitor IMAP — o teste cobre o disparo pelo botão "Atualizar", não a rede.
+const startEmailRead = vi.fn();
+const getEmailReadProgress = vi.fn();
+vi.mock('../services/emailReader', () => ({
+  startEmailRead: (...args: unknown[]) => startEmailRead(...args),
+  getEmailReadProgress: (...args: unknown[]) => getEmailReadProgress(...args),
+}));
+vi.mock('../hooks/useIdleLogout', () => ({
+  suspendIdleLogout: vi.fn(),
+  resumeIdleLogout: vi.fn(),
+}));
+
 import Consulta from './Consulta';
 
 // Linha mínima para os testes de grid — só os campos lidos pelas colunas.
@@ -50,6 +62,19 @@ describe('Consulta', () => {
     });
     getFinancialAccountTotalValue.mockResolvedValue(0);
     setFinancialAccountFlag.mockReset().mockResolvedValue(undefined);
+    startEmailRead.mockReset().mockResolvedValue({ started: true, alreadyRunning: false });
+    getEmailReadProgress.mockReset().mockResolvedValue({
+      running: false,
+      phase: 'concluído',
+      total: 0,
+      done: 0,
+      processed: 0,
+      skipped_keyword: 0,
+      skipped_dup: 0,
+      elapsed: 0,
+      summary: null,
+      error: null,
+    });
   });
 
   it('marca a flag "Tem NF" e persiste via setFinancialAccountFlag', async () => {
@@ -64,6 +89,19 @@ describe('Consulta', () => {
 
     expect(setFinancialAccountFlag).toHaveBeenCalledWith(1, 'has_invoice', true);
     await waitFor(() => expect(box).toBeChecked());
+  });
+
+  it('o botão "Atualizar" dispara a leitura IMAP dos últimos 7 dias', async () => {
+    const user = userEvent.setup();
+    render(<Consulta />);
+
+    await user.click(screen.getByRole('button', { name: 'Atualizar' }));
+    await waitFor(() => expect(startEmailRead).toHaveBeenCalledWith({ days: 7 }));
+
+    // ao concluir (progress.running=false), o banner de progresso some
+    await waitFor(() => expect(screen.queryByText(/Buscando e-mails/)).not.toBeInTheDocument(), {
+      timeout: 4000,
+    });
   });
 
   it('renderiza cabeçalho, cards de métricas e estado vazio', async () => {

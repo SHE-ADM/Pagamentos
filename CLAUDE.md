@@ -386,17 +386,21 @@ apps/frontend-vite/src/components/
 │   ├── FilledTextField.tsx    # (v2) campo label + fundo verde + id (useId) + aria-invalid
 │   ├── AccentPillButton.tsx   # (v2) botão primário verde + ArrowRight
 │   ├── AuthInput.tsx          # (gradient) campo label + input + erro inline (aria-describedby)
-│   └── GradientPillButton.tsx # (gradient) botão pill com bg-gradient-auth
+│   ├── GradientPillButton.tsx # (gradient) botão pill com bg-gradient-auth
+│   ├── CheckToggle.tsx        # checkbox de curadoria (NF/Boleto) — escreve no banco
+│   └── SelectCheckbox.tsx     # checkbox de SELEÇÃO de linha (rowSelection) + indeterminate
 ├── molecules/
 │   ├── SocialLinksBar.tsx     # (v2) círculos Otimotex/Lebianco/WhatsApp
 │   ├── AuthHeroHeader.tsx     # (gradient) header decorativo com círculos sobrepostos
-│   └── InlineMessage.tsx      # (gradient) banner sucesso/erro — nunca alert()
+│   ├── InlineMessage.tsx      # (gradient) banner sucesso/erro — nunca alert()
+│   ├── ColumnVisibilityMenu.tsx # (grid) popover mostrar/ocultar + fixar coluna (pin esq/dir)
+│   └── GridToolbar.tsx        # (grid) barra: colunas + densidade + restaurar + ações de seleção
 ├── organisms/
 │   ├── LoginForm.tsx          # (v2) estado + validação + supabase.auth.signInWithPassword
 │   ├── ForgotPasswordForm.tsx # (gradient) resetPasswordForEmail + mensagem genérica
 │   ├── ResetPasswordForm.tsx  # (gradient) updateUser + signOut + redirect
-│   ├── DataGrid.tsx           # grid responsivo genérico (+ DataGrid.test.tsx); tema via cva
-│   └── dataGrid.variants.ts   # cva por slot (header/row/cell/skeleton/empty/…) tema default|silver
+│   ├── DataGrid.tsx           # grid sobre TanStack Table v8 (+ DataGrid.test.tsx) — ver seção própria
+│   └── dataGrid.variants.ts   # cva por slot (header/row/cell/skeleton/empty/pin/resize/grip/densidade) default|silver
 ├── AuthLayout.tsx             # (gradient) wrapper full-page para Forgot/Reset
 ├── AttachmentViewer.tsx       # visualizador de PDF (signed URL do Storage) em iframe/modal
 ├── Layout.tsx (+ Layout.test.tsx)   # sidebar; navLink = cva local (estado active)
@@ -408,8 +412,11 @@ apps/frontend-vite/src/components/
 
 Hooks em `src/hooks/`: `useContainerBreakpoint.ts` (faixa `sm`/`md`/`lg` pela largura
 **real do container** via `ResizeObserver` — não da janela; usado pelo `DataGrid` p/ ocultar
-colunas considerando sidebar/paddings) e `useGridColumns.ts` (metadados de coluna —
-`ColumnDef`, `getConsultaColumns`, `getEmailColumns`; é módulo de **definições**, não um hook,
+colunas considerando sidebar/paddings), `useGridPreferences.ts` (estado de layout do grid —
+ordem/visibilidade/larguras/fixação/densidade — persistido em `localStorage` por `gridId`;
+setters no formato `OnChangeFn` do TanStack + `reset()`; ver seção do DataGrid) e
+`useGridColumns.ts` (metadados de coluna — `ColumnDef` com `size?` opcional, `getConsultaColumns`,
+`getEmailColumns`; é módulo de **definições**, não um hook,
 apesar do nome). `getConsultaColumns(onToggleFlag)` é factory porque as colunas "NF" e
 "BOL" (curadoria) renderizam o atom `CheckToggle` (checkbox que escreve no banco) — precisam
 do callback de toggle da página. Os cabeçalhos são abreviados (`NF`/`BOL`) para poupar
@@ -885,27 +892,51 @@ faturas SIEG em `ignorado`; o handler A1 (baixar o boleto real) segue como melho
   o estado e o botão parecia "pronto" enquanto o backend seguia registrando (total subia a cada
   refresh). O card **"Total de e-mails"** (sub-rótulo "na caixa de entradas") = contagem de
   `email_control`, que converge para o total do INBOX **quando o job termina** (não antes).
+  **`/consulta` reusa o mesmo motor:** o botão **"Atualizar"** (topo direito) dispara
+  `startEmailRead({ days: 7 })` + poll de progresso (mesmo padrão: banner `info` "Buscando
+  e-mails dos últimos 7 dias…", recarrega o grid ao vivo a cada ~5 polls e no `finally`, e
+  suspende/retoma o logout por inatividade) — assim traz e-mails novos **sem abrir `/emails`**.
+  O **label permanece "Atualizar"** (só ganha spinner + disabled enquanto processa); a guarda
+  `readingRef` evita disparos concorrentes. Não há reconexão ao job aqui (escopo do `/emails`).
 - **`/consulta` — `cancelado` oculto por padrão (consistência grid ↔ KPIs):** `applyFinancialFilters`
   aplica `status=neq.cancelado` quando **não** há filtro de situação. `getFinancialStats` usa o
   **mesmo** filtro, então o rodapé "N registros", o KPI "Total de registros", o "Valor total" e
   "Vencidas" batem com o grid — contas canceladas só aparecem se o usuário escolher `cancelado`
   no filtro de situação (que sobrescreve o `neq`). Ao criar nova query/KPI sobre
   `financial_account_control`, replicar esse padrão para não divergir.
-- **Grid compartilhado (responsivo, "à prova de mobile")**: `/consulta` (tema `default`) e
-  `/emails` (tema `silver`) renderizam pelo mesmo `organisms/DataGrid.tsx`, com as colunas de
-  `useGridColumns.ts` (`getConsultaColumns` / `getEmailColumns`). Estratégia em camadas:
-  1. **breakpoint pela largura do container** (`useContainerBreakpoint`/`ResizeObserver`),
-     não da janela — então oculta colunas (`hideOn`) e desce as `secondLine` para uma
-     sub-linha conforme o espaço **real** (considera a sidebar);
-  2. **truncagem** de texto longo nas colunas com `truncate: true` (Fornecedor, Assunto,
-     Remetente) — corta com `…` e expõe o valor no `title`;
-  3. **rolagem horizontal** como rede de segurança: a `<table>` vive num wrapper
-     `overflow-x-auto` no próprio `DataGrid` (rola em vez de cortar). **Trade-off:** o
-     cabeçalho **deixou de ser `sticky`** (o wrapper de rolagem seria um novo contexto de
-     scroll e quebraria o sticky vertical).
-  A **sidebar** (`Layout.tsx`) colapsa em drawer com hambúrguer abaixo de `lg` (overlay +
-  fecha ao navegar); em `lg+` é estática. Isso libera a largura no celular — toda página
-  nova deve viver dentro desse `Layout`.
+- **Grid compartilhado sobre TanStack Table v8** (`organisms/DataGrid.tsx`): `/consulta` (tema
+  `default`) e `/emails` (tema `silver`) usam o mesmo grid, com as colunas de `useGridColumns.ts`
+  (`getConsultaColumns` / `getEmailColumns`). O TanStack é **headless**: fornece row model (core),
+  header groups e os estados de layout. A interface pública `DataGridProps<T>` é retrocompatível —
+  features novas são **opt-in** via props.
+  - **Sort, filtro e paginação seguem SERVER-SIDE** (Supabase): `manualSorting` ligado, sort via
+    `onSort`/`sortCol`/`sortDir`, filtros e paginação nas páginas. **Nunca** ligar
+    `getSortedRowModel`/`getFilteredRowModel`/`getPaginationRowModel` nem virtualização: o grid só
+    recebe a página atual (~20 linhas), então esses modelos client-side agiriam sobre um subconjunto
+    = bug. Virtualização fica como opção futura **se** migrar para scroll infinito/páginas grandes.
+  - **Camadas responsivas** (própria, não do TanStack): (1) breakpoint pela largura **real do
+    container** (`useContainerBreakpoint`/`ResizeObserver`) oculta `hideOn` e desce `secondLine`
+    para a sub-linha; (2) truncagem (`truncate`) com `title`; (3) rolagem horizontal no viewport.
+    **Visibilidade efetiva = (usuário não ocultou via menu) E (breakpoint não escondeu).**
+    `getVisibleLeafColumns()` já exclui as ocultas pelo usuário; o filtro de breakpoint vem por cima.
+  - **Gestão de colunas (opt-in `enableColumnManagement` + `gridId`)**: `GridToolbar` expõe
+    mostrar/ocultar e **fixar** colunas (`ColumnVisibilityMenu`), **densidade** (confortável/compacto),
+    **restaurar layout**; **redimensionar** (resize handle) e **reordenar por arraste** (@dnd-kit nos
+    cabeçalhos — grip separado do clique de ordenação e da alça de resize). Layout persiste em
+    `localStorage` por `gridId` (`useGridPreferences`). Nesse modo a `<table>` vira `table-fixed` com
+    larguras de `column.getSize()` (default 160 ou `ColumnDef.size`) e `width = getTotalSize()` — daí
+    o **cabeçalho fixo** (`maxBodyHeight` cria viewport rolável) e a **fixação** (sticky + offset via
+    `column.getStart/ getAfter`) funcionarem; sem gestão, mantém o layout `w-full` antigo.
+  - **Seleção múltipla (opt-in `enableSelection`)**: coluna de checkbox (`SelectCheckbox`, sempre 1ª e
+    fixada à esquerda) + barra de ações com **"Exportar selecionadas"** (`onExportSelected` — em
+    `/consulta` reusa o `exportCsv`). A coluna de seleção (`__select__`) é injetada na ordem/fixação
+    efetivas mas **nunca** gravada nas preferências (que ficam data-only) — evita duplicar o id.
+    `/emails` **não** liga seleção (sem ação em lote de e-mail).
+  - **Render das células sem `flexRender`**: o renderer do `cell` é chamado direto (helper
+    `cellValue`) para preservar o **valor cru** (string) que o `title` da truncagem exige — `flexRender`
+    o envolveria num componente. Não regredir.
+  A **sidebar** (`Layout.tsx`) colapsa em drawer com hambúrguer abaixo de `lg`; em `lg+` é estática.
+  Dependências do grid: `@tanstack/react-table`, `@dnd-kit/core|sortable|modifiers`.
 
 ### Build e code-splitting (`frontend-vite`)
 
