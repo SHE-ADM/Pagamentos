@@ -1,5 +1,6 @@
 import { defineConfig } from 'vitest/config';
-import react from '@vitejs/plugin-react';
+import react, { reactCompilerPreset } from '@vitejs/plugin-react';
+import babel from '@rolldown/plugin-babel';
 import tsconfigPaths from 'vite-tsconfig-paths';
 
 // Proxy /api → backend Flask local (server/app.py). Evita CORS no dev.
@@ -7,7 +8,16 @@ import tsconfigPaths from 'vite-tsconfig-paths';
 // Flask. A Next API (apps/api-backend, porta 3000) é camada de CRUD/dados
 // independente e não intercepta este caminho.
 export default defineConfig({
-  plugins: [react(), tsconfigPaths()],
+  plugins: [
+    react(),
+    // React Compiler (transform de build) — memoiza componentes/hooks automaticamente.
+    // No @vitejs/plugin-react v6 (oxc/Rolldown) o compiler entra via @rolldown/plugin-babel
+    // + reactCompilerPreset (não pelo antigo `babel` option). target React 19 (runtime
+    // embutido em react/compiler-runtime); faz "bail out" seguro em código incompatível
+    // (ex.: @tanstack/react-table no DataGrid).
+    babel({ presets: [reactCompilerPreset()] }),
+    tsconfigPaths(),
+  ],
   // Força uma ÚNICA cópia do React no bundle/teste: o monorepo ainda tem react@18
   // hoisted na raiz (puxado pelo next dos apps Next), e libs vizinhas (@dnd-kit etc.)
   // dariam dedupe para ele — gerando dois React. `dedupe` resolve tudo para o react 19
