@@ -18,3 +18,9 @@ dist-ssr/
 # Logs
 *.log
 npm-debug.log*
+
+# Playwright (testes de acessibilidade em navegador)
+test-results/
+playwright-report/
+blob-report/
+playwright/.cache/

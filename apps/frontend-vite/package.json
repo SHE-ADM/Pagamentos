@@ -22,8 +22,10 @@
     "zod": "^4.4.3"
   },
   "devDependencies": {
+    "@axe-core/playwright": "^4.11.3",
     "@babel/core": "^7.29.7",
     "@eslint/js": "^10.0.1",
+    "@playwright/test": "^1.61.0",
     "@rolldown/plugin-babel": "^0.2.3",
     "@tailwindcss/postcss": "^4.3.1",
     "@testing-library/jest-dom": "^6.4.8",
@@ -59,6 +61,8 @@
     "typecheck": "tsc --noEmit",
     "prune": "ts-prune --ignore \"tailwind.config|vite.config\"",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "test:e2e": "playwright test",
+    "test:e2e:headed": "playwright test --headed"
   }
 }

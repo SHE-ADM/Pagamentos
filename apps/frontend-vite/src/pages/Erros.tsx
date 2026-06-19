@@ -115,12 +115,12 @@ export default function Erros() {
           {[
             { label: 'Total de erros', value: stats.total, icon: XCircle, cls: 'text-red-500' },
             { label: 'Erro de API', value: stats.counts.erro_api ?? 0, icon: XCircle, cls: 'text-red-600' },
-            { label: 'Sem valor', value: stats.counts.sem_valor ?? 0, icon: AlertTriangle, cls: 'text-amber-500' },
+            { label: 'Sem valor', value: stats.counts.sem_valor ?? 0, icon: AlertTriangle, cls: 'text-amber-600' },
             {
               label: 'Sem fornecedor',
               value: stats.counts.sem_fornecedor ?? 0,
               icon: AlertTriangle,
-              cls: 'text-orange-500',
+              cls: 'text-orange-600',
             },
             {
               label: 'Extração falhou',
@@ -203,7 +203,7 @@ export default function Erros() {
             <tbody>
               {rows.length === 0 ? (
                 <tr>
-                  <td colSpan={6} className="table-cell text-center text-gray-400 py-8">
+                  <td colSpan={6} className="table-cell text-center text-gray-500 py-8">
                     {loading ? 'Buscando registros…' : 'Nenhum erro encontrado — boas notícias!'}
                   </td>
                 </tr>
@@ -276,14 +276,14 @@ export default function Erros() {
                 ] as [string, string | null][]
               ).map(([k, v]) => (
                 <div key={k} className="flex gap-3">
-                  <dt className="w-36 shrink-0 text-gray-400 text-xs">{k}</dt>
+                  <dt className="w-36 shrink-0 text-gray-500 text-xs">{k}</dt>
                   <dd className="text-gray-700 text-xs break-all">{v ?? '—'}</dd>
                 </div>
               ))}
             </dl>
             {sel.raw_payload != null && (
               <div className="mt-2">
-                <p className="text-xs text-gray-400 mb-1 uppercase tracking-wide">Payload bruto</p>
+                <p className="text-xs text-gray-500 mb-1 uppercase tracking-wide">Payload bruto</p>
                 <pre className="text-xs bg-gray-50 rounded-lg p-3 overflow-x-auto text-gray-600 whitespace-pre-wrap">
                   {JSON.stringify(sel.raw_payload, null, 2)}
                 </pre>

@@ -468,7 +468,7 @@ export default function Emails() {
                   {label}
                 </div>
                 <div className={`text-2xl font-semibold ${tone.fg}`}>{value}</div>
-                <div className="text-xs text-gray-400">{sub}</div>
+                <div className="text-xs text-gray-500">{sub}</div>
               </button>
             );
           })}
@@ -493,7 +493,7 @@ export default function Emails() {
                 type="button"
                 aria-label="Limpar busca"
                 onClick={() => setSenderInput('')}
-                className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600"
+                className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-500 hover:text-slate-600"
               >
                 <X size={14} />
               </button>
@@ -559,7 +559,7 @@ export default function Emails() {
                           <div className="relative bg-zinc-50/60 border-l-2 border-brand p-4">
                             <button
                               onClick={(e) => { e.stopPropagation(); setSel(null); }}
-                              className="absolute right-3 top-3 flex h-7 w-7 items-center justify-center rounded-full text-zinc-400 hover:bg-zinc-200/60 hover:text-zinc-600 transition-colors"
+                              className="absolute right-3 top-3 flex h-7 w-7 items-center justify-center rounded-full text-zinc-500 hover:bg-zinc-200/60 hover:text-zinc-600 transition-colors"
                               title="Fechar"
                             >
                               <X size={15} />
@@ -606,17 +606,17 @@ export default function Emails() {
                                     Math.floor(i / 2) % 2 === 0 ? 'bg-zinc-50/40' : 'bg-white'
                                   }`}
                                 >
-                                  <dt className="w-28 shrink-0 text-zinc-400 text-xs">{k}</dt>
+                                  <dt className="w-28 shrink-0 text-zinc-500 text-xs">{k}</dt>
                                   <dd className="text-zinc-600 text-xs break-all">{v ?? '—'}</dd>
                                 </div>
                               ))}
                             </dl>
                             <div className="mt-3">
-                              <p className="text-xs text-zinc-400 mb-2 uppercase tracking-wide">
+                              <p className="text-xs text-zinc-500 mb-2 uppercase tracking-wide">
                                 Conta(s) registrada(s) — financial_account_control
                               </p>
                               {accounts.length === 0 ? (
-                                <p className="text-xs text-zinc-400">Nenhuma conta gerada a partir deste e-mail.</p>
+                                <p className="text-xs text-zinc-500">Nenhuma conta gerada a partir deste e-mail.</p>
                               ) : (
                                 <div className="space-y-1.5">
                                   {accounts.map((a) => (
@@ -627,7 +627,7 @@ export default function Emails() {
                                       <span className="truncate text-zinc-600 flex-1" title={a.supplier_name ?? ''}>
                                         {a.supplier_name || '—'}
                                       </span>
-                                      <span className="font-mono text-zinc-400 whitespace-nowrap">{fmtDate(a.due_date)}</span>
+                                      <span className="font-mono text-zinc-500 whitespace-nowrap">{fmtDate(a.due_date)}</span>
                                       <span className="font-mono font-medium text-zinc-600 whitespace-nowrap">
                                         {fmtMoney(a.amount)}
                                       </span>

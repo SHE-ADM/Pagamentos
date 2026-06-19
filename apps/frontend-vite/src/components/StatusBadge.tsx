@@ -9,7 +9,7 @@ interface StatusBadgeProps {
 
 export default function StatusBadge({ value }: Readonly<StatusBadgeProps>) {
   // Apenas nulo/vazio vira travessão; valor não mapeado cai no fallback neutro.
-  if (!value) return <span className="text-ink-muted">—</span>;
+  if (!value) return <span className="text-ink-secondary">—</span>;
 
   const resolved = resolveBadge(value);
   const variant = resolved?.variant ?? 'neutral';
