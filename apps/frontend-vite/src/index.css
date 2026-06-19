@@ -149,7 +149,7 @@
 }
 
 @utility metric-card {
-  @apply bg-surface rounded-lg p-3 border-l-2 border-brand shadow-xs
+  @apply bg-surface rounded-lg p-2 border-l-2 border-brand shadow-xs
            hover:shadow-sm transition-shadow;
   animation: fadeInUp 0.2s ease-out both;
 }

@@ -8,7 +8,7 @@
     "packages/*"
   ],
   "scripts": {
-    "dev": "concurrently --kill-others-on-fail -n flask,vite,api,portal -c yellow,green,cyan,magenta npm:dev:flask npm:dev:vite npm:dev:api npm:dev:portal",
+    "dev": "concurrently -n flask,vite,api,portal -c yellow,green,cyan,magenta npm:dev:flask npm:dev:vite npm:dev:api npm:dev:portal",
     "dev:flask": "py -3 server/app.py",
     "dev:vite": "npm run dev --workspace=apps/frontend-vite",
     "dev:api": "npm run dev --workspace=apps/api-backend",

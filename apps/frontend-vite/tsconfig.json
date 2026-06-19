@@ -4,6 +4,9 @@
     "useDefineForClassFields": true,
     "lib": ["ES2020", "DOM", "DOM.Iterable"],
     "module": "ESNext",
+    // Mantido: sem isto, o typecheck quebra com erros de tipos de terceiros
+    // (@supabase/auth-js webauthn.dom + @tanstack/table-core ColumnMeta) — não
+    // acionáveis por nós. Testado em 2026-06-19 na auditoria pós-upgrade.
     "skipLibCheck": true,
 
     /* Bundler mode */

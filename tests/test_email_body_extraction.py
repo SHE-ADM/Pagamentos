@@ -37,9 +37,6 @@ class FakeControl:
     def unique_invoice_number(self, base):
         return base
 
-    def financial_duplicate_exists(self, payload):
-        return self.duplicate
-
     def find_financial_duplicate(self, payload):
         # try_extract_from_body usa o id da conta existente na nota de duplicidade.
         return {"id": 999} if self.duplicate else None

@@ -311,7 +311,7 @@ export default function Emails() {
   return (
     <div className="flex flex-col h-full">
       <div className="h-0.5 bg-linear-to-r from-brand to-brand-dark" />
-      <div className="px-6 py-4 border-b border-slate-200 bg-white flex items-center justify-between">
+      <div className="px-6 py-2 border-b border-slate-200 bg-white flex items-center justify-between">
         <div>
           <h1 className="text-base font-semibold text-slate-800">Recebimento de e-mails</h1>
           <p className="text-xs text-gray-500 mt-0.5">
@@ -354,7 +354,7 @@ export default function Emails() {
         </div>
       </div>
 
-      <div className="flex-1 overflow-y-auto px-6 py-5">
+      <div className="flex-1 overflow-y-auto px-6 py-3">
         {error && (
           <Alert variant="error" className="mb-4">
             <strong>Erro:</strong> {error}
@@ -391,7 +391,7 @@ export default function Emails() {
           </Alert>
         )}
 
-        <div className="grid grid-cols-7 gap-3 mb-5">
+        <div className="grid grid-cols-7 gap-3 mb-3">
           {[
             {
               icon: Mail,
@@ -463,18 +463,18 @@ export default function Emails() {
                 onClick={() => handleCardFilter(cardId, filter)}
                 className={`metric-card w-full text-left cursor-pointer select-none transition-all hover:shadow-md hover:scale-[1.01] ${cardRing}`}
               >
-                <div className={`flex items-center gap-1.5 text-xs mb-1 ${labelCls}`}>
-                  <Icon size={13} className={tone.fg} />
+                <div className={`flex items-center gap-1.5 text-xs mb-0.5 ${labelCls}`}>
+                  <Icon size={12} className={tone.fg} />
                   {label}
                 </div>
-                <div className={`text-2xl font-semibold ${tone.fg}`}>{value}</div>
+                <div className={`text-xl font-semibold ${tone.fg}`}>{value}</div>
                 <div className="text-xs text-gray-500">{sub}</div>
               </button>
             );
           })}
         </div>
 
-        <div className="flex gap-2 mb-4">
+        <div className="flex gap-2 mb-3">
           <div className="relative w-90 max-w-full">
             <input
               id="emails-search"
@@ -548,7 +548,7 @@ export default function Emails() {
             onSort={() => undefined}
             gridId="emails"
             enableColumnManagement
-            maxBodyHeight="62vh"
+            maxBodyHeight="68vh"
             loading={loading}
             emptyMessage={loading ? 'Buscando registros…' : 'Nenhum e-mail encontrado com os filtros aplicados'}
             ariaLabel="Recebimento de e-mails"
