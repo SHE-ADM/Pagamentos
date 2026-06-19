@@ -241,13 +241,28 @@ Alvo: **WCAG 2.1 Nível AA** em todas as telas. Regras práticas:
   `wcag2a/2aa/21a/21aa`). Todo componente/página relevante ganha um `*.a11y.test.tsx` com
   `expect(await axe(container)).toHaveNoViolations()`. Páginas com serviços mockam os
   serviços (ver `pages/Consulta.a11y.test.tsx`, `pages/Emails.a11y.test.tsx`).
-- **Contraste é travado por teste** em `tests/contrast.a11y.test.ts`: lê os tokens reais das
-  variáveis `--color-*` do bloco `@theme` em `src/index.css` (fonte de verdade v4 CSS-first;
-  parse via regex do arquivo) e falha se algum par cair abaixo do mínimo AA. Cobre a lacuna do
-  axe em **jsdom**, que **não avalia `color-contrast`** (regra desligada em `tests/axe.ts`).
-- **Limitação conhecida (follow-up)**: contraste sob render real só por axe em navegador
-  (Lighthouse/Playwright). O Lighthouse roda em Chrome e pega o que o jsdom não pega
-  (contraste real, ordem de foco, autofill) — usar para auditoria periódica.
+- **Contraste é travado por teste** em **dois guardas** que compensam o axe em **jsdom** não
+  avaliar `color-contrast` (regra desligada em `tests/axe.ts`):
+  - `tests/contrast.a11y.test.ts` — pares dos **tokens do projeto** (`loginGreen-*`, `status-*`),
+    lendo os `--color-*` do bloco `@theme` em `src/index.css` (fonte de verdade v4 CSS-first;
+    parse via regex) e falhando abaixo do mínimo AA.
+  - `tests/contrast-usage.a11y.test.ts` — pares das **cores default do Tailwind em uso** como
+    texto/ícone (`gray/slate/zinc/amber/orange…`) sobre seus fundos reais. Mantém um array
+    `COMPLIANT` (asserção dura, não regride) e um padrão de **ratchet** documentado: uma nova
+    cor de baixo contraste vai para um `KNOWN_VIOLATIONS` verificado com `it.fails` (suíte segue
+    verde, dívida visível) e, ao corrigir, sobe para `COMPLIANT`. Texto AA ≥4.5:1 · ícone/UI ≥3:1;
+    ao introduzir cor default escura, **subir o tom** (ex.: `*-400`→`*-500`/`amber-600`) em vez de
+    relaxar o threshold.
+- **Camada de acessibilidade em NAVEGADOR REAL** (Playwright + `@axe-core/playwright`) — cobre o
+  que o jsdom não vê: contraste sob render efetivo, ordem de foco e autofill. Config em
+  `playwright.config.ts`, specs em `e2e/*.a11y.e2e.ts` (`public-auth` = login/forgot/reset sem
+  login; `protected` = `/consulta`/`/emails`/`/erros` atrás de `A11Y_TEST_EMAIL`/`A11Y_TEST_PASSWORD`,
+  pulado sem credencial), helper `e2e/axe.ts` (tags AA). Scripts `test:e2e`/`test:e2e:headed`. Os
+  specs **não** rodam no `npm test` (runner separado, fora do `tsconfig`/ESLint — `e2e/` está nos
+  `ignores`). Ver `e2e/README.md`. O **workflow `.github/workflows/a11y.yml`** roda a camada a cada
+  PR/push na `Features` (runner `ubuntu-latest`, Chromium provisionado). **Não rodar `npm run test:e2e`
+  no sandbox do agente** — o renderer do Chromium crasha ao montar a SPA completa (limite de recursos
+  do ambiente, não do código); validar na máquina do usuário ou no CI.
 
 ---
 
@@ -347,6 +362,21 @@ Scripts da raiz: `npm run dev` (sobe **flask+vite+api+portal** em paralelo via
 (`dev:flask` = `py -3 server/app.py`); requer Python com `pdfplumber` no PATH. Para
 subir só os apps Node, use os `dev:vite|dev:api|dev:portal` individuais.
 
+Acessibilidade em navegador (Playwright + axe) — **não** roda no `npm test`; runner
+separado em `apps/frontend-vite` (sobe o Vite dev sozinho via `webServer`):
+
+```powershell
+cd apps\frontend-vite
+npx playwright install chromium      # uma vez (baixa o navegador)
+npm run test:e2e                     # todas (protegidas pulam sem credencial)
+npm run test:e2e -- public-auth      # só login/forgot/reset (sem login)
+npm run test:e2e:headed              # com janela do navegador
+```
+
+Para escanear as rotas protegidas, exporte `A11Y_TEST_EMAIL`/`A11Y_TEST_PASSWORD` (usuário de
+teste no Supabase). No CI, o workflow `.github/workflows/a11y.yml` roda isso a cada PR/push na
+`Features`. **Não executar daqui (sandbox do agente)** — o renderer crasha na SPA completa.
+
 Leitura de e-mails:
 
 ```powershell
@@ -431,7 +461,7 @@ apps/frontend-vite/src/components/
 │   ├── DataGrid.tsx           # grid sobre TanStack Table v8 (+ DataGrid.test.tsx) — ver seção própria
 │   └── dataGrid.variants.ts   # cva por slot (header/row/cell/skeleton/empty/pin/resize/grip/densidade) default|silver
 ├── AuthLayout.tsx             # (gradient) wrapper full-page para Forgot/Reset
-├── AttachmentViewer.tsx       # visualizador de PDF (signed URL do Storage) em iframe/modal
+├── AttachmentViewer.tsx       # visualizador de PDF (signed URL do Storage) em <dialog> nativo (showModal: role/foco/trap/Esc nativos) + iframe
 ├── Layout.tsx (+ Layout.test.tsx)   # sidebar; navLink = cva local (estado active)
 ├── ProtectedRoute.tsx
 ├── StatusBadge.tsx (+ StatusBadge.test.tsx)   # componente; variantes em statusBadge.variants.ts
@@ -474,8 +504,10 @@ explicando por que um e-mail ficou em `falha` (error), `pendente` (warning) ou `
 (info); reusa `getFailureReason.ts` para o caso `falha`).
 
 Infra de teste a11y em `tests/`: `setup.ts` (matcher `toHaveNoViolations`), `axe.ts`
-(runner AA + `color-contrast` desligado) e `contrast.a11y.test.ts` (guarda de contraste
-dos tokens). Ver regra mandatória 6.
+(runner AA + `color-contrast` desligado), `contrast.a11y.test.ts` (guarda de contraste
+dos tokens) e `contrast-usage.a11y.test.ts` (guarda das cores default do Tailwind em uso,
+com ratchet `it.fails`). Camada de navegador em `e2e/` (Playwright + axe). Ver regra
+mandatória 6.
 
 ### Guia de cores — paleta `loginGreen` (`@theme` em `apps/frontend-vite/src/index.css`)
 
