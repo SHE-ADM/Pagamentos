@@ -8,7 +8,9 @@ import reactRefresh from 'eslint-plugin-react-refresh';
 // `tsconfigRootDir` ancora o parser e elimina o erro
 // "Parsing error: No tsconfigRootDir was set" nos componentes .tsx.
 export default tseslint.config(
-  { ignores: ['dist', 'coverage'] },
+  // e2e/ e playwright.config.ts ficam fora do lint type-aware: são um runner
+  // separado (Playwright), não entram no tsconfig do app e são validados ao rodar.
+  { ignores: ['dist', 'coverage', 'e2e', 'playwright.config.ts'] },
   {
     files: ['**/*.{ts,tsx}'],
     extends: [js.configs.recommended, ...tseslint.configs.recommendedTypeChecked],
