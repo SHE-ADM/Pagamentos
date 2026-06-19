@@ -413,7 +413,7 @@ export default function Consulta() {
       <div className="px-6 py-4 border-b border-slate-200 bg-white flex items-center justify-between">
         <div>
           <h1 className="text-base font-semibold text-slate-800">Consulta de movimentações</h1>
-          <p className="text-xs text-slate-400 mt-0.5">Controle de contas a pagar</p>
+          <p className="text-xs text-slate-500 mt-0.5">Controle de contas a pagar</p>
         </div>
         <div className="flex gap-2">
           <button onClick={() => exportCsv(rows)} className="btn" disabled={!rows.length}>
@@ -480,7 +480,7 @@ export default function Consulta() {
                   )}
                   <div className={`text-base font-semibold leading-tight ${valueCls}`}>
                     {fmt(value)}
-                    <span className="text-sm font-normal text-slate-400 ml-1">conta(s)</span>
+                    <span className="text-sm font-normal text-slate-500 ml-1">conta(s)</span>
                   </div>
                   <div className="text-base text-slate-500 truncate">{label}</div>
                 </div>
@@ -490,7 +490,7 @@ export default function Consulta() {
         </div>
 
         <div className="relative bg-white rounded-xl shadow-xs border border-slate-100 p-4 mb-4">
-          <span className="absolute left-4 top-2 text-xs uppercase tracking-widest text-slate-400">
+          <span className="absolute left-4 top-2 text-xs uppercase tracking-widest text-slate-500">
             Filtros
           </span>
           <div className="flex gap-2 flex-wrap pt-4">
@@ -512,7 +512,7 @@ export default function Consulta() {
                   type="button"
                   aria-label="Limpar busca"
                   onClick={() => sf('supplier', '')}
-                  className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600"
+                  className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-500 hover:text-slate-600"
                 >
                   <X size={14} />
                 </button>
@@ -591,7 +591,7 @@ export default function Consulta() {
                                 e.stopPropagation();
                                 setSel(null);
                               }}
-                              className="absolute right-3 top-3 flex h-7 w-7 items-center justify-center rounded-full text-slate-400 hover:bg-slate-200/60 hover:text-slate-600 transition-colors"
+                              className="absolute right-3 top-3 flex h-7 w-7 items-center justify-center rounded-full text-slate-500 hover:bg-slate-200/60 hover:text-slate-600 transition-colors"
                               title="Fechar"
                             >
                               <X size={15} />
@@ -644,7 +644,7 @@ export default function Consulta() {
                                     Math.floor(i / 2) % 2 === 0 ? 'bg-slate-50/30' : 'bg-white'
                                   }`}
                                 >
-                                  <dt className="w-36 shrink-0 text-slate-400 text-xs">{k}</dt>
+                                  <dt className="w-36 shrink-0 text-slate-500 text-xs">{k}</dt>
                                   <dd className="text-slate-700 text-xs break-all">{v ?? '—'}</dd>
                                 </div>
                               ))}
