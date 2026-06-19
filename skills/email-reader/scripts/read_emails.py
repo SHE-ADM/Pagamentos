@@ -454,10 +454,6 @@ class SupabaseControl:
             log.warning(f"Falha na checagem de duplicidade por nome (RPC): {e}")
             return None
 
-    def financial_duplicate_exists(self, payload: dict) -> bool:
-        """Compat: True se ja existe documento equivalente (ver find_financial_duplicate)."""
-        return self.find_financial_duplicate(payload) is not None
-
     def update_financial(self, record_id, fields: dict) -> bool:
         """PATCH de uma conta existente — ex.: atualizar vencimento/boleto de uma
         guia reemitida para os dados de pagamento mais recentes. Ignora campos None."""

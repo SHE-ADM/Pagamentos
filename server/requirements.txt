@@ -16,3 +16,7 @@ Pillow~=12.2
 # Extração via Claude API + montagem de CSV
 anthropic~=0.105.2
 pandas~=3.0
+
+# Driver Firebird 5 — skill cobranca-vencidos (db_firebird.py). Requer o Firebird
+# Client nativo instalado no servidor; db_firebird cai para firebirdsql se ausente.
+fdb~=2.0.4

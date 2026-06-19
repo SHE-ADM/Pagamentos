@@ -1,7 +1,6 @@
 import { defineConfig } from 'vitest/config';
 import react, { reactCompilerPreset } from '@vitejs/plugin-react';
 import babel from '@rolldown/plugin-babel';
-import tsconfigPaths from 'vite-tsconfig-paths';
 
 // Proxy /api → backend Flask local (server/app.py). Evita CORS no dev.
 // A leitura de e-mails (POST /api/emails/read) é servida diretamente pelo
@@ -16,13 +15,16 @@ export default defineConfig({
     // embutido em react/compiler-runtime); faz "bail out" seguro em código incompatível
     // (ex.: @tanstack/react-table no DataGrid).
     babel({ presets: [reactCompilerPreset()] }),
-    tsconfigPaths(),
   ],
-  // Força uma ÚNICA cópia do React no bundle/teste: o monorepo ainda tem react@18
-  // hoisted na raiz (puxado pelo next dos apps Next), e libs vizinhas (@dnd-kit etc.)
-  // dariam dedupe para ele — gerando dois React. `dedupe` resolve tudo para o react 19
-  // do frontend-vite. Mesmo padrão já usado em apps/portal-next.
   resolve: {
+    // Resolução nativa dos paths do tsconfig (Vite 8) — substitui o plugin
+    // `vite-tsconfig-paths`, que ficou redundante (o Vite 8 resolve `paths`
+    // nativamente) e pesava no build (alerta PLUGIN_TIMINGS do Rolldown).
+    tsconfigPaths: true,
+    // Defensivo: garante uma ÚNICA cópia do React no bundle/teste. Hoje o monorepo
+    // está unificado em react@19.2.7 (confirmado por `npm ls react` — tudo `deduped`),
+    // então o dedupe não corrige divergência ativa; fica como rede de segurança contra
+    // um futuro transitivo react@18 puxado por dependência vizinha (@dnd-kit etc.).
     dedupe: ['react', 'react-dom'],
   },
   server: {

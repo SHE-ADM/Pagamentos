@@ -410,11 +410,8 @@ export default function Consulta() {
     <div className="flex flex-col h-full">
       {/* Barra superior em gradiente (2px) — acento de marca */}
       <div className="h-0.5 bg-linear-to-r from-brand to-brand-dark" />
-      <div className="px-6 py-4 border-b border-slate-200 bg-white flex items-center justify-between">
-        <div>
-          <h1 className="text-base font-semibold text-slate-800">Consulta de movimentações</h1>
-          <p className="text-xs text-slate-500 mt-0.5">Controle de contas a pagar</p>
-        </div>
+      <div className="px-6 py-1 border-b border-slate-200 bg-white flex items-center justify-between">
+        <h1 className="text-sm font-semibold text-slate-800">Consulta de movimentações</h1>
         <div className="flex gap-2">
           <button onClick={() => exportCsv(rows)} className="btn" disabled={!rows.length}>
             <Download size={14} /> Exportar página ({rows.length})
@@ -431,7 +428,7 @@ export default function Consulta() {
         </div>
       </div>
 
-      <div className="flex-1 overflow-y-auto px-6 py-5">
+      <div className="flex-1 overflow-y-auto px-6 py-3">
         {error && (
           <Alert variant="error" className="mb-4">
             <strong>Erro:</strong> {error}
@@ -445,7 +442,7 @@ export default function Consulta() {
           </Alert>
         )}
 
-        <div className="flex gap-3 mb-5 flex-wrap">
+        <div className="flex gap-2 mb-2 flex-wrap">
           {cards.map(({ icon: Icon, label, value, fmt, amount, danger, success, muted, cardId, onCardClick }) => {
             const isActive = !!cardId && activeCard === cardId;
             const borderLeft = danger ? 'border-l-status-error-solid' : success ? 'border-l-status-success-fg' : 'border-l-brand';
@@ -467,102 +464,97 @@ export default function Consulta() {
                 tabIndex={onCardClick ? 0 : undefined}
                 onClick={onCardClick}
                 onKeyDown={onCardClick ? (e: React.KeyboardEvent) => { if (e.key === 'Enter' || e.key === ' ') onCardClick(); } : undefined}
-                className={`flex-1 min-w-[160px] flex items-center gap-3 rounded-xl shadow-xs border border-slate-100 border-l-4 px-4 py-3 animate-fade-in-up transition-all ${borderLeft} ${cardBg} ${interactive}`}
+                className={`flex-1 min-w-[140px] flex items-center gap-2 rounded-lg p-2 border-l-2 shadow-xs hover:shadow-sm transition-shadow animate-fade-in-up ${borderLeft} ${cardBg} ${interactive}`}
               >
-                <div className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-full ${iconCls}`}>
-                  <Icon size={18} />
+                <div className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-full ${iconCls}`}>
+                  <Icon size={14} />
                 </div>
                 <div className="min-w-0">
                   {amount != null && (
-                    <div className={`text-2xl font-bold leading-tight truncate ${valueCls}`}>
+                    <div className={`text-xl font-semibold leading-tight truncate ${valueCls}`}>
                       {fmtMoney(amount)}
                     </div>
                   )}
-                  <div className={`text-base font-semibold leading-tight ${valueCls}`}>
+                  <div className={`text-lg leading-tight ${valueCls}`}>
                     {fmt(value)}
-                    <span className="text-sm font-normal text-slate-500 ml-1">conta(s)</span>
+                    <span className="text-xs font-normal text-slate-500 ml-1">conta(s)</span>
                   </div>
-                  <div className="text-base text-slate-500 truncate">{label}</div>
+                  <div className="text-xs text-slate-500 truncate">{label}</div>
                 </div>
               </div>
             );
           })}
         </div>
 
-        <div className="relative bg-white rounded-xl shadow-xs border border-slate-100 p-4 mb-4">
-          <span className="absolute left-4 top-2 text-xs uppercase tracking-widest text-slate-500">
-            Filtros
-          </span>
-          <div className="flex gap-2 flex-wrap pt-4">
-            <div className="relative w-90 max-w-full">
-              <input
-                id="consulta-supplier"
-                name="consulta-supplier"
-                aria-label="Buscar por fornecedor, CNPJ, número do documento, assunto, remetente ou e-mail do fornecedor"
-                className="input w-full pr-8"
-                placeholder="Fornecedor, CNPJ, Nº doc, assunto, remetente ou e-mail…"
-                value={f.supplier}
-                onChange={(e) => sf('supplier', e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter') handleSearch();
-                }}
-              />
-              {f.supplier && (
-                <button
-                  type="button"
-                  aria-label="Limpar busca"
-                  onClick={() => sf('supplier', '')}
-                  className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-500 hover:text-slate-600"
-                >
-                  <X size={14} />
-                </button>
-              )}
-            </div>
-            <select id="consulta-doc-type" name="consulta-doc-type" aria-label="Filtrar por tipo de documento" className="input w-40" value={f.docType} onChange={(e) => sf('docType', e.target.value)}>
-              <option value="">Tipo Documento</option>
-              {['darf','das','dae','dam / duam','gare','gnre','gps','gru','iss','iptu','ipva','itbi','pix','tributo','boleto','cte','nfe','nfse','recibo','seguro','outro'].map((t) => (
-                <option key={t}>{t}</option>
-              ))}
-            </select>
-            <select id="consulta-payment-method" name="consulta-payment-method" aria-label="Filtrar por tipo de pagamento" className="input w-36" value={f.paymentMethod} onChange={(e) => sf('paymentMethod', e.target.value)}>
-              <option value="">Tipo Pagamento</option>
-              {['boleto','pix','ted','cartão','depósito','duplicata','bancário','carteira','vale','crédito','débito','dinheiro','transferência','cheque','outro'].map((m) => (
-                <option key={m}>{m}</option>
-              ))}
-            </select>
-            <select id="consulta-status" name="consulta-status" aria-label="Filtrar por situação" className="input w-32" value={f.status} onChange={(e) => sf('status', e.target.value)}>
-              <option value="">Situação</option>
-              {['pendente', 'a vencer', 'vencido', 'prorrogado', 'baixado', 'protestado', 'cartório', 'pago', 'cancelado', 'falha'].map((s) => (
-                <option key={s}>{s}</option>
-              ))}
-            </select>
+        <div className="flex gap-2 flex-wrap mb-2">
+          <div className="relative w-90 max-w-full">
             <input
-              id="consulta-date-from"
-              name="consulta-date-from"
-              aria-label="Vencimento inicial"
-              type="date"
-              className="input w-36"
-              value={f.dateFrom}
-              onChange={(e) => sf('dateFrom', e.target.value)}
-              title="Vencimento de"
+              id="consulta-supplier"
+              name="consulta-supplier"
+              aria-label="Buscar por fornecedor, CNPJ, número do documento, assunto, remetente ou e-mail do fornecedor"
+              className="input w-full pr-8"
+              placeholder="Fornecedor, CNPJ, Nº doc, assunto, remetente ou e-mail…"
+              value={f.supplier}
+              onChange={(e) => sf('supplier', e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') handleSearch();
+              }}
             />
-            <input
-              id="consulta-date-to"
-              name="consulta-date-to"
-              aria-label="Vencimento final"
-              type="date"
-              className="input w-36"
-              value={f.dateTo}
-              onChange={(e) => sf('dateTo', e.target.value)}
-              title="Vencimento até"
-            />
-            <button onClick={handleSearch} className="btn btn-primary w-24">
-              <Search size={14} /> Buscar
-            </button>
-            <button onClick={handleClear} className="btn w-24 justify-center">
-              Limpar
-            </button>
+            {f.supplier && (
+              <button
+                type="button"
+                aria-label="Limpar busca"
+                onClick={() => sf('supplier', '')}
+                className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-500 hover:text-slate-600"
+              >
+                <X size={14} />
+              </button>
+            )}
           </div>
+          <select id="consulta-doc-type" name="consulta-doc-type" aria-label="Filtrar por tipo de documento" className="input w-40" value={f.docType} onChange={(e) => sf('docType', e.target.value)}>
+            <option value="">Tipo Documento</option>
+            {['darf','das','dae','dam / duam','gare','gnre','gps','gru','iss','iptu','ipva','itbi','pix','tributo','boleto','cte','nfe','nfse','recibo','seguro','outro'].map((t) => (
+              <option key={t}>{t}</option>
+            ))}
+          </select>
+          <select id="consulta-payment-method" name="consulta-payment-method" aria-label="Filtrar por tipo de pagamento" className="input w-36" value={f.paymentMethod} onChange={(e) => sf('paymentMethod', e.target.value)}>
+            <option value="">Tipo Pagamento</option>
+            {['boleto','pix','ted','cartão','depósito','duplicata','bancário','carteira','vale','crédito','débito','dinheiro','transferência','cheque','outro'].map((m) => (
+              <option key={m}>{m}</option>
+            ))}
+          </select>
+          <select id="consulta-status" name="consulta-status" aria-label="Filtrar por situação" className="input w-32" value={f.status} onChange={(e) => sf('status', e.target.value)}>
+            <option value="">Situação</option>
+            {['pendente', 'a vencer', 'vencido', 'prorrogado', 'baixado', 'protestado', 'cartório', 'pago', 'cancelado', 'falha'].map((s) => (
+              <option key={s}>{s}</option>
+            ))}
+          </select>
+          <input
+            id="consulta-date-from"
+            name="consulta-date-from"
+            aria-label="Vencimento inicial"
+            type="date"
+            className="input w-36"
+            value={f.dateFrom}
+            onChange={(e) => sf('dateFrom', e.target.value)}
+            title="Vencimento de"
+          />
+          <input
+            id="consulta-date-to"
+            name="consulta-date-to"
+            aria-label="Vencimento final"
+            type="date"
+            className="input w-36"
+            value={f.dateTo}
+            onChange={(e) => sf('dateTo', e.target.value)}
+            title="Vencimento até"
+          />
+          <button onClick={handleSearch} className="btn btn-primary w-24">
+            <Search size={14} /> Buscar
+          </button>
+          <button onClick={handleClear} className="btn w-24 justify-center">
+            Limpar
+          </button>
         </div>
 
         <div className="card mb-2">
@@ -581,7 +573,7 @@ export default function Consulta() {
             onExportSelected={exportCsv}
             bulkStatusOptions={STATUS_OPTIONS}
             onBulkStatusChange={handleBulkStatusChange}
-            maxBodyHeight="62vh"
+            maxBodyHeight="74vh"
             loading={loading}
             emptyMessage={loading ? 'Buscando registros…' : 'Nenhum registro encontrado — ajuste os filtros e clique em Buscar'}
             renderDetail={(r) => (

@@ -13,6 +13,8 @@ const ResetPasswordPage = lazy(() => import('./pages/auth/ResetPasswordPage'));
 const Emails = lazy(() => import('./pages/Emails'));
 const Consulta = lazy(() => import('./pages/Consulta'));
 const Erros = lazy(() => import('./pages/Erros'));
+const CobrancaEnvios = lazy(() => import('./pages/cobranca/CobrancaEnvios'));
+const CobrancaErros = lazy(() => import('./pages/cobranca/CobrancaErros'));
 
 function RouteFallback() {
   return (
@@ -41,6 +43,9 @@ export default function App() {
                       <Route path="/emails" element={<Emails />} />
                       <Route path="/consulta" element={<Consulta />} />
                       <Route path="/erros" element={<Erros />} />
+                      <Route path="/cobranca/envios" element={<CobrancaEnvios />} />
+                      <Route path="/cobranca/erros" element={<CobrancaErros />} />
+
                     </Routes>
                   </Suspense>
                 </Layout>

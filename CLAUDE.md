@@ -5,8 +5,12 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## O que é este projeto
 
 `pagamentos` é um **pipeline financeiro de contas a pagar**, não um app CRUD comum.
-O fluxo central é: e-mail (IMAP) → download de PDF → extração via Claude API →
+O fluxo central (entrada) é: e-mail (IMAP) → download de PDF → extração via Claude API →
 gravação no Supabase → consulta/exportação pela interface web.
+
+Há também um **segundo pipeline (saída): cobrança de títulos vencidos** — lê o Firebird e
+**envia e-mails de cobrança por SMTP (Locaweb)**, com logs próprios. Ver "Pipeline de cobrança
+de vencidos (skill `cobranca-vencidos`)".
 
 > **Arquitetura: monorepo Sheild com backend híbrido.** Desde a reestruturação de
 > 2026-06-09, o projeto adota o monorepo `apps/* + packages/shared` (npm workspaces),
@@ -163,7 +167,11 @@ Escopo = área afetada: `login`, `email-reader`, `consulta`, `scheduler`, `migra
 ### 5 — Lint limpo e análise estática
 
 - **`npm run lint` na raiz deve passar com 0 erros e 0 warnings** em todos os workspaces
-  (cobre `frontend-vite`, `api-backend`, `portal-next` — cada um com seu `eslint.config.mjs`).
+  (cobre `frontend-vite`, `api-backend`, `portal-next` **e `packages/shared`** — cada um com
+  seu `eslint.config.mjs`). O `packages/shared` usa flat config type-aware **sem React**
+  (`@eslint/js` + `typescript-eslint` `recommendedTypeChecked`, `globals.node`, glob `**/*.ts`
+  para o próprio `eslint.config.mjs` ficar fora do lint type-aware) — binários resolvidos por
+  hoist. O shared **não** tem `prune` (ver nota do ts-prune abaixo).
 - **Versões de ESLint divergem por workspace (intencional):** `frontend-vite` usa **ESLint 10**
   (+ `typescript-eslint@8.61`); os apps Next ficam em **ESLint 9** porque o
   `eslint-config-next` depende de um `eslint-plugin-react` que quebra no ESLint 10 (`getFilename`
@@ -196,10 +204,14 @@ Escopo = área afetada: `login`, `email-reader`, `consulta`, `scheduler`, `migra
   extensão ESLint roda com cwd na raiz, não acha config e acusa "couldn't find an
   eslint.config file" / "No tsconfigRootDir was set" nos componentes. O `mode: auto` faz a
   extensão rodar com cwd em cada app.
-- **ts-prune (dead code / exports órfãos)**: `npm run prune` na raiz roda nos 3 workspaces
+- **ts-prune (dead code / exports órfãos)**: `npm run prune` na raiz roda nos **3 apps**
   e **deve reportar 0**. `ts-prune` está declarado só em `frontend-vite` (resolvido por
   hoist nos apps Next). Os apps Next ignoram os defaults do framework via
-  `--ignore "next.config|...|app.*(page|layout|route)"`. Export público intencional **sem
+  `--ignore "next.config|...|app.*(page|layout|route)"`. **`packages/shared` deliberadamente
+  NÃO tem `prune`**: sendo um pacote de barrel (biblioteca pura cuja API é consumida
+  cross-package via `@sheild/shared`), o ts-prune isolado reportaria **toda** export pública
+  como órfã (falso positivo). A cobertura de uso real vem do `prune` dos apps consumidores;
+  no shared fica só `lint` + `typecheck`. Export público intencional **sem
   consumidor** (scaffolding da camada CRUD ou contrato de tipo consumido por inferência —
   `getSupabaseAdmin`, `ApiResponse`/`ApiResponseMeta`, `ReaderSummary`/`TriggerReaderOptions`)
   leva `// ts-prune-ignore-next` na linha acima, documentando a intenção. Não deixar export
@@ -352,7 +364,7 @@ Dependências dos apps: `npm install` na **raiz** (workspaces — lockfile únic
 
 ```powershell
 # Tudo de uma vez: Flask (:8000) + os 3 apps Node (vite :5173, api :3000, portal :3002)
-npm run dev            # via concurrently — substitui os comandos abaixo
+npm run dev            # via concurrently — serviços falham de forma INDEPENDENTE (ver nota)
 
 # …ou individualmente, em terminais separados:
 npm run dev:flask      # backend Flask (:8000) — leitura de e-mails (py -3 server/app.py)
@@ -367,6 +379,12 @@ Scripts da raiz: `npm run dev` (sobe **flask+vite+api+portal** em paralelo via
 `npm run build:vite|build:api|build:portal`. O `dev` raiz **inclui o Flask**
 (`dev:flask` = `py -3 server/app.py`); requer Python com `pdfplumber` no PATH. Para
 subir só os apps Node, use os `dev:vite|dev:api|dev:portal` individuais.
+
+> **Nota de estabilidade do dev server (2026-06-19):** o `--kill-others-on-fail` foi
+> removido do script `dev` — cada serviço agora falha de forma independente. Antes, uma
+> falha do Flask (ex.: porta `:8000` ocupada de sessão anterior) derrubava o Vite junto.
+> **Para sessões de trabalho exclusivamente de frontend, prefira `npm run dev:vite`** —
+> o Vite sobe sem depender do Flask e não há risco de queda por serviços externos.
 
 Acessibilidade em navegador (Playwright + axe) — **não** roda no `npm test`; runner
 separado em `apps/frontend-vite` (sobe o Vite dev sozinho via `webServer`):
@@ -468,12 +486,26 @@ apps/frontend-vite/src/components/
 │   └── dataGrid.variants.ts   # cva por slot (header/row/cell/skeleton/empty/pin/resize/grip/densidade) default|silver
 ├── AuthLayout.tsx             # (gradient) wrapper full-page para Forgot/Reset
 ├── AttachmentViewer.tsx       # visualizador de PDF (signed URL do Storage) em <dialog> nativo (showModal: role/foco/trap/Esc nativos) + iframe
-├── Layout.tsx (+ Layout.test.tsx)   # sidebar; navLink = cva local (estado active)
+├── Layout.tsx (+ Layout.test.tsx)   # sidebar; navLink = cva local (estado active); menu em 5 grupos (ver abaixo)
 ├── ProtectedRoute.tsx
 ├── StatusBadge.tsx (+ StatusBadge.test.tsx)   # componente; variantes em statusBadge.variants.ts
 ├── statusBadge.variants.ts    # cva(badgeVariants) + resolveBadge + badgeLabel + mapas de tipo/status
 └── ExpandableText.tsx         # expansível "ver mais/ver menos" (+ ExpandableText.test.tsx)
 ```
+
+**Menu da sidebar (`Layout.tsx`) — 5 grupos** (cabeçalho `uppercase`; itens `breve` são
+`<span className="nav-link is-disabled">` com badge "breve", sem rota):
+
+| Grupo | Itens (rota / estado) |
+|---|---|
+| **Recebimentos** | E-mails (`/emails`) · Log de erros (`/erros`) |
+| **Envios** | E-mails (`/cobranca/envios`) · Log de erros (`/cobranca/erros`) — logs da cobrança automática de vencidos |
+| **Contas** | Gestão de contas (`/consulta`) · Cadastro de contas (`breve`) |
+| **Cadastros** | Cadastro de fornecedores (`breve`) |
+| **Análise** | Dashboard (`breve`) |
+
+> "Gestão de contas" aponta para `/consulta` (só o rótulo difere da rota). Ao promover um
+> item `breve` a ativo, troque o `<span … is-disabled>` por `<NavLink>` e remova o badge.
 
 Hooks em `src/hooks/`: `useContainerBreakpoint.ts` (faixa `sm`/`md`/`lg` pela largura
 **real do container** via `ResizeObserver` — não da janela; usado pelo `DataGrid` p/ ocultar
@@ -890,7 +922,7 @@ desescapa, colapsa espaços) para alimentar a extração — recupera "Fatura n�
 `document_type='fatura'` (keyword `fatura` em `_BODY_DOC_KEYWORDS`, fallback antes de
 `outro`). Prioridade segue **anexo → link → corpo**. O status da conta do corpo é **sempre
 `pendente`** — a baixa/atualização é feita pelo usuário, mesmo quando o corpo diz "pagamento
-realizado com sucesso". Dedup do corpo (`financial_duplicate_exists`) evita duplicar conta já
+realizado com sucesso". Dedup do corpo (`find_financial_duplicate`) evita duplicar conta já
 registrada. Testes: `tests/test_body_html_extraction.py`.
 
 **Fallbacks de campo (corpo E PDF — `build_financial_payload`):** `issue_date` vazio →
@@ -968,6 +1000,8 @@ faturas SIEG em `ignorado`; o handler A1 (baixar o boleto real) segue como melho
 | `/emails` | `Emails.tsx` | `email_control` + `financial_account_control` por `message_id` |
 | `/consulta` | `Consulta.tsx` | `financial_account_control` (paginado, filtros, CSV client-side) |
 | `/erros` | `Erros.tsx` | `email_processing_errors` |
+| `/cobranca/envios` | `cobranca/CobrancaEnvios.tsx` | `cobranca_envios_log` (ver "Pipeline de cobrança de vencidos") |
+| `/cobranca/erros` | `cobranca/CobrancaErros.tsx` | `cobranca_erros_log` |
 
 - `services/supabase.ts` — fetch direto REST, `Prefer: count=exact` + `Content-Range` para paginação.
   O total é parseado por `parsePaginationTotal` (resiliente): quando o PostgREST devolve a contagem
@@ -1059,12 +1093,22 @@ faturas SIEG em `ignorado`; o handler A1 (baixar o boleto real) segue como melho
   (Rolldown) o `manualChunks` é uma FUNÇÃO** (o objeto não é mais aceito) — um regex casa os
   pacotes exatos por segmento de `node_modules` (não pega `react-hook-form`/`lucide-react`/
   `@tanstack/react-table`). O `vite.config.ts` também tem `resolve.dedupe: ['react','react-dom']`
-  para garantir uma única cópia do React.
+  para garantir uma única cópia do React (hoje **defensivo** — `npm ls react` confirma o
+  monorepo unificado em react@19.2.7; mantido contra um futuro transitivo react@18).
+- **Resolução de `paths` do tsconfig é NATIVA do Vite 8** (`resolve.tsconfigPaths: true`) — o
+  plugin `vite-tsconfig-paths` foi **removido** (era redundante e pesava no build, alerta
+  `PLUGIN_TIMINGS` do Rolldown; o build caiu ~3.1s→1.3s). Os aliases `@/` e `@shared/` saem do
+  `tsconfig.json`. **Não reintroduzir** o plugin.
+- **`skipLibCheck: true` é obrigatório** nos 4 `tsconfig.json`: sem ele o `typecheck` quebra
+  com erros de tipos de **terceiros** não acionáveis — `@supabase/auth-js` (`webauthn.dom.d.ts`),
+  `@tanstack/table-core` (`ColumnMeta`) e os `.next/types/*` gerados pelo Next. Testado na
+  auditoria pós-upgrade (2026-06-19); **não remover**.
 
 ## Banco de dados (Supabase)
 
 Migrations em `supabase/migrations/`, aplicadas **manualmente no SQL Editor** em ordem
-numérica (`001` → `035`). Não há migration automática.
+numérica (`001` → `037`). Não há migration automática. (A `037` cria as tabelas de log da
+cobrança de vencidos — ver "Pipeline de cobrança de vencidos".)
 
 | Tabela | Propósito |
 |---|---|
@@ -1074,6 +1118,8 @@ numérica (`001` → `035`). Não há migration automática.
 | `supplier` | Fornecedores. Auto-criados pelo trigger, mas **cadastro PRESERVADO** (curadoria manual de `email`/`email2`/`email3`/`email4`) — **nunca truncar** em limpezas (ver "Limpeza / reset de dados"). Reconhecimento por **e-mail** em `email`/`email2`/`email3`/`email4` (migrations 023/027/028) — ver "Auto-resolução de fornecedor" |
 | `company` | Empresa pagadora (**cadastro**, tem campo `email`). Auto-resolvida pelo trigger `resolve_company_id` a partir de `payer_cnpj`/`payer_name`. **Preservada em limpezas** (ver abaixo) |
 | `status` | **Dimensão** de situação (`status_id`, `status_name`, `status_short_name`, `has_opened`/`has_closed`/`has_invoiced`). 10 linhas = domínio de `financial_account_control.status`. A trigger resolve `financial_account_control.status_id` por `status_name` (migration 035). **Cadastro/configuração — preservar em limpezas** |
+| `cobranca_envios_log` | Cobranças de vencidos **enviadas com sucesso** (migration 037). `document_id` (= TÍTULO no Firebird) **UNIQUE** = chave de deduplicação: `already_sent()` consulta aqui antes de enviar. Exibida em `/cobranca/envios`. Alvo de limpeza (dados de teste) |
+| `cobranca_erros_log` | **Falhas** da cobrança (migration 037), **sem UNIQUE** (reprocessável — o mesmo título pode falhar em execuções distintas). `error_type` ∈ (`email_ausente`, `email_invalido`, `smtp_falha`, `smtp_bloqueio`, `supabase_falha`, `firebird_falha`, `erro_inesperado`); `error_message` = motivo em linguagem leiga (exibido em `/cobranca/erros`), `error_detail` = traceback técnico. Alvo de limpeza |
 
 `financial_account_control.status` é a **coluna única de situação/ciclo de vida** (migration
 **034** fundiu o antigo `due_status` aqui). Default `pendente`; domínio pt-BR de **10 valores**
@@ -1141,7 +1187,8 @@ cadastro/configuração** — não são alimentadas pelo pipeline e nunca devem 
 - `financial_cost_center`
 
 **Alvos da limpeza** (truncar com `RESTART IDENTITY CASCADE`): `email_control`,
-`financial_account_control`, `email_processing_errors`, `audit_log` — mais o
+`financial_account_control`, `email_processing_errors`, `audit_log` — e, para os testes da
+cobrança de vencidos, `cobranca_envios_log` + `cobranca_erros_log` — mais o
 bucket **`attachments`** do Storage e o cache local (`data/pdfs_inbox`, `data/csv_output`).
 `supplier` **não** é mais alvo: embora seja auto-criado pelo trigger, acumula curadoria
 manual (e-mails `email2`/`email3`/`email4`) que seria perdida na truncagem; no
@@ -1152,6 +1199,64 @@ resolvendo `company_id`/`supplier_id` das novas contas.
 > **Storage:** `DELETE` direto em `storage.objects` é bloqueado (`protect_delete`). Esvaziar
 > o bucket via **Storage API** (`POST object/list/attachments` → `DELETE object/attachments`
 > com `{prefixes:[…]}`), usando `SUPABASE_SERVICE_KEY` do `.env` da raiz.
+
+## Pipeline de cobrança de vencidos (skill `cobranca-vencidos`)
+
+Segundo pipeline do projeto — **saída** (envio), paralelo ao de entrada (leitura de e-mails).
+Lê títulos vencidos no **Firebird**, monta um e-mail HTML e **envia por SMTP (Locaweb)**,
+registrando sucesso/falha no Supabase. Roda por `py -3` (Task Scheduler), **independente** do
+Flask/Next.
+
+```
+Firebird (VW_PSQ_FIN_REC_BAN + _004)  →  run.py  →  SMTP Locaweb (email-ssl.com.br)
+   títulos vencidos (STFI='VENCIDO',          │         To: cliente · Cc: representante
+   DTVC >= hoje-5)                            │
+                                              ├─ dedup: already_sent() consulta cobranca_envios_log (UNIQUE document_id)
+                                              ├─ sucesso → cobranca_envios_log
+                                              └─ falha   → cobranca_erros_log  →  UI /cobranca/erros
+```
+
+**Scripts** (`skills/cobranca-vencidos/scripts/`, importados como **módulos irmãos** via
+`sys.path` no próprio dir — a pasta tem hífen, inválido como pacote Python; mesmo padrão de
+`server/app.py` com `read_emails`):
+
+| Arquivo | Papel |
+|---|---|
+| `run.py` | Entry-point (`py -3 run.py [--dry-run]`). Loop por título com **rede de segurança** (`_process_titulo_safe`): falha de um e-mail **nunca** trava os demais. Throttle entre envios |
+| `db_firebird.py` | Conexão Firebird (driver **`fdb`**, fixado em `server/requirements.txt`) + `_QUERY` (UNION das views `VW_PSQ_FIN_REC_BAN` e `_004`). Linha **sem e-mail SEGUE** o fluxo (vira `email_ausente`); só descarta linha sem `document_id` |
+| `email_sender.py` | Monta e envia. **To primeiro; se o principal falhar, o Cc NÃO é enviado** (2 `sendmail` na mesma conexão). Conexão **nova por e-mail** |
+| `supabase_log.py` | `already_sent` (dedup), `log_envio_sucesso`, `log_envio_erro`, `fetch_company_smtp` |
+| `template.py` | HTML do e-mail (`render_html`) |
+
+**SMTP (não óbvio — não regredir):** remetente = `company.email` (`company_id=1` =
+`financeiro@otimotex.com.br`), **o mesmo mailbox do recebimento (IMAP)**. Por isso o envio
+**reaproveita as credenciais IMAP** do `.env`: host → `SMTP_HOST` ou `IMAP_HOST`
+(**`email-ssl.com.br`** — `smtp.locaweb.com.br` dá timeout nesta conta); senha → `SMTP_PASSWORD`
+ou **`IMAP_PASS`** (senha nunca no banco); porta 587 STARTTLS. `fetch_company_smtp` só lê colunas
+existentes (`email,legal_name,trade_name`) — a tabela `company` **não** tem colunas `smtp_*`.
+
+**Classificação de falha (regra de negócio):** `smtp_falha` = **instabilidade** (timeout,
+queda, 450/451/452) → o próximo run **retenta**; `smtp_bloqueio` = **negação** (auth 535, 421,
+5xx, destinatário recusado) → exige **ação humana** (limite de envios / conta bloqueada na
+Locaweb). `_classify_smtp_error` decide pelo código/exceção. Mensagens em `error_message` são
+**leigas** (coluna "Motivo" da UI); o técnico vai em `error_detail`.
+
+**`.env` (raiz):** `FB_HOST/FB_PORT/FB_DATABASE/FB_USER/FB_PASSWORD/FB_CHARSET`;
+`DEV_MODE=true` + `DEV_OVERRIDE_EMAIL` (To de teste) + `DEV_OVERRIDE_CC_EMAIL` (Cc de teste);
+`COBRANCA_SEND_DELAY_SECONDS` (throttle anti-bloqueio Locaweb, default 3s, faixa 2-5, `0` desliga).
+Em **DEV_MODE** todos os envios vão para as caixas de teste (To→`DEV_OVERRIDE_EMAIL`,
+Cc→`DEV_OVERRIDE_CC_EMAIL`); em produção, To/Cc reais do Firebird. **Ainda em teste — não entrou
+em produção.** Spec completa: `skills/cobranca-vencidos/references/env_reference.md`.
+
+**Entregabilidade (DNS, fora do código):** SPF ✅ (`include:_spf.locaweb.com.br`); DMARC ⚠️
+`p=none`; **DKIM ❌ a configurar** no painel Locaweb (melhora caixa-de-entrada em Gmail/Outlook).
+O envio **funciona** sem DKIM (SPF já autentica); é melhoria, não pré-requisito.
+
+**Frontend:** rotas lazy `/cobranca/envios` e `/cobranca/erros` (`App.tsx`), páginas
+`pages/cobranca/CobrancaEnvios.tsx` + `CobrancaErros.tsx` sobre o **`DataGrid` do projeto**
+(colunas em `cobrancaColumns.ts` no `ColumnDef<T>` de `useGridColumns`, **não** o do TanStack),
+serviço `services/cobrancaService.ts` (REST direto, paginado), tipos `types/cobranca.ts`
+(`ErrorType` + `ERROR_TYPE_LABEL` — **não** ficam em `@sheild/shared`). Sidebar: grupo **Envios**.
 
 ## Windows Task Scheduler
 

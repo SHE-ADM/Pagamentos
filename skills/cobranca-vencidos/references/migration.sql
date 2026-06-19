@@ -1,0 +1,5 @@
+-- Este arquivo é um alias. A migration oficial está em:
+--   supabase/migrations/037_create_cobranca_logs.sql
+--
+-- Executar APENAS a migration oficial no SQL Editor do Supabase.
+-- Não executar este arquivo diretamente.

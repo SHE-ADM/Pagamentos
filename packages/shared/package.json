@@ -10,7 +10,8 @@
     "./schemas": "./src/schemas/index.ts"
   },
   "scripts": {
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint ."
   },
   "dependencies": {
     "zod": "^4.4.3"

@@ -2,7 +2,7 @@
 import { useState, type ReactNode } from 'react';
 import { NavLink } from 'react-router-dom';
 import { cva } from 'class-variance-authority';
-import { Mail, Wallet, BarChart2, Edit3, Receipt, AlertTriangle, LogOut, Menu, X } from 'lucide-react';
+import { Mail, Wallet, BarChart2, FilePlus, Building2, Receipt, AlertTriangle, LogOut, Menu, X } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
 import { cn } from '../lib/cn';
 
@@ -67,29 +67,56 @@ export default function Layout({ children }: Readonly<{ children: ReactNode }>) 
         </div>
 
         <nav className="flex-1 px-2 py-3 space-y-0.5">
+          {/* Grupo 1 — Recebimentos */}
           <p className="px-3 pt-1 pb-1.5 text-xs font-bold tracking-widest text-slate-400 uppercase">
-            Ativo
+            Recebimentos
           </p>
           <NavLink to="/emails" onClick={closeNav} className={({ isActive }) => navLink({ active: isActive })}>
             <Mail size={16} /> E-mails
           </NavLink>
-          <NavLink to="/consulta" onClick={closeNav} className={({ isActive }) => navLink({ active: isActive })}>
-            <Wallet size={16} /> Consulta contas
-          </NavLink>
           <NavLink to="/erros" onClick={closeNav} className={({ isActive }) => navLink({ active: isActive })}>
-            <AlertTriangle size={16} /> Log de Erros
+            <AlertTriangle size={16} /> Log de erros
           </NavLink>
 
+          {/* Grupo 2 — Envios */}
           <p className="px-3 pt-4 pb-1.5 text-xs font-bold tracking-widest text-slate-400 uppercase">
-            Em breve
+            Envios
+          </p>
+          <NavLink to="/cobranca/envios" onClick={closeNav} className={({ isActive }) => navLink({ active: isActive })}>
+            <Mail size={16} /> E-mails
+          </NavLink>
+          <NavLink to="/cobranca/erros" onClick={closeNav} className={({ isActive }) => navLink({ active: isActive })}>
+            <AlertTriangle size={16} /> Log de erros
+          </NavLink>
+
+          {/* Grupo 3 — Contas */}
+          <p className="px-3 pt-4 pb-1.5 text-xs font-bold tracking-widest text-slate-400 uppercase">
+            Contas
+          </p>
+          <NavLink to="/consulta" onClick={closeNav} className={({ isActive }) => navLink({ active: isActive })}>
+            <Wallet size={16} /> Gestão de contas
+          </NavLink>
+          <span className="nav-link is-disabled">
+            <FilePlus size={16} /> Cadastro de contas
+            <span className="ml-auto text-xs bg-slate-800 text-slate-300 rounded-sm px-1">breve</span>
+          </span>
+
+          {/* Grupo 4 — Cadastros */}
+          <p className="px-3 pt-4 pb-1.5 text-xs font-bold tracking-widest text-slate-400 uppercase">
+            Cadastros
           </p>
           <span className="nav-link is-disabled">
-            <Edit3 size={16} /> Edição de contas
-            <span className="ml-auto text-xs bg-slate-800 text-slate-300 rounded-sm px-1">soon</span>
+            <Building2 size={16} /> Cadastro de fornecedores
+            <span className="ml-auto text-xs bg-slate-800 text-slate-300 rounded-sm px-1">breve</span>
           </span>
+
+          {/* Grupo 5 — Análise */}
+          <p className="px-3 pt-4 pb-1.5 text-xs font-bold tracking-widest text-slate-400 uppercase">
+            Análise
+          </p>
           <span className="nav-link is-disabled">
             <BarChart2 size={16} /> Dashboard
-            <span className="ml-auto text-xs bg-slate-800 text-slate-300 rounded-sm px-1">soon</span>
+            <span className="ml-auto text-xs bg-slate-800 text-slate-300 rounded-sm px-1">breve</span>
           </span>
         </nav>
 

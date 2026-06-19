@@ -24,15 +24,17 @@ function renderLayout() {
 describe('Layout (sidebar)', () => {
   it('renderiza os links ativos e o conteúdo filho', () => {
     renderLayout();
-    expect(screen.getByText('E-mails')).toBeInTheDocument();
-    expect(screen.getByText('Consulta contas')).toBeInTheDocument();
+    // "E-mails" e "Log de erros" aparecem tanto em Recebimentos quanto em Envios (ambos ativos)
+    expect(screen.getAllByText('E-mails').length).toBeGreaterThan(0);
+    expect(screen.getByText('Gestão de contas')).toBeInTheDocument();
+    expect(screen.getAllByText('Log de erros').length).toBeGreaterThan(0);
     expect(screen.getByText('conteúdo')).toBeInTheDocument();
   });
 
-  it('exibe iniciais do e-mail e badge "soon" nos itens em breve', () => {
+  it('exibe iniciais do e-mail e badge "breve" nos itens em breve', () => {
     renderLayout();
     expect(screen.getByText('SU')).toBeInTheDocument(); // iniciais de "suporte@..."
-    expect(screen.getAllByText('soon').length).toBeGreaterThan(0);
+    expect(screen.getAllByText('breve').length).toBeGreaterThan(0);
   });
 
   it('aciona signOut ao clicar em sair', async () => {
