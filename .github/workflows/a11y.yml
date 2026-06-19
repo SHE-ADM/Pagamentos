@@ -1,0 +1,77 @@
+name: Acessibilidade (a11y)
+
+# Roda a camada de acessibilidade em navegador real (Playwright + axe) do
+# frontend-vite a cada PR e em push na branch de desenvolvimento. Resolve o
+# "teto" do ambiente local: o runner do GitHub tem Chromium com recursos
+# normais, então o render pesado da SPA não derruba o renderer.
+on:
+  pull_request:
+    paths:
+      - 'apps/frontend-vite/**'
+      - 'packages/shared/**'
+      - '.github/workflows/a11y.yml'
+  push:
+    branches: [Features]
+    paths:
+      - 'apps/frontend-vite/**'
+      - 'packages/shared/**'
+      - '.github/workflows/a11y.yml'
+
+# Cancela execuções antigas do mesmo ref quando um novo push chega.
+concurrency:
+  group: a11y-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  e2e:
+    name: axe em navegador (Chromium)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configurar Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      # Lockfile único na raiz do monorepo (npm workspaces).
+      - name: Instalar dependências
+        run: npm ci
+
+      # Variáveis do Vite: o supabaseClient lança se VITE_SUPABASE_* faltarem.
+      # As páginas públicas (login/forgot/reset) não chamam o Supabase, então
+      # valores placeholder bastam. Para escanear as rotas protegidas, defina os
+      # secrets reais (VITE_SUPABASE_URL, VITE_SUPABASE_ANON_KEY).
+      - name: Configurar .env do frontend-vite
+        working-directory: apps/frontend-vite
+        run: |
+          echo "VITE_SUPABASE_URL=${{ secrets.VITE_SUPABASE_URL || 'https://placeholder.supabase.co' }}" >> .env
+          echo "VITE_SUPABASE_ANON_KEY=${{ secrets.VITE_SUPABASE_ANON_KEY || 'anon-key-placeholder' }}" >> .env
+
+      # Baixa o Chromium + libs de sistema necessárias (--with-deps).
+      - name: Instalar Chromium do Playwright
+        working-directory: apps/frontend-vite
+        run: npx playwright install --with-deps chromium
+
+      # O playwright.config sobe o Vite dev sozinho (webServer). Em CI,
+      # process.env.CI=true → forbidOnly e sem reuseExistingServer.
+      # As rotas protegidas são puladas se os secrets de login não existirem.
+      - name: Rodar testes de acessibilidade (Playwright + axe)
+        working-directory: apps/frontend-vite
+        env:
+          A11Y_TEST_EMAIL: ${{ secrets.A11Y_TEST_EMAIL }}
+          A11Y_TEST_PASSWORD: ${{ secrets.A11Y_TEST_PASSWORD }}
+        run: npm run test:e2e
+
+      # Relatório HTML do Playwright — útil para inspecionar violações no PR.
+      - name: Publicar relatório do Playwright
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: apps/frontend-vite/playwright-report/
+          retention-days: 14
