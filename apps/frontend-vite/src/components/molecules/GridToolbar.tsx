@@ -26,7 +26,7 @@ interface DensityButtonProps {
 
 function DensityButton({ active, label, onClick }: Readonly<DensityButtonProps>) {
   const tone = active
-    ? 'bg-brand text-white border-brand'
+    ? 'bg-brand-dark text-white border-brand-dark'
     : 'bg-white text-slate-500 border-slate-200 hover:bg-slate-50';
   return (
     <button
