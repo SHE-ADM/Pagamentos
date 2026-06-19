@@ -235,7 +235,9 @@ Alvo: **WCAG 2.1 Nível AA** em todas as telas. Regras práticas:
   senha).
 - **Contraste**: pares texto/fundo cumprem AA — texto normal ≥4.5:1, texto grande/ícone de
   UI ≥3:1. Ao criar ou alterar um token de cor, **validar o ratio** (controles desabilitados
-  são isentos pela 1.4.3).
+  são isentos pela 1.4.3). Em **superfícies escuras** (sidebar `bg-sidebar`) o texto deve ser
+  **claro**: `slate-300/400`, não `slate-500/600` (estes invertem e reprovam). `text-white`
+  sobre `bg-brand` sólido reprova (3,4:1) — usar `bg-brand-dark` quando houver texto branco.
 - **Testes a11y automatizados (jest-axe, AA)**: matcher em `tests/setup.ts`
   (`expect.extend(toHaveNoViolations)`); runner configurado em `tests/axe.ts` (tags
   `wcag2a/2aa/21a/21aa`). Todo componente/página relevante ganha um `*.a11y.test.tsx` com
@@ -260,9 +262,13 @@ Alvo: **WCAG 2.1 Nível AA** em todas as telas. Regras práticas:
   pulado sem credencial), helper `e2e/axe.ts` (tags AA). Scripts `test:e2e`/`test:e2e:headed`. Os
   specs **não** rodam no `npm test` (runner separado, fora do `tsconfig`/ESLint — `e2e/` está nos
   `ignores`). Ver `e2e/README.md`. O **workflow `.github/workflows/a11y.yml`** roda a camada a cada
-  PR/push na `Features` (runner `ubuntu-latest`, Chromium provisionado). **Não rodar `npm run test:e2e`
-  no sandbox do agente** — o renderer do Chromium crasha ao montar a SPA completa (limite de recursos
-  do ambiente, não do código); validar na máquina do usuário ou no CI.
+  PR/push na `Features` (runner `ubuntu-latest`, Chromium provisionado) — **operacional e verde**,
+  com os 4 secrets cadastrados (`VITE_SUPABASE_URL`/`ANON_KEY` + `A11Y_TEST_EMAIL`/`PASSWORD`, este
+  último um usuário de teste só-leitura no Supabase). **Não rodar `npm run test:e2e` no sandbox do
+  agente** — o renderer do Chromium crasha ao montar a SPA completa (limite de recursos do ambiente,
+  não do código); validar na máquina do usuário ou no CI. A camada já **pegou e corrigiu 45 violações
+  de contraste** nas páginas protegidas (sidebar/cabeçalhos/grid/toolbar) que os guardas por token e o
+  jsdom não viam — ver "Guia de cores — grid de dados".
 
 ---
 
@@ -586,6 +592,16 @@ nela via box-shadow inset brand (variante `selected` do `pinnedCell`, aplicada s
 célula left-pinned da linha selecionada). O `StatusBadge` dentro das células continua na paleta
 `status`. Cada slot (header, row, cell, skeleton, empty, sub-linha de detalhe) é um `cva`
 próprio com a base + o neutro do tema — string literal completa.
+
+> **Contraste AA do texto do grid (não regredir):** o "chrome neutro" vale para
+> **fundos/bordas e ícones SVG** (grip, sort, skeleton) — o axe `color-contrast` checa **só
+> texto**, então ícone claro não é flagado. Mas **todo TEXTO** do grid precisa cumprir AA: a
+> varredura em navegador (`e2e/`) reprovava `slate/zinc-300/400` na sub-linha de detalhe e nos
+> cabeçalhos. Mínimos travados: `table-header`/`-silver` = `slate-600`/`zinc-600`;
+> `secondText` (sub-linha) `label`/`sep` = `*-500`, `value` = `*-600`; `emptyText` = `*-500`.
+> Botão/badge com **texto branco** usa `bg-brand-dark` (não `bg-brand` sólido, que dá só
+> 3,4:1) — ver `DensityButton`/`PinButton`. Foi o axe em navegador que provou que a antiga
+> "exceção" cobria texto demais.
 
 ### Guia de tamanhos — tokens Tailwind em uso
 

@@ -52,7 +52,7 @@ export default function Layout({ children }: Readonly<{ children: ReactNode }>) 
             </div>
             <div className="leading-tight">
               <div className="font-semibold text-sm text-white">pagamentos</div>
-              <div className="text-xs text-slate-500">contas a pagar</div>
+              <div className="text-xs text-slate-400">contas a pagar</div>
             </div>
           </div>
           {/* Fechar — só no mobile. */}
@@ -67,7 +67,7 @@ export default function Layout({ children }: Readonly<{ children: ReactNode }>) 
         </div>
 
         <nav className="flex-1 px-2 py-3 space-y-0.5">
-          <p className="px-3 pt-1 pb-1.5 text-xs font-bold tracking-widest text-slate-600 uppercase">
+          <p className="px-3 pt-1 pb-1.5 text-xs font-bold tracking-widest text-slate-400 uppercase">
             Ativo
           </p>
           <NavLink to="/emails" onClick={closeNav} className={({ isActive }) => navLink({ active: isActive })}>
@@ -80,16 +80,16 @@ export default function Layout({ children }: Readonly<{ children: ReactNode }>) 
             <AlertTriangle size={16} /> Log de Erros
           </NavLink>
 
-          <p className="px-3 pt-4 pb-1.5 text-xs font-bold tracking-widest text-slate-600 uppercase">
+          <p className="px-3 pt-4 pb-1.5 text-xs font-bold tracking-widest text-slate-400 uppercase">
             Em breve
           </p>
           <span className="nav-link is-disabled">
             <Edit3 size={16} /> Edição de contas
-            <span className="ml-auto text-xs bg-slate-800 text-slate-500 rounded-sm px-1">soon</span>
+            <span className="ml-auto text-xs bg-slate-800 text-slate-300 rounded-sm px-1">soon</span>
           </span>
           <span className="nav-link is-disabled">
             <BarChart2 size={16} /> Dashboard
-            <span className="ml-auto text-xs bg-slate-800 text-slate-500 rounded-sm px-1">soon</span>
+            <span className="ml-auto text-xs bg-slate-800 text-slate-300 rounded-sm px-1">soon</span>
           </span>
         </nav>
 
@@ -97,7 +97,7 @@ export default function Layout({ children }: Readonly<{ children: ReactNode }>) 
           {user && (
             <div className="flex items-center justify-between gap-2">
               <div className="flex items-center gap-2 min-w-0">
-                <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-brand/20 text-brand text-xs font-bold">
+                <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-brand/20 text-brand-light text-xs font-bold">
                   {initials}
                 </div>
                 <span className="text-xs text-slate-400 truncate" title={email}>
@@ -114,7 +114,7 @@ export default function Layout({ children }: Readonly<{ children: ReactNode }>) 
               </button>
             </div>
           )}
-          <div className="text-xs text-slate-600">v1.0.0 — fase 1</div>
+          <div className="text-xs text-slate-400">v1.0.0 — fase 1</div>
         </div>
       </aside>
 

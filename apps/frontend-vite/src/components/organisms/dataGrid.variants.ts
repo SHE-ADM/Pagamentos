@@ -134,7 +134,7 @@ export const emptyIcon = cva('flex h-14 w-14 items-center justify-center rounded
 
 /** Texto do estado vazio. */
 export const emptyText = cva('text-sm max-w-xs', {
-  variants: { variant: { default: 'text-slate-400', silver: 'text-zinc-400' } },
+  variants: { variant: { default: 'text-slate-500', silver: 'text-zinc-500' } },
   defaultVariants: { variant: 'default' },
 });
 
@@ -150,13 +150,15 @@ export const secondText = cva('', {
     variant: { default: '', silver: '' },
     tone: { sep: '', label: '', value: '' },
   },
+  // Tons escurecidos para cumprir AA sobre o fundo claro da sub-linha (validado em
+  // navegador real — slate/zinc-300/400 reprovavam contraste).
   compoundVariants: [
-    { variant: 'default', tone: 'sep', class: 'text-slate-300' },
-    { variant: 'default', tone: 'label', class: 'text-slate-400' },
-    { variant: 'default', tone: 'value', class: 'text-slate-500' },
-    { variant: 'silver', tone: 'sep', class: 'text-zinc-300' },
-    { variant: 'silver', tone: 'label', class: 'text-zinc-400' },
-    { variant: 'silver', tone: 'value', class: 'text-zinc-500' },
+    { variant: 'default', tone: 'sep', class: 'text-slate-500' },
+    { variant: 'default', tone: 'label', class: 'text-slate-500' },
+    { variant: 'default', tone: 'value', class: 'text-slate-600' },
+    { variant: 'silver', tone: 'sep', class: 'text-zinc-500' },
+    { variant: 'silver', tone: 'label', class: 'text-zinc-500' },
+    { variant: 'silver', tone: 'value', class: 'text-zinc-600' },
   ],
   defaultVariants: { variant: 'default', tone: 'value' },
 });

@@ -22,8 +22,10 @@ test.describe('Acessibilidade WCAG AA — páginas protegidas (navegador real)',
 
   test.beforeEach(async ({ page }) => {
     await page.goto('/auth/login');
-    await page.getByLabel('Email ou usuário').fill(EMAIL ?? '');
-    await page.getByLabel('Senha').fill(PASSWORD ?? '');
+    // exact:true — sem isso, getByLabel('Senha') também casa o botão "Mostrar senha"
+    // (match por substring) e dá strict mode violation.
+    await page.getByLabel('Email ou usuário', { exact: true }).fill(EMAIL ?? '');
+    await page.getByLabel('Senha', { exact: true }).fill(PASSWORD ?? '');
     await page.getByRole('button', { name: 'Login' }).click();
     // Login bem-sucedido redireciona para /consulta.
     await page.waitForURL('**/consulta');
