@@ -285,7 +285,9 @@ export default function DataGrid<T>({
   const tanstackColumns = useMemo<TanStackColumnDef<T>[]>(() => {
     const dataColumns: TanStackColumnDef<T>[] = columns.map((col) => ({
       id: String(col.key),
-      accessorFn: (row) => row[col.key],
+      // Colunas sintéticas (derivadas de JOIN) não existem em T → undefined; o
+      // accessor só alimenta sort/filter client-side, que não usamos (manualSorting).
+      accessorFn: (row) => row[col.key as keyof T],
       header: col.header,
       cell: ({ row }) => col.render(row.original),
       size: col.size ?? DEFAULT_COL_SIZE,

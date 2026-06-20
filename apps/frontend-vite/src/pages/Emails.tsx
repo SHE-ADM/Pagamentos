@@ -624,8 +624,11 @@ export default function Emails() {
                                       key={a.id}
                                       className="flex items-center justify-between gap-3 p-2 bg-white rounded-lg border border-zinc-100 text-xs"
                                     >
-                                      <span className="truncate text-zinc-600 flex-1" title={a.supplier_name ?? ''}>
-                                        {a.supplier_name || '—'}
+                                      <span
+                                        className="truncate text-zinc-600 flex-1"
+                                        title={a.supplier?.trade_name ?? a.supplier?.legal_name ?? ''}
+                                      >
+                                        {a.supplier?.trade_name ?? a.supplier?.legal_name ?? '—'}
                                       </span>
                                       <span className="font-mono text-zinc-500 whitespace-nowrap">{fmtDate(a.due_date)}</span>
                                       <span className="font-mono font-medium text-zinc-600 whitespace-nowrap">

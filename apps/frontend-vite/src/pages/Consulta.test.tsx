@@ -36,13 +36,12 @@ import Consulta from './Consulta';
 const makeRow = (over: Partial<FinancialAccountControl> = {}): FinancialAccountControl =>
   ({
     id: 1,
-    supplier_name: 'ACME LTDA',
+    supplier_id: 1,
+    supplier: { trade_name: 'ACME LTDA', legal_name: 'ACME LTDA', cnpj: null, cpf: null },
     invoice_number: '12345',
     issue_date: '2026-06-01',
     due_date: '2026-06-10',
     amount: 100,
-    supplier_cnpj: null,
-    supplier_cpf: null,
     document_type: 'boleto',
     payment_method: 'boleto',
     status: 'a vencer',

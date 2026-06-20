@@ -58,31 +58,36 @@ const GRID_REFRESH_EVERY = 5; // a cada ~7,5s recarrega o grid durante o process
 const PROGRESS_MAX_ERRORS = 20; // ~30s sem contato com o backend → aborta o poll
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
-const CSV_COLS: (keyof FinancialAccountControl)[] = [
-  'due_date',
-  'status',
-  'supplier_name',
-  'supplier_cnpj',
-  'document_type',
-  'amount',
-  'amount_charged',
-  'discount',
-  'other_deductions',
-  'fine_interest',
-  'other_additions',
-  'payment_method',
-  'nosso_numero',
-  'invoice_number',
-  'barcode',
-  'description',
-  'email_body_excerpt',
-  'processing_notes',
+// Colunas do CSV: cada uma define o cabeçalho e como extrair o valor da linha.
+// supplier_name/supplier_cnpj vêm do JOIN com `supplier` (não são mais colunas
+// da conta — migrations 040/041); as demais saem direto do registro.
+type CsvCol = { header: string; get: (r: FinancialAccountControl) => string | number | null | undefined };
+
+const CSV_COLS: CsvCol[] = [
+  { header: 'due_date', get: (r) => r.due_date },
+  { header: 'status', get: (r) => r.status },
+  { header: 'supplier_name', get: (r) => r.supplier?.trade_name ?? r.supplier?.legal_name },
+  { header: 'supplier_cnpj', get: (r) => r.supplier?.cnpj ?? r.supplier?.cpf },
+  { header: 'document_type', get: (r) => r.document_type },
+  { header: 'amount', get: (r) => r.amount },
+  { header: 'amount_charged', get: (r) => r.amount_charged },
+  { header: 'discount', get: (r) => r.discount },
+  { header: 'other_deductions', get: (r) => r.other_deductions },
+  { header: 'fine_interest', get: (r) => r.fine_interest },
+  { header: 'other_additions', get: (r) => r.other_additions },
+  { header: 'payment_method', get: (r) => r.payment_method },
+  { header: 'nosso_numero', get: (r) => r.nosso_numero },
+  { header: 'invoice_number', get: (r) => r.invoice_number },
+  { header: 'barcode', get: (r) => r.barcode },
+  { header: 'description', get: (r) => r.description },
+  { header: 'email_body_excerpt', get: (r) => r.email_body_excerpt },
+  { header: 'processing_notes', get: (r) => r.processing_notes },
 ];
 
 function exportCsv(rows: FinancialAccountControl[]) {
-  const header = CSV_COLS.join(';');
+  const header = CSV_COLS.map((c) => c.header).join(';');
   const body = rows.map((r) =>
-    CSV_COLS.map((c) => `"${(r[c] ?? '').toString().replace(/"/g, '""')}"`).join(';'),
+    CSV_COLS.map((c) => `"${(c.get(r) ?? '').toString().replace(/"/g, '""')}"`).join(';'),
   );
   const blob = new Blob(['﻿' + [header, ...body].join('\n')], { type: 'text/csv;charset=utf-8' });
   const a = document.createElement('a');
@@ -328,7 +333,7 @@ export default function Consulta() {
     setPage(1);
   };
 
-  // Ciclo: nenhuma → asc → desc → nenhuma (volta ao padrão due_date.asc).
+  // Ciclo: nenhuma → asc → desc → nenhuma (volta ao padrão created_at.desc).
   const handleSort = (col: string) => {
     setSort((prev) => {
       if (prev.col !== col) return { col, dir: 'asc' };
@@ -589,7 +594,7 @@ export default function Consulta() {
                               <X size={15} />
                             </button>
                             <p className="text-xs font-semibold text-slate-500 mb-3 uppercase tracking-wide pr-8">
-                              Detalhes — {r.supplier_name || 'registro'} · {fmtDate(r.due_date)}
+                              Detalhes — {(r.supplier?.trade_name ?? r.supplier?.legal_name) || 'registro'} · {fmtDate(r.due_date)}
                             </p>
                             {r.source_file && (
                               <div className="mb-3">
@@ -608,10 +613,11 @@ export default function Consulta() {
                             <dl className="grid grid-cols-2 rounded-lg overflow-hidden border border-slate-100">
                               {(
                                 [
-                                  ['Fornecedor', r.supplier_name],
+                                  ['ID', String(r.id)],
+                                  ['Fornecedor', r.supplier?.trade_name ?? r.supplier?.legal_name],
                                   ['Assunto', r.subject],
                                   ['Remetente', r.sender_email],
-                                  ['CNPJ', fmtCnpj(r.supplier_cnpj)],
+                                  ['CNPJ', fmtCnpj(r.supplier?.cnpj ?? null)],
                                   ['N° Documento', r.invoice_number],
                                   ['Competência', r.competence_date],
                                   ['Emissão', fmtDate(r.issue_date)],
