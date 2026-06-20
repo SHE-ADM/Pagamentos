@@ -36,6 +36,10 @@ class FakeCtrl:
     def find_financial_duplicate(self, payload):
         return self._dup
 
+    def resolve_supplier(self, payload):
+        # _finalize_supplier resolve o fornecedor antes da dedup; stub devolve id fixo.
+        return 1
+
     def unique_invoice_number(self, n):
         return n
 

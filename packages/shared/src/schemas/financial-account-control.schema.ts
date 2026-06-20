@@ -90,6 +90,20 @@ export const accountStatusSchema = z.enum(ACCOUNT_STATUSES);
 // Valor monetário: aceita number ou string numérica vinda da REST.
 const money = z.coerce.number();
 
+// ── Fornecedor embutido (JOIN via supplier_id) ──────────────────────────────
+// Retornado pelo PostgREST quando se usa select=*,supplier(...).
+// Campos do cadastro canônico (tabela `supplier`) — fonte de verdade única do
+// nome/CNPJ/CPF do fornecedor desde que as colunas denormalizadas foram dropadas.
+
+export const supplierEmbeddedSchema = z.object({
+  trade_name: z.string().nullable(),
+  legal_name: z.string().nullable(),
+  cnpj: z.string().nullable(),
+  cpf: z.string().nullable(),
+}).nullable();
+
+export type SupplierEmbedded = z.infer<typeof supplierEmbeddedSchema>;
+
 // ── Linha completa (leitura) ────────────────────────────────────────────────
 
 export const financialAccountControlSchema = z.object({
@@ -103,11 +117,10 @@ export const financialAccountControlSchema = z.object({
   document_type: documentTypeSchema.nullable(),
   extraction_source: extractionSourceSchema.nullable(),
 
-  // Fornecedor
-  supplier_name: z.string().nullable(),
-  supplier_cnpj: z.string().nullable(),
-  supplier_cpf: z.string().nullable(),
-  supplier_id: z.number().int().nullable(),
+  // Fornecedor — referenciado APENAS pela FK supplier_id (NOT NULL no banco).
+  // Os dados denormalizados (nome/CNPJ/CPF) foram removidos (migrations 040/041);
+  // a fonte de verdade é a tabela `supplier`, lida via JOIN (campo `supplier`).
+  supplier_id: z.number().int(),
 
   // Documento
   invoice_number: z.string().nullable(),
@@ -159,18 +172,25 @@ export const financialAccountControlSchema = z.object({
   extracted_at: z.string().nullable(),
   created_at: z.string(),
   updated_at: z.string(),
+
+  // Fornecedor embutido — presente quando o select inclui supplier(...).
+  // Fonte de verdade única para exibição (nome/CNPJ/CPF vêm daqui via JOIN).
+  supplier: supplierEmbeddedSchema.optional(),
 });
 
 // ── Entrada (gravação pelo pipeline/API) ────────────────────────────────────
-// Omite os campos gerados pelo banco; usado ao validar antes de persistir.
+// Omite os campos gerados pelo banco e o recurso embutido `supplier` (leitura).
+// `supplier_id` agora é entrada OBRIGATÓRIA — o pipeline resolve o fornecedor
+// (RPC resolve_supplier_for_account) antes de persistir; não há mais trigger de
+// resolução nem colunas denormalizadas (migrations 040/041).
 
 export const financialAccountControlInputSchema = financialAccountControlSchema.omit({
   id: true,
-  supplier_id: true,
   company_id: true,
   status_id: true,
   created_at: true,
   updated_at: true,
+  supplier: true,
 });
 
 // ── Criação manual (CRUD) ────────────────────────────────────────────────────

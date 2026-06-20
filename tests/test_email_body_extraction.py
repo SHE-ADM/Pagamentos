@@ -41,6 +41,10 @@ class FakeControl:
         # try_extract_from_body usa o id da conta existente na nota de duplicidade.
         return {"id": 999} if self.duplicate else None
 
+    def resolve_supplier(self, payload):
+        # _finalize_supplier resolve o fornecedor antes da dedup; stub devolve um id fixo.
+        return 1
+
 
 # Corpo real (resumido) da notificacao de NF-e da Editora Globo S.A.
 # Inclui a chave de acesso de 44 digitos — o que tornava o payload nao-nulo e

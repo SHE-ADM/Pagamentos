@@ -130,11 +130,12 @@ EXTRACTION_PROMPT = (
     "GARE (Guia de Arrecadacao de Receitas Estaduais) | "
     "tributo (qualquer outro documento de arrecadacao tributaria nao identificado acima)\n"
     "- supplier_name: nome do BENEFICIARIO/CEDENTE/FORNECEDOR (quem RECEBE). "
-    "Preferencia: label 'fornecedor' > 'beneficiario' > 'cedente' > 'remetente'. "
+    "Preferencia: label 'fornecedor' > 'beneficiario final' > 'beneficiario' > 'cedente' > 'remetente'. "
     "NUNCA use o pagador/sacado.\n"
     "- supplier_cnpj: CNPJ do BENEFICIARIO (apenas digitos, 14 caracteres). "
     "Prefira identificar o CNPJ no formato mascarado com 18 caracteres (XX.XXX.XXX/XXXX-XX). "
-    "Em boletos, procure o campo 'CNPJ Beneficiario' ou 'CNPJ/CPF' do beneficiario/cedente. "
+    "Em boletos, procure o campo 'CNPJ Beneficiario', 'CNPJ/CPF' do beneficiario/cedente "
+    "ou o campo 'Beneficiario Final' seguido de CNPJ/CPF (formato Banco Inter). "
     "O texto pode conter anotacoes '[RTL: XX.XXX.XXX/XXXX-XX]' que indicam o valor corrigido. "
     "Retorne null se nao houver. NUNCA use o CNPJ do pagador/sacado.\n"
     "- supplier_cpf: CPF do BENEFICIARIO (apenas digitos, 11 caracteres). "
@@ -496,7 +497,7 @@ def extract_invoice_number(text, doc_type):
     return None
 
 def extract_supplier_name(text, doc_type):
-    hints = {"boleto":["cedente","beneficiário"],"nfe":["emitente","razão social"],
+    hints = {"boleto":["cedente","beneficiário final","beneficiário"],"nfe":["emitente","razão social"],
              "nfse":["prestador","razão social"],"fatura":["operadora","empresa"]}
     lines = text.splitlines()
     for i, line in enumerate(lines):

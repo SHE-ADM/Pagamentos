@@ -65,7 +65,12 @@ const fmtDateTime = (iso: string | null): string =>
 
 /** Metadata de uma coluna do grid — fonte única para cabeçalho, render e responsividade. */
 export interface ColumnDef<T> {
-  key: keyof T;
+  // Identidade da coluna (React key + id de preferências de layout). Geralmente um
+  // campo de T, mas aceita string sintética para colunas derivadas de JOIN
+  // (ex.: 'supplier_name'/'supplier_cnpj' vêm do recurso embutido `supplier`,
+  // não são mais colunas próprias — migrations 040/041). `(string & {})` preserva
+  // o autocomplete das chaves reais sem travar as sintéticas.
+  key: keyof T | (string & {});
   header: string;
   /** Campo enviado ao Supabase para ordenação (mapeia ao SORT_COLS de Consulta). */
   sortKey?: string;
@@ -112,23 +117,24 @@ export function getConsultaColumns(
     render: (r) => fmtDate(r.issue_date),
   },
   {
+    // Fornecedor e CNPJ/CPF vêm do JOIN com `supplier` (migrations 040/041); não há
+    // mais coluna própria em financial_account_control, então não são ordenáveis
+    // server-side (order por recurso embutido no PostgREST é frágil).
     key: 'supplier_name',
     header: 'Fornecedor',
     size: 200,
-    sortKey: 'supplier_name',
     truncate: true,
-    render: (r) => r.supplier_name ?? '—',
+    render: (r) => r.supplier?.trade_name ?? r.supplier?.legal_name ?? '—',
   },
   {
     key: 'supplier_cnpj',
     header: 'CNPJ / CPF',
     size: 165,
-    sortKey: 'supplier_cnpj',
     hideOn: ['sm'],
     secondLine: true,
     secondLineLabel: 'CNPJ',
     truncate: true,
-    render: (r) => fmtCnpjOrCpf(r.supplier_cnpj, r.supplier_cpf),
+    render: (r) => fmtCnpjOrCpf(r.supplier?.cnpj ?? null, r.supplier?.cpf ?? null),
   },
   {
     key: 'document_type',
@@ -173,7 +179,7 @@ export function getConsultaColumns(
     render: (r) =>
       createElement(CheckToggle, {
         checked: r.has_invoice,
-        ariaLabel: `Tem NF — ${r.supplier_name ?? 'registro'}`,
+        ariaLabel: `Tem NF — ${r.supplier?.trade_name ?? r.supplier?.legal_name ?? 'registro'}`,
         onToggle: (v: boolean) => onToggleFlag(r, 'has_invoice', v),
       }),
   },
@@ -185,7 +191,7 @@ export function getConsultaColumns(
     render: (r) =>
       createElement(CheckToggle, {
         checked: r.has_bank_slip,
-        ariaLabel: `Tem Boleto — ${r.supplier_name ?? 'registro'}`,
+        ariaLabel: `Tem Boleto — ${r.supplier?.trade_name ?? r.supplier?.legal_name ?? 'registro'}`,
         onToggle: (v: boolean) => onToggleFlag(r, 'has_bank_slip', v),
       }),
   },

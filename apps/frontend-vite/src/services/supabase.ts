@@ -217,16 +217,19 @@ export function parsePaginationTotal(
 
 // Aplica os filtros de financial_account_control nos search params — compartilhado
 // entre a listagem paginada e a soma do card "Valor total".
-// Pré-resolve os supplier_id cujos e-mails cadastrados (email/email2/email3/email4)
-// casam com o termo. O resultado alimenta o filtro `supplier_id IN (...)` da busca de
-// contas — assim a pesquisa por e-mail do fornecedor funciona sem JOIN no PostgREST.
-// Os índices GIN trigram (migration 029) suportam o ILIKE '%termo%'.
-async function findSupplierIdsByEmail(term: string): Promise<number[]> {
+// Como financial_account_control não guarda mais nome/CNPJ do fornecedor (só a FK
+// supplier_id — migrations 040/041), a busca por fornecedor resolve antes os
+// supplier_id que casam o termo na tabela `supplier` (nome, CNPJ/CPF e os 4 e-mails)
+// e alimenta o filtro `supplier_id IN (...)`. Os índices GIN trigram (migration 029)
+// aceleram o ILIKE '%termo%' nos e-mails.
+async function findSupplierIdsByTerm(term: string): Promise<number[]> {
   const url = new URL(`${BASE_URL}/rest/v1/supplier`);
   url.searchParams.set('select', 'supplier_id');
   url.searchParams.set(
     'or',
-    `(email.ilike.*${term}*,email2.ilike.*${term}*,email3.ilike.*${term}*,email4.ilike.*${term}*)`,
+    `(trade_name.ilike.*${term}*,legal_name.ilike.*${term}*,cnpj.ilike.*${term}*,` +
+      `cpf.ilike.*${term}*,email.ilike.*${term}*,email2.ilike.*${term}*,` +
+      `email3.ilike.*${term}*,email4.ilike.*${term}*)`,
   );
   url.searchParams.set('limit', '1000');
   const res = await fetch(url.toString(), { headers: await authHeaders() });
@@ -240,12 +243,10 @@ function applyFinancialFilters(
   { supplier, docType, status, paymentMethod, dateFrom, dateTo }: FinancialAccountControlFilters,
   supplierIds: number[] = [],
 ): void {
-  // or= em cinco colunas (nome, CNPJ/CPF, nº documento, assunto e remetente) mais,
-  // quando o termo casa e-mail cadastrado do fornecedor, os supplier_id resolvidos.
+  // or= nas colunas próprias da conta (nº documento, assunto, remetente) mais os
+  // supplier_id resolvidos pelo termo (nome/CNPJ/CPF/e-mail do cadastro supplier).
   if (supplier) {
     const clauses = [
-      `supplier_name.ilike.*${supplier}*`,
-      `supplier_cnpj.ilike.*${supplier}*`,
       `invoice_number.ilike.*${supplier}*`,
       `subject.ilike.*${supplier}*`,
       `sender_email.ilike.*${supplier}*`,
@@ -275,12 +276,15 @@ export async function getFinancialAccountControl({
 }: FinancialAccountControlFilters = {}): Promise<Paginated<FinancialAccountControl>> {
   const offset = (page - 1) * pageSize;
   const url = new URL(`${BASE_URL}/rest/v1/financial_account_control`);
-  url.searchParams.set('select', '*');
-  // Ordenação padrão = vencimento (due_date) ascendente; sort explícito sobrescreve.
-  url.searchParams.set('order', sortCol ? `${sortCol}.${sortDir ?? 'asc'}` : 'due_date.asc');
+  // JOIN com supplier via FK supplier_id — retorna dados canônicos do cadastro.
+  // Campos denormalizados (supplier_name, supplier_cnpj) servem de fallback no frontend.
+  url.searchParams.set('select', '*,supplier(trade_name,legal_name,cnpj,cpf)');
+  // Ordenação padrão = criação (created_at) descendente — mais recente no topo (igual ao /emails).
+  // Sort explícito do usuário sobrescreve.
+  url.searchParams.set('order', sortCol ? `${sortCol}.${sortDir ?? 'asc'}` : 'created_at.desc');
   url.searchParams.set('limit', String(pageSize));
   url.searchParams.set('offset', String(offset));
-  const supplierIds = supplier ? await findSupplierIdsByEmail(supplier) : [];
+  const supplierIds = supplier ? await findSupplierIdsByTerm(supplier) : [];
   applyFinancialFilters(url.searchParams, { supplier, docType, status, paymentMethod, dateFrom, dateTo }, supplierIds);
   const reqHeaders = await authHeaders({ Prefer: 'count=exact' });
   const res = await fetch(url.toString(), { headers: reqHeaders });
@@ -345,7 +349,7 @@ export async function getFinancialAccountTotalValue(
   const url = new URL(`${BASE_URL}/rest/v1/financial_account_control`);
   url.searchParams.set('select', 'amount');
   url.searchParams.set('limit', '10000');
-  const supplierIds = filters.supplier ? await findSupplierIdsByEmail(filters.supplier) : [];
+  const supplierIds = filters.supplier ? await findSupplierIdsByTerm(filters.supplier) : [];
   applyFinancialFilters(url.searchParams, filters, supplierIds);
   const res = await fetch(url.toString(), { headers: await authHeaders() });
   if (!res.ok) throw new Error(`Supabase ${res.status}: ${await res.text()}`);
@@ -411,7 +415,7 @@ export async function getProcessingErrorStats(): Promise<ProcessingErrorStats> {
 export async function getAccountsByMessageId(messageId: string | null): Promise<FinancialAccountControl[]> {
   if (!messageId) return [];
   return query<FinancialAccountControl[]>('financial_account_control', {
-    select: '*',
+    select: '*,supplier(trade_name,legal_name,cnpj,cpf)',
     gmail_message_id: `like.${messageId}*`,
     order: 'due_date.asc',
   });
