@@ -1,12 +1,22 @@
 <#
 .SYNOPSIS
     Wrapper do agendador — executa read_emails.py e grava log diário.
-    Chamado pelo Windows Task Scheduler a cada 1 hora.
+    Chamado pelo Windows Task Scheduler no intervalo configurado em
+    setup-task.ps1 (padrão: a cada 5 minutos).
 
 .NOTES
     Não altere este arquivo para trocar credenciais ou keywords.
     Tudo é lido do .env na raiz do projeto a cada execução.
+
+.PARAMETER Days
+    Janela de busca no IMAP, em dias. Padrão 1 (cadência normal da task). Para uma
+    recuperação pontual com janela maior, rode manualmente: .\run_reader.ps1 -Days 7
+    (a deduplicação por message_id impede reprocessar o que já foi registrado).
 #>
+
+param(
+    [int]$Days = 1
+)
 
 # ---------------------------------------------------------------------------
 # Configuração
@@ -15,7 +25,7 @@ $PROJECT_ROOT = Split-Path -Parent $PSScriptRoot
 $SCRIPT       = Join-Path $PROJECT_ROOT "skills\email-reader\scripts\read_emails.py"
 $LOG_DIR      = Join-Path $PROJECT_ROOT "logs\scheduler"
 $LOG_RETENTION_DAYS = 30   # logs mais antigos que isso são removidos
-$DAYS_BACK    = 1          # janela de busca no IMAP; dedup impede reprocessamento
+$DAYS_BACK    = $Days       # janela de busca no IMAP; dedup impede reprocessamento
 
 # ---------------------------------------------------------------------------
 # Localiza Python
