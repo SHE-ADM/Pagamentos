@@ -1783,6 +1783,36 @@ def _parse_internaldate(fetch_meta: bytes | None) -> str | None:
         return None
 
 
+def _received_at_from(meta: bytes | None, date_header: str) -> str:
+    """received_at canonico: INTERNALDATE (chegada na caixa postal) e a fonte
+    primaria — confiavel mesmo com o header Date do remetente adulterado ou com
+    fuso errado. O header Date e fallback; nunca grava data futura. Usada tanto no
+    process_message quanto no registro de e-mails 'ignorado', para que /emails
+    fique na MESMA ordem da caixa postal (o grid ordena por received_at desc)."""
+    now_dt = datetime.now(timezone.utc)
+    now = now_dt.isoformat()
+    internal_iso = _parse_internaldate(meta)
+    try:
+        header_dt = parsedate_to_datetime(date_header).astimezone(timezone.utc)
+    except Exception:
+        header_dt = None
+
+    if internal_iso:
+        received_at = internal_iso
+    elif header_dt is not None and header_dt <= now_dt:
+        received_at = header_dt.isoformat()
+    else:
+        received_at = now
+
+    # Rede de seguranca: jamais gravar received_at no futuro.
+    try:
+        if datetime.fromisoformat(received_at) > now_dt:
+            received_at = now
+    except Exception:
+        received_at = now
+    return received_at
+
+
 def status_for_result(has_attachment: bool, csv_generated: bool,
                        body_created: bool, pure_nfe: bool = False,
                        accounts_saved: int = 0, notification: bool = False,
@@ -1866,29 +1896,8 @@ def process_message(mail, uid: bytes, keywords: list,
         sender_name  = decode_str(sender_name) or sender_email
         date_header  = msg.get("Date", "")
 
-        # received_at: INTERNALDATE (chegada na caixa) e a fonte primaria —
-        # confiavel mesmo quando o header Date do remetente vem adulterado ou
-        # com fuso errado. O header Date e fallback. Nunca aceitar data futura.
-        now_dt = datetime.now(timezone.utc)
-        internal_iso = _parse_internaldate(meta)
-        try:
-            header_dt = parsedate_to_datetime(date_header).astimezone(timezone.utc)
-        except Exception:
-            header_dt = None
-
-        if internal_iso:
-            received_at = internal_iso
-        elif header_dt is not None and header_dt <= now_dt:
-            received_at = header_dt.isoformat()
-        else:
-            received_at = now
-
-        # Rede de seguranca: jamais gravar received_at no futuro.
-        try:
-            if datetime.fromisoformat(received_at) > now_dt:
-                received_at = now
-        except Exception:
-            received_at = now
+        # received_at canonico (INTERNALDATE -> header Date -> agora; nunca futuro).
+        received_at = _received_at_from(meta, date_header)
 
         body_text    = get_body_text(msg)
         # E-mail SO-HTML (ex.: Correios): sem texto plano, extrai do HTML para que
@@ -2168,9 +2177,13 @@ def run_reader(days: int = 0, all_: bool = False,
         try:
             # Header enxuto para filtrar/registrar rapidamente (inclui remetente e
             # data, necessários para registrar também os e-mails 'ignorado').
+            # INTERNALDATE incluido no fetch para registrar 'ignorado' com a data de
+            # CHEGADA na caixa (mesma fonte do process_message) — alinha /emails ao
+            # webmail. _rfc822_from_fetch tolera respostas IMAP intercaladas.
             _, hdr = mail.uid("fetch", uid,
-                              "(BODY.PEEK[HEADER.FIELDS (SUBJECT MESSAGE-ID FROM DATE)])")
-            hdr_msg = email.message_from_bytes(hdr[0][1])
+                              "(INTERNALDATE BODY.PEEK[HEADER.FIELDS (SUBJECT MESSAGE-ID FROM DATE)])")
+            hdr_meta, hdr_raw = _rfc822_from_fetch(hdr)
+            hdr_msg = email.message_from_bytes(hdr_raw)
             subject = decode_str(hdr_msg.get("Subject", ""))
             msg_id  = hdr_msg.get("Message-ID", "").strip()
         except Exception as e:
@@ -2192,11 +2205,9 @@ def run_reader(days: int = 0, all_: bool = False,
         if not match_keyword(subject, keywords):
             if not dry_run:
                 sender_name, sender_email = parseaddr(hdr_msg.get("From", ""))
-                try:
-                    received_at = parsedate_to_datetime(
-                        hdr_msg.get("Date", "")).astimezone(timezone.utc).isoformat()
-                except Exception:
-                    received_at = datetime.now(timezone.utc).isoformat()
+                # received_at canonico = INTERNALDATE (chegada na caixa), igual ao
+                # process_message — para /emails ficar na MESMA ordem do webmail.
+                received_at = _received_at_from(hdr_meta, hdr_msg.get("Date", ""))
                 ctrl.register({
                     "message_id":   msg_id,
                     "subject":      subject,

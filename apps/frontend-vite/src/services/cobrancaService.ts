@@ -36,17 +36,37 @@ async function get<T>(token: string, table: string, params: Record<string, strin
   return { data, total };
 }
 
-interface EnviosFilter { token: string; page?: number; search?: string; dateFrom?: string; dateTo?: string; }
+interface EnviosFilter {
+  token: string;
+  page?: number;
+  search?: string;
+  sentFrom?: string;
+  sentTo?: string;
+  dueFrom?: string;
+  dueTo?: string;
+  sortCol?: string | null;
+  sortDir?: 'asc' | 'desc' | null;
+}
 
 export async function fetchEnviosLog(filter: EnviosFilter): Promise<PaginatedResult<CobrancaEnvioLog>> {
-  const { token, page = 1, search, dateFrom, dateTo } = filter;
+  const { token, page = 1, search, sentFrom, sentTo, dueFrom, dueTo, sortCol, sortDir } = filter;
+  // Ordenação padrão = vencimento (due_date) descendente; sort explícito sobrescreve.
+  const order = sortCol && sortDir ? `${sortCol}.${sortDir}` : 'due_date.desc';
   const params: Record<string, string> = {
     select: 'id,document_id,customer_name,primary_email,cc_email,due_date,bill_amount,email_subject,sent_at',
-    order: 'sent_at.desc', limit: String(PAGE_SIZE), offset: String((page - 1) * PAGE_SIZE),
+    order, limit: String(PAGE_SIZE), offset: String((page - 1) * PAGE_SIZE),
   };
   if (search?.trim()) params['or'] = `(customer_name.ilike.*${search.trim()}*,document_id.ilike.*${search.trim()}*)`;
-  if (dateFrom) params['sent_at'] = `gte.${dateFrom}`;
-  if (dateTo)   params['sent_at'] = params['sent_at'] ? `gte.${dateFrom},lte.${dateTo}T23:59:59` : `lte.${dateTo}T23:59:59`;
+  // Filtros de data combinados via `and` (coexiste com o `or` da busca — o PostgREST faz
+  // AND entre os parâmetros de topo). "Enviado em" (sent_at) é TIMESTAMPTZ: filtramos só
+  // pela DATA, ignorando o horário — o limite superior vai até o fim do dia (T23:59:59).
+  // "Vencimento" (due_date) é DATE puro (gte/lte direto, sem horário).
+  const conds: string[] = [];
+  if (sentFrom) conds.push(`sent_at.gte.${sentFrom}`);
+  if (sentTo)   conds.push(`sent_at.lte.${sentTo}T23:59:59`);
+  if (dueFrom)  conds.push(`due_date.gte.${dueFrom}`);
+  if (dueTo)    conds.push(`due_date.lte.${dueTo}`);
+  if (conds.length) params['and'] = `(${conds.join(',')})`;
   return get<CobrancaEnvioLog>(token, 'cobranca_envios_log', params);
 }
 

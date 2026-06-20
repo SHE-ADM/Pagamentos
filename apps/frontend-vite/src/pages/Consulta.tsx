@@ -328,7 +328,7 @@ export default function Consulta() {
     setPage(1);
   };
 
-  // Ciclo: nenhuma → asc → desc → nenhuma (volta ao padrão issue_date.desc).
+  // Ciclo: nenhuma → asc → desc → nenhuma (volta ao padrão due_date.asc).
   const handleSort = (col: string) => {
     setSort((prev) => {
       if (prev.col !== col) return { col, dir: 'asc' };
