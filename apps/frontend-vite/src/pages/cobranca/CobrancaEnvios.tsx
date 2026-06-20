@@ -14,6 +14,16 @@ import { enviosColumns } from './cobrancaColumns';
 const PAGE_SIZE = 50;
 const SEARCH_DEBOUNCE_MS = 350;
 
+// Filtros de data: envio ("Enviado em" / sent_at) e vencimento (due_date). O usuário
+// escolhe só a data — a consulta ignora o horário (ver fetchEnviosLog).
+interface DateFilters {
+  sentFrom: string;
+  sentTo: string;
+  dueFrom: string;
+  dueTo: string;
+}
+const EMPTY_DATES: DateFilters = { sentFrom: '', sentTo: '', dueFrom: '', dueTo: '' };
+
 export default function CobrancaEnvios() {
   const { session } = useAuth();
   const token = session?.access_token ?? '';
@@ -23,6 +33,9 @@ export default function CobrancaEnvios() {
   const [page, setPage] = useState(1);
   const [search, setSearch] = useState('');
   const [applied, setApplied] = useState('');
+  const [dates, setDates] = useState<DateFilters>(EMPTY_DATES);
+  // Ordenação padrão: vencimento (due_date) descendente.
+  const [sort, setSort] = useState<{ col: string; dir: 'asc' | 'desc' }>({ col: 'due_date', dir: 'desc' });
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -42,7 +55,17 @@ export default function CobrancaEnvios() {
     setLoading(true);
     setError(null);
     try {
-      const { data, total: t } = await fetchEnviosLog({ token, page, search: applied || undefined });
+      const { data, total: t } = await fetchEnviosLog({
+        token,
+        page,
+        search: applied || undefined,
+        sentFrom: dates.sentFrom || undefined,
+        sentTo: dates.sentTo || undefined,
+        dueFrom: dates.dueFrom || undefined,
+        dueTo: dates.dueTo || undefined,
+        sortCol: sort.col,
+        sortDir: sort.dir,
+      });
       setRows(data);
       setTotal(t);
     } catch (e) {
@@ -50,7 +73,35 @@ export default function CobrancaEnvios() {
     } finally {
       setLoading(false);
     }
-  }, [token, page, applied]);
+  }, [token, page, applied, dates, sort]);
+
+  // Ciclo de ordenação: ao clicar numa coluna, asc → desc → volta ao padrão
+  // (vencimento desc). Server-side via `order` do PostgREST (ver fetchEnviosLog).
+  const handleSort = (col: string) => {
+    setSort((prev) => {
+      if (prev.col !== col) return { col, dir: 'asc' };
+      if (prev.dir === 'asc') return { col, dir: 'desc' };
+      return { col: 'due_date', dir: 'desc' };
+    });
+    setPage(1);
+  };
+
+  // Aplica um filtro de data e volta para a primeira página. Datas são uma ação
+  // deliberada (date picker) — sem debounce, ao contrário da busca textual.
+  const setDate = (key: keyof DateFilters, value: string) => {
+    setDates((d) => ({ ...d, [key]: value }));
+    setPage(1);
+  };
+
+  const hasFilters =
+    !!search || dates.sentFrom !== '' || dates.sentTo !== '' || dates.dueFrom !== '' || dates.dueTo !== '';
+
+  const clearFilters = () => {
+    setSearch('');
+    setApplied('');
+    setDates(EMPTY_DATES);
+    setPage(1);
+  };
 
   useEffect(() => {
     // fetch-on-change — o effect é a ferramenta certa quando token/page/applied mudam;
@@ -79,7 +130,7 @@ export default function CobrancaEnvios() {
           </Alert>
         )}
 
-        <div className="flex gap-2 flex-wrap mb-2">
+        <div className="flex gap-3 flex-wrap items-end mb-2">
           <input
             id="envios-search"
             name="envios-search"
@@ -90,6 +141,68 @@ export default function CobrancaEnvios() {
             value={search}
             onChange={(e) => setSearch(e.target.value)}
           />
+
+          <div className="flex flex-col">
+            <label htmlFor="envios-sent-from" className="text-xs text-slate-500 mb-0.5">
+              Envio de
+            </label>
+            <input
+              id="envios-sent-from"
+              name="envios-sent-from"
+              type="date"
+              className="input w-36"
+              value={dates.sentFrom}
+              onChange={(e) => setDate('sentFrom', e.target.value)}
+            />
+          </div>
+
+          <div className="flex flex-col">
+            <label htmlFor="envios-sent-to" className="text-xs text-slate-500 mb-0.5">
+              Envio até
+            </label>
+            <input
+              id="envios-sent-to"
+              name="envios-sent-to"
+              type="date"
+              className="input w-36"
+              value={dates.sentTo}
+              onChange={(e) => setDate('sentTo', e.target.value)}
+            />
+          </div>
+
+          <div className="flex flex-col">
+            <label htmlFor="envios-due-from" className="text-xs text-slate-500 mb-0.5">
+              Vencimento de
+            </label>
+            <input
+              id="envios-due-from"
+              name="envios-due-from"
+              type="date"
+              className="input w-36"
+              value={dates.dueFrom}
+              onChange={(e) => setDate('dueFrom', e.target.value)}
+            />
+          </div>
+
+          <div className="flex flex-col">
+            <label htmlFor="envios-due-to" className="text-xs text-slate-500 mb-0.5">
+              Vencimento até
+            </label>
+            <input
+              id="envios-due-to"
+              name="envios-due-to"
+              type="date"
+              className="input w-36"
+              value={dates.dueTo}
+              onChange={(e) => setDate('dueTo', e.target.value)}
+            />
+          </div>
+
+          {hasFilters && (
+            <button onClick={clearFilters} className="btn">
+              Limpar
+            </button>
+          )}
         </div>
 
         <div className="card mb-2">
@@ -98,9 +211,9 @@ export default function CobrancaEnvios() {
             rows={rows}
             rowKey={(r) => String(r.id)}
             onRowClick={() => undefined}
-            sortCol={null}
-            sortDir={null}
-            onSort={() => undefined}
+            sortCol={sort.col}
+            sortDir={sort.dir}
+            onSort={handleSort}
             loading={loading}
             ariaLabel="Cobranças enviadas"
             emptyMessage={applied ? `Nenhum resultado para "${applied}".` : 'Nenhum envio registrado.'}

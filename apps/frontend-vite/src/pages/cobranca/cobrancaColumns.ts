@@ -30,8 +30,8 @@ const fmtCurrency = (value: number | null): string =>
   value == null ? DASH : Number(value).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
 
 export const enviosColumns: ColumnDef<CobrancaEnvioLog>[] = [
-  { key: 'document_id', header: 'Título', size: 130, render: (r) => r.document_id || DASH },
-  { key: 'customer_name', header: 'Cliente', size: 220, truncate: true, render: (r) => r.customer_name || DASH },
+  { key: 'document_id', header: 'Título', size: 130, sortKey: 'document_id', render: (r) => r.document_id || DASH },
+  { key: 'customer_name', header: 'Cliente', size: 220, truncate: true, sortKey: 'customer_name', render: (r) => r.customer_name || DASH },
   {
     key: 'primary_email',
     header: 'E-mail (To)',
@@ -52,8 +52,8 @@ export const enviosColumns: ColumnDef<CobrancaEnvioLog>[] = [
     secondLineLabel: 'Cc',
     render: (r) => r.cc_email || DASH,
   },
-  { key: 'due_date', header: 'Vencimento', size: 110, hideOn: ['sm'], render: (r) => fmtDate(r.due_date) },
-  { key: 'bill_amount', header: 'Valor', size: 120, align: 'right', render: (r) => fmtCurrency(r.bill_amount) },
+  { key: 'due_date', header: 'Vencimento', size: 110, hideOn: ['sm'], sortKey: 'due_date', render: (r) => fmtDate(r.due_date) },
+  { key: 'bill_amount', header: 'Valor', size: 120, align: 'right', sortKey: 'bill_amount', render: (r) => fmtCurrency(r.bill_amount) },
   {
     key: 'email_subject',
     header: 'Assunto',
@@ -64,7 +64,7 @@ export const enviosColumns: ColumnDef<CobrancaEnvioLog>[] = [
     secondLineLabel: 'Assunto',
     render: (r) => r.email_subject || DASH,
   },
-  { key: 'sent_at', header: 'Enviado em', size: 160, render: (r) => fmtDateTime(r.sent_at) },
+  { key: 'sent_at', header: 'Enviado em', size: 160, sortKey: 'sent_at', render: (r) => fmtDateTime(r.sent_at) },
 ];
 
 export const errosColumns: ColumnDef<CobrancaErroLog>[] = [

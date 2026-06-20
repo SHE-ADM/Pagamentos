@@ -276,7 +276,8 @@ export async function getFinancialAccountControl({
   const offset = (page - 1) * pageSize;
   const url = new URL(`${BASE_URL}/rest/v1/financial_account_control`);
   url.searchParams.set('select', '*');
-  url.searchParams.set('order', sortCol ? `${sortCol}.${sortDir ?? 'asc'}` : 'issue_date.desc');
+  // Ordenação padrão = vencimento (due_date) ascendente; sort explícito sobrescreve.
+  url.searchParams.set('order', sortCol ? `${sortCol}.${sortDir ?? 'asc'}` : 'due_date.asc');
   url.searchParams.set('limit', String(pageSize));
   url.searchParams.set('offset', String(offset));
   const supplierIds = supplier ? await findSupplierIdsByEmail(supplier) : [];
