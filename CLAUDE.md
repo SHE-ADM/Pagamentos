@@ -1260,12 +1260,22 @@ serviço `services/cobrancaService.ts` (REST direto, paginado), tipos `types/cob
 
 ## Windows Task Scheduler
 
-`scheduler/run_reader.ps1` — 1 hora de intervalo. Detecta Python com `pdfplumber`
-(ordem: `py -3.12`, `-3.13`, `-3.11`, `-3.10`, `-3`, PATH). Logs em
-`logs/scheduler/reader_YYYYMMDD.log`, retidos 30 dias.
+`scheduler/run_reader.ps1` — intervalo de 5 min (`$INTERVAL_MIN` em
+`scheduler/setup-task.ps1`). Detecta Python com `pdfplumber` (ordem: `py -3.12`,
+`-3.13`, `-3.11`, `-3.10`, `-3`, PATH). Logs em
+`logs/scheduler/reader_YYYYMMDD.log`, retidos 30 dias. Instalação em outra
+máquina: `scheduler/INSTALL.md` (setup detecta executor `pwsh.exe`/`powershell.exe`
+e checa o `.env`).
 
-Dev/único checkout: `C:\Sheild\Projetos\Claude\Contas a pagar\Pagamentos` (branch `Features`,
-sincronizado com `main`). **Não há checkout de produção separado** — `C:\Sheild\API\Pagamentos`
-(citado em versões antigas) não existe como repositório. Para provisionar produção no futuro,
-clonar o `main` no destino; até lá, app e scheduler rodam deste diretório.
+Checkout de **desenvolvimento**: `C:\Sheild\Projetos\Claude\Contas a pagar\Pagamentos`
+(branch `Features`, sincronizado com `main`) — clone git completo onde todo o trabalho acontece.
+
+**Produção dos recebimentos (outra máquina):** o scheduler roda de
+`C:\Sheild\API\Pagamentos`, um **deploy mínimo** (NÃO é clone git) com apenas o
+necessário para o pipeline de leitura: `scheduler\` + `skills\` + `.env` + `data\` +
+`logs\`. Não tem `apps\`, `server\`, `supabase\`, `packages\` nem `.git`. Como os
+scripts `.ps1` usam caminhos relativos a `$PSScriptRoot`, funcionam nesse caminho sem
+ajuste. **Atualizar produção = copiar manualmente** os arquivos alterados (ex.: os 2
+scripts de `scheduler\`) — não há `git pull` lá. Requer Python 3.12 + `pdfplumber`
+instalados na máquina. Guia: `scheduler/INSTALL.md`.
 
