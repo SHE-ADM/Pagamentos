@@ -986,6 +986,16 @@ espelha o webmail inteiro (o app substitui abrir a caixa). O filtro de keyword d
 - **Câmbio**: lê `cambio` **ou** `câmbio` (sem acento), mas a keyword gravada/retornada é
   sempre `câmbio` (forma gramatical correta na lista).
 
+**Remetente de SISTEMA → `ignorado`** (`is_ignored_sender`, `IGNORED_SENDER_LOCALPARTS`,
+`tests/test_match_keyword.py`): e-mails cujo **local-part** do remetente está na lista
+(hoje `postmaster`) — NDR/bounce/aviso de servidor (ex.: "Undeliverable: …") — viram
+`ignorado` **sem baixar nem extrair**, e o filtro roda **antes** do match de keyword (no loop
+de `run_reader`), então vale **mesmo que o assunto case uma palavra-chave**. Motivo: um aviso
+de não-entrega frequentemente cita o corpo da cobrança original (com valor), e sem esse filtro
+o pipeline criava uma conta a pagar **falsa** a partir do bounce. Match por local-part
+(case-insensitive, qualquer domínio); a lista é um `set` extensível. O registro `ignorado` é
+compartilhado com o filtro de assunto via `_register_ignored`.
+
 Lista padrão em `KEYWORDS_DEFAULT`, **sobrescrita por `EMAIL_KEYWORDS` no `.env`** (fonte de
 verdade usada hoje). **NF-e "pura"** (`subject_is_pure_nfe`): assunto com `nota fiscal/nfe/
 nf-e/nfse/nfs-e` **por palavra inteira** (não casa "co**nfe**cções") e **sem** indício de
@@ -1261,10 +1271,12 @@ Firebird (VW_PSQ_FIN_REC_BAN + _004)  →  run.py  →  SMTP Locaweb (email-ssl.
 
 | Arquivo | Papel |
 |---|---|
-| `run.py` | Entry-point (`py -3 run.py [--dry-run]`). Loop por título com **rede de segurança** (`_process_titulo_safe`): falha de um e-mail **nunca** trava os demais. Throttle entre envios |
+| `run.py` | Entry-point do **batch diário** (`py -3 run.py [--dry-run]`). Lê o Firebird e, por título, chama `send_core.send_and_log`. Loop com **rede de segurança** (`_process_titulo_safe`): falha de um e-mail **nunca** trava os demais. Throttle entre envios (`COBRANCA_SEND_DELAY_SECONDS`, default 3s) |
+| `send_core.py` | **Núcleo compartilhado** por `run.py` (batch) e `resend.py` (reenvio manual): `validate_email`, `classify_smtp_error` e `send_and_log` (render→envia→loga; sucesso→`cobranca_envios_log`, falha→`cobranca_erros_log`; **nunca propaga exceção SMTP**). Centraliza a lógica num só lugar — não duplicar entre os fluxos |
+| `resend.py` | **Reenvio manual** de falhas a partir de `/cobranca/erros` (`resend_erros(ids, on_progress)`). Ver subseção "Reenvio manual" abaixo |
 | `db_firebird.py` | Conexão Firebird (driver **`fdb`**, fixado em `server/requirements.txt`) + `_QUERY` (UNION das views `VW_PSQ_FIN_REC_BAN` e `_004`). Linha **sem e-mail SEGUE** o fluxo (vira `email_ausente`); só descarta linha sem `document_id` |
 | `email_sender.py` | Monta e envia. **To primeiro; se o principal falhar, o Cc NÃO é enviado** (2 `sendmail` na mesma conexão). Conexão **nova por e-mail** |
-| `supabase_log.py` | `already_sent` (dedup), `log_envio_sucesso`, `log_envio_erro`, `fetch_company_smtp` |
+| `supabase_log.py` | `already_sent` (dedup), `log_envio_sucesso`, `log_envio_erro`, `fetch_company_smtp`, `fetch_erro_rows` (linhas de erro para o reenvio) |
 | `template.py` | HTML do e-mail (`render_html`) |
 
 **SMTP (não óbvio — não regredir):** remetente = `company.email` (`company_id=1` =
@@ -1291,11 +1303,31 @@ em produção.** Spec completa: `skills/cobranca-vencidos/references/env_referen
 `p=none`; **DKIM ❌ a configurar** no painel Locaweb (melhora caixa-de-entrada em Gmail/Outlook).
 O envio **funciona** sem DKIM (SPF já autentica); é melhoria, não pré-requisito.
 
+**Reenvio manual de falhas (tela `/cobranca/erros`):** o usuário **seleciona** linhas de erro
+(1 ou em lote) e reenvia **sem depender do Firebird** — `resend.py` (`resend_erros(ids)`)
+reconstrói o e-mail a partir dos campos **já gravados** em `cobranca_erros_log` (via
+`fetch_erro_rows`) e reusa `send_core.send_and_log` (mesma dedup, throttle e classificação de
+erro do batch). Teto `MAX_IDS=500`; throttle `COBRANCA_SEND_DELAY_SECONDS` (default **10s** no
+reenvio — ver memória `cobranca-smtp-bottleneck`) só **entre envios reais** (não após skip/
+no_email nem após o último). Status por título (consumido pela UI): `sent` (enviado agora) ·
+`skipped` (já em `cobranca_envios_log` — dedup, **não** reenvia) · `no_email` (sem e-mail/
+inválido → novo registro de erro) · `error` (falha SMTP → novo registro).
+
+**Endpoints Flask (assíncronos, **um job por vez** — dict + lock em `server/app.py`):**
+`GET /api/cobranca/resend/health` (prontidão: `resend_ready()` checa Supabase + SMTP/IMAP +
+DEV_MODE/override → a UI **desabilita o botão** quando `ready=false`, com o motivo no `title`) ·
+`POST /api/cobranca/resend/start` (dispara em **thread**, responde na hora) ·
+`GET /api/cobranca/resend/progress` (poll do progresso).
+
 **Frontend:** rotas lazy `/cobranca/envios` e `/cobranca/erros` (`App.tsx`), páginas
 `pages/cobranca/CobrancaEnvios.tsx` + `CobrancaErros.tsx` sobre o **`DataGrid` do projeto**
 (colunas em `cobrancaColumns.ts` no `ColumnDef<T>` de `useGridColumns`, **não** o do TanStack),
-serviço `services/cobrancaService.ts` (REST direto, paginado), tipos `types/cobranca.ts`
-(`ErrorType` + `ERROR_TYPE_LABEL` — **não** ficam em `@sheild/shared`). Sidebar: grupo **Envios**.
+serviço `services/cobrancaService.ts` (REST direto, paginado; + `startResend`/`getResendProgress`/
+health do reenvio), tipos `types/cobranca.ts` (`ErrorType` + `ERROR_TYPE_LABEL` — **não** ficam
+em `@sheild/shared`). O grid de `/cobranca/erros` liga **seleção** + a ação
+`organisms/ResendErrosAction.tsx` (botão "Reenviar e-mails (N)" na barra de seleção;
+**confirmação inline** antes de disparar — são e-mails reais; poll de progresso a cada 1,5s;
+**desabilitado** quando o backend não está pronto). Sidebar: grupo **Envios**.
 
 ## Windows Task Scheduler
 
