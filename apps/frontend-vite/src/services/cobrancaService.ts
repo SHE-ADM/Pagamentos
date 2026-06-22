@@ -85,7 +85,7 @@ interface ErrosFilter { token: string; page?: number; errorType?: string; search
 export async function fetchErrosLog(filter: ErrosFilter): Promise<PaginatedResult<CobrancaErroLog>> {
   const { token, page = 1, errorType, search, dateFrom, dateTo } = filter;
   const params: Record<string, string> = {
-    select: 'id,document_id,customer_name,primary_email,due_date,bill_amount,error_type,error_message,error_detail,occurred_at',
+    select: 'id,document_id,customer_name,primary_email,cc_email,due_date,bill_amount,error_type,error_message,error_detail,occurred_at',
     order: 'occurred_at.desc', limit: String(PAGE_SIZE), offset: String((page - 1) * PAGE_SIZE),
   };
   if (errorType?.trim()) params['error_type'] = `eq.${errorType.trim()}`;

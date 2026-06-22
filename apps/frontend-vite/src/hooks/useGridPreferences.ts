@@ -37,12 +37,27 @@ const defaultPrefs = (order: string[]): GridPreferences => ({
   density: 'comfortable',
 });
 
-// Mantém a ordem salva para colunas ainda existentes e acrescenta as novas no fim —
-// assim adicionar/remover uma coluna no código não corrompe o layout salvo do usuário.
+// Mantém a ordem salva das colunas ainda existentes e insere as NOVAS na POSIÇÃO da
+// definição (logo após o vizinho anterior já presente; senão, antes do próximo presente;
+// senão, no fim). Assim adicionar uma coluna no código não a joga para o fim do layout
+// salvo do usuário — ela aparece onde foi definida (ex.: "E-mail (Cc)" logo após "E-mail").
 const reconcileOrder = (saved: string[], ids: string[]): string[] => {
-  const known = saved.filter((id) => ids.includes(id));
-  const missing = ids.filter((id) => !known.includes(id));
-  return [...known, ...missing];
+  const idsSet = new Set(ids);
+  const result = saved.filter((id) => idsSet.has(id));
+  ids.forEach((id, defIdx) => {
+    if (result.includes(id)) return;
+    let at = -1;
+    for (let i = defIdx - 1; i >= 0 && at === -1; i--) {
+      const p = result.indexOf(ids[i]);
+      if (p !== -1) at = p + 1;
+    }
+    for (let j = defIdx + 1; j < ids.length && at === -1; j++) {
+      const q = result.indexOf(ids[j]);
+      if (q !== -1) at = q;
+    }
+    result.splice(at === -1 ? result.length : at, 0, id);
+  });
+  return result;
 };
 
 const applyUpdater = <T,>(updater: T | ((old: T) => T), old: T): T =>

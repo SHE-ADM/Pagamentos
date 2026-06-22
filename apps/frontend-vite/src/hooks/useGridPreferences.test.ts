@@ -29,7 +29,7 @@ describe('useGridPreferences', () => {
     expect(result.current.prefs.density).toBe('comfortable');
   });
 
-  it('reconcilia a ordem salva (mantém conhecidas, anexa novas, descarta removidas)', () => {
+  it('reconcilia a ordem salva (mantém conhecidas, insere novas na posição, descarta removidas)', () => {
     localStorage.setItem(
       'pag:grid:g1:v3',
       JSON.stringify({
@@ -41,8 +41,24 @@ describe('useGridPreferences', () => {
       }),
     );
     const { result } = renderHook(() => useGridPreferences('g1', ['a', 'b', 'c']));
-    // 'c','a' conhecidas (nessa ordem) → 'b' nova anexada; 'x' (removida) descartada.
+    // 'c','a' conhecidas (nessa ordem); 'b' (def. após 'a') entra após 'a'; 'x' descartada.
     expect(result.current.prefs.order).toEqual(['c', 'a', 'b']);
+  });
+
+  it('insere coluna nova na POSIÇÃO da definição, não no fim do layout salvo', () => {
+    localStorage.setItem(
+      'pag:grid:g1:v3',
+      JSON.stringify({
+        order: ['a', 'b', 'c'],
+        visibility: {},
+        sizing: {},
+        pinning: { left: [], right: [] },
+        density: 'comfortable',
+      }),
+    );
+    // 'novo' definido entre 'a' e 'b' deve entrar entre eles (não ser anexado ao fim).
+    const { result } = renderHook(() => useGridPreferences('g1', ['a', 'novo', 'b', 'c']));
+    expect(result.current.prefs.order).toEqual(['a', 'novo', 'b', 'c']);
   });
 
   it('sem gridId não persiste (apenas memória)', () => {
