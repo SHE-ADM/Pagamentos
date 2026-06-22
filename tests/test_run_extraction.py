@@ -66,42 +66,50 @@ class RunExtractionRetryTest(unittest.TestCase):
         self._sleep.assert_not_called()
 
 
-class RunExtractionOnceClassificationTest(unittest.TestCase):
-    """Classificacao transitorio/definitivo — patch em subprocess.run."""
+class RunExtractionOnceInProcessTest(unittest.TestCase):
+    """Classificacao transitorio/definitivo do _run_extraction_once IN-PROCESS.
 
-    def _fake_proc(self, returncode, stderr="", stdout=""):
-        m = mock.Mock()
-        m.returncode = returncode
-        m.stderr = stderr
-        m.stdout = stdout
-        return m
+    A extracao roda no MESMO processo (sem subprocesso) — correcao do rc=0xC0000142
+    (STATUS_DLL_INIT_FAILED) que derrubava 100% das extracoes quando o spawn partia
+    do Flask. Aqui o patch e em extract_pdf.extract_to_csv (via sys.modules), nao mais
+    em subprocess.run.
+    """
 
-    def test_rc_diferente_de_zero_e_transitorio(self):
-        with mock.patch.object(read_emails.subprocess, "run",
-                               return_value=self._fake_proc(1, stderr="ImportError: x")):
+    def _patch_extract(self, fn):
+        fake = mock.Mock()
+        fake.extract_to_csv = fn
+        return mock.patch.dict(sys.modules, {"extract_pdf": fake})
+
+    def test_sucesso_move_csv_para_output(self):
+        def fake(pdf_path, out_dir):
+            p = Path(out_dir) / "20260101_000000_extracted.csv"
+            p.write_text("col\nval\n", encoding="utf-8")
+            return p
+        with self._patch_extract(fake):
             csv, reason, transient = read_emails._run_extraction_once(Path("x.pdf"))
-        self.assertIsNone(csv)
-        self.assertTrue(transient)
-        self.assertIn("rc=1", reason)
-        self.assertIn("ImportError", reason)
+        self.assertIsNotNone(csv)
+        self.addCleanup(lambda: Path(csv).unlink(missing_ok=True))
+        self.assertTrue(csv.endswith("_extracted.csv"))
+        self.assertTrue(Path(csv).exists())          # movido para o dir definitivo
+        self.assertIsNone(reason)
+        self.assertFalse(transient)
 
-    def test_rc_zero_sem_csv_e_definitivo(self):
-        # tmp_out real fica vazio -> glob nao acha CSV -> definitivo
-        with mock.patch.object(read_emails.subprocess, "run",
-                               return_value=self._fake_proc(0, stdout="nada extraido")):
+    def test_sem_registros_e_definitivo(self):
+        # extract_to_csv devolve None (PDF sem registros extraiveis) -> nao repete
+        with self._patch_extract(lambda pdf, out: None):
             csv, reason, transient = read_emails._run_extraction_once(Path("x.pdf"))
         self.assertIsNone(csv)
         self.assertFalse(transient)
-        self.assertIn("sem CSV", reason)
+        self.assertIn("registros", reason)
 
-    def test_timeout_e_transitorio(self):
-        import subprocess as sp
-        with mock.patch.object(read_emails.subprocess, "run",
-                               side_effect=sp.TimeoutExpired(cmd="x", timeout=180)):
+    def test_excecao_e_transitorio(self):
+        def boom(pdf, out):
+            raise RuntimeError("lib nativa caiu")
+        with self._patch_extract(boom):
             csv, reason, transient = read_emails._run_extraction_once(Path("x.pdf"))
         self.assertIsNone(csv)
         self.assertTrue(transient)
-        self.assertIn("timeout", reason)
+        self.assertIn("in-process", reason)
 
 
 if __name__ == "__main__":
