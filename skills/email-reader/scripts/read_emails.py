@@ -709,6 +709,19 @@ def subject_is_ignorable_notification(subject: str) -> bool:
     return any(_strip_accents_lower(t) in s for t in NOTIFICATION_PHRASE_TERMS)
 
 
+# Remetentes de SISTEMA (NDR/bounce/aviso de servidor) — nunca sao conta a pagar.
+# Match pelo local-part (antes do @), case-insensitive, em QUALQUER dominio.
+IGNORED_SENDER_LOCALPARTS = {"postmaster"}
+
+
+def is_ignored_sender(sender_email: str | None) -> bool:
+    """True se o remetente e um endereco de SISTEMA (ex.: postmaster@) cuja
+    mensagem (NDR/bounce/aviso de entrega) deve virar 'ignorado' sem baixar nem
+    extrair — MESMO que o assunto case uma keyword financeira."""
+    local = (sender_email or "").split("@")[0].strip().lower()
+    return local in IGNORED_SENDER_LOCALPARTS
+
+
 def append_log_csv(record: dict):
     """Fallback local: acrescenta registro no CSV. Falhas são logadas e ignoradas."""
     try:
@@ -2130,6 +2143,24 @@ def _connect_and_search(criteria: str):
     ) from last_err
 
 
+def _register_ignored(ctrl, msg_id, subject, sender_name, sender_email,
+                      received_at, notes):
+    """Registra um e-mail como 'ignorado' (sem baixar/extrair). Compartilhado pelo
+    filtro de remetente de sistema (postmaster@) e pelo filtro de assunto."""
+    ctrl.register({
+        "message_id":      msg_id,
+        "subject":         subject,
+        "sender_name":     decode_str(sender_name) or sender_email,
+        "sender_email":    sender_email,
+        "received_at":     received_at,
+        "keyword_matched": None,
+        "has_attachment":  None,   # desconhecido — não baixamos o corpo
+        "status":          "ignorado",
+        "notes":           notes,
+        "processed_at":    datetime.now(timezone.utc).isoformat(),
+    })
+
+
 def run_reader(days: int = 0, all_: bool = False,
                dry_run: bool = False, mark_seen: bool = False,
                on_progress=None) -> dict:
@@ -2226,26 +2257,27 @@ def run_reader(days: int = 0, all_: bool = False,
             skipped_dup += 1
             continue
 
+        # Remetente e data (canonico = INTERNALDATE) — usados pelos filtros abaixo
+        # e pelo registro 'ignorado', mantendo /emails na MESMA ordem do webmail.
+        sender_name, sender_email = parseaddr(hdr_msg.get("From", ""))
+        received_at = _received_at_from(hdr_meta, hdr_msg.get("Date", ""))
+
+        # Remetente de SISTEMA (postmaster@ etc.) → 'ignorado' sem baixar/extrair,
+        # MESMO com keyword no assunto (NDR/bounce/aviso nao e conta a pagar).
+        if is_ignored_sender(sender_email):
+            if not dry_run:
+                _register_ignored(ctrl, msg_id, subject, sender_name, sender_email,
+                                  received_at, f"Remetente de sistema ignorado ({sender_email})")
+            log.info(f"  [IGN remetente] {subject[:55]}")
+            skipped_kw += 1
+            continue
+
         # Fora do filtro de assunto → registra como 'ignorado' (sem baixar/extrair),
         # para que /emails reflita a caixa inteira (o app substitui abrir o webmail).
         if not match_keyword(subject, keywords):
             if not dry_run:
-                sender_name, sender_email = parseaddr(hdr_msg.get("From", ""))
-                # received_at canonico = INTERNALDATE (chegada na caixa), igual ao
-                # process_message — para /emails ficar na MESMA ordem do webmail.
-                received_at = _received_at_from(hdr_meta, hdr_msg.get("Date", ""))
-                ctrl.register({
-                    "message_id":   msg_id,
-                    "subject":      subject,
-                    "sender_name":  decode_str(sender_name) or sender_email,
-                    "sender_email": sender_email,
-                    "received_at":  received_at,
-                    "keyword_matched": None,
-                    "has_attachment":  None,   # desconhecido — não baixamos o corpo
-                    "status":       "ignorado",
-                    "notes":        "Fora do filtro de assunto (não-financeiro)",
-                    "processed_at": datetime.now(timezone.utc).isoformat(),
-                })
+                _register_ignored(ctrl, msg_id, subject, sender_name, sender_email,
+                                  received_at, "Fora do filtro de assunto (não-financeiro)")
             log.info(f"  [IGN] {subject[:65]}")
             skipped_kw += 1
             continue

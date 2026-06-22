@@ -986,6 +986,16 @@ espelha o webmail inteiro (o app substitui abrir a caixa). O filtro de keyword d
 - **Câmbio**: lê `cambio` **ou** `câmbio` (sem acento), mas a keyword gravada/retornada é
   sempre `câmbio` (forma gramatical correta na lista).
 
+**Remetente de SISTEMA → `ignorado`** (`is_ignored_sender`, `IGNORED_SENDER_LOCALPARTS`,
+`tests/test_match_keyword.py`): e-mails cujo **local-part** do remetente está na lista
+(hoje `postmaster`) — NDR/bounce/aviso de servidor (ex.: "Undeliverable: …") — viram
+`ignorado` **sem baixar nem extrair**, e o filtro roda **antes** do match de keyword (no loop
+de `run_reader`), então vale **mesmo que o assunto case uma palavra-chave**. Motivo: um aviso
+de não-entrega frequentemente cita o corpo da cobrança original (com valor), e sem esse filtro
+o pipeline criava uma conta a pagar **falsa** a partir do bounce. Match por local-part
+(case-insensitive, qualquer domínio); a lista é um `set` extensível. O registro `ignorado` é
+compartilhado com o filtro de assunto via `_register_ignored`.
+
 Lista padrão em `KEYWORDS_DEFAULT`, **sobrescrita por `EMAIL_KEYWORDS` no `.env`** (fonte de
 verdade usada hoje). **NF-e "pura"** (`subject_is_pure_nfe`): assunto com `nota fiscal/nfe/
 nf-e/nfse/nfs-e` **por palavra inteira** (não casa "co**nfe**cções") e **sem** indício de

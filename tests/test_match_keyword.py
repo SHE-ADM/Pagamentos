@@ -105,5 +105,21 @@ class IgnorableNotificationTest(unittest.TestCase):
             self.assertFalse(read_emails.subject_is_ignorable_notification(assunto), assunto)
 
 
+class IsIgnoredSenderTest(unittest.TestCase):
+    """postmaster@ (NDR/bounce/aviso de servidor) e ignorado em qualquer dominio,
+    case-insensitive — mesmo que o assunto case keyword."""
+
+    def test_postmaster_em_qualquer_dominio_e_ignorado(self):
+        for addr in ["postmaster@otimotex.com.br", "postmaster@locaweb.com.br",
+                     "Postmaster@Gmail.com", "POSTMASTER@x.com"]:
+            self.assertTrue(read_emails.is_ignored_sender(addr), addr)
+
+    def test_remetente_normal_nao_e_ignorado(self):
+        for addr in ["financeiro@fornecedor.com", "boleto@banco.com.br",
+                     "postmaster.financeiro@x.com",  # local-part != 'postmaster'
+                     "naopostmaster@x.com", "", None]:
+            self.assertFalse(read_emails.is_ignored_sender(addr), addr)
+
+
 if __name__ == "__main__":
     unittest.main()
