@@ -3,12 +3,18 @@
 
 import { useCallback, useEffect, useState } from 'react';
 import { useAuth } from '../../contexts/AuthContext';
-import { fetchErrosLog } from '../../services/cobrancaService';
+import {
+  fetchErrosLog,
+  getResendHealth,
+  type ResendHealth,
+  type ResendProgress,
+} from '../../services/cobrancaService';
 import type { CobrancaErroLog, ErrorType } from '../../types/cobranca';
 import { ERROR_TYPE_LABEL } from '../../types/cobranca';
 import { getErrorMessage } from '../../lib/getErrorMessage';
 import Alert from '../../components/atoms/Alert';
 import DataGrid from '../../components/organisms/DataGrid';
+import ResendErrosAction from '../../components/organisms/ResendErrosAction';
 import { errosColumns } from './cobrancaColumns';
 
 const PAGE_SIZE = 50;
@@ -27,6 +33,19 @@ export default function CobrancaErros() {
   const [errorType, setErrorType] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Prontidão do reenvio (probe no mount) — desabilita o botão sem backend/SMTP.
+  const [resendHealth, setResendHealth] = useState<ResendHealth>({ ready: false, reason: null });
+  const [resendNotice, setResendNotice] = useState<string | null>(null);
+
+  useEffect(() => {
+    let alive = true;
+    void getResendHealth().then((h) => {
+      if (alive) setResendHealth(h);
+    });
+    return () => {
+      alive = false;
+    };
+  }, []);
 
   // Debounce da busca (mesmo padrão de Consulta): congela `search` em `applied` após 350ms.
   useEffect(() => {
@@ -66,6 +85,25 @@ export default function CobrancaErros() {
 
   const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
 
+  // Ao concluir o reenvio: banner com o balanço + recarrega o grid (linhas enviadas
+  // saem de cobranca_erros_log conforme o status real muda no próximo ciclo).
+  const handleResendFinished = useCallback(
+    (s: ResendProgress) => {
+      setError(null);
+      if (s.error_msg) {
+        setError(s.error_msg);
+        return;
+      }
+      const parts = [`${s.sent} enviado${s.sent === 1 ? '' : 's'}`];
+      if (s.skipped) parts.push(`${s.skipped} já enviado${s.skipped === 1 ? '' : 's'}`);
+      if (s.no_email) parts.push(`${s.no_email} sem e-mail`);
+      if (s.error) parts.push(`${s.error} com falha`);
+      setResendNotice(`Reenvio concluído: ${parts.join(', ')}.`);
+      void load();
+    },
+    [load],
+  );
+
   return (
     <div className="flex flex-col h-full">
       <div className="h-0.5 bg-linear-to-r from-brand to-brand-dark" />
@@ -81,6 +119,12 @@ export default function CobrancaErros() {
         {error && (
           <Alert variant="error" className="mb-4">
             <strong>Erro:</strong> {error}
+          </Alert>
+        )}
+
+        {resendNotice && (
+          <Alert variant="success" className="mb-4">
+            {resendNotice}
           </Alert>
         )}
 
@@ -129,6 +173,19 @@ export default function CobrancaErros() {
             emptyMessage={
               applied || errorType ? 'Nenhum erro encontrado com os filtros aplicados.' : 'Nenhuma falha registrada.'
             }
+            gridId="cobranca-erros"
+            enableColumnManagement
+            enableSelection
+            renderSelectionActions={(selected, clear) => (
+              <ResendErrosAction
+                ids={selected.map((r) => r.id)}
+                ready={resendHealth.ready}
+                reason={resendHealth.reason}
+                clearSelection={clear}
+                onFinished={handleResendFinished}
+                onError={setError}
+              />
+            )}
           />
         </div>
 

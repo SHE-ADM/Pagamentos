@@ -6,10 +6,15 @@ para que o frontend dispare a busca por um botão em vez de rodar o script no
 terminal. Roda na máquina onde estão as credenciais IMAP e a service_role do
 Supabase (ambas no .env da raiz do projeto, carregado pelo próprio read_emails).
 
-Dois modos de disparo:
+Leitura de e-mails:
   - POST /api/emails/read        → síncrono (bloqueia até terminar; ponte da Next API)
   - POST /api/emails/read/start  → assíncrono (dispara em thread, responde na hora)
   - GET  /api/emails/progress    → progresso do job assíncrono em andamento
+
+Reenvio de cobranças (tela /cobranca/erros):
+  - GET  /api/cobranca/resend/health    → prontidão (habilita/desabilita o botão)
+  - POST /api/cobranca/resend/start     → dispara o reenvio em thread
+  - GET  /api/cobranca/resend/progress  → progresso do reenvio
 
 Execução:
     python server/app.py
@@ -32,6 +37,13 @@ SCRIPTS_DIR  = PROJECT_ROOT / "skills" / "email-reader" / "scripts"
 sys.path.insert(0, str(SCRIPTS_DIR))
 
 import read_emails  # noqa: E402  (depende do sys.path acima)
+
+# Skill cobranca-vencidos (reenvio manual via /cobranca/erros). Não há colisão de
+# nomes de módulo entre os dois diretórios de scripts. read_emails já carregou o
+# .env da raiz, então resend/send_core leem as credenciais de os.environ.
+COBRANCA_DIR = PROJECT_ROOT / "skills" / "cobranca-vencidos" / "scripts"
+sys.path.insert(0, str(COBRANCA_DIR))
+import resend  # noqa: E402  (depende do sys.path acima)
 
 # Limites de validação de entrada
 MAX_DAYS = 365
@@ -100,6 +112,102 @@ def _run_job(params: dict) -> None:
 def health():
     """Sonda simples para o frontend saber se o backend está no ar."""
     return jsonify({"status": "ok"})
+
+
+# ---------------------------------------------------------------------------
+# Reenvio manual de cobranças (tela /cobranca/erros). Mesmo modelo assíncrono da
+# leitura de e-mails: /start dispara em thread, /progress faz o poll. /health
+# informa se o ambiente está apto a enviar — a UI usa isso para habilitar/
+# desabilitar o botão de reenvio (sem SMTP/Supabase, fica desabilitado).
+# ---------------------------------------------------------------------------
+_resend_lock = threading.Lock()
+_resend = {
+    "running": False,
+    "phase": "idle",        # idle | iniciando | enviando | concluído | erro
+    "total": 0,
+    "done": 0,
+    "sent": 0,
+    "skipped": 0,
+    "no_email": 0,
+    "error": 0,             # contador de falhas SMTP
+    "started_at": None,
+    "finished_at": None,
+    "results": None,        # lista por-título ao concluir
+    "error_msg": None,      # erro de execução do job (não confundir com o contador 'error')
+}
+
+
+@app.get("/api/cobranca/resend/health")
+def cobranca_resend_health():
+    """Prontidão do reenvio: o frontend desabilita o botão quando ready=False."""
+    ready, reason = resend.resend_ready()
+    return jsonify({"ok": True, "ready": ready, "reason": reason})
+
+
+def _resend_on_progress(ev: dict) -> None:
+    keys = ("phase", "total", "done", "sent", "skipped", "no_email", "error")
+    with _resend_lock:
+        for k in keys:
+            if k in ev:
+                _resend[k] = ev[k]
+
+
+def _resend_job(ids: list) -> None:
+    try:
+        summary = resend.resend_erros(ids, on_progress=_resend_on_progress)
+        with _resend_lock:
+            _resend.update({
+                "running": False, "phase": "concluído",
+                "results": summary["results"], "finished_at": time.time(),
+            })
+    except Exception as e:  # noqa: BLE001 — superfície de erro para o GET /progress
+        with _resend_lock:
+            _resend.update({
+                "running": False, "phase": "erro",
+                "error_msg": str(e), "finished_at": time.time(),
+            })
+
+
+@app.post("/api/cobranca/resend/start")
+def cobranca_resend_start():
+    """Dispara o reenvio das linhas de erro selecionadas (assíncrono)."""
+    ready, reason = resend.resend_ready()
+    if not ready:
+        return jsonify({"ok": False, "error": reason or "Reenvio indisponível."}), 503
+
+    body = request.get_json(silent=True) or {}
+    ids = body.get("ids")
+    if (not isinstance(ids, list) or not ids
+            or not all(isinstance(i, int) and not isinstance(i, bool) for i in ids)):
+        return jsonify({"ok": False, "error": "Informe 'ids' (lista não vazia de inteiros)."}), 422
+    if len(ids) > resend.MAX_IDS:
+        return jsonify({"ok": False, "error": f"Máximo de {resend.MAX_IDS} por vez."}), 422
+
+    with _resend_lock:
+        if _resend["running"]:
+            return jsonify({"ok": True, "started": False, "already_running": True})
+        _resend.update({
+            "running": True, "phase": "iniciando", "total": len(ids), "done": 0,
+            "sent": 0, "skipped": 0, "no_email": 0, "error": 0,
+            "started_at": time.time(), "finished_at": None,
+            "results": None, "error_msg": None,
+        })
+
+    threading.Thread(target=_resend_job, args=(ids,), daemon=True).start()
+    return jsonify({"ok": True, "started": True})
+
+
+@app.get("/api/cobranca/resend/progress")
+def cobranca_resend_progress():
+    """Snapshot do progresso do reenvio (+ elapsed em segundos)."""
+    with _resend_lock:
+        snap = dict(_resend)
+    if snap["started_at"]:
+        end = snap["finished_at"] or time.time()
+        snap["elapsed"] = round(end - snap["started_at"], 1)
+    else:
+        snap["elapsed"] = 0
+    return jsonify({"ok": True, "progress": snap})
 
 
 @app.post("/api/emails/read")

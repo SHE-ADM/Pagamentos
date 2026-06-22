@@ -81,6 +81,11 @@ interface DataGridProps<T> {
   bulkStatusOptions?: readonly { value: string; label: string }[];
   /** Callback disparado ao aplicar status em lote — recebe as linhas selecionadas e o novo status. */
   onBulkStatusChange?: (rows: T[], status: string) => Promise<void>;
+  /**
+   * Ações customizadas na barra de seleção (ex.: botão "Reenviar e-mails"). Recebe as
+   * linhas selecionadas e uma função para limpar a seleção. Compõe com `bulkStatusOptions`.
+   */
+  renderSelectionActions?: (rows: T[], clearSelection: () => void) => ReactNode;
   /** Altura máxima do corpo rolável (habilita cabeçalho fixo). px ou string CSS. */
   maxBodyHeight?: number | string;
 }
@@ -265,6 +270,7 @@ export default function DataGrid<T>({
   onExportSelected,
   bulkStatusOptions,
   onBulkStatusChange,
+  renderSelectionActions,
   maxBodyHeight,
 }: Readonly<DataGridProps<T>>) {
   const { ref, breakpoint } = useContainerBreakpoint<HTMLDivElement>();
@@ -637,32 +643,37 @@ export default function DataGrid<T>({
           }
           onClearSelection={enableSelection ? () => table.resetRowSelection() : undefined}
           selectionActions={
-            enableSelection && bulkStatusOptions && onBulkStatusChange ? (
+            enableSelection && (renderSelectionActions || (bulkStatusOptions && onBulkStatusChange)) ? (
               <>
-                <select
-                  value={bulkStatus}
-                  onChange={(e) => setBulkStatus(e.target.value)}
-                  aria-label="Selecionar nova situação"
-                  className="h-7 rounded-sm border border-brand/30 bg-white px-2 text-xs text-slate-700 focus:outline-hidden focus:ring-1 focus:ring-brand"
-                >
-                  <option value="">Alterar situação...</option>
-                  {bulkStatusOptions.map((o) => (
-                    <option key={o.value} value={o.value}>{o.label}</option>
-                  ))}
-                </select>
-                <button
-                  type="button"
-                  disabled={!bulkStatus}
-                  onClick={async () => {
-                    const rows = selectedRows.map((r) => r.original);
-                    await onBulkStatusChange(rows, bulkStatus);
-                    setBulkStatus('');
-                    table.resetRowSelection();
-                  }}
-                  className="btn btn-primary disabled:opacity-40 disabled:cursor-not-allowed"
-                >
-                  Aplicar
-                </button>
+                {bulkStatusOptions && onBulkStatusChange && (
+                  <>
+                    <select
+                      value={bulkStatus}
+                      onChange={(e) => setBulkStatus(e.target.value)}
+                      aria-label="Selecionar nova situação"
+                      className="h-7 rounded-sm border border-brand/30 bg-white px-2 text-xs text-slate-700 focus:outline-hidden focus:ring-1 focus:ring-brand"
+                    >
+                      <option value="">Alterar situação...</option>
+                      {bulkStatusOptions.map((o) => (
+                        <option key={o.value} value={o.value}>{o.label}</option>
+                      ))}
+                    </select>
+                    <button
+                      type="button"
+                      disabled={!bulkStatus}
+                      onClick={async () => {
+                        const rows = selectedRows.map((r) => r.original);
+                        await onBulkStatusChange(rows, bulkStatus);
+                        setBulkStatus('');
+                        table.resetRowSelection();
+                      }}
+                      className="btn btn-primary disabled:opacity-40 disabled:cursor-not-allowed"
+                    >
+                      Aplicar
+                    </button>
+                  </>
+                )}
+                {renderSelectionActions?.(selectedRows.map((r) => r.original), () => table.resetRowSelection())}
               </>
             ) : undefined
           }
