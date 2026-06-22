@@ -63,6 +63,15 @@ def fetch_erro_rows(ids:list[int])->list[dict]:
     r=httpx.get(f"{_base_url()}/cobranca_erros_log",headers=_headers(),params={"id":f"in.({id_list})","select":"id,document_id,customer_name,primary_email,cc_email,due_date,bill_amount,email_subject,error_type"},timeout=15)
     r.raise_for_status(); return r.json()
 
+def delete_erro_rows(ids:list[int])->None:
+    # Remove linhas de cobranca_erros_log por id. Usado pelo reenvio manual: todo título
+    # reenviado com SUCESSO (ou que já constava enviado) sai do log de erros — a tabela
+    # passa a refletir só falhas pendentes. service_role ignora RLS.
+    if not ids: return
+    id_list=",".join(str(int(i)) for i in ids)
+    r=httpx.delete(f"{_base_url()}/cobranca_erros_log",headers=_headers(),params={"id":f"in.({id_list})"},timeout=15)
+    r.raise_for_status()
+
 def fetch_company_smtp()->dict|None:
     try:
         r=httpx.get(f"{_base_url()}/company",headers=_headers(),params={"select":"email,legal_name,trade_name","company_id":"eq.1","limit":"1"},timeout=10)

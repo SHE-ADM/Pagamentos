@@ -80,7 +80,7 @@ $action = New-ScheduledTaskAction `
     -WorkingDirectory $PROJECT_ROOT
 
 # ---------------------------------------------------------------------------
-# Gatilho: diário ao meio-dia
+# Gatilho: diário às 08:00 (TRIGGER_H/TRIGGER_M)
 # ---------------------------------------------------------------------------
 $startAt = (Get-Date -Hour $TRIGGER_H -Minute $TRIGGER_M -Second 0 -Millisecond 0)
 # Se o horário de hoje já passou, agenda para amanhã
