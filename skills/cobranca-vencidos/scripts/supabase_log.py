@@ -72,6 +72,22 @@ def delete_erro_rows(ids:list[int])->None:
     r=httpx.delete(f"{_base_url()}/cobranca_erros_log",headers=_headers(),params={"id":f"in.({id_list})"},timeout=15)
     r.raise_for_status()
 
+def delete_erro_rows_by_document_id(document_id)->None:
+    # Remove TODAS as linhas de cobranca_erros_log de um título. Usado pela TASK diária:
+    # um título antes com erro (ex.: e-mail corrigido no Firebird) volta ao fluxo e, ao ser
+    # enviado com sucesso, suas falhas antigas deixam de ser pendências. service_role ignora RLS.
+    if not document_id: return
+    r=httpx.delete(f"{_base_url()}/cobranca_erros_log",headers=_headers(),params={"document_id":f"eq.{document_id}"},timeout=15)
+    r.raise_for_status()
+
+def fetch_error_document_ids()->set[str]:
+    # Conjunto de document_ids que possuem alguma linha em cobranca_erros_log. A task usa isso
+    # para limpar SÓ os títulos que já tinham erro ao enviá-los com sucesso, evitando um DELETE
+    # por título para quem nunca falhou.
+    r=httpx.get(f"{_base_url()}/cobranca_erros_log",headers=_headers(),params={"select":"document_id"},timeout=15)
+    r.raise_for_status()
+    return {row["document_id"] for row in r.json() if row.get("document_id")}
+
 def fetch_company_smtp()->dict|None:
     try:
         r=httpx.get(f"{_base_url()}/company",headers=_headers(),params={"select":"email,legal_name,trade_name","company_id":"eq.1","limit":"1"},timeout=10)

@@ -41,7 +41,9 @@ from email_sender import SmtpSession              # noqa: E402
 from send_core    import send_and_log, validate_email  # noqa: E402
 from supabase_log import (                        # noqa: E402
     already_sent,
+    delete_erro_rows_by_document_id,
     fetch_company_smtp,
+    fetch_error_document_ids,
     log_envio_erro,
 )
 
@@ -83,6 +85,15 @@ def _log_email_error(titulo, motivo: str | None, *, dry_run: bool) -> None:
             due_date=titulo.due_date, bill_amount=titulo.bill_amount,
             email_subject=titulo.email_subject,
         )
+
+
+def _cleanup_resolved_errors(document_id) -> None:
+    """Remove as linhas de erro antigas de um título resolvido (enviado agora ou que já
+    constava enviado). Best-effort: falha aqui não derruba o run — os e-mails já saíram."""
+    try:
+        delete_erro_rows_by_document_id(document_id)
+    except Exception:  # noqa: BLE001 — limpeza best-effort, não interrompe o lote
+        logger.warning("Falha ao limpar erros resolvidos do título %s (envio OK, seguindo).", document_id)
 
 
 def _send_titulo(titulo, *, dev_mode: bool, dev_override: str, company_row, session) -> str:
@@ -190,6 +201,17 @@ def main(dry_run: bool = False) -> None:
     except ValueError:
         send_delay = 10.0
 
+    # Títulos que JÁ têm erro registrado — usado para limpar o log de erros ao enviá-los
+    # com sucesso (e-mail corrigido no Firebird volta ao fluxo e a falha antiga some). Só
+    # limpa quem estava neste conjunto, evitando um DELETE por título p/ quem nunca falhou.
+    # Best-effort: se a consulta falhar, segue sem limpar (não derruba o run). Vazio em dry-run.
+    error_doc_ids: set[str] = set()
+    if not dry_run:
+        try:
+            error_doc_ids = fetch_error_document_ids()
+        except Exception:  # noqa: BLE001 — sem isso, só não limpa; o run segue
+            logger.warning("Não foi possível listar títulos com erro; limpeza de resolvidos desativada neste run.")
+
     counts = {"sent": 0, "skipped": 0, "error": 0}
     # Uma única conexão SMTP para todo o lote (lazy: só conecta no 1º envio real).
     # Em dry-run não há envio, então não abre sessão.
@@ -202,6 +224,9 @@ def main(dry_run: bool = False) -> None:
                 dev_override=dev_override, company_row=company_row, session=session,
             )
             counts[result] += 1
+            # Título resolvido (enviado agora ou já enviado) que antes tinha erro: limpa o log.
+            if result in ("sent", "skipped") and titulo.document_id in error_doc_ids:
+                _cleanup_resolved_errors(titulo.document_id)
             if send_delay > 0 and not dry_run and result in ("sent", "error"):
                 time.sleep(send_delay)
     finally:
