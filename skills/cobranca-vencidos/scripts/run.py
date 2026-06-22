@@ -13,8 +13,6 @@ import argparse
 import logging
 import logging.handlers
 import os
-import re
-import smtplib
 import sys
 import time
 import traceback
@@ -39,14 +37,12 @@ load_dotenv(PROJECT_ROOT / ".env")
 # Imports da skill (módulos irmãos em SCRIPTS_DIR)
 # ---------------------------------------------------------------------------
 from db_firebird  import fetch_titulos_vencidos   # noqa: E402
-from email_sender import send_cobranca            # noqa: E402
+from send_core    import send_and_log, validate_email  # noqa: E402
 from supabase_log import (                        # noqa: E402
     already_sent,
     fetch_company_smtp,
     log_envio_erro,
-    log_envio_sucesso,
 )
-from template import render_html                  # noqa: E402
 
 # ---------------------------------------------------------------------------
 # Logging -- arquivo rotativo 30 dias + console
@@ -65,16 +61,6 @@ logging.basicConfig(
     ],
 )
 logger = logging.getLogger("cobranca-vencidos")
-_EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
-
-
-def _validate_email(value: str | None) -> tuple[bool, str | None]:
-    # Mensagens em linguagem simples (vão para a coluna "Motivo" em /cobranca/erros).
-    if not value or not value.strip():
-        return False, "Cliente sem e-mail cadastrado."
-    if not _EMAIL_RE.match(value.strip()):
-        return False, f"E-mail do cliente parece inválido: {value.strip()}"
-    return True, None
 
 
 def _log_email_error(titulo, motivo: str | None, *, dry_run: bool) -> None:
@@ -98,67 +84,15 @@ def _log_email_error(titulo, motivo: str | None, *, dry_run: bool) -> None:
         )
 
 
-def _classify_smtp_error(exc: Exception) -> tuple[str, str]:
-    """Distingue BLOQUEIO/negação (exige ação humana) de INSTABILIDADE temporária (retry).
-
-    Retorna (error_type, mensagem em linguagem simples para a coluna "Motivo").
-    Locaweb costuma BLOQUEAR o envio (login recusado, limite de envios, conta bloqueada) —
-    nesses casos repetir não resolve; já timeout/queda de rede são temporários.
-    """
-    code = getattr(exc, "smtp_code", None)
-
-    # Login recusado / conta bloqueada (Locaweb 535).
-    if isinstance(exc, smtplib.SMTPAuthenticationError):
-        return ("smtp_bloqueio",
-            "Envio bloqueado: o servidor de e-mail recusou o login. Verifique o usuário/senha "
-            "e se a conta de e-mail não está bloqueada na Locaweb.")
-
-    # Endereço do destinatário recusado pelo servidor de destino.
-    if isinstance(exc, smtplib.SMTPRecipientsRefused):
-        return ("smtp_bloqueio",
-            "O e-mail do cliente foi recusado pelo servidor de destino (endereço inexistente, "
-            "caixa cheia ou bloqueado). Confira o e-mail cadastrado do cliente.")
-
-    # 421 (excesso de conexões / limite temporário) ou qualquer 5xx = bloqueio/negação:
-    # repetir não resolve — exige verificar o limite de envios ou o bloqueio da conta.
-    if code == 421 or (isinstance(code, int) and 500 <= code < 600):
-        return ("smtp_bloqueio",
-            "Envio bloqueado pelo servidor de e-mail — provável limite de envios excedido ou "
-            "conta bloqueada na Locaweb. Repetir não resolve: verifique o limite de envios e o "
-            "status da conta de e-mail.")
-
-    # Timeout, queda de rede, 450/451/452 (fila ocupada) = instabilidade temporária.
-    return ("smtp_falha",
-        "Não foi possível enviar o e-mail agora (instabilidade temporária no servidor de "
-        "e-mail). O sistema tentará novamente na próxima execução.")
-
-
 def _send_titulo(titulo, *, dev_mode: bool, dev_override: str, company_row) -> str:
-    """Renderiza, envia e registra um título. Retorna 'sent' ou 'error'."""
-    doc_id = titulo.document_id
-    html = render_html(customer_name=titulo.customer_name, document_id=doc_id,
-        bill_amount=titulo.bill_amount, due_date=titulo.due_date)
-    try:
-        send_cobranca(to_email=titulo.primary_email, cc_email=titulo.cc_email,
-            subject=titulo.email_subject, html_body=html, company_row=company_row,
-            dev_mode=dev_mode, dev_override=dev_override)
-        log_envio_sucesso(document_id=doc_id, customer_name=titulo.customer_name,
-            primary_email=titulo.primary_email, cc_email=titulo.cc_email,
-            due_date=titulo.due_date, bill_amount=titulo.bill_amount,
-            email_subject=titulo.email_subject)
-        logger.info("[OK] %s -> %s", doc_id, titulo.primary_email)
-        return "sent"
-    except Exception as exc:
-        logger.exception("[ERRO SMTP] %s: %s", doc_id, exc)
-        error_type, motivo = _classify_smtp_error(exc)
-        log_envio_erro(error_type=error_type,
-            error_message=motivo,
-            error_detail=traceback.format_exc(),
-            document_id=doc_id, customer_name=titulo.customer_name,
-            primary_email=titulo.primary_email, cc_email=titulo.cc_email,
-            due_date=titulo.due_date, bill_amount=titulo.bill_amount,
-            email_subject=titulo.email_subject)
-        return "error"
+    """Adapta um TituloVencido para o núcleo de envio compartilhado (send_core)."""
+    return send_and_log(
+        document_id=titulo.document_id, customer_name=titulo.customer_name,
+        primary_email=titulo.primary_email, cc_email=titulo.cc_email,
+        due_date=titulo.due_date, bill_amount=titulo.bill_amount,
+        email_subject=titulo.email_subject, company_row=company_row,
+        dev_mode=dev_mode, dev_override=dev_override,
+    )
 
 
 def _process_titulo(titulo, *, dry_run: bool, dev_mode: bool, dev_override: str, company_row) -> str:
@@ -169,7 +103,7 @@ def _process_titulo(titulo, *, dry_run: bool, dev_mode: bool, dev_override: str,
         logger.info("[SKIP] %s -- ja consta em cobranca_envios_log.", doc_id)
         return "skipped"
 
-    email_ok, email_motivo = _validate_email(titulo.primary_email)
+    email_ok, email_motivo = validate_email(titulo.primary_email)
     if not email_ok:
         _log_email_error(titulo, email_motivo, dry_run=dry_run)
         return "error"

@@ -344,7 +344,7 @@ read_emails.run_reader() ◄───────── server/app.py (Flask, po
       │  1. deduplica via email_control.message_id (UNIQUE) — pula já vistos
       │  2. SEM keyword no assunto → registra como 'ignorado' (sem baixar/extrair)
       │  3. COM keyword → salva PDF em data/pdfs_inbox/  apps/api-backend (:3000)
-      │  4. subprocess → extract_pdf.py (Claude API: pdf_text ou pdf_vision)
+      │  4. in-process → extract_pdf.extract_to_csv (Claude API: pdf_text ou pdf_vision)
       │  5. UPSERT em email_control  +  fallback CSV em data/csv_output/
       ▼
 Supabase (PostgreSQL)  ── financial_account_control (dados extraídos)
@@ -732,17 +732,22 @@ Proteções aprendidas "na dor" — manter:
   travado congela o pipeline inteiro**. As 3 instâncias `anthropic.Anthropic(...)`
   (`_try_barcode_vision`, `extract_with_vision`, `extract_fields_with_claude`) **sempre** passam
   `timeout=CLAUDE_API_TIMEOUT_SECONDS`. **Nunca** criar o client sem `timeout`.
+- **Extração IN-PROCESS (não regredir — 2026-06-22)**: `run_extraction` chama
+  `extract_pdf.extract_to_csv()` **no mesmo processo**, via import lazy — **não** mais um
+  subprocesso `python extract_pdf.py`. Motivo: na busca geral de 2026-06-22, **100% das
+  extrações falharam** com `rc=0xC0000142` (STATUS_DLL_INIT_FAILED) quando o spawn de
+  subprocesso partia do processo do Flask — o subprocesso nem inicializava (DLLs nativas de
+  pandas/Pillow não carregavam naquele contexto de *desktop heap*). O caminho do corpo
+  (in-process) seguia funcionando; só o de PDF (subprocesso) caía. Chamar a função direto
+  **elimina a criação de processo** → funciona idêntico no app (Flask), no CLI e no scheduler,
+  e ainda evita reimportar pdfplumber/pandas/anthropic por PDF. **Nunca** voltar a
+  `subprocess.run([sys.executable, extract_pdf.py])`. Ver memória `pdf-extraction-dll-init-fail`.
 - **`run_extraction` resiliente**: retorna `(csv_path, motivo)`. `_run_extraction_once`
-  classifica a falha — **transitória** (rc≠0, timeout, exceção de subprocesso → repete com
-  backoff; `EXTRACTION_MAX_ATTEMPTS=3`/`EXTRACTION_RETRY_BACKOFF`) vs **definitiva** (rc=0 sem
-  CSV → não repete). O `motivo` (rc/stderr) é gravado em `email_processing_errors.raw_payload`
+  classifica a falha — **transitória** (exceção de I/O/runtime → repete com backoff;
+  `EXTRACTION_MAX_ATTEMPTS=3`/`EXTRACTION_RETRY_BACKOFF`) vs **definitiva** (extração não gerou
+  registros → não repete). O `motivo` é gravado em `email_processing_errors.raw_payload`
   (`detalhe`) e fica **visível em `/erros`** — antes só ia para o console do Flask, fazendo um
   blip transitório parecer "tudo quebrado".
-- **UTF-8 forçado no subprocesso de extração**: o `extract_pdf` emite Unicode (`✓`, `→`) nos
-  logs; em console Windows (cp1252) a captura com `text=True` lançava `UnicodeDecodeError` e
-  **derrubava a extração em massa** mesmo com o PDF extraído. `subprocess.run` usa
-  `encoding='utf-8', errors='replace'` (parent) + `env PYTHONUTF8=1/PYTHONIOENCODING=utf-8`
-  (filho). **Não remover.**
 - **FETCH RFC822 robusto** (`_rfc822_from_fetch`): o `imaplib` pode **intercalar** respostas
   (um `FLAGS`/`UID` isolado como item `bytes`) no retorno do `fetch`. Aí `data[0]` não é a
   tupla `(meta, raw)` e `data[0][1]` indexa um `bytes`, devolvendo um **int** — e

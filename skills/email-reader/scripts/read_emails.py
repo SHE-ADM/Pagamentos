@@ -6,7 +6,7 @@ Deduplicação: tabela email_control no Supabase (message_id UNIQUE).
 Nunca reprocessa um e-mail já registrado, independente de onde o script rodar.
 """
 
-import os, sys, re, time, socket, imaplib, email, argparse, logging, subprocess, csv, json, tempfile, faulthandler, unicodedata
+import os, sys, re, time, socket, imaplib, email, argparse, logging, csv, json, tempfile, faulthandler, unicodedata
 import urllib.request, urllib.error, http.cookiejar
 from html import unescape as html_unescape
 from email.header import decode_header
@@ -1497,61 +1497,57 @@ def download_pdf_from_url(url: str, sender_email: str, subject: str,
 
 
 # ---------------------------------------------------------------------------
-# Acionar extract_pdf.py
+# Acionar extract_pdf (IN-PROCESS)
 # ---------------------------------------------------------------------------
-# Robustez da extração: uma falha transitória (crash do subprocesso, timeout) não
-# deve derrubar o PDF — repete com backoff. Falha definitiva (rc=0 sem CSV = nada a
-# extrair) não repete. O motivo é propagado para gravar em email_processing_errors.
+# A extração roda no MESMO processo do chamador — NÃO mais via subprocesso
+# `python extract_pdf.py`. Motivo (busca geral 2026-06-22): o spawn de subprocesso
+# partindo do processo do Flask falhava 100% com rc=0xC0000142 (STATUS_DLL_INIT_FAILED),
+# o subprocesso nem inicializava (DLLs nativas de pandas/Pillow não carregavam naquele
+# contexto). Chamar a função diretamente elimina a criação de processo — funciona
+# idêntico no app (Flask), no CLI/terminal e no scheduler. Bônus: sem reimport de
+# pdfplumber/pandas/anthropic a cada PDF, e sem o problema de encoding do pipe.
+#
+# Robustez mantida: falha transitória (I/O, lib nativa) repete com backoff; falha
+# definitiva (PDF sem registros extraíveis) não repete. O motivo é propagado para
+# gravar em email_processing_errors.
 EXTRACTION_MAX_ATTEMPTS = 3
 EXTRACTION_RETRY_BACKOFF = (2, 5)  # segundos de espera entre tentativas
 
 
 def _run_extraction_once(pdf_path: Path) -> tuple[str | None, str | None, bool]:
-    """Uma tentativa de extração. Retorna (csv_path, motivo_falha, transitorio).
+    """Uma tentativa de extração IN-PROCESS. Retorna (csv_path, motivo_falha, transitorio).
 
-    `transitorio=True` indica que vale repetir (rc≠0, timeout, exceção de
-    subprocesso); `False` é falha definitiva (rc=0 sem CSV — repetir não muda).
-    Usa diretório de saída temporário exclusivo, evitando CSV obsoleto de run anterior.
+    `transitorio=True` indica que vale repetir (exceção de I/O/runtime); `False` é
+    falha definitiva (extração não gerou registros — repetir não muda). Usa diretório
+    de saída temporário exclusivo, evitando CSV obsoleto de run anterior.
     """
     try:
+        # Import lazy: só carrega pdfplumber/pandas/anthropic quando há PDF a extrair
+        # (mantém o import do read_emails leve — mesmo padrão de _normalize_body_barcode).
+        if str(EXTRACT_SCRIPT.parent) not in sys.path:
+            sys.path.insert(0, str(EXTRACT_SCRIPT.parent))
+        import extract_pdf  # noqa: E402
+
         with tempfile.TemporaryDirectory(dir=CSV_OUTPUT) as tmp_out:
-            # UTF-8 nos DOIS lados: o extract_pdf emite Unicode (✓, →) nos logs.
-            # Em console Windows (cp1252) isso quebra a captura — o parent lança
-            # UnicodeDecodeError ao decodificar a saída do filho, derrubando a
-            # extração mesmo com o PDF já extraído. Parent: encoding utf-8 +
-            # errors='replace' (nunca quebra). Filho: env PYTHONUTF8/PYTHONIOENCODING
-            # garante que ele escreva utf-8 independente do code page do console.
-            child_env = {**os.environ, "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"}
-            result = subprocess.run(
-                [sys.executable, str(EXTRACT_SCRIPT),
-                 "--input", str(pdf_path),
-                 "--output", tmp_out],
-                capture_output=True, text=True, timeout=180,
-                encoding="utf-8", errors="replace", env=child_env,
-            )
-            if result.returncode != 0:
-                return None, f"rc={result.returncode}: {(result.stderr or '').strip()[:300]}", True
-            csvs = sorted(Path(tmp_out).glob("*_extracted.csv"),
-                          key=lambda p: p.stat().st_mtime, reverse=True)
-            if not csvs:
-                return None, f"rc=0 sem CSV: {(result.stdout or '').strip()[-200:]}", False
+            csv_path = extract_pdf.extract_to_csv(pdf_path, tmp_out)
+            if not csv_path or not Path(csv_path).exists():
+                # Sem CSV = nenhum registro válido (PDF ilegível/sem dados). Definitivo.
+                return None, "extração não gerou registros (PDF ilegível ou sem dados)", False
             # Move o CSV para o diretório definitivo antes que o tempdir seja removido
-            final = CSV_OUTPUT / csvs[0].name
-            csvs[0].replace(final)
+            final = CSV_OUTPUT / Path(csv_path).name
+            Path(csv_path).replace(final)
             return str(final), None, False
-    except subprocess.TimeoutExpired:
-        return None, "timeout (>180s) na extração", True
     except Exception as e:
-        return None, f"exceção no subprocesso: {e}", True
+        return None, f"exceção na extração in-process: {e}", True
 
 
 def run_extraction(pdf_path: Path) -> tuple[str | None, str | None]:
-    """Executa extract_pdf.py em subprocesso e retorna (csv_path, motivo_falha).
+    """Executa extract_pdf in-process e retorna (csv_path, motivo_falha).
 
     Em sucesso: (caminho_do_csv, None). Em falha: (None, motivo). Repete falhas
-    transitórias com backoff — um blip de subprocesso/timeout não perde o PDF. O
-    motivo final é gravado em email_processing_errors (observável em /erros), em
-    vez de só no console do Flask.
+    transitórias com backoff — um blip de I/O/runtime não perde o PDF. O motivo
+    final é gravado em email_processing_errors (observável em /erros), em vez de
+    só no console do Flask.
     """
     if not EXTRACT_SCRIPT.exists():
         msg = f"extract_pdf.py não encontrado: {EXTRACT_SCRIPT}"

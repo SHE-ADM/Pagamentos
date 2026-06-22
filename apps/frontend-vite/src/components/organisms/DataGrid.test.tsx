@@ -137,5 +137,21 @@ describe('DataGrid', () => {
       await userEvent.click(screen.getByRole('button', { name: /Exportar selecionadas/ }));
       expect(onExportSelected).toHaveBeenCalledWith(ROWS);
     });
+
+    it('renderSelectionActions recebe as linhas selecionadas e aparece na barra', async () => {
+      render(
+        <DataGrid
+          {...baseProps}
+          gridId="test-grid"
+          enableColumnManagement
+          enableSelection
+          renderSelectionActions={(rows) => (
+            <button type="button">Reenviar ({rows.length})</button>
+          )}
+        />,
+      );
+      await userEvent.click(screen.getByRole('checkbox', { name: 'Selecionar todas as linhas' }));
+      expect(screen.getByRole('button', { name: 'Reenviar (2)' })).toBeInTheDocument();
+    });
   });
 });

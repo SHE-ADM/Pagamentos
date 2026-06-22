@@ -920,28 +920,30 @@ def process_pdf(pdf_path, force_vision=False):
                    ["source_file","document_type","extraction_source",
                     "status","processing_notes","extracted_at"]}}
 
-# --- CLI ---
-def main():
-    parser = argparse.ArgumentParser(description="Extrai PDFs financeiros → CSV")
-    parser.add_argument("--input",  required=True)
-    parser.add_argument("--output", required=True)
-    parser.add_argument("--batch",  action="store_true")
-    parser.add_argument("--force-vision", action="store_true")
-    args = parser.parse_args()
+# --- Núcleo reutilizável (CLI + in-process) ---
+def extract_to_csv(input_path, output_dir, *, batch=False, force_vision=False):
+    """Extrai PDF(s) e grava o CSV de registros. Retorna o Path do CSV gerado
+    (registros válidos / erro_api) ou None quando nada foi extraído (só falhas).
 
-    inp = Path(args.input)
-    out = Path(args.output)
+    É o núcleo reutilizável tanto por main() (CLI) quanto pelo pipeline in-process
+    (read_emails.run_extraction). Chamar esta função diretamente — em vez de gerar
+    `python extract_pdf.py` num subprocesso — torna a extração imune a falhas de
+    criação de processo do Windows (0xC0000142 / STATUS_DLL_INIT_FAILED), que
+    derrubavam 100% das extrações quando o spawn partia do processo do Flask.
+    """
+    inp = Path(input_path)
+    out = Path(output_dir)
     out.mkdir(parents=True, exist_ok=True)
 
-    pdfs = sorted(inp.glob("*.pdf")) if (args.batch or inp.is_dir()) else [inp]
+    pdfs = sorted(inp.glob("*.pdf")) if (batch or inp.is_dir()) else [inp]
     if not pdfs:
-        log.error(f"Nenhum PDF em {inp}"); sys.exit(1)
+        raise FileNotFoundError(f"Nenhum PDF em {inp}")
 
     log.info(f"Total: {len(pdfs)} arquivo(s)")
     records, errors = [], []
 
     for pdf in pdfs:
-        rec = process_pdf(pdf, force_vision=args.force_vision)
+        rec = process_pdf(pdf, force_vision=force_vision)
         (errors if rec.get("extraction_source") == "falha" else records).append(rec)
         # Circuit breaker: API indisponivel interrompe o lote com seguranca —
         # evita gastar chamadas e gravar registros incompletos para os demais PDFs.
@@ -951,16 +953,35 @@ def main():
             break
 
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    csv_path = None
     if records:
         df = pd.DataFrame(records, columns=CSV_COLUMNS)
-        path = out / f"{ts}_extracted.csv"
-        df.to_csv(path, index=False, encoding="utf-8-sig", sep=";")
-        log.info(f"✓ {path} ({len(records)} registros)")
+        csv_path = out / f"{ts}_extracted.csv"
+        df.to_csv(csv_path, index=False, encoding="utf-8-sig", sep=";")
+        log.info(f"✓ {csv_path} ({len(records)} registros)")
     if errors:
-        path = out / f"{ts}_errors.log"
-        path.write_text("\n".join(f"{e['source_file']} | {e['processing_notes']}"
-                                  for e in errors), encoding="utf-8")
-        log.warning(f"⚠ {path} ({len(errors)} erros)")
+        epath = out / f"{ts}_errors.log"
+        epath.write_text("\n".join(f"{e['source_file']} | {e['processing_notes']}"
+                                   for e in errors), encoding="utf-8")
+        log.warning(f"⚠ {epath} ({len(errors)} erros)")
+
+    return csv_path
+
+
+# --- CLI ---
+def main():
+    parser = argparse.ArgumentParser(description="Extrai PDFs financeiros → CSV")
+    parser.add_argument("--input",  required=True)
+    parser.add_argument("--output", required=True)
+    parser.add_argument("--batch",  action="store_true")
+    parser.add_argument("--force-vision", action="store_true")
+    args = parser.parse_args()
+
+    try:
+        extract_to_csv(args.input, args.output,
+                       batch=args.batch, force_vision=args.force_vision)
+    except FileNotFoundError as e:
+        log.error(str(e)); sys.exit(1)
 
 if __name__ == "__main__":
     main()

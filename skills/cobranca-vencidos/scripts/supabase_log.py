@@ -55,6 +55,14 @@ def log_envio_erro(*,error_type:ErrorType,error_message:str,document_id=None,cus
         r=httpx.post(f"{_base_url()}/cobranca_erros_log",headers=_headers(),json=pay,timeout=10); r.raise_for_status()
     except Exception as e: logger.exception("Falha CRITICA erros_log %s: %s",document_id,e)
 
+def fetch_erro_rows(ids:list[int])->list[dict]:
+    # Busca linhas de cobranca_erros_log por id (para o reenvio manual via /cobranca/erros).
+    # Retorna só os campos necessários para reconstruir o e-mail — não depende do Firebird.
+    if not ids: return []
+    id_list=",".join(str(int(i)) for i in ids)
+    r=httpx.get(f"{_base_url()}/cobranca_erros_log",headers=_headers(),params={"id":f"in.({id_list})","select":"id,document_id,customer_name,primary_email,cc_email,due_date,bill_amount,email_subject,error_type"},timeout=15)
+    r.raise_for_status(); return r.json()
+
 def fetch_company_smtp()->dict|None:
     try:
         r=httpx.get(f"{_base_url()}/company",headers=_headers(),params={"select":"email,legal_name,trade_name","company_id":"eq.1","limit":"1"},timeout=10)

@@ -7,6 +7,8 @@ const fetchErrosLog = vi.fn();
 
 vi.mock('../../services/cobrancaService', () => ({
   fetchErrosLog: (...args: unknown[]) => fetchErrosLog(...args),
+  // Probe de prontidão do reenvio (chamado no mount) — backend offline no teste.
+  getResendHealth: vi.fn().mockResolvedValue({ ready: false, reason: null }),
 }));
 
 // Sessão válida — a página lê `session.access_token` para chamar o serviço.

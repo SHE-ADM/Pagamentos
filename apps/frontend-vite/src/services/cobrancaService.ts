@@ -1,11 +1,21 @@
 // services/cobrancaService.ts
-// Leitura paginada de cobranca_envios_log e cobranca_erros_log.
+// Leitura paginada de cobranca_envios_log e cobranca_erros_log + reenvio manual
+// das falhas (via backend Flask, exposto pelo proxy /api).
 
 import type { CobrancaEnvioLog, CobrancaErroLog, PaginatedResult } from '../types/cobranca';
 
 const SUPABASE_URL  = import.meta.env.VITE_SUPABASE_URL;
 const SUPABASE_ANON = import.meta.env.VITE_SUPABASE_ANON_KEY;
 const PAGE_SIZE     = 50;
+
+// Backend de reenvio (Flask). Mesmo modelo assíncrono da leitura de e-mails:
+// /start dispara em thread, /progress faz o poll; /health diz se o ambiente está
+// apto a enviar (a UI desabilita o botão quando não está).
+const RESEND_HEALTH   = '/api/cobranca/resend/health';
+const RESEND_START    = '/api/cobranca/resend/start';
+const RESEND_PROGRESS = '/api/cobranca/resend/progress';
+
+const BACKEND_DOWN = 'Servidor de reenvio indisponível. Inicie o backend: python server/app.py';
 
 function baseHeaders(token: string): HeadersInit {
   return {
@@ -83,4 +93,83 @@ export async function fetchErrosLog(filter: ErrosFilter): Promise<PaginatedResul
   if (dateFrom) params['occurred_at'] = `gte.${dateFrom}`;
   if (dateTo)   params['occurred_at'] = params['occurred_at'] ? `gte.${dateFrom},lte.${dateTo}T23:59:59` : `lte.${dateTo}T23:59:59`;
   return get<CobrancaErroLog>(token, 'cobranca_erros_log', params);
+}
+
+// ── Reenvio manual das falhas (backend Flask) ──────────────────────────────
+
+/** Prontidão do reenvio: `ready=false` → a UI mantém o botão desabilitado com o motivo. */
+export interface ResendHealth {
+  ready: boolean;
+  reason: string | null;
+}
+
+type ResendStatus = 'sent' | 'skipped' | 'no_email' | 'error';
+
+interface ResendResultRow {
+  id: number;
+  document_id: string | null;
+  status: ResendStatus;
+  message: string | null;
+}
+
+/** Snapshot do progresso do reenvio (GET /api/cobranca/resend/progress). */
+export interface ResendProgress {
+  running: boolean;
+  phase: string; // idle | iniciando | enviando | concluído | erro
+  total: number;
+  done: number;
+  sent: number;
+  skipped: number;
+  no_email: number;
+  error: number; // contador de falhas SMTP
+  elapsed: number; // segundos
+  results: ResendResultRow[] | null; // preenchido ao concluir
+  error_msg: string | null; // erro de execução do job (não o contador 'error')
+}
+
+/**
+ * Consulta a prontidão do backend de reenvio. Se o backend estiver fora do ar,
+ * retorna `ready=false` (em vez de lançar) — a UI só precisa desabilitar o botão.
+ */
+export async function getResendHealth(): Promise<ResendHealth> {
+  try {
+    const res = await fetch(RESEND_HEALTH);
+    const data = (await res.json().catch(() => ({}))) as { ready?: boolean; reason?: string | null };
+    if (!res.ok) return { ready: false, reason: `Backend retornou HTTP ${res.status}` };
+    return { ready: Boolean(data.ready), reason: data.reason ?? null };
+  } catch {
+    return { ready: false, reason: BACKEND_DOWN };
+  }
+}
+
+/** Dispara o reenvio das linhas de erro selecionadas. Retorna assim que a thread arranca. */
+export async function startResend(ids: number[]): Promise<{ started: boolean; alreadyRunning: boolean }> {
+  let res: Response;
+  try {
+    res = await fetch(RESEND_START, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ids }),
+    });
+  } catch {
+    throw new Error(BACKEND_DOWN);
+  }
+  const data = (await res.json().catch(() => ({}))) as {
+    ok?: boolean; error?: string; started?: boolean; already_running?: boolean;
+  };
+  if (!res.ok || !data.ok) throw new Error(data.error || `Backend retornou HTTP ${res.status}`);
+  return { started: Boolean(data.started), alreadyRunning: Boolean(data.already_running) };
+}
+
+/** Consulta o progresso atual do reenvio. */
+export async function getResendProgress(): Promise<ResendProgress> {
+  let res: Response;
+  try {
+    res = await fetch(RESEND_PROGRESS);
+  } catch {
+    throw new Error(BACKEND_DOWN);
+  }
+  const data = (await res.json().catch(() => ({}))) as { ok?: boolean; error?: string; progress?: ResendProgress };
+  if (!res.ok || !data.ok || !data.progress) throw new Error(data.error || `Backend retornou HTTP ${res.status}`);
+  return data.progress;
 }
