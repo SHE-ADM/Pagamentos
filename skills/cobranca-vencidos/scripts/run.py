@@ -37,6 +37,7 @@ load_dotenv(PROJECT_ROOT / ".env")
 # Imports da skill (módulos irmãos em SCRIPTS_DIR)
 # ---------------------------------------------------------------------------
 from db_firebird  import fetch_titulos_vencidos   # noqa: E402
+from email_sender import SmtpSession              # noqa: E402
 from send_core    import send_and_log, validate_email  # noqa: E402
 from supabase_log import (                        # noqa: E402
     already_sent,
@@ -84,18 +85,18 @@ def _log_email_error(titulo, motivo: str | None, *, dry_run: bool) -> None:
         )
 
 
-def _send_titulo(titulo, *, dev_mode: bool, dev_override: str, company_row) -> str:
+def _send_titulo(titulo, *, dev_mode: bool, dev_override: str, company_row, session) -> str:
     """Adapta um TituloVencido para o núcleo de envio compartilhado (send_core)."""
     return send_and_log(
         document_id=titulo.document_id, customer_name=titulo.customer_name,
         primary_email=titulo.primary_email, cc_email=titulo.cc_email,
         due_date=titulo.due_date, bill_amount=titulo.bill_amount,
         email_subject=titulo.email_subject, company_row=company_row,
-        dev_mode=dev_mode, dev_override=dev_override,
+        dev_mode=dev_mode, dev_override=dev_override, session=session,
     )
 
 
-def _process_titulo(titulo, *, dry_run: bool, dev_mode: bool, dev_override: str, company_row) -> str:
+def _process_titulo(titulo, *, dry_run: bool, dev_mode: bool, dev_override: str, company_row, session) -> str:
     """Processa um título do começo ao fim. Retorna 'sent' | 'skipped' | 'error'."""
     doc_id = titulo.document_id
 
@@ -113,10 +114,11 @@ def _process_titulo(titulo, *, dry_run: bool, dev_mode: bool, dev_override: str,
             doc_id, titulo.primary_email, titulo.cc_email, titulo.email_subject)
         return "sent"
 
-    return _send_titulo(titulo, dev_mode=dev_mode, dev_override=dev_override, company_row=company_row)
+    return _send_titulo(titulo, dev_mode=dev_mode, dev_override=dev_override,
+        company_row=company_row, session=session)
 
 
-def _process_titulo_safe(titulo, *, dry_run: bool, dev_mode: bool, dev_override: str, company_row) -> str:
+def _process_titulo_safe(titulo, *, dry_run: bool, dev_mode: bool, dev_override: str, company_row, session) -> str:
     """Rede de segurança: envolve _process_titulo para que NENHUMA falha de um título
     interrompa os demais. Erros previstos (SMTP/e-mail) já são tratados lá dentro; isto
     captura qualquer exceção inesperada (render, dado ruim), registra como erro_inesperado
@@ -124,7 +126,7 @@ def _process_titulo_safe(titulo, *, dry_run: bool, dev_mode: bool, dev_override:
     try:
         return _process_titulo(
             titulo, dry_run=dry_run, dev_mode=dev_mode,
-            dev_override=dev_override, company_row=company_row,
+            dev_override=dev_override, company_row=company_row, session=session,
         )
     except Exception:
         doc_id = getattr(titulo, "document_id", None)
@@ -180,22 +182,31 @@ def main(dry_run: bool = False) -> None:
         return
 
     # Throttle anti-bloqueio (boa prática Locaweb): pausa de alguns segundos ENTRE envios
-    # reais para não disparar o limite de envios. Configurável por COBRANCA_SEND_DELAY_SECONDS
-    # (default 3s, faixa recomendada 2-5s); 0 desliga. Não pausa em duplicatas puladas nem em dry-run.
+    # reais para não saturar a fila de saída (451 "queue file write error" sob rajada).
+    # Configurável por COBRANCA_SEND_DELAY_SECONDS (default 10s — alinhado ao reenvio e à
+    # produção; 0 desliga). Não pausa em duplicatas puladas nem em dry-run.
     try:
-        send_delay = max(0.0, float(os.environ.get("COBRANCA_SEND_DELAY_SECONDS", "3")))
+        send_delay = max(0.0, float(os.environ.get("COBRANCA_SEND_DELAY_SECONDS", "10")))
     except ValueError:
-        send_delay = 3.0
+        send_delay = 10.0
 
     counts = {"sent": 0, "skipped": 0, "error": 0}
-    for titulo in titulos:
-        result = _process_titulo_safe(
-            titulo, dry_run=dry_run, dev_mode=dev_mode,
-            dev_override=dev_override, company_row=company_row,
-        )
-        counts[result] += 1
-        if send_delay > 0 and not dry_run and result in ("sent", "error"):
-            time.sleep(send_delay)
+    # Uma única conexão SMTP para todo o lote (lazy: só conecta no 1º envio real).
+    # Em dry-run não há envio, então não abre sessão.
+    session = None if dry_run else SmtpSession(
+        company_row, dev_mode=dev_mode, dev_override=dev_override)
+    try:
+        for titulo in titulos:
+            result = _process_titulo_safe(
+                titulo, dry_run=dry_run, dev_mode=dev_mode,
+                dev_override=dev_override, company_row=company_row, session=session,
+            )
+            counts[result] += 1
+            if send_delay > 0 and not dry_run and result in ("sent", "error"):
+                time.sleep(send_delay)
+    finally:
+        if session is not None:
+            session.close()
 
     logger.info("-" * 60)
     logger.info("Resumo: total=%d | enviados=%d | pulados=%d | erros=%d",

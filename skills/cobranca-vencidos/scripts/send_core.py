@@ -16,7 +16,7 @@ import re
 import smtplib
 import traceback
 
-from email_sender import send_cobranca
+from email_sender import SmtpSession, send_cobranca
 from supabase_log import log_envio_erro, log_envio_sucesso
 from template import render_html
 
@@ -83,18 +83,27 @@ def classify_smtp_error(exc: Exception) -> tuple[str, str]:
 
 def send_and_log(*, document_id, customer_name, primary_email, cc_email,
                  due_date, bill_amount, email_subject, company_row,
-                 dev_mode: bool = False, dev_override: str = "") -> str:
+                 dev_mode: bool = False, dev_override: str = "",
+                 session: SmtpSession | None = None) -> str:
     """Renderiza, envia e registra UMA cobrança. Retorna 'sent' ou 'error'.
 
     Sucesso -> grava em cobranca_envios_log; falha -> classifica e grava em
     cobranca_erros_log. Nunca propaga exceção de SMTP (o caller decide o fluxo).
+
+    `session`: quando o caller (batch/reenvio) já abriu uma SmtpSession para o lote,
+    o envio reaproveita essa conexão. Sem sessão, abre uma conexão avulsa por envio
+    (compatibilidade — `send_cobranca`).
     """
     html = render_html(customer_name=customer_name, document_id=document_id,
         bill_amount=bill_amount, due_date=due_date)
     try:
-        send_cobranca(to_email=primary_email, cc_email=cc_email,
-            subject=email_subject, html_body=html, company_row=company_row,
-            dev_mode=dev_mode, dev_override=dev_override)
+        if session is not None:
+            session.send(to_email=primary_email, cc_email=cc_email,
+                subject=email_subject, html_body=html)
+        else:
+            send_cobranca(to_email=primary_email, cc_email=cc_email,
+                subject=email_subject, html_body=html, company_row=company_row,
+                dev_mode=dev_mode, dev_override=dev_override)
         log_envio_sucesso(document_id=document_id, customer_name=customer_name,
             primary_email=primary_email, cc_email=cc_email,
             due_date=due_date, bill_amount=bill_amount, email_subject=email_subject)

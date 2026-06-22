@@ -11,6 +11,11 @@ Statuses por título (consumidos pela UI):
   skipped  -> já constava em cobranca_envios_log (dedup) — não reenvia
   no_email -> sem e-mail / e-mail inválido (registrado em cobranca_erros_log)
   error    -> falha de SMTP (registrada em cobranca_erros_log)
+
+Ao final, as linhas RESOLVIDAS (status 'sent' ou 'skipped') são REMOVIDAS de
+`cobranca_erros_log` (`delete_erro_rows`) — o log de erros passa a conter só falhas
+pendentes. Linhas que falharam de novo ('error'/'no_email') permanecem (com um registro
+de erro atualizado).
 """
 
 from __future__ import annotations
@@ -22,8 +27,15 @@ from datetime import date
 from decimal import Decimal, InvalidOperation
 from typing import Callable
 
+from email_sender import SmtpSession
 from send_core import send_and_log, validate_email
-from supabase_log import already_sent, fetch_company_smtp, fetch_erro_rows, log_envio_erro
+from supabase_log import (
+    already_sent,
+    delete_erro_rows,
+    fetch_company_smtp,
+    fetch_erro_rows,
+    log_envio_erro,
+)
 
 logger = logging.getLogger("cobranca-vencidos")
 
@@ -86,6 +98,50 @@ def _email_error_type(primary_email: str | None) -> str:
     return "email_ausente" if not primary_email or not primary_email.strip() else "email_invalido"
 
 
+def _resend_one(row: dict, _id: int, *, session, company_row, dev_mode: bool,
+                dev_override: str, counts: dict, results: list[dict],
+                emit: Callable[[str], None]) -> str:
+    """Reenvia UMA linha de erro: valida, deduplica e despacha pelo núcleo compartilhado.
+    Atualiza counts/results/emit e retorna o status ('no_email'|'skipped'|'sent'|'error')
+    para o caller decidir o throttle (só pausa após envio real)."""
+    doc_id = row.get("document_id")
+    customer = row.get("customer_name")
+    email = row.get("primary_email")
+    cc = row.get("cc_email")
+    due = _parse_due(row.get("due_date"))
+    amount = _parse_amount(row.get("bill_amount"))
+    subject = row.get("email_subject") or "COBRANÇA"
+
+    email_ok, motivo = validate_email(email)
+    if not email_ok:
+        log_envio_erro(error_type=_email_error_type(email),
+            error_message=motivo or "E-mail do cliente indisponível.",
+            error_detail=f"primary_email={email!r}",
+            document_id=doc_id, customer_name=customer, primary_email=email,
+            cc_email=cc, due_date=due, bill_amount=amount, email_subject=subject)
+        counts["no_email"] += 1
+        results.append({"id": _id, "document_id": doc_id, "status": "no_email", "message": motivo})
+        emit("enviando")
+        return "no_email"
+
+    if already_sent(doc_id):
+        counts["skipped"] += 1
+        results.append({"id": _id, "document_id": doc_id, "status": "skipped",
+                        "message": "Já enviado anteriormente."})
+        emit("enviando")
+        return "skipped"
+
+    status = send_and_log(document_id=doc_id, customer_name=customer,
+        primary_email=email, cc_email=cc, due_date=due, bill_amount=amount,
+        email_subject=subject, company_row=company_row,
+        dev_mode=dev_mode, dev_override=dev_override, session=session)
+    counts["sent" if status == "sent" else "error"] += 1
+    results.append({"id": _id, "document_id": doc_id, "status": status,
+                    "message": "Enviado." if status == "sent" else "Falha no envio."})
+    emit("enviando")
+    return status
+
+
 def resend_erros(ids: list[int], on_progress: Callable[[dict], None] | None = None) -> dict:
     """Reenvia as cobranças das linhas de erro informadas. Retorna o resumo + por-linha."""
     ids = [int(i) for i in (ids or [])][:MAX_IDS]
@@ -109,50 +165,36 @@ def resend_erros(ids: list[int], on_progress: Callable[[dict], None] | None = No
     dev_mode, dev_override = _dev_config()
     delay = _delay_seconds()
 
-    for idx, _id in enumerate(ids):
-        row = by_id.get(_id)
-        if row is None:
-            continue
-        doc_id = row.get("document_id")
-        customer = row.get("customer_name")
-        email = row.get("primary_email")
-        cc = row.get("cc_email")
-        due = _parse_due(row.get("due_date"))
-        amount = _parse_amount(row.get("bill_amount"))
-        subject = row.get("email_subject") or "COBRANÇA"
+    # Ids resolvidos a remover do log de erros: reenviado AGORA com sucesso ('sent') ou
+    # que já constava como enviado ('skipped'). Ambos deixam de ser falha pendente.
+    resolved_ids: list[int] = []
+    # Uma única conexão SMTP para todo o lote de reenvio (lazy: conecta no 1º envio real).
+    session = SmtpSession(company_row, dev_mode=dev_mode, dev_override=dev_override)
+    try:
+        for idx, _id in enumerate(ids):
+            row = by_id.get(_id)
+            if row is None:
+                continue
+            status = _resend_one(row, _id, session=session, company_row=company_row,
+                dev_mode=dev_mode, dev_override=dev_override,
+                counts=counts, results=results, emit=_emit)
+            if status in ("sent", "skipped"):
+                resolved_ids.append(_id)
+            # Throttle só entre envios reais (sent/error), nunca após skip/no_email — e
+            # não após o último item.
+            if status in ("sent", "error") and delay > 0 and idx < len(ids) - 1:
+                time.sleep(delay)
+    finally:
+        session.close()
 
-        email_ok, motivo = validate_email(email)
-        if not email_ok:
-            log_envio_erro(error_type=_email_error_type(email),
-                error_message=motivo or "E-mail do cliente indisponível.",
-                error_detail=f"primary_email={email!r}",
-                document_id=doc_id, customer_name=customer, primary_email=email,
-                cc_email=cc, due_date=due, bill_amount=amount, email_subject=subject)
-            counts["no_email"] += 1
-            results.append({"id": _id, "document_id": doc_id, "status": "no_email", "message": motivo})
-            _emit("enviando")
-            continue
-
-        if already_sent(doc_id):
-            counts["skipped"] += 1
-            results.append({"id": _id, "document_id": doc_id, "status": "skipped",
-                            "message": "Já enviado anteriormente."})
-            _emit("enviando")
-            continue
-
-        status = send_and_log(document_id=doc_id, customer_name=customer,
-            primary_email=email, cc_email=cc, due_date=due, bill_amount=amount,
-            email_subject=subject, company_row=company_row,
-            dev_mode=dev_mode, dev_override=dev_override)
-        counts["sent" if status == "sent" else "error"] += 1
-        results.append({"id": _id, "document_id": doc_id, "status": status,
-                        "message": "Enviado." if status == "sent" else "Falha no envio."})
-        _emit("enviando")
-
-        # Throttle só entre envios reais (sent/error), nunca após skip/no_email — e não
-        # após o último item.
-        if delay > 0 and idx < len(ids) - 1:
-            time.sleep(delay)
+    # Remove do log de erros tudo que foi resolvido. Falha aqui não invalida o reenvio
+    # (os e-mails já saíram) — apenas registra aviso; a dedup evita reenvio futuro.
+    if resolved_ids:
+        try:
+            delete_erro_rows(resolved_ids)
+        except Exception as e:  # noqa: BLE001 — limpeza best-effort, não derruba o reenvio
+            logger.warning("Falha ao remover %d linha(s) resolvida(s) de cobranca_erros_log: %s",
+                len(resolved_ids), e)
 
     _emit("concluído")
     logger.info("Reenvio: total=%d sent=%d skipped=%d no_email=%d error=%d",

@@ -1271,11 +1271,11 @@ Firebird (VW_PSQ_FIN_REC_BAN + _004)  →  run.py  →  SMTP Locaweb (email-ssl.
 
 | Arquivo | Papel |
 |---|---|
-| `run.py` | Entry-point do **batch diário** (`py -3 run.py [--dry-run]`). Lê o Firebird e, por título, chama `send_core.send_and_log`. Loop com **rede de segurança** (`_process_titulo_safe`): falha de um e-mail **nunca** trava os demais. Throttle entre envios (`COBRANCA_SEND_DELAY_SECONDS`, default 3s) |
+| `run.py` | Entry-point do **batch diário** (`py -3 run.py [--dry-run]`). Lê o Firebird, abre **uma `SmtpSession` por lote** e, por título, chama `send_core.send_and_log` (passando a sessão). Loop com **rede de segurança** (`_process_titulo_safe`): falha de um e-mail **nunca** trava os demais. Throttle entre envios (`COBRANCA_SEND_DELAY_SECONDS`, default 10s) |
 | `send_core.py` | **Núcleo compartilhado** por `run.py` (batch) e `resend.py` (reenvio manual): `validate_email`, `classify_smtp_error` e `send_and_log` (render→envia→loga; sucesso→`cobranca_envios_log`, falha→`cobranca_erros_log`; **nunca propaga exceção SMTP**). Centraliza a lógica num só lugar — não duplicar entre os fluxos |
 | `resend.py` | **Reenvio manual** de falhas a partir de `/cobranca/erros` (`resend_erros(ids, on_progress)`). Ver subseção "Reenvio manual" abaixo |
 | `db_firebird.py` | Conexão Firebird (driver **`fdb`**, fixado em `server/requirements.txt`) + `_QUERY` (UNION das views `VW_PSQ_FIN_REC_BAN` e `_004`). Linha **sem e-mail SEGUE** o fluxo (vira `email_ausente`); só descarta linha sem `document_id` |
-| `email_sender.py` | Monta e envia. **To primeiro; se o principal falhar, o Cc NÃO é enviado** (2 `sendmail` na mesma conexão). Conexão **nova por e-mail** |
+| `email_sender.py` | Monta e envia. **To primeiro; se o principal falhar, o Cc NÃO é enviado** (2 `sendmail` na mesma conexão). **`SmtpSession`**: conexão **reaproveitada no lote** (lazy no 1º envio; reconecta+reenvia 1× se cair). `send_cobranca` (avulso) é wrapper de compat. **Atenção:** `smtplib.SMTPException` herda de `OSError` — o catch de queda usa `(SMTPServerDisconnected, ConnectionError, TimeoutError)`, **nunca** `OSError`, para não reenviar recusa definitiva (451/5xx/auth) |
 | `supabase_log.py` | `already_sent` (dedup), `log_envio_sucesso`, `log_envio_erro`, `fetch_company_smtp`, `fetch_erro_rows` (linhas de erro para o reenvio) |
 | `template.py` | HTML do e-mail (`render_html`) |
 
@@ -1285,6 +1285,11 @@ Firebird (VW_PSQ_FIN_REC_BAN + _004)  →  run.py  →  SMTP Locaweb (email-ssl.
 (**`email-ssl.com.br`** — `smtp.locaweb.com.br` dá timeout nesta conta); senha → `SMTP_PASSWORD`
 ou **`IMAP_PASS`** (senha nunca no banco); porta 587 STARTTLS. `fetch_company_smtp` só lê colunas
 existentes (`email,legal_name,trade_name`) — a tabela `company` **não** tem colunas `smtp_*`.
+A conexão é **reaproveitada no lote** (`SmtpSession`) — não mais uma conexão por e-mail — para
+aliviar a pressão sobre o relay (`451 queue file write error`). **Migração para SMTP transacional
+da Locaweb** (`smtp.locaweb.com.br`, produto de alto volume com credencial/token próprios, não a
+senha do mailbox): é **só `.env`** — setar `SMTP_HOST`/`SMTP_PORT`/`SMTP_USER`/`SMTP_PASSWORD`
+(têm prioridade sobre os `IMAP_*` em `_load_smtp_config`), sem mudança de código.
 
 **Classificação de falha (regra de negócio):** `smtp_falha` = **instabilidade** (timeout,
 queda, 450/451/452) → o próximo run **retenta**; `smtp_bloqueio` = **negação** (auth 535, 421,
@@ -1294,10 +1299,12 @@ Locaweb). `_classify_smtp_error` decide pelo código/exceção. Mensagens em `er
 
 **`.env` (raiz):** `FB_HOST/FB_PORT/FB_DATABASE/FB_USER/FB_PASSWORD/FB_CHARSET`;
 `DEV_MODE=true` + `DEV_OVERRIDE_EMAIL` (To de teste) + `DEV_OVERRIDE_CC_EMAIL` (Cc de teste);
-`COBRANCA_SEND_DELAY_SECONDS` (throttle anti-bloqueio Locaweb, default 3s, faixa 2-5, `0` desliga).
+`COBRANCA_SEND_DELAY_SECONDS` (throttle anti-bloqueio Locaweb, default 10s, `0` desliga).
 Em **DEV_MODE** todos os envios vão para as caixas de teste (To→`DEV_OVERRIDE_EMAIL`,
-Cc→`DEV_OVERRIDE_CC_EMAIL`); em produção, To/Cc reais do Firebird. **Ainda em teste — não entrou
-em produção.** Spec completa: `skills/cobranca-vencidos/references/env_reference.md`.
+Cc→`DEV_OVERRIDE_CC_EMAIL`); em produção, To/Cc reais do Firebird. **Em produção desde 2026-06-22
+(`DEV_MODE=false`): envia para os clientes reais (To/Cc do Firebird).** As variáveis
+`DEV_OVERRIDE_*` ficam **comentadas** no `.env` (desativadas) — para um teste pontual, defina
+`DEV_MODE=true` e descomente ambas. Spec completa: `skills/cobranca-vencidos/references/env_reference.md`.
 
 **Entregabilidade (DNS, fora do código):** SPF ✅ (`include:_spf.locaweb.com.br`); DMARC ⚠️
 `p=none`; **DKIM ❌ a configurar** no painel Locaweb (melhora caixa-de-entrada em Gmail/Outlook).
@@ -1349,4 +1356,83 @@ scripts `.ps1` usam caminhos relativos a `$PSScriptRoot`, funcionam nesse caminh
 ajuste. **Atualizar produção = copiar manualmente** os arquivos alterados (ex.: os 2
 scripts de `scheduler\`) — não há `git pull` lá. Requer Python 3.12 + `pdfplumber`
 instalados na máquina. Guia: `scheduler/INSTALL.md`.
+
+### Deploy manual do Email Reader em produção (caso específico — não regredir)
+
+O usuário **prefere atualizar/validar a produção manualmente** (cópia de arquivos + comando
+de validação), **não** pelo `scheduler/deploy-prod.ps1`. Ao orientar, dê o passo a passo
+manual direto. Dois cuidados **não óbvios** ao copiar o pipeline de leitura:
+
+- **Caminho correto = `skills\email-reader\scripts\`, NÃO `scheduler\`.** O `run_reader.ps1`
+  executa `$PROJECT_ROOT\skills\email-reader\scripts\read_emails.py` (variável `$SCRIPT`).
+  Copiar `read_emails.py` para `scheduler\` deixa o código **antigo** rodando.
+- **São 2 arquivos INTERDEPENDENTES — copiar só um quebra a extração.** O `read_emails.py`
+  novo chama `extract_pdf.extract_to_csv()` (extração **in-process**), função que só existe
+  na versão nova de `extract_pdf.py`. Com o `extract_pdf.py` antigo → `AttributeError` →
+  toda extração de PDF falha.
+
+| De (dev/bundle) | Para (produção) |
+|---|---|
+| `skills\email-reader\scripts\read_emails.py` | `C:\Sheild\API\Pagamentos\skills\email-reader\scripts\read_emails.py` |
+| `skills\pdf-contas-pagar\scripts\extract_pdf.py` | `C:\Sheild\API\Pagamentos\skills\pdf-contas-pagar\scripts\extract_pdf.py` |
+
+Validar (com o Python que o scheduler usa) — esperado `True True`:
+
+```powershell
+cd C:\Sheild\API\Pagamentos
+py -3 -c "import sys; sys.path.insert(0,'skills/email-reader/scripts'); import read_emails; print('subprocess' not in dir(read_emails), hasattr(read_emails,'is_ignored_sender'))"
+```
+
+**Não precisa reiniciar nada**: a tarefa agendada inicia um processo novo a cada execução e
+lê os arquivos do disco. Nenhuma dependência nova (as libs de extração já estavam instaladas,
+pois o subprocesso antigo usava o mesmo Python).
+
+### Deploy manual da Cobrança de vencidos (envios) em produção (caso específico — não regredir)
+
+Mesma máquina/pasta dos recebimentos (`C:\Sheild\API\Pagamentos`); o scheduler de **envios**
+executa `skills\cobranca-vencidos\scripts\run.py` (`run_cobranca.ps1` `$SCRIPT`).
+
+> **PREFERÊNCIA DO USUÁRIO (não regredir):** atualização de produção é **cópia manual dos
+> arquivos + validação manual** — **NÃO** propor nem usar scripts de deploy (o `scheduler\
+> deploy-prod.ps1` existe, mas o usuário NÃO quer usá-lo; só executar se ele pedir
+> explicitamente). Fluxo preferido: (1) backup do que será sobrescrito; (2) copiar os arquivos
+> `.py` alterados; (3) validar com `Select-String` (confirmar que o código novo chegou) +
+> `import ...` + `run.py --dry-run`. Mesmos cuidados do reader:
+
+**O QUE COPIAR para produção (regra geral — vale p/ reader e cobrança):**
+
+| Mudou… | Copiar | Re-registrar tarefa? |
+|---|---|---|
+| **Lógica do pipeline** (`.py` em `skills\…\scripts\`) | os `.py` alterados (conjunto interdependente) | Não |
+| **Wrapper/agendador funcional** (`.ps1` em `scheduler\` — horário, timeout, runner) | o `.ps1` alterado | Só se mudou `setup-*.ps1` (rodar como Admin) |
+| **Só comentário/doc** (`.ps1`/`.md` sem efeito funcional) | nada | Não |
+
+> Cada **caso de atualização** (esta sessão, p.ex.) deve dizer explicitamente de quais pastas
+> copiar. Ex.: mudança que mexe só em `skills\cobranca-vencidos\scripts\` **não** exige tocar em
+> `scheduler\`. A tarefa agendada lê o disco a cada execução — nunca precisa "reiniciar".
+
+- **Caminho correto = `skills\cobranca-vencidos\scripts\`, NÃO `scheduler\`.**
+- **7 scripts INTERDEPENDENTES — copiar só um quebra.** `run.py` (batch) **e** `resend.py`
+  (reenvio) dependem de **`send_core.py`** (`from send_core import send_and_log, validate_email`
+  — dependência **nova** do `run.py`); `send_core.py` → `email_sender`/`supabase_log`/`template`.
+  Copiar `run.py`/`resend.py` sem `send_core.py` → `ImportError`. **Na dúvida, copie o conjunto
+  inteiro**: `db_firebird.py`, `email_sender.py`, `resend.py`, `run.py`, `send_core.py`,
+  `supabase_log.py`, `template.py`.
+- **Pré-requisitos da máquina (diferente do reader):** driver Firebird **`fdb`** (fallback
+  `firebirdsql`) instalado; `.env` com **`FB_HOST/FB_PORT/FB_DATABASE/FB_USER/FB_PASSWORD/
+  FB_CHARSET`** (Firebird) + SMTP (reusa `IMAP_*` quando `SMTP_*` ausente; host
+  `email-ssl.com.br`) + `COBRANCA_SEND_DELAY_SECONDS` (throttle, **10s** em produção — ver
+  `cobranca-smtp-bottleneck`) + `DEV_MODE`/`DEV_OVERRIDE_EMAIL`/`DEV_OVERRIDE_CC_EMAIL`.
+
+Validar (esperado: `imports OK`):
+
+```powershell
+cd C:\Sheild\API\Pagamentos
+py -3 -c "import sys; sys.path.insert(0,'skills/cobranca-vencidos/scripts'); import send_core, run, resend; print('imports OK')"
+```
+
+Ou melhor — `py -3 skills\cobranca-vencidos\scripts\run.py --dry-run` valida imports **e** a
+conexão Firebird **sem enviar e-mail**. **Não precisa reiniciar nada** (a tarefa inicia processo
+novo). A cobrança está **em produção** (`DEV_MODE=false` — envia para clientes reais); ainda
+assim, rode um `--dry-run` após alterar o pipeline antes de confiar na próxima execução real.
 
