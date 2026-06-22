@@ -36,10 +36,16 @@ load_dotenv(PROJECT_ROOT / ".env")
 # ---------------------------------------------------------------------------
 # Imports da skill (módulos irmãos em SCRIPTS_DIR)
 # ---------------------------------------------------------------------------
-from db_firebird  import fetch_titulos_vencidos   # noqa: E402
-from email_sender import SmtpSession              # noqa: E402
-from send_core    import send_and_log, validate_email  # noqa: E402
-from supabase_log import (                        # noqa: E402
+from db_firebird   import fetch_titulos_vencidos   # noqa: E402
+from email_sender  import SmtpSession              # noqa: E402
+from failure_notify import (                       # noqa: E402
+    DEFINITIVE_ERROR_TYPES,
+    build_subject,
+    group_by_cc,
+    render_failure_digest,
+)
+from send_core     import SendResult, send_and_log, validate_email  # noqa: E402
+from supabase_log  import (                        # noqa: E402
     already_sent,
     delete_erro_rows_by_document_id,
     fetch_company_smtp,
@@ -66,14 +72,14 @@ logging.basicConfig(
 logger = logging.getLogger("cobranca-vencidos")
 
 
+def _email_error_type(primary_email) -> str:
+    return "email_ausente" if not (primary_email or "").strip() else "email_invalido"
+
+
 def _log_email_error(titulo, motivo: str | None, *, dry_run: bool) -> None:
     """Registra falha de e-mail (ausente/inválido) em cobranca_erros_log."""
     doc_id = titulo.document_id
-    error_type = (
-        "email_ausente"
-        if not titulo.primary_email or not titulo.primary_email.strip()
-        else "email_invalido"
-    )
+    error_type = _email_error_type(titulo.primary_email)
     logger.warning("[ERRO] %s -- %s", doc_id, motivo)
     if not dry_run:
         log_envio_erro(
@@ -96,7 +102,7 @@ def _cleanup_resolved_errors(document_id) -> None:
         logger.warning("Falha ao limpar erros resolvidos do título %s (envio OK, seguindo).", document_id)
 
 
-def _send_titulo(titulo, *, dev_mode: bool, dev_override: str, company_row, session) -> str:
+def _send_titulo(titulo, *, dev_mode: bool, dev_override: str, company_row, session) -> SendResult:
     """Adapta um TituloVencido para o núcleo de envio compartilhado (send_core)."""
     return send_and_log(
         document_id=titulo.document_id, customer_name=titulo.customer_name,
@@ -107,29 +113,30 @@ def _send_titulo(titulo, *, dev_mode: bool, dev_override: str, company_row, sess
     )
 
 
-def _process_titulo(titulo, *, dry_run: bool, dev_mode: bool, dev_override: str, company_row, session) -> str:
-    """Processa um título do começo ao fim. Retorna 'sent' | 'skipped' | 'error'."""
+def _process_titulo(titulo, *, dry_run: bool, dev_mode: bool, dev_override: str, company_row, session) -> SendResult:
+    """Processa um título do começo ao fim. Retorna SendResult (status sent/skipped/error;
+    em erro, com error_type + motivo para a notificação ao representante)."""
     doc_id = titulo.document_id
 
     if not dry_run and already_sent(doc_id):
         logger.info("[SKIP] %s -- ja consta em cobranca_envios_log.", doc_id)
-        return "skipped"
+        return SendResult("skipped")
 
     email_ok, email_motivo = validate_email(titulo.primary_email)
     if not email_ok:
         _log_email_error(titulo, email_motivo, dry_run=dry_run)
-        return "error"
+        return SendResult("error", _email_error_type(titulo.primary_email), email_motivo)
 
     if dry_run:
         logger.info("[DRY-RUN] Enviaria: doc_id=%s to=%s cc=%s subject=%r",
             doc_id, titulo.primary_email, titulo.cc_email, titulo.email_subject)
-        return "sent"
+        return SendResult("sent")
 
     return _send_titulo(titulo, dev_mode=dev_mode, dev_override=dev_override,
         company_row=company_row, session=session)
 
 
-def _process_titulo_safe(titulo, *, dry_run: bool, dev_mode: bool, dev_override: str, company_row, session) -> str:
+def _process_titulo_safe(titulo, *, dry_run: bool, dev_mode: bool, dev_override: str, company_row, session) -> SendResult:
     """Rede de segurança: envolve _process_titulo para que NENHUMA falha de um título
     interrompa os demais. Erros previstos (SMTP/e-mail) já são tratados lá dentro; isto
     captura qualquer exceção inesperada (render, dado ruim), registra como erro_inesperado
@@ -154,7 +161,30 @@ def _process_titulo_safe(titulo, *, dry_run: bool, dev_mode: bool, dev_override:
                 bill_amount=getattr(titulo, "bill_amount", None),
                 email_subject=getattr(titulo, "email_subject", None),
             )
-        return "error"
+        # erro_inesperado NÃO é falha definitiva — não notifica o CC (só as previstas).
+        return SendResult("error", "erro_inesperado", "Erro inesperado ao processar o título.")
+
+
+def _notify_failures(session, failures: list[dict], send_delay: float) -> None:
+    """Envia ao representante (CC) um resumo das falhas DEFINITIVAS dos seus títulos.
+    Best-effort: uma falha no envio da notificação não derruba o run (os e-mails de
+    cobrança já saíram). Throttle entre representantes, como nos envios."""
+    by_cc = group_by_cc(failures)
+    sem_cc = len(failures) - sum(len(v) for v in by_cc.values())
+    if sem_cc:
+        logger.warning("%d falha(s) definitiva(s) sem CC — sem representante para notificar.", sem_cc)
+    enviados = 0
+    total = len(by_cc)
+    for i, (cc, itens) in enumerate(by_cc.items()):
+        try:
+            session.send(to_email=cc, cc_email=None,
+                subject=build_subject(len(itens)), html_body=render_failure_digest(itens))
+            enviados += 1
+        except Exception:  # noqa: BLE001 — notificação best-effort
+            logger.warning("Falha ao notificar o representante %s sobre %d cobrança(s).", cc, len(itens))
+        if send_delay > 0 and i < total - 1:
+            time.sleep(send_delay)
+    logger.info("Notificações de falha enviadas a %d/%d representante(s).", enviados, total)
 
 
 def main(dry_run: bool = False) -> None:
@@ -213,6 +243,9 @@ def main(dry_run: bool = False) -> None:
             logger.warning("Não foi possível listar títulos com erro; limpeza de resolvidos desativada neste run.")
 
     counts = {"sent": 0, "skipped": 0, "error": 0}
+    # Falhas DEFINITIVAS (exigem ação humana) acumuladas para notificar o representante (CC)
+    # ao fim do run — resumo por CC. Transitórias (smtp_falha) re-tentam e não entram aqui.
+    failures: list[dict] = []
     # Uma única conexão SMTP para todo o lote (lazy: só conecta no 1º envio real).
     # Em dry-run não há envio, então não abre sessão.
     session = None if dry_run else SmtpSession(
@@ -223,12 +256,24 @@ def main(dry_run: bool = False) -> None:
                 titulo, dry_run=dry_run, dev_mode=dev_mode,
                 dev_override=dev_override, company_row=company_row, session=session,
             )
-            counts[result] += 1
+            counts[result.status] += 1
             # Título resolvido (enviado agora ou já enviado) que antes tinha erro: limpa o log.
-            if result in ("sent", "skipped") and titulo.document_id in error_doc_ids:
+            if result.status in ("sent", "skipped") and titulo.document_id in error_doc_ids:
                 _cleanup_resolved_errors(titulo.document_id)
-            if send_delay > 0 and not dry_run and result in ("sent", "error"):
+            if result.status == "error" and result.error_type in DEFINITIVE_ERROR_TYPES:
+                failures.append({
+                    "cc_email": titulo.cc_email, "customer_name": titulo.customer_name,
+                    "document_id": titulo.document_id, "due_date": titulo.due_date,
+                    "bill_amount": titulo.bill_amount, "motivo": result.motivo,
+                })
+            if send_delay > 0 and not dry_run and result.status in ("sent", "error"):
                 time.sleep(send_delay)
+
+        # Notifica os representantes das falhas definitivas (resumo por CC).
+        if failures and not dry_run and session is not None:
+            _notify_failures(session, failures, send_delay)
+        elif failures and dry_run:
+            logger.info("[DRY-RUN] %d falha(s) definitiva(s) gerariam notificação ao CC.", len(failures))
     finally:
         if session is not None:
             session.close()

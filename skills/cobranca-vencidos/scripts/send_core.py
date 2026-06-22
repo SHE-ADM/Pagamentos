@@ -15,12 +15,22 @@ import logging
 import re
 import smtplib
 import traceback
+from typing import NamedTuple
 
 from email_sender import SmtpSession, send_cobranca
 from supabase_log import log_envio_erro, log_envio_sucesso
 from template import render_html
 
 logger = logging.getLogger("cobranca-vencidos")
+
+
+class SendResult(NamedTuple):
+    """Resultado de send_and_log. `status` = 'sent' | 'error'. Em falha, `error_type`
+    (mesmo domínio de classify_smtp_error / validação) e `motivo` (mensagem leiga)
+    permitem ao caller decidir notificações sem reclassificar."""
+    status: str
+    error_type: str | None = None
+    motivo: str | None = None
 
 # Valido o suficiente para pegar e-mail ausente/obviamente quebrado — a validacao
 # definitiva e o proprio servidor SMTP (que devolve o erro real no envio).
@@ -84,8 +94,9 @@ def classify_smtp_error(exc: Exception) -> tuple[str, str]:
 def send_and_log(*, document_id, customer_name, primary_email, cc_email,
                  due_date, bill_amount, email_subject, company_row,
                  dev_mode: bool = False, dev_override: str = "",
-                 session: SmtpSession | None = None) -> str:
-    """Renderiza, envia e registra UMA cobrança. Retorna 'sent' ou 'error'.
+                 session: SmtpSession | None = None) -> SendResult:
+    """Renderiza, envia e registra UMA cobrança. Retorna SendResult (status 'sent'/'error';
+    em falha, com error_type + motivo).
 
     Sucesso -> grava em cobranca_envios_log; falha -> classifica e grava em
     cobranca_erros_log. Nunca propaga exceção de SMTP (o caller decide o fluxo).
@@ -108,7 +119,7 @@ def send_and_log(*, document_id, customer_name, primary_email, cc_email,
             primary_email=primary_email, cc_email=cc_email,
             due_date=due_date, bill_amount=bill_amount, email_subject=email_subject)
         logger.info("[OK] %s -> %s", document_id, primary_email)
-        return "sent"
+        return SendResult("sent")
     except Exception as exc:  # noqa: BLE001 — falha de envio vira registro, não crash
         logger.exception("[ERRO SMTP] %s: %s", document_id, exc)
         error_type, motivo = classify_smtp_error(exc)
@@ -117,4 +128,4 @@ def send_and_log(*, document_id, customer_name, primary_email, cc_email,
             document_id=document_id, customer_name=customer_name,
             primary_email=primary_email, cc_email=cc_email,
             due_date=due_date, bill_amount=bill_amount, email_subject=email_subject)
-        return "error"
+        return SendResult("error", error_type, motivo)

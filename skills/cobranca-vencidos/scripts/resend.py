@@ -134,7 +134,7 @@ def _resend_one(row: dict, _id: int, *, session, company_row, dev_mode: bool,
     status = send_and_log(document_id=doc_id, customer_name=customer,
         primary_email=email, cc_email=cc, due_date=due, bill_amount=amount,
         email_subject=subject, company_row=company_row,
-        dev_mode=dev_mode, dev_override=dev_override, session=session)
+        dev_mode=dev_mode, dev_override=dev_override, session=session).status
     counts["sent" if status == "sent" else "error"] += 1
     results.append({"id": _id, "document_id": doc_id, "status": status,
                     "message": "Enviado." if status == "sent" else "Falha no envio."})

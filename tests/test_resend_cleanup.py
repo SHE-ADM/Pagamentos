@@ -18,6 +18,7 @@ _SCRIPTS_DIR = (
 sys.path.insert(0, str(_SCRIPTS_DIR))
 
 import resend  # noqa: E402
+from send_core import SendResult  # noqa: E402
 
 
 class ResendCleanupTest(unittest.TestCase):
@@ -63,13 +64,18 @@ class ResendCleanupTest(unittest.TestCase):
             os.environ["COBRANCA_SEND_DELAY_SECONDS"] = self._orig_delay
 
     class _FakeSession:
-        def __init__(self, *a, **k): pass
-        def close(self): pass
+        """Dublê de SmtpSession (não envia nada)."""
+
+        def __init__(self, *a, **k):
+            """Sem estado a inicializar."""
+
+        def close(self):
+            """Nada a fechar."""
 
     @staticmethod
-    def _fake_send_and_log(*, document_id, **_kw) -> str:
+    def _fake_send_and_log(*, document_id, **_kw) -> SendResult:
         # doc1 -> sent ; doc3 -> error (doc2 nem chega aqui: short-circuit no already_sent)
-        return "error" if document_id == "doc3" else "sent"
+        return SendResult("error", "smtp_falha", "x") if document_id == "doc3" else SendResult("sent")
 
     def _fake_delete(self, ids):
         self.deleted.extend(ids)
