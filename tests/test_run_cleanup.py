@@ -19,6 +19,7 @@ _SCRIPTS_DIR = (
 sys.path.insert(0, str(_SCRIPTS_DIR))
 
 import run  # noqa: E402
+from send_core import SendResult  # noqa: E402
 
 
 class _Titulo:
@@ -33,8 +34,13 @@ class _Titulo:
 
 
 class _FakeSession:
-    def __init__(self, *a, **k): pass
-    def close(self): pass
+    """Dublê de SmtpSession para os testes (não envia nada)."""
+
+    def __init__(self, *a, **k):
+        """Sem estado a inicializar."""
+
+    def close(self):
+        """Nada a fechar."""
 
 
 class RunCleanupTest(unittest.TestCase):
@@ -78,8 +84,9 @@ class RunCleanupTest(unittest.TestCase):
             os.environ["COBRANCA_SEND_DELAY_SECONDS"] = self._orig_delay
 
     @staticmethod
-    def _fake_send_and_log(*, document_id, **_kw) -> str:
-        return "error" if document_id == "doc3" else "sent"
+    def _fake_send_and_log(*, document_id, **_kw) -> SendResult:
+        # doc3 -> smtp_falha (transitória, NÃO definitiva) p/ não disparar notificação ao CC.
+        return SendResult("error", "smtp_falha", "x") if document_id == "doc3" else SendResult("sent")
 
     def _fake_delete(self, document_id):
         self.deleted.append(document_id)

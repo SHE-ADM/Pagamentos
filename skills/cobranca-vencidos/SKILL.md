@@ -23,7 +23,7 @@ skills/cobranca-vencidos/scripts/run.py
         │
         ├── Firebird 5 (fdb / firebirdsql)
         │     └── VW_PSQ_FIN_REC_BAN  UNION ALL  VW_PSQ_FIN_REC_BAN_004
-        │         WHERE STFI = 'VENCIDO' AND DTVC >= CURRENT_DATE - 5
+        │         WHERE STFI = 'VENCIDO' AND DTVC >= CURRENT_DATE - 7
         │
         ├── Supabase REST (httpx)
         │     ├── GET  cobranca_envios?document_id=eq.X  → dedup check

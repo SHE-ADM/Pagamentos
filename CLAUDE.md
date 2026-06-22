@@ -1259,10 +1259,11 @@ Flask/Next.
 ```
 Firebird (VW_PSQ_FIN_REC_BAN + _004)  →  run.py  →  SMTP Locaweb (email-ssl.com.br)
    títulos vencidos (STFI='VENCIDO',          │         To: cliente · Cc: representante
-   DTVC >= hoje-5)                            │
+   DTVC >= hoje-7)                            │
                                               ├─ dedup: already_sent() consulta cobranca_envios_log (UNIQUE document_id)
-                                              ├─ sucesso → cobranca_envios_log
-                                              └─ falha   → cobranca_erros_log  →  UI /cobranca/erros
+                                              ├─ sucesso → cobranca_envios_log  (+ limpa erros antigos do título)
+                                              ├─ falha   → cobranca_erros_log   →  UI /cobranca/erros
+                                              └─ ao fim: resumo por CC das falhas DEFINITIVAS (failure_notify)
 ```
 
 **Scripts** (`skills/cobranca-vencidos/scripts/`, importados como **módulos irmãos** via
@@ -1276,8 +1277,9 @@ Firebird (VW_PSQ_FIN_REC_BAN + _004)  →  run.py  →  SMTP Locaweb (email-ssl.
 | `resend.py` | **Reenvio manual** de falhas a partir de `/cobranca/erros` (`resend_erros(ids, on_progress)`). Ver subseção "Reenvio manual" abaixo |
 | `db_firebird.py` | Conexão Firebird (driver **`fdb`**, fixado em `server/requirements.txt`) + `_QUERY` (UNION das views `VW_PSQ_FIN_REC_BAN` e `_004`). Linha **sem e-mail SEGUE** o fluxo (vira `email_ausente`); só descarta linha sem `document_id` |
 | `email_sender.py` | Monta e envia. **To primeiro; se o principal falhar, o Cc NÃO é enviado** (2 `sendmail` na mesma conexão). **`SmtpSession`**: conexão **reaproveitada no lote** (lazy no 1º envio; reconecta+reenvia 1× se cair). `send_cobranca` (avulso) é wrapper de compat. **Atenção:** `smtplib.SMTPException` herda de `OSError` — o catch de queda usa `(SMTPServerDisconnected, ConnectionError, TimeoutError)`, **nunca** `OSError`, para não reenviar recusa definitiva (451/5xx/auth) |
-| `supabase_log.py` | `already_sent` (dedup), `log_envio_sucesso`, `log_envio_erro`, `fetch_company_smtp`, `fetch_erro_rows` (linhas de erro para o reenvio) |
-| `template.py` | HTML do e-mail (`render_html`) |
+| `supabase_log.py` | `already_sent` (dedup), `log_envio_sucesso`, `log_envio_erro`, `fetch_company_smtp`, `fetch_erro_rows` (linhas de erro para o reenvio), `delete_erro_rows`/`delete_erro_rows_by_document_id`/`fetch_error_document_ids` (limpeza de resolvidos) |
+| `template.py` | HTML do e-mail de cobrança (`render_html`) |
+| `failure_notify.py` | **Notificação ao representante (CC)** das falhas **definitivas** (`DEFINITIVE_ERROR_TYPES` = email_ausente/email_invalido/smtp_bloqueio): `group_by_cc` (resumo por CC, ignora falha sem CC) + `render_failure_digest` (HTML com cliente/título/vencimento/valor/motivo) + `build_subject`. Só no batch (`run.py`) |
 
 **SMTP (não óbvio — não regredir):** remetente = `company.email` (`company_id=1` =
 `financeiro@otimotex.com.br`), **o mesmo mailbox do recebimento (IMAP)**. Por isso o envio
@@ -1296,6 +1298,16 @@ queda, 450/451/452) → o próximo run **retenta**; `smtp_bloqueio` = **negaçã
 5xx, destinatário recusado) → exige **ação humana** (limite de envios / conta bloqueada na
 Locaweb). `_classify_smtp_error` decide pelo código/exceção. Mensagens em `error_message` são
 **leigas** (coluna "Motivo" da UI); o técnico vai em `error_detail`.
+
+**Notificação ao representante (CC) — só batch:** ao fim do `run.py`, as falhas **definitivas**
+(`DEFINITIVE_ERROR_TYPES`: email_ausente/email_invalido/smtp_bloqueio — exigem ação humana) são
+agrupadas por **CC** (representante do título, `CV_EMAIL` do Firebird) e cada CC recebe **um
+resumo** (`failure_notify`) com cliente/título/vencimento/valor/motivo dos seus títulos que
+falharam. Transitórias (`smtp_falha`/timeout) **não** notificam (re-tentam sozinhas). Falha sem
+CC não tem para quem notificar (logada). `send_and_log` retorna **`SendResult`** (status +
+error_type + motivo) para o `run.py` filtrar as definitivas sem reclassificar. Envio best-effort
+(falha na notificação não derruba o run) e reusa a `SmtpSession` do lote (respeita DEV_MODE). O
+reenvio manual (`resend.py`) **não** notifica (o usuário já vê os erros na tela).
 
 **`.env` (raiz):** `FB_HOST/FB_PORT/FB_DATABASE/FB_USER/FB_PASSWORD/FB_CHARSET`;
 `DEV_MODE=true` + `DEV_OVERRIDE_EMAIL` (To de teste) + `DEV_OVERRIDE_CC_EMAIL` (Cc de teste);

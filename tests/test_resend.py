@@ -20,6 +20,7 @@ _SCRIPTS_DIR = (
 sys.path.insert(0, str(_SCRIPTS_DIR))
 
 import resend  # noqa: E402
+from send_core import SendResult  # noqa: E402
 
 
 def _row(_id, *, doc, email="cliente@x.com", name="CLIENTE X"):
@@ -51,7 +52,7 @@ class ResendErrosTest(unittest.TestCase):
     def test_envio_com_sucesso(self):
         with mock.patch.object(resend, "fetch_erro_rows", return_value=[_row(1, doc="245107-A")]), \
              mock.patch.object(resend, "already_sent", return_value=False), \
-             mock.patch.object(resend, "send_and_log", return_value="sent") as send:
+             mock.patch.object(resend, "send_and_log", return_value=SendResult("sent")) as send:
             out = resend.resend_erros([1])
         send.assert_called_once()
         self.assertEqual(out["sent"], 1)
@@ -81,7 +82,7 @@ class ResendErrosTest(unittest.TestCase):
     def test_falha_smtp_conta_como_error(self):
         with mock.patch.object(resend, "fetch_erro_rows", return_value=[_row(4, doc="999")]), \
              mock.patch.object(resend, "already_sent", return_value=False), \
-             mock.patch.object(resend, "send_and_log", return_value="error"):
+             mock.patch.object(resend, "send_and_log", return_value=SendResult("error", "smtp_falha", "x")):
             out = resend.resend_erros([4])
         self.assertEqual(out["error"], 1)
         self.assertEqual(out["results"][0]["status"], "error")
@@ -91,7 +92,7 @@ class ResendErrosTest(unittest.TestCase):
         events = []
         with mock.patch.object(resend, "fetch_erro_rows", return_value=rows), \
              mock.patch.object(resend, "already_sent", return_value=False), \
-             mock.patch.object(resend, "send_and_log", return_value="sent"), \
+             mock.patch.object(resend, "send_and_log", return_value=SendResult("sent")), \
              mock.patch.object(resend, "log_envio_erro"):
             out = resend.resend_erros([10, 20, 30], on_progress=events.append)
         self.assertEqual([r["document_id"] for r in out["results"]], ["A", "B", "C"])
