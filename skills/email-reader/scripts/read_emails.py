@@ -790,7 +790,8 @@ def read_extracted_rows(csv_path: str) -> list:
 
 
 def build_financial_payload(row: dict, gmail_message_id: str,
-                            received_at: str | None = None) -> dict:
+                            received_at: str | None = None,
+                            subject: str | None = None) -> dict:
     """Converte uma linha do CSV de extracao em payload para financial_account_control.
 
     Sanitiza os campos com restricao no schema (CHAR(14) do CNPJ e
@@ -798,6 +799,10 @@ def build_financial_payload(row: dict, gmail_message_id: str,
     NAO e calculada aqui — a trigger grava em `status` no banco (migration 034).
     Aplica os mesmos fallbacks do caminho de corpo: emissao->data do e-mail
     (received_at); vencimento->emissao; numero->"{tipo}_{ddmmyy}".
+
+    Conta de concessionaria (agua/luz/telefone-internet) e classificada pelo ASSUNTO
+    do e-mail com precedencia maxima (o extract_pdf.py e cego ao assunto), antes do
+    fallback de invoice_number para o tipo entrar no numero sintetico.
     """
     payload = {f: _none_if_blank(row.get(f)) for f in FINANCIAL_FIELDS}
 
@@ -827,6 +832,14 @@ def build_financial_payload(row: dict, gmail_message_id: str,
     # emissão, a data de hoje.
     if not payload.get("due_date"):
         payload["due_date"] = payload.get("issue_date") or datetime.now().strftime("%Y-%m-%d")
+
+    # Conta de concessionária pelo assunto ou pela marca no nome do fornecedor
+    # (precedência máxima) — antes do fallback de invoice abaixo, para o nº sintético
+    # usar o tipo correto.
+    utility = (_classify_utility_doc_type(subject)
+               or _classify_utility_by_supplier(payload.get("supplier_name")))
+    if utility:
+        payload["document_type"] = utility
 
     # Nº documento em branco → "{tipo}_{ddmmyy(vencimento|emissão)}" (mesma regra do corpo).
     if not payload.get("invoice_number"):
@@ -914,6 +927,13 @@ _BODY_PIX_RE     = re.compile(r"\bpix\b", re.IGNORECASE)
 _BODY_DUE_RE     = re.compile(r"(?i)venc(?:imento|to)?\D{0,15}?(\d{2}/\d{2}/\d{2,4})")
 _BODY_ISSUE_RE   = re.compile(r"(?i)emiss[aã]o\D{0,10}?(\d{2}/\d{2}/\d{2,4})")
 _BODY_INVOICE_RE = re.compile(r"(?i)\b(?:nf(?:[- ]?e)?|nota\s+fiscal|fatura\s+n[º°.]?)\s*[n°.:]?\s*(\d{3,})")
+# Nº de documento rotulado EXPLICITAMENTE como "Número do documento" — valor
+# ALFANUMÉRICO (ex.: boleto Sabesp "SOR202659903949", CATAGUASES "014696-001").
+# Usado como fallback quando _BODY_INVOICE_RE (NF/fatura + dígitos) não casa.
+# Conservador de propósito: só o rótulo "número do documento" (varredura confirmou
+# 0 falso positivo; rótulos frouxos como "documento nº" capturavam "Banco").
+_BODY_DOCNUM_RE  = re.compile(
+    r"(?i)n[uú]mero\s+do\s+documento\s*[:\-]?\s*([A-Za-z0-9][A-Za-z0-9./-]{3,})")
 # ID estável da fatura no link da SIEG (app.sieg.com/faturas?bill=NNN). Sem nº de
 # documento no texto, é o identificador que faz os DOIS lembretes da mesma fatura
 # ("Vencimento Próximo" + "Hoje") deduplicarem — antes geravam 2 contas/mês porque
@@ -1037,6 +1057,54 @@ def _classify_body_doc_type(body_text: str) -> str:
     return "outro"
 
 
+# Contas de concessionaria — classificadas por FRASE do assunto/corpo (regra de
+# negocio). Tem PRECEDENCIA sobre boleto/fatura/PIX: o assunto "PAGAMENTO CONTA DE
+# AGUA" define o tipo mesmo que o corpo pareca uma fatura. Termos sem acento (casados
+# por _ns_body) e por PALAVRA inteira (_has_word). "vivo"/"fibra" sao termos do
+# usuario para o tipo telefone/internet (a marca Vivo / fibra optica).
+_UTILITY_DOC_KEYWORDS: list[tuple[str, list[str]]] = [
+    ("conta de água", ["conta de agua", "conta agua"]),
+    ("conta de luz",  ["conta de luz", "conta luz"]),
+    ("conta de telefone / internet",
+        ["conta de telefone", "conta telefone", "conta vivo", "vivo conta",
+         "conta de internet", "conta internet", "vivo", "fibra"]),
+]
+
+
+def _classify_utility_doc_type(*texts: str | None) -> str | None:
+    """Detecta conta de agua/luz/telefone-internet a partir das frases do assunto e/ou
+    corpo. Retorna o tipo (primeiro que casar, na ordem da lista) ou None se nenhum."""
+    blob = _ns_body(" ".join(t for t in texts if t))
+    for doc_type, terms in _UTILITY_DOC_KEYWORDS:
+        if any(_has_word(blob, term) for term in terms):
+            return doc_type
+    return None
+
+
+# Marcas de concessionaria → tipo, casadas SOMENTE contra o NOME DO FORNECEDOR
+# (regra de negocio). Escopo restrito de proposito: "claro"/"tim"/"vivo" sao
+# palavras comuns no corpo ("esta claro", "ao vivo"), entao casar no corpo livre
+# geraria falso positivo — por isso so o supplier_name alimenta este match.
+_UTILITY_SUPPLIER_BRANDS: list[tuple[str, list[str]]] = [
+    ("conta de luz",                  ["enel", "eletropaulo"]),
+    ("conta de telefone / internet",  ["vivo", "claro", "tim"]),
+    ("conta de água",                 ["sabesp"]),
+]
+
+
+def _classify_utility_by_supplier(supplier_name: str | None) -> str | None:
+    """Detecta conta de concessionaria pela MARCA no nome do fornecedor (enel/
+    eletropaulo→luz; vivo/claro/tim→telefone-internet; sabesp→água). Palavra inteira,
+    sem acento. Retorna o tipo ou None."""
+    if not supplier_name:
+        return None
+    blob = _ns_body(supplier_name)
+    for doc_type, brands in _UTILITY_SUPPLIER_BRANDS:
+        if any(_has_word(blob, brand) for brand in brands):
+            return doc_type
+    return None
+
+
 def _brl_to_decimal(raw: str | None):
     """Converte valor em formato BR ('8.650,00' ou '8650,00') para float.
 
@@ -1110,7 +1178,8 @@ def _iso_date_to_ddmmyy(iso_date: str | None) -> str | None:
 
 
 def extract_from_email_body(body_text: str, received_at: str, message_id: str,
-                            sender_email: str | None = None) -> dict | None:
+                            sender_email: str | None = None,
+                            subject: str | None = None) -> dict | None:
     """Monta um payload de financial_account_control a partir do corpo do e-mail.
 
     Retorna None (sem log de erro) quando nenhum sinal financeiro e encontrado
@@ -1167,6 +1236,12 @@ def extract_from_email_body(body_text: str, received_at: str, message_id: str,
 
     inv_match      = _BODY_INVOICE_RE.search(body_text)
     invoice_number = inv_match.group(1).strip() if inv_match else None
+    # Fallback: rótulo explícito "Número do documento" (valor alfanumérico) — pega
+    # boletos de concessionária/cobrança cujo nº não é NF/fatura+dígitos.
+    if not invoice_number:
+        doc_match = _BODY_DOCNUM_RE.search(body_text)
+        if doc_match:
+            invoice_number = doc_match.group(1).strip()
     # Sem nº no texto, mas com link de fatura SIEG: usa o bill como nº estável, para
     # os dois lembretes ("Vencimento Próximo" + "Hoje") da MESMA fatura deduplicarem
     # (a dedup por nome+nº+valor casa; antes o nº saía de data relativa e divergia).
@@ -1203,10 +1278,16 @@ def extract_from_email_body(body_text: str, received_at: str, message_id: str,
         # Regra de negocio: sem nenhuma data, usa a data da extracao (hoje).
         due_date = datetime.now().strftime("%Y-%m-%d")
 
-    # Honorários têm precedência sobre o override de PIX: registra como tipo
-    # "honorários" e, por regra de negócio, forma de pagamento "pix".
+    # Conta de concessionária (água/luz/telefone-internet) tem PRECEDÊNCIA MÁXIMA:
+    # a frase no assunto/corpo define o tipo mesmo que pareça fatura/boleto/PIX.
+    # payment_method permanece o detectado (pix se houver) — utility não força forma.
+    # Depois: honorários (precedência sobre PIX) → PIX → classificação por keyword.
+    utility = (_classify_utility_doc_type(subject, body_text)
+               or _classify_utility_by_supplier(supplier_name))
     classified = _classify_body_doc_type(body_text)
-    if classified == "honorários":
+    if utility:
+        document_type, payment_method = utility, ("pix" if has_pix else "outro")
+    elif classified == "honorários":
         document_type, payment_method = "honorários", "pix"
     elif has_pix:
         # PIX sobrescreve o tipo quando não é honorários.
@@ -1638,7 +1719,8 @@ def extract_and_store_accounts(saved_pdfs: list, message_id: str,
                 continue
 
             gmid    = message_id if acc_index == 0 else f"{message_id}#{acc_index}"
-            payload = build_financial_payload(row, gmid, received_at=err_ctx.get("received_at"))
+            payload = build_financial_payload(row, gmid, received_at=err_ctx.get("received_at"),
+                                              subject=err_ctx.get("subject"))
             # Remetente do e-mail → o trigger alinha supplier.email (migration 023).
             payload["sender_email"] = err_ctx.get("sender_email")
             payload["subject"]      = err_ctx.get("subject")  # exibido/buscado em /consulta (migration 025)
@@ -1654,13 +1736,20 @@ def extract_and_store_accounts(saved_pdfs: list, message_id: str,
                 acc_index += 1
                 continue
 
-            # Validacao 2: fornecedor sem nenhum identificador
+            # Validacao 2: fornecedor nao identificado por NENHUMA chave.
+            # Alem de CNPJ/CPF/nome extraidos do PDF, o e-mail do remetente e
+            # chave valida — a RPC resolve_supplier_for_account casa por e-mail
+            # (passo 3, email/2/3/4) ou cria o fornecedor a partir dele. So
+            # rejeita quando nao ha identificador algum (espelha a guarda da
+            # propria RPC), evitando descartar uma conta que o remetente
+            # identifica (mesmo comportamento do caminho de corpo).
             if not any([payload.get("supplier_cnpj"),
                         payload.get("supplier_cpf"),
-                        payload.get("supplier_name")]):
+                        payload.get("supplier_name"),
+                        payload.get("sender_email")]):
                 ctrl.register_error(
                     ctx, "sem_fornecedor",
-                    f"CNPJ, CPF e nome do fornecedor ausentes — {row.get('source_file')}",
+                    f"CNPJ, CPF, nome e e-mail do fornecedor ausentes — {row.get('source_file')}",
                     raw_payload=row
                 )
                 acc_index += 1
@@ -1748,7 +1837,8 @@ def try_extract_from_body(email_rec: dict, body_text: str, received_at: str,
     Anota o motivo em email_rec['notes']. O log em email_processing_errors e feito
     de forma centralizada no chamador (process_message), para TODA falha.
     """
-    payload = extract_from_email_body(body_text, received_at, message_id, sender_email)
+    payload = extract_from_email_body(body_text, received_at, message_id, sender_email,
+                                      subject=email_rec.get("subject"))
     if payload is None:
         # Sem sinal financeiro (sem valor nem documento) no corpo.
         email_rec["notes"] = "Corpo sem sinal financeiro (sem valor nem documento)"
