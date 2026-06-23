@@ -1,6 +1,6 @@
-import { createElement, type ReactNode } from 'react';
-import { CheckCircle2 } from 'lucide-react';
-import type { FinancialAccountControl, EmailControl } from '@sheild/shared';
+import { createElement, type ReactNode, type MouseEvent } from 'react';
+import { CheckCircle2, Pencil, Trash2 } from 'lucide-react';
+import type { FinancialAccountControl, EmailControl, Supplier } from '@sheild/shared';
 import StatusBadge from '../components/StatusBadge';
 import CheckToggle from '../components/atoms/CheckToggle';
 import StatusSelectCell, { type StatusOption } from '../components/atoms/StatusSelectCell';
@@ -310,6 +310,107 @@ export function getEmailColumns(invoiceMap: Record<string, string>): ColumnDef<E
           }),
         );
       },
+    },
+  ];
+}
+
+/** Callback acionado pelos botões de ação (editar/excluir) da linha de fornecedor. */
+type SupplierRowAction = (supplier: Supplier) => void;
+
+// Botão de ação na célula — para o clique (stopPropagation) não disparar o clique da
+// linha (que abre a edição). Cada um leva aria-label descritivo com o nome do fornecedor.
+function actionButton(
+  icon: typeof Pencil,
+  label: string,
+  className: string,
+  onClick: () => void,
+): ReactNode {
+  return createElement(
+    'button',
+    {
+      type: 'button',
+      'aria-label': label,
+      title: label,
+      className,
+      onClick: (e: MouseEvent) => {
+        e.stopPropagation();
+        onClick();
+      },
+    },
+    createElement(icon, { size: 15 }),
+  );
+}
+
+const supplierLabel = (s: Supplier): string => s.trade_name ?? s.legal_name ?? `#${s.sk_supplier}`;
+
+/**
+ * Colunas do grid de /fornecedores. É uma **factory** porque a coluna "Ações"
+ * renderiza botões (editar/excluir) que dependem dos callbacks da página.
+ */
+export function getSupplierColumns(onEdit: SupplierRowAction, onDelete: SupplierRowAction): ColumnDef<Supplier>[] {
+  return [
+    {
+      key: 'legal_name',
+      header: 'Razão social',
+      size: 240,
+      truncate: true,
+      render: (s) => s.legal_name ?? '—',
+    },
+    {
+      key: 'trade_name',
+      header: 'Nome fantasia',
+      size: 200,
+      truncate: true,
+      render: (s) => s.trade_name ?? '—',
+    },
+    {
+      key: 'cnpj',
+      header: 'CNPJ',
+      size: 170,
+      hideOn: ['sm'],
+      secondLine: true,
+      secondLineLabel: 'CNPJ',
+      render: (s) => fmtCnpj(s.cnpj),
+    },
+    {
+      key: 'cpf',
+      header: 'CPF',
+      size: 140,
+      hideOn: ['sm', 'md'],
+      secondLine: true,
+      secondLineLabel: 'CPF',
+      render: (s) => (s.cpf ? fmtCpf(s.cpf) : '—'),
+    },
+    {
+      key: 'email',
+      header: 'E-mail',
+      size: 220,
+      hideOn: ['sm', 'md'],
+      truncate: true,
+      render: (s) => s.email ?? '—',
+    },
+    {
+      key: '__actions__',
+      header: 'Ações',
+      size: 96,
+      align: 'center',
+      render: (s) =>
+        createElement(
+          'div',
+          { className: 'flex items-center justify-center gap-1' },
+          actionButton(
+            Pencil,
+            `Editar ${supplierLabel(s)}`,
+            'flex h-7 w-7 items-center justify-center rounded-md text-slate-500 hover:bg-slate-100 hover:text-brand transition-colors',
+            () => onEdit(s),
+          ),
+          actionButton(
+            Trash2,
+            `Excluir ${supplierLabel(s)}`,
+            'flex h-7 w-7 items-center justify-center rounded-md text-slate-500 hover:bg-status-error-bg hover:text-status-error-fg transition-colors',
+            () => onDelete(s),
+          ),
+        ),
     },
   ];
 }

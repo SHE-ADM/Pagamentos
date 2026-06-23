@@ -2,10 +2,11 @@ import { defineConfig } from 'vitest/config';
 import react, { reactCompilerPreset } from '@vitejs/plugin-react';
 import babel from '@rolldown/plugin-babel';
 
-// Proxy /api → backend Flask local (server/app.py). Evita CORS no dev.
-// A leitura de e-mails (POST /api/emails/read) é servida diretamente pelo
-// Flask. A Next API (apps/api-backend, porta 3000) é camada de CRUD/dados
-// independente e não intercepta este caminho.
+// Proxy /api → backend Flask local (server/app.py) e /data-api → Next API
+// (apps/api-backend, porta 3000). Evita CORS no dev. A leitura de e-mails
+// (POST /api/emails/read) é servida pelo Flask; o CRUD de dados (ex.: fornecedores)
+// vai pela Next API. Como ambos expõem rotas sob /api, o /data-api é reescrito
+// para /api ao encaminhar ao :3000 (mantém os dois caminhos sem colisão).
 export default defineConfig({
   plugins: [
     react(),
@@ -31,6 +32,11 @@ export default defineConfig({
     port: 5173,
     proxy: {
       '/api': 'http://127.0.0.1:8000',
+      '/data-api': {
+        target: 'http://127.0.0.1:3000',
+        changeOrigin: true,
+        rewrite: (p) => p.replace(/^\/data-api/, '/api'),
+      },
     },
   },
   build: {
