@@ -702,14 +702,25 @@ def _due_date_ddmmyy(due_date) -> str:
     return datetime.now().strftime("%d%m%y")
 
 
-def fallback_invoice_number(doc_type: str, due_date) -> str:
+def _format_brl(value) -> str:
+    """Formata um valor numerico como moeda BR: 10999.99 -> 'R$ 10.999,99'."""
+    # f-string usa formato US ('10,999.99'); troca os separadores para o padrao BR.
+    s = f"{float(value):,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+    return f"R$ {s}"
+
+
+def fallback_invoice_number(doc_type: str, due_date, amount=None) -> str:
     """invoice_number sintetico quando o documento nao traz N do Documento.
 
-    Regra de negocio: tipo_documento + '_' + vencimento em DDMMYY.
-    Ex.: 'tributo_030626', 'boleto_100726'.
+    Regra de negocio:
+    - PIX (sem N documento): 'PIX_' + valor em moeda BR. Ex.: 'PIX_R$ 10.999,99'.
+    - Demais tipos: tipo_documento + '_' + vencimento em DDMMYY.
+      Ex.: 'tributo_030626', 'boleto_100726'.
     A deduplicacao de sufixos '(2)', '(3)'... e feita no momento da gravacao
     no banco (read_emails.py — SupabaseControl.unique_invoice_number).
     """
+    if (doc_type or "").lower() == "pix" and amount is not None:
+        return f"PIX_{_format_brl(amount)}"
     return f"{doc_type}_{_due_date_ddmmyy(due_date)}"
 
 
@@ -795,7 +806,8 @@ def build_record_from_json(pdf_path, data: dict, source: str) -> dict:
         rec["issue_date"] = None
         notes.append("Emissão ignorada (guia de tributo não tem data de emissão confiável)")
     if not has_document_number(rec["invoice_number"]):
-        rec["invoice_number"] = fallback_invoice_number(rec["document_type"], rec["due_date"])
+        rec["invoice_number"] = fallback_invoice_number(
+            rec["document_type"], rec["due_date"], rec.get("amount"))
         notes.append("N documento ausente — gerado de tipo+vencimento")
     rec["processing_notes"] = " | ".join(notes) if notes else None
     return rec
@@ -830,7 +842,8 @@ def build_record_regex(pdf_path, raw: str, source: str) -> dict:
     apply_pix_override(rec)
     ensure_due_date(rec, notes)
     if not has_document_number(rec["invoice_number"]):
-        rec["invoice_number"] = fallback_invoice_number(rec["document_type"], rec["due_date"])
+        rec["invoice_number"] = fallback_invoice_number(
+            rec["document_type"], rec["due_date"], rec.get("amount"))
         notes.append("N documento ausente — gerado de tipo+vencimento")
     rec["processing_notes"] = " | ".join(notes)
     return rec
