@@ -19,8 +19,9 @@ export interface ApiResponse<T = unknown> {
   meta?: ApiResponseMeta;
 }
 
-export function ok<T>(data: T, meta?: ApiResponseMeta): Response {
-  return Response.json({ success: true, data, meta } satisfies ApiResponse<T>);
+// `status` permite 201 (criação) sem quebrar chamadas existentes (default 200).
+export function ok<T>(data: T, meta?: ApiResponseMeta, status = 200): Response {
+  return Response.json({ success: true, data, meta } satisfies ApiResponse<T>, { status });
 }
 
 export function fail(error: string, status = 400): Response {

@@ -1,6 +1,6 @@
-import { createElement, type ReactNode } from 'react';
-import { CheckCircle2 } from 'lucide-react';
-import type { FinancialAccountControl, EmailControl } from '@sheild/shared';
+import { createElement, type ReactNode, type MouseEvent } from 'react';
+import { CheckCircle2, Pencil } from 'lucide-react';
+import type { FinancialAccountControl, EmailControl, Supplier } from '@sheild/shared';
 import StatusBadge from '../components/StatusBadge';
 import CheckToggle from '../components/atoms/CheckToggle';
 import StatusSelectCell, { type StatusOption } from '../components/atoms/StatusSelectCell';
@@ -31,6 +31,9 @@ export type ToggleFlag = (
 
 /** Callback acionado ao alterar o status de uma conta no dropdown inline. */
 export type StatusChangeCallback = (rowId: number, newStatus: string) => Promise<void>;
+
+/** Callback acionado pelo botão de editar conta na coluna de ação do grid de /consulta. */
+type ContaRowAction = (conta: FinancialAccountControl) => void;
 
 // Formatters — cópia das implementações de Consulta.tsx. A consolidação num
 // módulo único (src/lib) é follow-up de quando Consulta.tsx for migrado ao hook.
@@ -98,6 +101,7 @@ export interface ColumnDef<T> {
 export function getConsultaColumns(
   onToggleFlag: ToggleFlag,
   onStatusChange: StatusChangeCallback,
+  onEdit: ContaRowAction,
 ): ColumnDef<FinancialAccountControl>[] {
   return [
   {
@@ -222,6 +226,22 @@ export function getConsultaColumns(
     hideOn: ['sm', 'md'],
     render: (r) => createElement(StatusBadge, { value: r.extraction_source }),
   },
+  {
+    // Coluna de ação — botão de editar a conta (abre o modal de edição na página).
+    key: '__actions__',
+    header: 'Ações',
+    size: 72,
+    align: 'center',
+    render: (r) => {
+      const nome = r.supplier?.trade_name ?? r.supplier?.legal_name ?? `#${r.id}`;
+      return actionButton(
+        Pencil,
+        `Editar conta de ${nome}`,
+        'inline-flex h-7 w-7 items-center justify-center rounded-md text-slate-500 hover:bg-slate-100 hover:text-brand transition-colors',
+        () => onEdit(r),
+      );
+    },
+  },
   ];
 }
 
@@ -310,6 +330,97 @@ export function getEmailColumns(invoiceMap: Record<string, string>): ColumnDef<E
           }),
         );
       },
+    },
+  ];
+}
+
+/** Callback acionado pelos botões de ação (editar/excluir) da linha de fornecedor. */
+type SupplierRowAction = (supplier: Supplier) => void;
+
+// Botão de ação na célula — para o clique (stopPropagation) não disparar o clique da
+// linha (que abre a edição). Cada um leva aria-label descritivo com o nome do fornecedor.
+function actionButton(
+  icon: typeof Pencil,
+  label: string,
+  className: string,
+  onClick: () => void,
+): ReactNode {
+  return createElement(
+    'button',
+    {
+      type: 'button',
+      'aria-label': label,
+      title: label,
+      className,
+      onClick: (e: MouseEvent) => {
+        e.stopPropagation();
+        onClick();
+      },
+    },
+    createElement(icon, { size: 15 }),
+  );
+}
+
+const supplierLabel = (s: Supplier): string => s.trade_name ?? s.legal_name ?? `#${s.sk_supplier}`;
+
+/**
+ * Colunas do grid de /fornecedores. É uma **factory** porque a coluna "Ações"
+ * renderiza o botão de editar, que depende do callback da página.
+ */
+export function getSupplierColumns(onEdit: SupplierRowAction): ColumnDef<Supplier>[] {
+  return [
+    {
+      key: 'legal_name',
+      header: 'Razão social',
+      size: 240,
+      truncate: true,
+      render: (s) => s.legal_name ?? '—',
+    },
+    {
+      key: 'trade_name',
+      header: 'Nome fantasia',
+      size: 200,
+      truncate: true,
+      render: (s) => s.trade_name ?? '—',
+    },
+    {
+      key: 'cnpj',
+      header: 'CNPJ',
+      size: 170,
+      hideOn: ['sm'],
+      secondLine: true,
+      secondLineLabel: 'CNPJ',
+      render: (s) => fmtCnpj(s.cnpj),
+    },
+    {
+      key: 'cpf',
+      header: 'CPF',
+      size: 140,
+      hideOn: ['sm', 'md'],
+      secondLine: true,
+      secondLineLabel: 'CPF',
+      render: (s) => (s.cpf ? fmtCpf(s.cpf) : '—'),
+    },
+    {
+      key: 'email',
+      header: 'E-mail',
+      size: 220,
+      hideOn: ['sm', 'md'],
+      truncate: true,
+      render: (s) => s.email ?? '—',
+    },
+    {
+      key: '__actions__',
+      header: 'Ações',
+      size: 72,
+      align: 'center',
+      render: (s) =>
+        actionButton(
+          Pencil,
+          `Editar ${supplierLabel(s)}`,
+          'inline-flex h-7 w-7 items-center justify-center rounded-md text-slate-500 hover:bg-slate-100 hover:text-brand transition-colors',
+          () => onEdit(s),
+        ),
     },
   ];
 }

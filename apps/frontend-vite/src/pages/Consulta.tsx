@@ -11,9 +11,10 @@ import {
   Search,
   X,
   Eye,
+  Pencil,
   type LucideIcon,
 } from 'lucide-react';
-import type { FinancialAccountControl } from '@sheild/shared';
+import type { FinancialAccountControl, FinancialAccountControlCreate } from '@sheild/shared';
 import {
   getFinancialAccountControl,
   getFinancialStats,
@@ -24,12 +25,14 @@ import {
   type FinancialStats,
 } from '../services/supabase';
 import { startEmailRead, getEmailReadProgress, type ReadProgress } from '../services/emailReader';
+import { updateConta } from '../services/contas';
 import { suspendIdleLogout, resumeIdleLogout } from '../hooks/useIdleLogout';
 import { getErrorMessage } from '../lib/getErrorMessage';
 import Alert from '../components/atoms/Alert';
 import ExpandableText from '../components/ExpandableText';
 import AttachmentViewer from '../components/AttachmentViewer';
 import DataGrid from '../components/organisms/DataGrid';
+import ContaForm from '../components/organisms/ContaForm';
 import { getConsultaColumns, STATUS_OPTIONS, type ToggleFlag, type StatusChangeCallback } from '../hooks/useGridColumns';
 
 const fmtDate = (d: string | null): string => (d ? new Date(d + 'T00:00:00').toLocaleDateString('pt-BR') : '—');
@@ -136,6 +139,11 @@ export default function Consulta() {
   const [filteredValue, setFilteredValue] = useState<number | null>(null);
   const [sel, setSel] = useState<FinancialAccountControl | null>(null);
   const [viewing, setViewing] = useState<string | null>(null);
+  // Edição de conta (modal com ContaForm → PATCH /api/contas/:id).
+  const [editing, setEditing] = useState<FinancialAccountControl | null>(null);
+  const [editSubmitting, setEditSubmitting] = useState(false);
+  const [editError, setEditError] = useState<string | null>(null);
+  const editDialogRef = useRef<HTMLDialogElement>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [f, setF] = useState<ConsultaFilters>({ ...EMPTY_FILTERS });
@@ -254,9 +262,44 @@ export default function Consulta() {
     void refreshStats();
   }, [refreshStats]);
 
+  // Salva a edição da conta via Next API (PATCH) e recarrega o grid + KPIs.
+  const handleEditSubmit = async (data: FinancialAccountControlCreate) => {
+    if (!editing) return;
+    setEditSubmitting(true);
+    setEditError(null);
+    try {
+      await updateConta(editing.id, data);
+      setEditing(null);
+      await load();
+      void refreshStats();
+    } catch (e) {
+      setEditError(getErrorMessage(e));
+    } finally {
+      setEditSubmitting(false);
+    }
+  };
+
+  // Abre/fecha o <dialog> nativo de edição (foco/trap/Esc; try/catch p/ jsdom).
+  useEffect(() => {
+    const el = editDialogRef.current;
+    if (!el) return;
+    try {
+      if (editing) el.showModal();
+      else el.close();
+    } catch {
+      /* showModal indisponível (jsdom) */
+    }
+  }, [editing]);
+
+  // Abre o modal de edição a partir do botão de ação no grid.
+  const handleEditRow = useCallback((r: FinancialAccountControl) => {
+    setEditError(null);
+    setEditing(r);
+  }, []);
+
   const columns = useMemo(
-    () => getConsultaColumns(handleToggleFlag, handleStatusChange),
-    [handleToggleFlag, handleStatusChange],
+    () => getConsultaColumns(handleToggleFlag, handleStatusChange, handleEditRow),
+    [handleToggleFlag, handleStatusChange, handleEditRow],
   );
 
   // "Atualizar": dispara a leitura IMAP dos últimos 7 dias (job em background no
@@ -596,20 +639,31 @@ export default function Consulta() {
                             <p className="text-xs font-semibold text-slate-500 mb-3 uppercase tracking-wide pr-8">
                               Detalhes — {(r.supplier?.trade_name ?? r.supplier?.legal_name) || 'registro'} · {fmtDate(r.due_date)}
                             </p>
-                            {r.source_file && (
-                              <div className="mb-3">
+                            <div className="mb-3 flex gap-2">
+                              <button
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setEditError(null);
+                                  setEditing(r);
+                                }}
+                                className="btn btn-primary"
+                                title="Editar esta conta"
+                              >
+                                <Pencil size={14} /> Editar conta
+                              </button>
+                              {r.source_file && (
                                 <button
                                   onClick={(e) => {
                                     e.stopPropagation();
                                     setViewing(r.source_file);
                                   }}
-                                  className="btn btn-primary"
+                                  className="btn"
                                   title="Ver o PDF anexado"
                                 >
                                   <Eye size={14} /> Ver anexo
                                 </button>
-                              </div>
-                            )}
+                              )}
+                            </div>
                             <dl className="grid grid-cols-2 rounded-lg overflow-hidden border border-slate-100">
                               {(
                                 [
@@ -689,6 +743,27 @@ export default function Consulta() {
       </div>
 
       {viewing && <AttachmentViewer sourceFile={viewing} onClose={() => setViewing(null)} />}
+
+      {editing && (
+        <dialog
+          ref={editDialogRef}
+          aria-label="Editar conta"
+          onCancel={() => setEditing(null)}
+          className="fixed inset-0 m-auto h-fit max-h-[90vh] w-full max-w-2xl overflow-y-auto rounded-xl border-0 bg-white p-0 shadow-lg backdrop:bg-black/50"
+        >
+          <div className="p-6">
+            <h2 className="mb-4 text-base font-semibold text-gray-900">Editar conta</h2>
+            <ContaForm
+              mode="edit"
+              defaultValues={editing}
+              onSubmit={handleEditSubmit}
+              onCancel={() => setEditing(null)}
+              submitError={editError}
+              submitting={editSubmitting}
+            />
+          </div>
+        </dialog>
+      )}
     </div>
   );
 }

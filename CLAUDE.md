@@ -136,6 +136,40 @@ Service → Route, conforme `monorepo-crud-spec.md`). A exceção aceita: a leit
 `GET /api/emails/progress`) usa POST + corpo de parâmetros porque é uma **ação de disparo**,
 não um recurso CRUD.
 
+**CRUD de fornecedores (`apps/api-backend/lib/suppliers.ts` + `app/api/suppliers/**`):** primeiro
+CRUD completo da Next API (Repository → Service → Route, escrita via `getSupabaseAdmin`).
+`GET /api/suppliers` (paginado `page`/`limit`≤100 + `search` por nome/CNPJ/CPF/4 e-mails via
+`ilike`, índices trgm da migration 029) · `GET/PATCH/DELETE /api/suppliers/:sk` (por
+`sk_supplier`) · `POST /api/suppliers`. Validação Zod em `@sheild/shared`
+(`supplierCreateSchema`/`supplierUpdateSchema` — CNPJ/CPF com strip de máscara; ao menos um
+identificador, espelhando `chk_supplier_has_identifier`). `DELETE` é **soft delete**
+(`deleted_at`, migration 045) e **bloqueia com 409** quando há contas vinculadas
+(`financial_account_control.sk_supplier`) — fornecedor é PRESERVADO, nunca hard delete.
+`sk_supplier`/`supplier_id` nunca entram no corpo (gerados pelo banco + trigger
+`trg_supplier_mirror_id`). Status: `201` criação · `409` UNIQUE (23505) de CNPJ/CPF · `404` ·
+`422` Zod · `400` sk inválido. Spec/template em `docs/prompts/api-supplier-crud-spec.md`.
+
+**CRUD de contas (`apps/api-backend/lib/contas.ts` + `app/api/contas/**`):** CRUD da tabela
+principal `financial_account_control` (PK = **`id`**, não `sk_*`; fornecedor pela FK obrigatória
+`sk_supplier`). `GET /api/contas` (paginado + `search` por fornecedor/nº doc/assunto/remetente,
+JOIN `supplier`, exclui `cancelado` por padrão) · `GET/PATCH /api/contas/:id` · `POST /api/contas`.
+**Sem DELETE** (regra de preservação): "remoção" = `PATCH { status: 'cancelado' }`. Validação Zod
+em `@sheild/shared` — `financialAccountControlCreateSchema` (criação manual exige `sk_supplier` +
+`amount`>0; demais campos opcionais, o banco aplica DEFAULT/NULL) e
+`financialAccountControlUpdateSchema` (partial). `status_id`/`company_id`/`created_at`/`updated_at`
+são derivados (trigger) — não entram no corpo. Status: `201` · `409` (23505) · `404` · `422` ·
+`400` id inválido. Frontend: **página `/contas`** (lançamento rápido — `pages/ContasNovaPage.tsx`
+com o card centralizado `mx-auto` + `organisms/ContaForm.tsx`) e **edição da conta em `/consulta`
+por DUAS vias**: a **coluna "Ações"** do `DataGrid` (botão lápis por linha — `getConsultaColumns`
+ganhou o 3º parâmetro `onEdit` + a coluna de ação) **e** o botão "Editar conta" no painel de
+detalhe; ambos abrem o mesmo modal `ContaForm` → `PATCH /api/contas/:id`. Fornecedor via
+**react-select** (`molecules/SupplierSelect.tsx` — `AsyncCreatableSelect`: busca + cria fornecedor
+inline via `POST /api/suppliers`); **tipo de documento e tipo de pagamento** são `<select>` de enum
+(valores pré-definidos, obrigatórios). Ordem dos campos do form: **Fornecedor → Tipo de documento →
+Tipo de pagamento → Valor → Vencimento → …**. **Sem botão de exclusão** em nenhuma das telas.
+Cliente Next API em `services/contas.ts` (proxy `/data-api`). Spec/template em
+`docs/prompts/api-contas-crud-spec.md`.
+
 **Auth das rotas Next (`apps/api-backend/middleware.ts` + `lib/auth.ts`):** o middleware
 protege `/api/*` (matcher `/api/((?!health).*)` — `/api/health` fica público) exigindo
 `Authorization: Bearer <token>`. O token é validado contra o Supabase Auth (`auth.getUser`)
@@ -493,19 +527,19 @@ apps/frontend-vite/src/components/
 └── ExpandableText.tsx         # expansível "ver mais/ver menos" (+ ExpandableText.test.tsx)
 ```
 
-**Menu da sidebar (`Layout.tsx`) — 5 grupos** (cabeçalho `uppercase`; itens `breve` são
+**Menu da sidebar (`Layout.tsx`) — 4 grupos** (cabeçalho `uppercase`; itens `breve` são
 `<span className="nav-link is-disabled">` com badge "breve", sem rota):
 
 | Grupo | Itens (rota / estado) |
 |---|---|
 | **Recebimentos** | E-mails (`/emails`) · Log de erros (`/erros`) |
 | **Envios** | E-mails (`/cobranca/envios`) · Log de erros (`/cobranca/erros`) — logs da cobrança automática de vencidos |
-| **Contas** | Gestão de contas (`/consulta`) · Cadastro de contas (`breve`) |
-| **Cadastros** | Cadastro de fornecedores (`breve`) |
+| **Contas** | Gestão de contas (`/consulta`) · Cadastro de contas (`/contas`) · Cadastro de fornecedores (`/fornecedores`) |
 | **Análise** | Dashboard (`breve`) |
 
 > "Gestão de contas" aponta para `/consulta` (só o rótulo difere da rota). Ao promover um
-> item `breve` a ativo, troque o `<span … is-disabled>` por `<NavLink>` e remova o badge.
+> item `breve` a ativo, troque o `<span … is-disabled>` por `<NavLink>` e remova o badge
+> (feito para "Cadastro de fornecedores" e "Cadastro de contas").
 
 Hooks em `src/hooks/`: `useContainerBreakpoint.ts` (faixa `sm`/`md`/`lg` pela largura
 **real do container** via `ResizeObserver` — não da janela; usado pelo `DataGrid` p/ ocultar
@@ -514,10 +548,11 @@ ordem/visibilidade/larguras/fixação/densidade — persistido em `localStorage`
 setters no formato `OnChangeFn` do TanStack + `reset()`; ver seção do DataGrid) e
 `useGridColumns.ts` (metadados de coluna — `ColumnDef` com `size?` opcional, `getConsultaColumns`,
 `getEmailColumns`; é módulo de **definições**, não um hook,
-apesar do nome). `getConsultaColumns(onToggleFlag, onStatusChange)` é factory porque as colunas
-"NF" e "BOL" (curadoria) renderizam o atom `CheckToggle` (checkbox que escreve no banco) e a
-coluna "Situação" renderiza o `StatusSelectCell` (dropdown inline que altera o status) — precisam
-dos callbacks da página. Os cabeçalhos são abreviados (`NF`/`BOL`) para poupar
+apesar do nome). `getConsultaColumns(onToggleFlag, onStatusChange, onEdit)` é factory porque as
+colunas "NF" e "BOL" (curadoria) renderizam o atom `CheckToggle` (checkbox que escreve no banco), a
+coluna "Situação" renderiza o `StatusSelectCell` (dropdown inline que altera o status) e a coluna
+"Ações" renderiza o botão de editar (lápis) que chama `onEdit` (abre o modal `ContaForm` na página)
+— todos precisam dos callbacks da página. Os cabeçalhos são abreviados (`NF`/`BOL`) para poupar
 largura, mas o `aria-label` do checkbox continua descritivo (`Tem NF`/`Tem Boleto`). As colunas
 **"Fornecedor" e "CNPJ/CPF" derivam do JOIN com `supplier`** (`r.supplier?.trade_name ??
 legal_name` e `r.supplier?.cnpj ?? cpf`) — `financial_account_control` não guarda mais essas
@@ -525,9 +560,10 @@ colunas (migrations 040/041); por isso **não têm `sortKey`** (não são orden�
 por recurso embutido no PostgREST é frágil) e seu `key` no `ColumnDef` é uma string sintética
 (`ColumnDef.key` é `keyof T | (string & {})`; no `DataGrid` o `accessorFn` faz `row[key as keyof T]`,
 inócuo pois o accessor só alimenta sort/filter client-side, que não usamos). Ordem
-das colunas finais de `/consulta`: **… Valor → NF → BOL → Situação → Extração** (`Extração`
-por último, após `Situação`). A coluna `Extração` mostra `extraction_source` (badge), mas foi
-removida do painel de detalhe e da exportação CSV — aparece **apenas** como coluna do grid.
+das colunas finais de `/consulta`: **… Valor → NF → BOL → Situação → Extração → Ações** (a coluna
+`Ações` é a última e traz o botão de editar a conta; `Extração` vem logo antes). A coluna `Extração`
+mostra `extraction_source` (badge), mas foi removida do painel de detalhe e da exportação CSV —
+aparece **apenas** como coluna do grid.
 A coluna **"Situação" ordena alfabeticamente pelo texto** (`sortKey: 'status'`), **não** por
 `status_id`: decisão de negócio — o ciclo de vida não é linear (de `a vencer` pode-se ir direto a
 `cancelado`/`falha`), então a ordem alfabética é mais previsível (`status_name` só existe na
@@ -844,8 +880,15 @@ pagamento é forçado a `pix` tanto no corpo (`extract_from_email_body`) quanto 
 O pipeline resolve o fornecedor **antes do INSERT** via RPC `resolve_supplier_for_account`
 (`migration 040`; `_finalize_supplier` → `SupabaseControl.resolve_supplier`), que chama
 `resolve_supplier_id(cnpj, cpf, name, email)` + `_add_supplier_email`. Ordem de busca
-(`migration 027`/`028`): **CNPJ → CPF → e-mail exato → nome normalizado → auto-insert** em
-`supplier`. Função `normalize_search()` é SECURITY DEFINER. `financial_account_control`
+(**corrigida na `migration 046`**): **CNPJ → CPF → nome normalizado → e-mail exato → auto-insert**
+em `supplier`. **O e-mail só é usado para busca na AUSÊNCIA TOTAL de nome de fornecedor** — antes
+(027/028) o e-mail vinha antes do nome, o que fazia pagamentos internos encaminhados por
+remetentes internos (ex.: `ester@otimotex.com.br`) colapsarem todos num único fornecedor,
+ignorando o NOME do corpo/anexo. **Domínios internos não viram fornecedor** (`migration 046`):
+`_is_internal_email` (`%@otimotex.com.br`/`%@lebianco.com.br`) bloqueia esses e-mails tanto no
+`_add_supplier_email` quanto no auto-insert do `resolve_supplier_id`. A precedência **anexo → corpo**
+do nome é garantida antes, no pipeline Python (o corpo só alimenta o resolver quando o anexo não
+gera conta). Função `normalize_search()` é SECURITY DEFINER. `financial_account_control`
 referencia o fornecedor **apenas pela FK `sk_supplier`** (surrogate key snowflake, NOT NULL —
 `migration 042`): a RPC e as funções de resolução retornam/keyam `sk_supplier`; `supplier_id`
 virou **chave de negócio** e ficou só na tabela `supplier` (NOT NULL UNIQUE, igualada ao `sk`
@@ -1176,7 +1219,12 @@ faturas SIEG em `ignorado`; o handler A1 (baixar o boleto real) segue como melho
 ## Banco de dados (Supabase)
 
 Migrations em `supabase/migrations/`, aplicadas **manualmente no SQL Editor** em ordem
-numérica (`001` → `043`). Não há migration automática. (A `037` cria as tabelas de log da
+numérica (`001` → `046`). Não há migration automática. (A `046` corrige a **ordem de resolução de
+fornecedor** — nome antes do e-mail; e-mail só sem nome — e bloqueia e-mails de domínio interno
+(`otimotex.com.br`/`lebianco.com.br`) em `supplier`; ver "Auto-resolução de fornecedor". A `045`
+adiciona `supplier.deleted_at`
++ índice parcial — soft delete do CRUD de fornecedores, ver "CRUD de fornecedores (Next API)".
+A `037` cria as tabelas de log da
 cobrança de vencidos — ver "Pipeline de cobrança de vencidos". A `040` cria a RPC
 `resolve_supplier_for_account`; a `041` dropa o trigger de resolução, a RPC
 `financial_dup_by_name` e as colunas `supplier_name`/`supplier_cnpj`/`supplier_cpf`. A `042`
@@ -1191,7 +1239,7 @@ internet` ao CHECK de `document_type` e faz backfill — ver "Normalização de 
 | `email_control` | Dedup/controle. `status` ∈ (`extraído`, `recebido`, `pendente`, `falha`, `ignorado`, `duplicidade`) — **migrations 022/031**. `extraído`=PDF extraído (CSV gerado); `recebido`=sem PDF, conta via corpo; `pendente`=PDF salvo sem CSV (substitui `baixado`); `falha`=casou keyword mas sem PDF e sem conta no corpo; `ignorado`=não-financeiro (sem keyword) **ou NF-e pura sem conta a pagar** (`subject_is_pure_nfe`); `duplicidade`=pagável do corpo duplica conta já registrada por outro e-mail (**migration 031**; card/filtro próprios em `/emails`). O status é calculado em `process_message` pelo resultado real (conta/CSV/corpo/duplicata), não por `pdf_extracted` |
 | `financial_account_control` | Tabela principal de contas a pagar — uma linha por documento; alimentada pelo pipeline de e-mail **e** por CRUD manual (baixas, consolidações, dashboards). Substitui a antiga `financial_emails` (dropada na migration 020). O fornecedor é referenciado **só pela FK `sk_supplier`** (surrogate key snowflake, NOT NULL — **migration 042**, antes era `supplier_id`) — nome/CNPJ vêm do JOIN com `supplier` (colunas denormalizadas dropadas na **migration 041**). Tem `sender_email` (migration 023; backfill em 025) usado na resolução p/ alinhar `supplier.email`, e `subject` (migration 025) — exibidos/buscados em `/consulta` |
 | `email_processing_errors` | Log de falhas com `raw_payload` JSON |
-| `supplier` | Fornecedores. PK = `sk_supplier` (surrogate key snowflake auto-incremental — **migration 042**); `supplier_id` é **chave de negócio** (NOT NULL UNIQUE, só nesta tabela; = `sk_supplier` nos fornecedores criados pela extração, via trigger de espelho `trg_supplier_mirror_id`, podendo divergir em cargas externas). Auto-criados pelo trigger de resolução, mas **cadastro PRESERVADO** (curadoria manual de `email`/`email2`/`email3`/`email4`) — **nunca truncar** em limpezas (ver "Limpeza / reset de dados"). Reconhecimento por **e-mail** em `email`/`email2`/`email3`/`email4` (migrations 023/027/028) — ver "Auto-resolução de fornecedor" |
+| `supplier` | Fornecedores. PK = `sk_supplier` (surrogate key snowflake auto-incremental — **migration 042**); `supplier_id` é **chave de negócio** (NOT NULL UNIQUE, só nesta tabela; = `sk_supplier` nos fornecedores criados pela extração, via trigger de espelho `trg_supplier_mirror_id`, podendo divergir em cargas externas). Auto-criados pelo trigger de resolução, mas **cadastro PRESERVADO** (curadoria manual de `email`/`email2`/`email3`/`email4`) — **nunca truncar** em limpezas (ver "Limpeza / reset de dados"). Reconhecimento por **e-mail** em `email`/`email2`/`email3`/`email4` (migrations 023/027/028) — ver "Auto-resolução de fornecedor". **Soft delete** via `deleted_at` (migration 045) — a baixa pelo CRUD da Next API marca `deleted_at` (nunca hard delete) e é bloqueada quando há contas vinculadas; ver "CRUD de fornecedores (Next API)" |
 | `company` | Empresa pagadora (**cadastro**, tem campo `email`). Auto-resolvida pelo trigger `resolve_company_id` a partir de `payer_cnpj`/`payer_name`. **Preservada em limpezas** (ver abaixo) |
 | `status` | **Dimensão** de situação (`status_id`, `status_name`, `status_short_name`, `has_opened`/`has_closed`/`has_invoiced`). 10 linhas = domínio de `financial_account_control.status`. A trigger resolve `financial_account_control.status_id` por `status_name` (migration 035). **Cadastro/configuração — preservar em limpezas** |
 | `cobranca_envios_log` | Cobranças de vencidos **enviadas com sucesso** (migration 037). `document_id` (= TÍTULO no Firebird) **UNIQUE** = chave de deduplicação: `already_sent()` consulta aqui antes de enviar. Exibida em `/cobranca/envios`. Alvo de limpeza (dados de teste) |
