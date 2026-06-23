@@ -218,13 +218,13 @@ export function parsePaginationTotal(
 // Aplica os filtros de financial_account_control nos search params — compartilhado
 // entre a listagem paginada e a soma do card "Valor total".
 // Como financial_account_control não guarda mais nome/CNPJ do fornecedor (só a FK
-// supplier_id — migrations 040/041), a busca por fornecedor resolve antes os
-// supplier_id que casam o termo na tabela `supplier` (nome, CNPJ/CPF e os 4 e-mails)
-// e alimenta o filtro `supplier_id IN (...)`. Os índices GIN trigram (migration 029)
+// sk_supplier — migrations 040/041/042), a busca por fornecedor resolve antes os
+// sk_supplier que casam o termo na tabela `supplier` (nome, CNPJ/CPF e os 4 e-mails)
+// e alimenta o filtro `sk_supplier IN (...)`. Os índices GIN trigram (migration 029)
 // aceleram o ILIKE '%termo%' nos e-mails.
 async function findSupplierIdsByTerm(term: string): Promise<number[]> {
   const url = new URL(`${BASE_URL}/rest/v1/supplier`);
-  url.searchParams.set('select', 'supplier_id');
+  url.searchParams.set('select', 'sk_supplier');
   url.searchParams.set(
     'or',
     `(trade_name.ilike.*${term}*,legal_name.ilike.*${term}*,cnpj.ilike.*${term}*,` +
@@ -234,8 +234,8 @@ async function findSupplierIdsByTerm(term: string): Promise<number[]> {
   url.searchParams.set('limit', '1000');
   const res = await fetch(url.toString(), { headers: await authHeaders() });
   if (!res.ok) return [];
-  const data = (await res.json()) as { supplier_id: number }[];
-  return data.map((r) => r.supplier_id);
+  const data = (await res.json()) as { sk_supplier: number }[];
+  return data.map((r) => r.sk_supplier);
 }
 
 function applyFinancialFilters(
@@ -244,14 +244,14 @@ function applyFinancialFilters(
   supplierIds: number[] = [],
 ): void {
   // or= nas colunas próprias da conta (nº documento, assunto, remetente) mais os
-  // supplier_id resolvidos pelo termo (nome/CNPJ/CPF/e-mail do cadastro supplier).
+  // sk_supplier resolvidos pelo termo (nome/CNPJ/CPF/e-mail do cadastro supplier).
   if (supplier) {
     const clauses = [
       `invoice_number.ilike.*${supplier}*`,
       `subject.ilike.*${supplier}*`,
       `sender_email.ilike.*${supplier}*`,
     ];
-    if (supplierIds.length) clauses.push(`supplier_id.in.(${supplierIds.join(',')})`);
+    if (supplierIds.length) clauses.push(`sk_supplier.in.(${supplierIds.join(',')})`);
     params.set('or', `(${clauses.join(',')})`);
   }
   if (docType) params.set('document_type', `eq.${docType}`);
@@ -276,8 +276,8 @@ export async function getFinancialAccountControl({
 }: FinancialAccountControlFilters = {}): Promise<Paginated<FinancialAccountControl>> {
   const offset = (page - 1) * pageSize;
   const url = new URL(`${BASE_URL}/rest/v1/financial_account_control`);
-  // JOIN com supplier via FK supplier_id — retorna dados canônicos do cadastro.
-  // Campos denormalizados (supplier_name, supplier_cnpj) servem de fallback no frontend.
+  // JOIN com supplier via FK sk_supplier — retorna dados canônicos do cadastro
+  // (nome/CNPJ/CPF). Fonte de verdade única; não há mais colunas denormalizadas.
   url.searchParams.set('select', '*,supplier(trade_name,legal_name,cnpj,cpf)');
   // Ordenação padrão = criação (created_at) descendente — mais recente no topo (igual ao /emails).
   // Sort explícito do usuário sobrescreve.

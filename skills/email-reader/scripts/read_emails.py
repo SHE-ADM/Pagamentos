@@ -392,14 +392,14 @@ class SupabaseControl:
             if m:
                 return m
 
-        # 2/3. Precisam do fornecedor ja resolvido (supplier_id). A resolucao
+        # 2/3. Precisam do fornecedor ja resolvido (sk_supplier). A resolucao
         # (incl. normalizacao de nome/CNPJ via resolve_supplier_id) acontece em
-        # _finalize_supplier ANTES da dedup, entao aqui basta casar por supplier_id.
-        supplier_id = payload.get("supplier_id")
-        if not supplier_id:
+        # _finalize_supplier ANTES da dedup, entao aqui basta casar por sk_supplier.
+        sk_supplier = payload.get("sk_supplier")
+        if not sk_supplier:
             return None  # sem fornecedor resolvido — nao deduplica
 
-        supplier_clause = f"supplier_id=eq.{int(supplier_id)}"
+        supplier_clause = f"sk_supplier=eq.{int(sk_supplier)}"
 
         # 2. fornecedor + numero do documento + valor (numero substancial).
         invoice = str(payload.get("invoice_number") or "").strip()
@@ -420,9 +420,10 @@ class SupabaseControl:
 
     def resolve_supplier(self, payload: dict) -> int | None:
         """Resolve/cria o fornecedor via RPC resolve_supplier_for_account e devolve
-        supplier_id. Reusa a mesma logica antes embutida no trigger trg_fe_resolve_supplier
-        (resolve_supplier_id por CNPJ->CPF->e-mail->nome->auto-insert + anexa o e-mail do
-        remetente). Em erro de consulta, retorna None (o chamador trata como falha)."""
+        sk_supplier (surrogate key). Reusa a mesma logica antes embutida no trigger
+        trg_fe_resolve_supplier (resolve_supplier_id por CNPJ->CPF->e-mail->nome->auto-insert
+        + anexa o e-mail do remetente). Em erro de consulta, retorna None (o chamador trata
+        como falha)."""
         if not self._available:
             return None
         body = json.dumps({
@@ -754,8 +755,9 @@ FINANCIAL_FIELDS = [
 
 # Colunas denormalizadas do fornecedor extraidas do e-mail/PDF: servem APENAS de
 # ENTRADA para resolve_supplier (RPC). _finalize_supplier as remove do payload e
-# grava supplier_id no lugar — financial_account_control referencia o fornecedor
-# so pela FK (fonte de verdade: tabela supplier). Ver migrations 040/041.
+# grava sk_supplier no lugar — financial_account_control referencia o fornecedor
+# so pela FK sk_supplier (fonte de verdade: tabela supplier; supplier_id e chave de
+# negocio e fica so em supplier). Ver migrations 040/041/042.
 SUPPLIER_INPUT_FIELDS = ("supplier_name", "supplier_cnpj", "supplier_cpf")
 
 # Campos de valor do boleto: em branco -> 0 (regra de negocio).
@@ -843,19 +845,19 @@ def build_financial_payload(row: dict, gmail_message_id: str,
 
 
 def _finalize_supplier(ctrl: "SupabaseControl", payload: dict) -> bool:
-    """Resolve o fornecedor (RPC), grava payload['supplier_id'] e REMOVE as colunas
+    """Resolve o fornecedor (RPC), grava payload['sk_supplier'] e REMOVE as colunas
     denormalizadas supplier_name/supplier_cnpj/supplier_cpf — o fornecedor passa a
-    ser referenciado APENAS pela FK supplier_id (fonte de verdade: tabela supplier).
+    ser referenciado APENAS pela FK sk_supplier (fonte de verdade: tabela supplier).
 
     Deve ser chamado APOS a validacao 'sem_fornecedor' (que usa os campos brutos
-    extraidos) e ANTES de find_financial_duplicate (a dedup casa por supplier_id).
+    extraidos) e ANTES de find_financial_duplicate (a dedup casa por sk_supplier).
     Retorna False quando a resolucao falha (chamador trata como erro de gravacao)."""
-    supplier_id = ctrl.resolve_supplier(payload)
+    sk_supplier = ctrl.resolve_supplier(payload)
     for col in ("supplier_name", "supplier_cnpj", "supplier_cpf"):
         payload.pop(col, None)
-    if not supplier_id:
+    if not sk_supplier:
         return False
-    payload["supplier_id"] = supplier_id
+    payload["sk_supplier"] = sk_supplier
     return True
 
 
@@ -1664,9 +1666,9 @@ def extract_and_store_accounts(saved_pdfs: list, message_id: str,
                 acc_index += 1
                 continue
 
-            # Resolve o fornecedor (RPC) → grava supplier_id e remove as colunas
+            # Resolve o fornecedor (RPC) → grava sk_supplier e remove as colunas
             # denormalizadas do payload. Roda APOS a validacao sem_fornecedor (que
-            # usa os campos brutos) e ANTES da dedup (que casa por supplier_id).
+            # usa os campos brutos) e ANTES da dedup (que casa por sk_supplier).
             if not _finalize_supplier(ctrl, payload):
                 ctrl.register_error(
                     ctx, "db_erro",
@@ -1771,8 +1773,8 @@ def try_extract_from_body(email_rec: dict, body_text: str, received_at: str,
         email_rec["notes"] = "Valor ausente ou zero no corpo do e-mail"
         return BODY_NONE
 
-    # Resolve o fornecedor (RPC) → grava supplier_id e remove as colunas
-    # denormalizadas. ANTES da dedup (que casa por supplier_id). Falha de
+    # Resolve o fornecedor (RPC) → grava sk_supplier e remove as colunas
+    # denormalizadas. ANTES da dedup (que casa por sk_supplier). Falha de
     # resolucao → trata como sem pagavel utilizavel (chamador segue p/ falha).
     if not _finalize_supplier(ctrl, payload):
         email_rec["notes"] = "Falha ao resolver fornecedor do corpo do e-mail"

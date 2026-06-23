@@ -78,7 +78,7 @@ def inspect_one(ctrl, ec: dict, body_text: str) -> str:
         motivo = f"{dtype} não gera conta" if (payload and amount) else "sem valor/sinal no corpo"
         log.info(f"[{ec['id']}] {ec['subject'][:55]} — não gravaria ({motivo})")
         return "sem_conta"
-    # A dedup casa por supplier_id, entao resolve o fornecedor antes (mesmo no
+    # A dedup casa por sk_supplier, entao resolve o fornecedor antes (mesmo no
     # dry-run). resolve_supplier_id e idempotente — so cria cadastro novo se o
     # fornecedor ainda nao existir (o mesmo que o run real faria).
     payload["sender_email"] = ec.get("sender_email")
