@@ -117,10 +117,11 @@ export const financialAccountControlSchema = z.object({
   document_type: documentTypeSchema.nullable(),
   extraction_source: extractionSourceSchema.nullable(),
 
-  // Fornecedor — referenciado APENAS pela FK supplier_id (NOT NULL no banco).
-  // Os dados denormalizados (nome/CNPJ/CPF) foram removidos (migrations 040/041);
-  // a fonte de verdade é a tabela `supplier`, lida via JOIN (campo `supplier`).
-  supplier_id: z.number().int(),
+  // Fornecedor — referenciado APENAS pela FK sk_supplier (surrogate key snowflake,
+  // NOT NULL no banco). supplier_id é chave de negócio e fica só na tabela `supplier`
+  // (migration 042). Os dados denormalizados (nome/CNPJ/CPF) foram removidos
+  // (migrations 040/041); a fonte de verdade é `supplier`, lida via JOIN (campo `supplier`).
+  sk_supplier: z.number().int(),
 
   // Documento
   invoice_number: z.string().nullable(),
@@ -180,9 +181,10 @@ export const financialAccountControlSchema = z.object({
 
 // ── Entrada (gravação pelo pipeline/API) ────────────────────────────────────
 // Omite os campos gerados pelo banco e o recurso embutido `supplier` (leitura).
-// `supplier_id` agora é entrada OBRIGATÓRIA — o pipeline resolve o fornecedor
-// (RPC resolve_supplier_for_account) antes de persistir; não há mais trigger de
-// resolução nem colunas denormalizadas (migrations 040/041).
+// `sk_supplier` agora é entrada OBRIGATÓRIA — o pipeline resolve o fornecedor
+// (RPC resolve_supplier_for_account, que devolve o surrogate sk_supplier) antes de
+// persistir; não há mais trigger de resolução nem colunas denormalizadas (migrations
+// 040/041/042).
 
 export const financialAccountControlInputSchema = financialAccountControlSchema.omit({
   id: true,
