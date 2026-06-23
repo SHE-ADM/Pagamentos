@@ -801,11 +801,37 @@ por nome (RPC `financial_dup_by_name` / `_dup_by_name`) foi **removida** — "EF
 
 `extract_pdf.py` usa `_ns()` (strip de acentos + lowercase) para lookup em `_DOC_TYPE_NORM`.
 CHECK constraint em `financial_account_control.document_type` usa `lower()` (migrations 014,
-017, **024** e **026**). Tipos aceitos incluem: `boleto`, `cte`, `nfe`, `nfse`, `tributo`,
+017, **024**, **026** e **043**). Tipos aceitos incluem: `boleto`, `cte`, `nfe`, `nfse`, `tributo`,
 `das`, `pix`, `seguro`, `fatura`, `recibo`, `contrato`, `honorários`, `container`, `outro`
 (DAS de Simples Nacional → `das`; PIX → `pix`). `container` = frete/demurrage/movimentação de
 contêineres (keyword de assunto + classificação no corpo e PDF; migration 026).
 `SKIP_ACCOUNT_TYPES = ['nfe', 'nfse']` — não geram conta a pagar.
+
+**Contas de concessionária** (migration 043): `conta de água`, `conta de luz` e
+`conta de telefone / internet` (com barra, estilo `dam / duam`). Classificadas em `read_emails.py`
+por **duas regras** (palavra inteira via `_has_word`, sem acento via `_ns_body`), ambas com
+**precedência máxima** sobre boleto/fatura/PIX:
+- **Frase do assunto/corpo** — `_UTILITY_DOC_KEYWORDS` + `_classify_utility_doc_type(*texts)`:
+  água=`conta (de) água`; luz=`conta (de) luz`; telefone/internet=`conta (de) telefone|internet`,
+  `(conta) vivo`, `vivo (conta)`, `vivo`, `fibra`.
+- **Marca no NOME DO FORNECEDOR** — `_UTILITY_SUPPLIER_BRANDS` +
+  `_classify_utility_by_supplier(supplier_name)`: `enel`/`eletropaulo`→luz;
+  `vivo`/`claro`/`tim`→telefone-internet; `sabesp`→água. **Escopo restrito ao `supplier_name`** de
+  propósito: `claro`/`tim`/`vivo` são palavras comuns no corpo ("está claro", "ao vivo") — casar no
+  corpo livre geraria falso positivo.
+
+Aplicadas no corpo (`extract_from_email_body`, recebe `subject`) e no PDF
+(`build_financial_payload`, recebe `subject` — `extract_pdf.py` é cego ao assunto, então o override
+é em `read_emails.py`); a frase tem precedência sobre a marca (`frase or marca`). `payment_method`
+permanece o detectado (não é forçado). Geram conta a pagar (não entram em `SKIP_ACCOUNT_TYPES`).
+Teste: `tests/test_doc_type_utilities.py`.
+
+**Captura do nº de documento no corpo** (migration 043 / `_BODY_DOCNUM_RE`): além de
+`_BODY_INVOICE_RE` (NF/fatura + dígitos), o rótulo **explícito** `Número do documento` captura
+valores **alfanuméricos** (ex.: Sabesp `SOR202659903949`, CATAGUASES `014696-001`) como fallback,
+antes do SIEG e antes do nº sintético `{tipo}_{ddmmyy}`. Conservador de propósito — rótulos
+frouxos (`documento nº`) capturavam lixo ("Banco"). Backfill da migration 043 corrigiu os ids 5,
+18 e 171.
 
 **Regra honorários** (migration 024): e-mail de honorários (keyword de assunto `honorário`;
 termo `honorário(s)` no corpo ou recibo) é gravado com `document_type='honorários'` e
@@ -1150,14 +1176,15 @@ faturas SIEG em `ignorado`; o handler A1 (baixar o boleto real) segue como melho
 ## Banco de dados (Supabase)
 
 Migrations em `supabase/migrations/`, aplicadas **manualmente no SQL Editor** em ordem
-numérica (`001` → `042`). Não há migration automática. (A `037` cria as tabelas de log da
+numérica (`001` → `043`). Não há migration automática. (A `037` cria as tabelas de log da
 cobrança de vencidos — ver "Pipeline de cobrança de vencidos". A `040` cria a RPC
 `resolve_supplier_for_account`; a `041` dropa o trigger de resolução, a RPC
 `financial_dup_by_name` e as colunas `supplier_name`/`supplier_cnpj`/`supplier_cpf`. A `042`
 introduz a **surrogate key snowflake** `sk_supplier`: vira a PK auto-incremental de `supplier`
 e o alvo de toda FK; `supplier_id` passa a chave de negócio (NOT NULL UNIQUE, só em `supplier`);
 `financial_account_control.supplier_id` é substituída por `sk_supplier` — **ver "Auto-resolução
-de fornecedor"**.)
+de fornecedor"**. A `043` adiciona os tipos `conta de água`/`conta de luz`/`conta de telefone /
+internet` ao CHECK de `document_type` e faz backfill — ver "Normalização de `document_type`".)
 
 | Tabela | Propósito |
 |---|---|

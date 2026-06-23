@@ -36,6 +36,10 @@ export const DOCUMENT_TYPES = [
   'pix',
   'honorários',
   'container',
+  // Contas de concessionária — classificadas por frase do assunto/corpo (migration 043).
+  'conta de água',
+  'conta de luz',
+  'conta de telefone / internet',
 ] as const;
 
 export const EXTRACTION_SOURCES = [
