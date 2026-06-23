@@ -774,22 +774,22 @@ atualizar o registro existente. Fallback local em CSV quando Supabase indisponí
 
 Além do dedup por `message_id`, `find_financial_duplicate(payload)` evita gravar o
 **mesmo documento** chegado em e-mails diferentes. Casa por 3 impressões: (1) barcode;
-(2) **`supplier_id`** + `invoice_number` (≥6) + valor — pega **guia/DAS reemitida** com o mesmo
-número e vencimento novo; (3) **`supplier_id`** + valor + vencimento + tipo. Quando encontra
+(2) **`sk_supplier`** + `invoice_number` (≥6) + valor — pega **guia/DAS reemitida** com o mesmo
+número e vencimento novo; (3) **`sk_supplier`** + valor + vencimento + tipo. Quando encontra
 duplicata, `extract_and_store_accounts` **não cria outra conta**: se a reemissão tem
 vencimento **mais recente**, chama `update_financial` para atualizar `due_date` + boleto
 (`barcode`, `amount_charged`, `fine_interest`, `other_additions`) na conta existente — uma
 guia paga uma vez, sempre com o boleto válido. A trigger recalcula a situação em `status` no
 UPDATE (só quando em aberto — migration 034).
 
-**A dedup casa por `supplier_id`, não por texto do fornecedor** (migrations 040/041): o
+**A dedup casa por `sk_supplier`, não por texto do fornecedor** (migrations 040/041/042): o
 fornecedor é resolvido ANTES da dedup por `_finalize_supplier` (RPC
 `resolve_supplier_for_account` → `SupabaseControl.resolve_supplier`), que grava
-`payload['supplier_id']` e **remove** as colunas brutas `supplier_name`/`supplier_cnpj`/
+`payload['sk_supplier']` e **remove** as colunas brutas `supplier_name`/`supplier_cnpj`/
 `supplier_cpf` do payload. Como a resolução já normaliza nome/CNPJ (via `resolve_supplier_id`:
 CNPJ → CPF → e-mail → `normalize_search(legal_name/trade_name)` → auto-insert), a antiga dedup
 por nome (RPC `financial_dup_by_name` / `_dup_by_name`) foi **removida** — "EFE Displays" e
-"EFE DISPLAYS" deduplicam por já resolverem o mesmo `supplier_id`. Teste:
+"EFE DISPLAYS" deduplicam por já resolverem o mesmo `sk_supplier`. Teste:
 `tests/test_dup_by_supplier_id.py`.
 
 ### Duas chaves Supabase, dois papéis
@@ -820,11 +820,14 @@ O pipeline resolve o fornecedor **antes do INSERT** via RPC `resolve_supplier_fo
 `resolve_supplier_id(cnpj, cpf, name, email)` + `_add_supplier_email`. Ordem de busca
 (`migration 027`/`028`): **CNPJ → CPF → e-mail exato → nome normalizado → auto-insert** em
 `supplier`. Função `normalize_search()` é SECURITY DEFINER. `financial_account_control`
-referencia o fornecedor **apenas pela FK `supplier_id`** (NOT NULL) — as antigas colunas
-denormalizadas `supplier_name`/`supplier_cnpj`/`supplier_cpf` e o trigger `trg_fe_supplier_id`
-foram **removidos** (`migration 041`); nome/CNPJ vêm do JOIN com `supplier`. A extração
-(`extract_pdf.py`/corpo) ainda **produz** nome/CNPJ — são a **entrada** do resolver,
-descartados por `_finalize_supplier` depois de obter o `supplier_id`.
+referencia o fornecedor **apenas pela FK `sk_supplier`** (surrogate key snowflake, NOT NULL —
+`migration 042`): a RPC e as funções de resolução retornam/keyam `sk_supplier`; `supplier_id`
+virou **chave de negócio** e ficou só na tabela `supplier` (NOT NULL UNIQUE, igualada ao `sk`
+nos fornecedores criados pela extração via trigger de espelho, podendo divergir em cargas
+externas). As antigas colunas denormalizadas `supplier_name`/`supplier_cnpj`/`supplier_cpf` e
+o trigger `trg_fe_supplier_id` foram **removidos** (`migration 041`); nome/CNPJ vêm do JOIN com
+`supplier`. A extração (`extract_pdf.py`/corpo) ainda **produz** nome/CNPJ — são a **entrada**
+do resolver, descartados por `_finalize_supplier` depois de obter o `sk_supplier`.
 
 - **Reconhecimento por e-mail** (`027`): na falta de CNPJ/CPF, o **remetente** (`sender_email`)
   é a chave — regra de negócio: o e-mail é estável por fornecedor e raramente um fornecedor
@@ -947,7 +950,7 @@ registrada. Testes: `tests/test_body_html_extraction.py`.
 data do e-mail (`received_at`); `due_date` vazio → `issue_date` → hoje; `invoice_number`
 vazio → `"{document_type}_{ddmmyy(vencimento|emissão)}"`. Um **identificador de fornecedor**
 extraído (nome **ou** CNPJ **ou** CPF) e `amount` são obrigatórios para gerar conta — o nome/CNPJ
-extraído alimenta a resolução do `supplier_id` (`_finalize_supplier`) e depois é descartado;
+extraído alimenta a resolução do `sk_supplier` (`_finalize_supplier`) e depois é descartado;
 não vira coluna em `financial_account_control`.
 
 ### Registrar TODOS os e-mails + filtro de assunto (`KEYWORDS_DEFAULT`)
@@ -1067,15 +1070,16 @@ faturas SIEG em `ignorado`; o handler A1 (baixar o boleto real) segue como melho
   cancela o timeout pendente quando o aplicado muda por outra via (Enter, card, limpar), eliminando a
   corrida em que um debounce antigo sobrescreveria o valor recém-aplicado. Isso evita o refetch a cada
   tecla (antes `/emails` recarregava por caractere porque `load` dependia de `filters` inteiro).
-- **Fornecedor vem do JOIN com `supplier` (migrations 040/041):** `financial_account_control` não
-  guarda mais nome/CNPJ/CPF — só a FK `supplier_id`. `getFinancialAccountControl` e
-  `getAccountsByMessageId` usam `select=*,supplier(trade_name,legal_name,cnpj,cpf)`; o grid, o card
-  de detalhe e a exportação CSV exibem `r.supplier?.trade_name ?? r.supplier?.legal_name` e
-  `r.supplier?.cnpj ?? r.supplier?.cpf`. As colunas "Fornecedor" e "CNPJ/CPF" **não são ordenáveis**
-  server-side (order por recurso embutido no PostgREST é frágil). A **busca por fornecedor** resolve
-  antes os `supplier_id` que casam o termo na tabela `supplier` (nome/CNPJ/CPF + 4 e-mails, via
-  `findSupplierIdsByTerm`) e filtra `supplier_id=in.(...)` — o `applyFinancialFilters` casa ainda
-  `invoice_number`/`subject`/`sender_email`, que são colunas próprias da conta.
+- **Fornecedor vem do JOIN com `supplier` (migrations 040/041/042):** `financial_account_control`
+  não guarda mais nome/CNPJ/CPF — só a FK `sk_supplier` (surrogate key snowflake).
+  `getFinancialAccountControl` e `getAccountsByMessageId` usam
+  `select=*,supplier(trade_name,legal_name,cnpj,cpf)`; o grid, o card de detalhe e a exportação CSV
+  exibem `r.supplier?.trade_name ?? r.supplier?.legal_name` e `r.supplier?.cnpj ?? r.supplier?.cpf`.
+  As colunas "Fornecedor" e "CNPJ/CPF" **não são ordenáveis** server-side (order por recurso embutido
+  no PostgREST é frágil). A **busca por fornecedor** resolve antes os `sk_supplier` que casam o termo
+  na tabela `supplier` (nome/CNPJ/CPF + 4 e-mails, via `findSupplierIdsByTerm`) e filtra
+  `sk_supplier=in.(...)` — o `applyFinancialFilters` casa ainda `invoice_number`/`subject`/
+  `sender_email`, que são colunas próprias da conta.
 - **`/consulta` — `cancelado` oculto por padrão (consistência grid ↔ KPIs):** `applyFinancialFilters`
   aplica `status=neq.cancelado` quando **não** há filtro de situação. `getFinancialStats` usa o
   **mesmo** filtro, então o rodapé "N registros", o KPI "Total de registros", o "Valor total" e
@@ -1146,22 +1150,38 @@ faturas SIEG em `ignorado`; o handler A1 (baixar o boleto real) segue como melho
 ## Banco de dados (Supabase)
 
 Migrations em `supabase/migrations/`, aplicadas **manualmente no SQL Editor** em ordem
-numérica (`001` → `041`). Não há migration automática. (A `037` cria as tabelas de log da
+numérica (`001` → `042`). Não há migration automática. (A `037` cria as tabelas de log da
 cobrança de vencidos — ver "Pipeline de cobrança de vencidos". A `040` cria a RPC
 `resolve_supplier_for_account`; a `041` dropa o trigger de resolução, a RPC
-`financial_dup_by_name` e as colunas `supplier_name`/`supplier_cnpj`/`supplier_cpf` —
-**ver "Auto-resolução de fornecedor"**.)
+`financial_dup_by_name` e as colunas `supplier_name`/`supplier_cnpj`/`supplier_cpf`. A `042`
+introduz a **surrogate key snowflake** `sk_supplier`: vira a PK auto-incremental de `supplier`
+e o alvo de toda FK; `supplier_id` passa a chave de negócio (NOT NULL UNIQUE, só em `supplier`);
+`financial_account_control.supplier_id` é substituída por `sk_supplier` — **ver "Auto-resolução
+de fornecedor"**.)
 
 | Tabela | Propósito |
 |---|---|
 | `email_control` | Dedup/controle. `status` ∈ (`extraído`, `recebido`, `pendente`, `falha`, `ignorado`, `duplicidade`) — **migrations 022/031**. `extraído`=PDF extraído (CSV gerado); `recebido`=sem PDF, conta via corpo; `pendente`=PDF salvo sem CSV (substitui `baixado`); `falha`=casou keyword mas sem PDF e sem conta no corpo; `ignorado`=não-financeiro (sem keyword) **ou NF-e pura sem conta a pagar** (`subject_is_pure_nfe`); `duplicidade`=pagável do corpo duplica conta já registrada por outro e-mail (**migration 031**; card/filtro próprios em `/emails`). O status é calculado em `process_message` pelo resultado real (conta/CSV/corpo/duplicata), não por `pdf_extracted` |
-| `financial_account_control` | Tabela principal de contas a pagar — uma linha por documento; alimentada pelo pipeline de e-mail **e** por CRUD manual (baixas, consolidações, dashboards). Substitui a antiga `financial_emails` (dropada na migration 020). O fornecedor é referenciado **só pela FK `supplier_id`** (NOT NULL) — nome/CNPJ vêm do JOIN com `supplier` (colunas denormalizadas dropadas na **migration 041**). Tem `sender_email` (migration 023; backfill em 025) usado na resolução p/ alinhar `supplier.email`, e `subject` (migration 025) — exibidos/buscados em `/consulta` |
+| `financial_account_control` | Tabela principal de contas a pagar — uma linha por documento; alimentada pelo pipeline de e-mail **e** por CRUD manual (baixas, consolidações, dashboards). Substitui a antiga `financial_emails` (dropada na migration 020). O fornecedor é referenciado **só pela FK `sk_supplier`** (surrogate key snowflake, NOT NULL — **migration 042**, antes era `supplier_id`) — nome/CNPJ vêm do JOIN com `supplier` (colunas denormalizadas dropadas na **migration 041**). Tem `sender_email` (migration 023; backfill em 025) usado na resolução p/ alinhar `supplier.email`, e `subject` (migration 025) — exibidos/buscados em `/consulta` |
 | `email_processing_errors` | Log de falhas com `raw_payload` JSON |
-| `supplier` | Fornecedores. Auto-criados pelo trigger, mas **cadastro PRESERVADO** (curadoria manual de `email`/`email2`/`email3`/`email4`) — **nunca truncar** em limpezas (ver "Limpeza / reset de dados"). Reconhecimento por **e-mail** em `email`/`email2`/`email3`/`email4` (migrations 023/027/028) — ver "Auto-resolução de fornecedor" |
+| `supplier` | Fornecedores. PK = `sk_supplier` (surrogate key snowflake auto-incremental — **migration 042**); `supplier_id` é **chave de negócio** (NOT NULL UNIQUE, só nesta tabela; = `sk_supplier` nos fornecedores criados pela extração, via trigger de espelho `trg_supplier_mirror_id`, podendo divergir em cargas externas). Auto-criados pelo trigger de resolução, mas **cadastro PRESERVADO** (curadoria manual de `email`/`email2`/`email3`/`email4`) — **nunca truncar** em limpezas (ver "Limpeza / reset de dados"). Reconhecimento por **e-mail** em `email`/`email2`/`email3`/`email4` (migrations 023/027/028) — ver "Auto-resolução de fornecedor" |
 | `company` | Empresa pagadora (**cadastro**, tem campo `email`). Auto-resolvida pelo trigger `resolve_company_id` a partir de `payer_cnpj`/`payer_name`. **Preservada em limpezas** (ver abaixo) |
 | `status` | **Dimensão** de situação (`status_id`, `status_name`, `status_short_name`, `has_opened`/`has_closed`/`has_invoiced`). 10 linhas = domínio de `financial_account_control.status`. A trigger resolve `financial_account_control.status_id` por `status_name` (migration 035). **Cadastro/configuração — preservar em limpezas** |
 | `cobranca_envios_log` | Cobranças de vencidos **enviadas com sucesso** (migration 037). `document_id` (= TÍTULO no Firebird) **UNIQUE** = chave de deduplicação: `already_sent()` consulta aqui antes de enviar. Exibida em `/cobranca/envios`. Alvo de limpeza (dados de teste) |
 | `cobranca_erros_log` | **Falhas** da cobrança (migration 037), **sem UNIQUE** (reprocessável — o mesmo título pode falhar em execuções distintas). `error_type` ∈ (`email_ausente`, `email_invalido`, `smtp_falha`, `smtp_bloqueio`, `supabase_falha`, `firebird_falha`, `erro_inesperado`); `error_message` = motivo em linguagem leiga (exibido em `/cobranca/erros`), `error_detail` = traceback técnico. Alvo de limpeza |
+
+**Características físicas de `supplier`** (tabela pré-existente, **não criada por migration**;
+introspecção em 2026-06-23): colunas `sk_supplier` (PK, bigint), `supplier_id` (bigint, chave de
+negócio), `cnpj CHAR(14)`, `cpf CHAR(11)`, `legal_name`, `trade_name`, `email`/`email2`/`email3`/
+`email4`. CHECK `chk_supplier_has_identifier` (ao menos um de cnpj/cpf/legal_name/trade_name).
+Índices GIN trigram nos 4 e-mails (migration 029); RLS `authenticated_select_supplier`.
+- **Estado original (pré-042):** `supplier_id` era **`GENERATED ALWAYS AS IDENTITY`**
+  (`pg_attribute.attidentity = 'a'`), backed por `supplier_supplier_id_seq`; PK `supplier_pkey`.
+- **Pós-042:** a `042` faz `DROP IDENTITY` em `supplier_id` (remove a `supplier_supplier_id_seq`
+  junto) e cria uma **sequence nova** `supplier_sk_supplier_seq` (semeada em `max(sk_supplier)+1`)
+  como `DEFAULT` de `sk_supplier`; a PK `supplier_pkey` passa a ser `(sk_supplier)`; `supplier_id`
+  vira `NOT NULL UNIQUE` (`uq_supplier_supplier_id`), gravado pelo trigger de espelho
+  `trg_supplier_mirror_id` quando o INSERT não o informa.
 
 `financial_account_control.status` é a **coluna única de situação/ciclo de vida** (migration
 **034** fundiu o antigo `due_status` aqui). Default `pendente`; domínio pt-BR de **10 valores**
@@ -1192,12 +1212,13 @@ O frontend consome os schemas de dados (`FinancialAccountControl`, `EmailControl
 `ProcessingError`) **apenas como `import type`** (sem `.parse()` em runtime — `services/supabase.ts`
 faz cast); só os schemas de **auth** rodam em runtime via `zodResolver`.
 
-**Fornecedor no schema (migrations 040/041):** `financialAccountControlSchema` **não** tem mais
-`supplier_name`/`supplier_cnpj`/`supplier_cpf` — só `supplier_id` (`z.number().int()`, NOT NULL) e
-um recurso embutido opcional `supplier` (`supplierEmbeddedSchema`: `trade_name`/`legal_name`/`cnpj`/
-`cpf`), presente quando o select inclui `supplier(...)`. O `financialAccountControlInputSchema`
-**inclui `supplier_id`** (entrada obrigatória — o pipeline resolve via RPC antes de gravar) e omite
-o recurso `supplier` (leitura).
+**Fornecedor no schema (migrations 040/041/042):** `financialAccountControlSchema` **não** tem mais
+`supplier_name`/`supplier_cnpj`/`supplier_cpf` — só `sk_supplier` (`z.number().int()`, NOT NULL — a
+FK surrogate; `supplier_id` ficou só na tabela `supplier`) e um recurso embutido opcional `supplier`
+(`supplierEmbeddedSchema`: `trade_name`/`legal_name`/`cnpj`/`cpf`), presente quando o select inclui
+`supplier(...)`. O `financialAccountControlInputSchema` **inclui `sk_supplier`** (entrada obrigatória
+— o pipeline resolve via RPC, que devolve o surrogate, antes de gravar) e omite o recurso `supplier`
+(leitura).
 
 **Schema base vs. criação manual:** `amount` é `nullable` no schema base (o pipeline pode
 gravar sem valor → vira erro `sem_valor`, não cria conta). A criação manual via API usa
@@ -1227,7 +1248,7 @@ cadastro/configuração** — não são alimentadas pelo pipeline e nunca devem 
 
 - `company`
 - `status` (dimensão de situação — domínio de `status` + alvo da FK `status_id`)
-- `supplier` (cadastro com curadoria manual — nome/CNPJ/CPF + `email`/`email2`/`email3`/`email4` são a **fonte da busca por fornecedor em `/consulta`**, que resolve `supplier_id` na tabela `supplier` via `findSupplierIdsByTerm`; truncá-lo destruiria os e-mails cadastrados à mão **e** quebraria a exibição/busca, já que `financial_account_control` só guarda a FK)
+- `supplier` (cadastro com curadoria manual — nome/CNPJ/CPF + `email`/`email2`/`email3`/`email4` são a **fonte da busca por fornecedor em `/consulta`**, que resolve `sk_supplier` na tabela `supplier` via `findSupplierIdsByTerm`; truncá-lo destruiria os e-mails cadastrados à mão **e** quebraria a exibição/busca, já que `financial_account_control` só guarda a FK `sk_supplier`. **Atenção:** truncar `supplier` com `RESTART IDENTITY` zeraria a sequence de `sk_supplier` e desalinharia das contas — mais um motivo para nunca truncá-lo)
 - `financial_account`
 - `financial_bank`
 - `financial_chart_of_account`
@@ -1243,7 +1264,7 @@ bucket **`attachments`** do Storage e o cache local (`data/pdfs_inbox`, `data/cs
 manual (e-mails `email2`/`email3`/`email4`) que seria perdida na truncagem; no
 reprocessamento o `resolve_supplier_id` reutiliza os fornecedores existentes (casa por
 CNPJ/CPF/e-mail/nome) sem duplicar. A `company` e o `supplier` preservados continuam
-resolvendo `company_id`/`supplier_id` das novas contas.
+resolvendo `company_id`/`sk_supplier` das novas contas.
 
 > **Storage:** `DELETE` direto em `storage.objects` é bloqueado (`protect_delete`). Esvaziar
 > o bucket via **Storage API** (`POST object/list/attachments` → `DELETE object/attachments`
