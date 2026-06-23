@@ -841,11 +841,13 @@ def build_financial_payload(row: dict, gmail_message_id: str,
     if utility:
         payload["document_type"] = utility
 
-    # Nº documento em branco → "{tipo}_{ddmmyy(vencimento|emissão)}" (mesma regra do corpo).
+    # Nº documento em branco → sintético (PIX: valor; demais: tipo+vencimento) — mesma regra do corpo.
     if not payload.get("invoice_number"):
-        ddmmyy = _iso_date_to_ddmmyy(payload.get("due_date") or payload.get("issue_date"))
-        if ddmmyy:
-            payload["invoice_number"] = f"{payload.get('document_type') or 'outro'}_{ddmmyy}"
+        synthetic = _synthetic_invoice_number(
+            payload.get("document_type"), payload.get("amount"),
+            payload.get("due_date") or payload.get("issue_date"))
+        if synthetic:
+            payload["invoice_number"] = synthetic
 
     # Honorários: forma de pagamento sempre PIX (regra de negócio), mesmo via PDF.
     if (payload.get("document_type") or "").lower() == "honorários":
@@ -1177,6 +1179,29 @@ def _iso_date_to_ddmmyy(iso_date: str | None) -> str | None:
         return None
 
 
+def _format_brl(value) -> str:
+    """Formata um valor numerico como moeda BR: 10999.99 -> 'R$ 10.999,99'."""
+    # f-string usa formato US ('10,999.99'); troca os separadores para o padrao BR.
+    s = f"{float(value):,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+    return f"R$ {s}"
+
+
+def _synthetic_invoice_number(document_type, amount, iso_date) -> str | None:
+    """N documento sintetico quando o documento nao traz numero proprio.
+
+    Regra de negocio:
+    - PIX (sem N documento): 'PIX_' + valor em moeda BR. Ex.: 'PIX_R$ 10.999,99'.
+    - Demais tipos: '{tipo}_{ddmmaa(vencimento|emissao)}' quando ha data.
+    Retorna None quando nao ha base para gerar (nao-PIX sem data).
+    """
+    if (document_type or "").lower() == "pix" and amount is not None:
+        return f"PIX_{_format_brl(amount)}"
+    ddmmyy = _iso_date_to_ddmmyy(iso_date)
+    if ddmmyy:
+        return f"{document_type or 'outro'}_{ddmmyy}"
+    return None
+
+
 def extract_from_email_body(body_text: str, received_at: str, message_id: str,
                             sender_email: str | None = None,
                             subject: str | None = None) -> dict | None:
@@ -1197,7 +1222,8 @@ def extract_from_email_body(body_text: str, received_at: str, message_id: str,
       - barcode     : linha digitavel / codigo de barras (boleto 47 / arrecadacao 48)
       - payment_method: 'pix' no corpo → 'pix'; caso contrario → 'outro'
       - document_type: 'PIX' quando PIX; senao keywords de tributo; fallback 'outro'
-      - invoice_number fallback: '{document_type}_{ddmmyy}' quando nao encontrado
+      - invoice_number fallback: PIX -> 'PIX_' + valor BR ('PIX_R$ 10.999,99');
+        demais tipos -> '{document_type}_{ddmmyy}' quando nao encontrado
 
     Guarda: corpos de comprovante de pagamento ja feito / 'pix recebido' (sem
     pedido de pagamento) retornam None — nao sao conta a pagar.
@@ -1295,11 +1321,11 @@ def extract_from_email_body(body_text: str, received_at: str, message_id: str,
     else:
         document_type, payment_method = classified, "outro"
 
-    # Numero de documento: valor encontrado no corpo ou fallback tipo+ddmmyy
+    # Numero de documento: valor encontrado no corpo ou sintetico
+    # (PIX: 'PIX_' + valor; demais: tipo+ddmmyy do vencimento/emissao).
     if not invoice_number:
-        ddmmyy = _iso_date_to_ddmmyy(due_date or issue_date)
-        if ddmmyy:
-            invoice_number = f"{document_type}_{ddmmyy}"
+        invoice_number = _synthetic_invoice_number(
+            document_type, amount, due_date or issue_date) or invoice_number
 
     payload = {f: None for f in FINANCIAL_FIELDS}
     payload.update({

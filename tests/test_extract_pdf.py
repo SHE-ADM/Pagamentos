@@ -36,6 +36,28 @@ class ApplyPixOverrideTest(unittest.TestCase):
         self.assertEqual(got, "outro")
 
 
+class FallbackInvoiceNumberTest(unittest.TestCase):
+    """N documento sintetico: PIX usa o valor; demais tipos usam tipo+vencimento."""
+
+    def test_pix_usa_valor_em_moeda_br(self):
+        self.assertEqual(
+            e.fallback_invoice_number("pix", "2026-06-20", 10999.99),
+            "PIX_R$ 10.999,99")
+        self.assertEqual(
+            e.fallback_invoice_number("pix", None, 1250),
+            "PIX_R$ 1.250,00")
+
+    def test_pix_sem_valor_cai_para_tipo_vencimento(self):
+        self.assertEqual(
+            e.fallback_invoice_number("pix", "2026-06-20", None),
+            "pix_200626")
+
+    def test_demais_tipos_usam_tipo_vencimento(self):
+        self.assertEqual(
+            e.fallback_invoice_number("boleto", "2026-07-10", 50.00),
+            "boleto_100726")
+
+
 class EnsureDueDateTest(unittest.TestCase):
     """Regra: vencimento ausente -> data da extracao (hoje). Ex.: CT-e sem vencimento."""
 

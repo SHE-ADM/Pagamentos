@@ -352,6 +352,16 @@ class TryExtractFromBodyTest(unittest.TestCase):
         self.assertEqual(ctrl.financial_calls[0]["payment_method"], "pix")
         self.assertEqual(ctrl.error_calls, [])
 
+    def test_pix_sem_n_documento_gera_invoice_com_valor(self):
+        """PIX sem N documento → invoice_number = 'PIX_' + valor em moeda BR."""
+        ctrl = FakeControl()
+        read_emails.try_extract_from_body(
+            {"message_id": "<msg-pix-inv>"}, PIX_BODY,
+            "2026-06-10T00:00:00+00:00", "<msg-pix-inv>", ctrl,
+        )
+        self.assertEqual(len(ctrl.financial_calls), 1)
+        self.assertEqual(ctrl.financial_calls[0]["invoice_number"], "PIX_R$ 1.250,00")
+
     def test_documento_duplicado_vira_duplicidade(self):
         """Conteudo ja existente no banco (remetente reenviou) nao grava de novo:
         retorna BODY_DUPLICATE e referencia o id da conta existente."""
