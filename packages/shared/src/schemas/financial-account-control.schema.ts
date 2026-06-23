@@ -199,18 +199,24 @@ export const financialAccountControlInputSchema = financialAccountControlSchema.
   supplier: true,
 });
 
-// ── Criação manual (CRUD) ────────────────────────────────────────────────────
+// ── Criação manual (CRUD — POST /api/contas) ─────────────────────────────────
 // O pipeline de extração pode gravar uma conta sem valor (vira erro 'sem_valor',
-// não cria conta — ver read_emails), por isso `amount` é nullable no schema base.
-// Já a criação manual via API EXIGE valor positivo: não faz sentido lançar uma
-// conta a pagar de R$ 0. Usado no futuro `POST /api/contas`.
-export const financialAccountControlCreateSchema = financialAccountControlInputSchema.extend({
+// não cria conta — ver read_emails). Já a criação manual via API EXIGE fornecedor
+// (sk_supplier) e valor positivo; os demais campos são OPCIONAIS (o banco aplica
+// DEFAULT/NULL nas colunas omitidas), para um formulário de lançamento rápido.
+export const financialAccountControlCreateSchema = financialAccountControlInputSchema.partial().extend({
+  sk_supplier: z.number().int(),
   amount: money.positive('O valor deve ser maior que zero'),
 });
+
+// ── Atualização parcial (PATCH /api/contas/:id) ──────────────────────────────
+// Todos os campos opcionais; permite alterar a situação (ex.: status='cancelado').
+export const financialAccountControlUpdateSchema = financialAccountControlInputSchema.partial();
 
 export type FinancialAccountControl = z.infer<typeof financialAccountControlSchema>;
 export type FinancialAccountControlInput = z.infer<typeof financialAccountControlInputSchema>;
 export type FinancialAccountControlCreate = z.infer<typeof financialAccountControlCreateSchema>;
+export type FinancialAccountControlUpdate = z.infer<typeof financialAccountControlUpdateSchema>;
 export type DocumentType = (typeof DOCUMENT_TYPES)[number];
 export type ExtractionSource = (typeof EXTRACTION_SOURCES)[number];
 export type PaymentMethod = (typeof PAYMENT_METHODS)[number];

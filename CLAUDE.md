@@ -149,6 +149,23 @@ identificador, espelhando `chk_supplier_has_identifier`). `DELETE` é **soft del
 `trg_supplier_mirror_id`). Status: `201` criação · `409` UNIQUE (23505) de CNPJ/CPF · `404` ·
 `422` Zod · `400` sk inválido. Spec/template em `docs/prompts/api-supplier-crud-spec.md`.
 
+**CRUD de contas (`apps/api-backend/lib/contas.ts` + `app/api/contas/**`):** CRUD da tabela
+principal `financial_account_control` (PK = **`id`**, não `sk_*`; fornecedor pela FK obrigatória
+`sk_supplier`). `GET /api/contas` (paginado + `search` por fornecedor/nº doc/assunto/remetente,
+JOIN `supplier`, exclui `cancelado` por padrão) · `GET/PATCH /api/contas/:id` · `POST /api/contas`.
+**Sem DELETE** (regra de preservação): "remoção" = `PATCH { status: 'cancelado' }`. Validação Zod
+em `@sheild/shared` — `financialAccountControlCreateSchema` (criação manual exige `sk_supplier` +
+`amount`>0; demais campos opcionais, o banco aplica DEFAULT/NULL) e
+`financialAccountControlUpdateSchema` (partial). `status_id`/`company_id`/`created_at`/`updated_at`
+são derivados (trigger) — não entram no corpo. Status: `201` · `409` (23505) · `404` · `422` ·
+`400` id inválido. Frontend: **página `/contas`** (lançamento rápido — `pages/ContasNovaPage.tsx` +
+`organisms/ContaForm.tsx`) e **botão "Editar conta"** no painel de detalhe de `/consulta` (modal
+`ContaForm` → `PATCH`). Fornecedor via **react-select** (`molecules/SupplierSelect.tsx` —
+`AsyncCreatableSelect`: busca + cria fornecedor inline via `POST /api/suppliers`); **tipo de
+documento e tipo de pagamento** são `<select>` de enum (valores pré-definidos, obrigatórios).
+Cliente Next API em `services/contas.ts` (proxy `/data-api`). Spec/template em
+`docs/prompts/api-contas-crud-spec.md`.
+
 **Auth das rotas Next (`apps/api-backend/middleware.ts` + `lib/auth.ts`):** o middleware
 protege `/api/*` (matcher `/api/((?!health).*)` — `/api/health` fica público) exigindo
 `Authorization: Bearer <token>`. O token é validado contra o Supabase Auth (`auth.getUser`)
@@ -506,19 +523,19 @@ apps/frontend-vite/src/components/
 └── ExpandableText.tsx         # expansível "ver mais/ver menos" (+ ExpandableText.test.tsx)
 ```
 
-**Menu da sidebar (`Layout.tsx`) — 5 grupos** (cabeçalho `uppercase`; itens `breve` são
+**Menu da sidebar (`Layout.tsx`) — 4 grupos** (cabeçalho `uppercase`; itens `breve` são
 `<span className="nav-link is-disabled">` com badge "breve", sem rota):
 
 | Grupo | Itens (rota / estado) |
 |---|---|
 | **Recebimentos** | E-mails (`/emails`) · Log de erros (`/erros`) |
 | **Envios** | E-mails (`/cobranca/envios`) · Log de erros (`/cobranca/erros`) — logs da cobrança automática de vencidos |
-| **Contas** | Gestão de contas (`/consulta`) · Cadastro de contas (`breve`) |
-| **Cadastros** | Cadastro de fornecedores (`breve`) |
+| **Contas** | Gestão de contas (`/consulta`) · Cadastro de contas (`/contas`) · Cadastro de fornecedores (`/fornecedores`) |
 | **Análise** | Dashboard (`breve`) |
 
 > "Gestão de contas" aponta para `/consulta` (só o rótulo difere da rota). Ao promover um
-> item `breve` a ativo, troque o `<span … is-disabled>` por `<NavLink>` e remova o badge.
+> item `breve` a ativo, troque o `<span … is-disabled>` por `<NavLink>` e remova o badge
+> (feito para "Cadastro de fornecedores" e "Cadastro de contas").
 
 Hooks em `src/hooks/`: `useContainerBreakpoint.ts` (faixa `sm`/`md`/`lg` pela largura
 **real do container** via `ResizeObserver` — não da janela; usado pelo `DataGrid` p/ ocultar

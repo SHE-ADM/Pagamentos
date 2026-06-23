@@ -96,20 +96,14 @@ export default function Layout({ children }: Readonly<{ children: ReactNode }>) 
           <NavLink to="/consulta" onClick={closeNav} className={({ isActive }) => navLink({ active: isActive })}>
             <Wallet size={16} /> Gestão de contas
           </NavLink>
-          <span className="nav-link is-disabled">
+          <NavLink to="/contas" onClick={closeNav} className={({ isActive }) => navLink({ active: isActive })}>
             <FilePlus size={16} /> Cadastro de contas
-            <span className="ml-auto text-xs bg-slate-800 text-slate-300 rounded-sm px-1">breve</span>
-          </span>
-
-          {/* Grupo 4 — Cadastros */}
-          <p className="px-3 pt-4 pb-1.5 text-xs font-bold tracking-widest text-slate-400 uppercase">
-            Cadastros
-          </p>
+          </NavLink>
           <NavLink to="/fornecedores" onClick={closeNav} className={({ isActive }) => navLink({ active: isActive })}>
             <Building2 size={16} /> Cadastro de fornecedores
           </NavLink>
 
-          {/* Grupo 5 — Análise */}
+          {/* Grupo 4 — Análise */}
           <p className="px-3 pt-4 pb-1.5 text-xs font-bold tracking-widest text-slate-400 uppercase">
             Análise
           </p>

@@ -14,6 +14,7 @@ const Emails = lazy(() => import('./pages/Emails'));
 const Consulta = lazy(() => import('./pages/Consulta'));
 const Erros = lazy(() => import('./pages/Erros'));
 const SuppliersPage = lazy(() => import('./pages/SuppliersPage'));
+const ContasNovaPage = lazy(() => import('./pages/ContasNovaPage'));
 const CobrancaEnvios = lazy(() => import('./pages/cobranca/CobrancaEnvios'));
 const CobrancaErros = lazy(() => import('./pages/cobranca/CobrancaErros'));
 
@@ -43,6 +44,7 @@ export default function App() {
                       <Route path="/" element={<Navigate to="/consulta" replace />} />
                       <Route path="/emails" element={<Emails />} />
                       <Route path="/consulta" element={<Consulta />} />
+                      <Route path="/contas" element={<ContasNovaPage />} />
                       <Route path="/fornecedores" element={<SuppliersPage />} />
                       <Route path="/erros" element={<Erros />} />
                       <Route path="/cobranca/envios" element={<CobrancaEnvios />} />
