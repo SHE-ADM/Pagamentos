@@ -1,5 +1,5 @@
 import { createElement, type ReactNode, type MouseEvent } from 'react';
-import { CheckCircle2, Pencil, Trash2 } from 'lucide-react';
+import { CheckCircle2, Pencil } from 'lucide-react';
 import type { FinancialAccountControl, EmailControl, Supplier } from '@sheild/shared';
 import StatusBadge from '../components/StatusBadge';
 import CheckToggle from '../components/atoms/CheckToggle';
@@ -345,9 +345,9 @@ const supplierLabel = (s: Supplier): string => s.trade_name ?? s.legal_name ?? `
 
 /**
  * Colunas do grid de /fornecedores. É uma **factory** porque a coluna "Ações"
- * renderiza botões (editar/excluir) que dependem dos callbacks da página.
+ * renderiza o botão de editar, que depende do callback da página.
  */
-export function getSupplierColumns(onEdit: SupplierRowAction, onDelete: SupplierRowAction): ColumnDef<Supplier>[] {
+export function getSupplierColumns(onEdit: SupplierRowAction): ColumnDef<Supplier>[] {
   return [
     {
       key: 'legal_name',
@@ -392,24 +392,14 @@ export function getSupplierColumns(onEdit: SupplierRowAction, onDelete: Supplier
     {
       key: '__actions__',
       header: 'Ações',
-      size: 96,
+      size: 72,
       align: 'center',
       render: (s) =>
-        createElement(
-          'div',
-          { className: 'flex items-center justify-center gap-1' },
-          actionButton(
-            Pencil,
-            `Editar ${supplierLabel(s)}`,
-            'flex h-7 w-7 items-center justify-center rounded-md text-slate-500 hover:bg-slate-100 hover:text-brand transition-colors',
-            () => onEdit(s),
-          ),
-          actionButton(
-            Trash2,
-            `Excluir ${supplierLabel(s)}`,
-            'flex h-7 w-7 items-center justify-center rounded-md text-slate-500 hover:bg-status-error-bg hover:text-status-error-fg transition-colors',
-            () => onDelete(s),
-          ),
+        actionButton(
+          Pencil,
+          `Editar ${supplierLabel(s)}`,
+          'inline-flex h-7 w-7 items-center justify-center rounded-md text-slate-500 hover:bg-slate-100 hover:text-brand transition-colors',
+          () => onEdit(s),
         ),
     },
   ];

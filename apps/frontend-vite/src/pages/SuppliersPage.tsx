@@ -1,17 +1,12 @@
 // src/pages/SuppliersPage.tsx
-// Página "Cadastro de fornecedores" — gestão completa (lista paginada + busca,
-// criar, editar e baixar) sobre o CRUD da Next API (services/suppliers.ts).
+// Página "Cadastro de fornecedores" — lista paginada + busca, criar e editar
+// sobre o CRUD da Next API (services/suppliers.ts). A exclusão não é exposta na UI.
 // A escrita não passa pelo REST direto do Supabase porque `supplier` tem RLS
 // só-leitura para authenticated; a Next API grava com service_role.
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { RefreshCw, Plus, Building2 } from 'lucide-react';
 import type { Supplier, SupplierCreateInput } from '@sheild/shared';
-import {
-  listSuppliers,
-  createSupplier,
-  updateSupplier,
-  deleteSupplier,
-} from '../services/suppliers';
+import { listSuppliers, createSupplier, updateSupplier } from '../services/suppliers';
 import { getSupplierColumns } from '../hooks/useGridColumns';
 import { getErrorMessage } from '../lib/getErrorMessage';
 import DataGrid from '../components/organisms/DataGrid';
@@ -35,15 +30,12 @@ export default function SuppliersPage() {
   const [searchInput, setSearchInput] = useState('');
   const [search, setSearch] = useState('');
 
-  // Modais
+  // Modal de criação/edição
   const [form, setForm] = useState<FormState>(null);
   const [formError, setFormError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
-  const [pendingDelete, setPendingDelete] = useState<Supplier | null>(null);
-  const [deleting, setDeleting] = useState(false);
 
   const formDialogRef = useRef<HTMLDialogElement>(null);
-  const deleteDialogRef = useRef<HTMLDialogElement>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -87,17 +79,6 @@ export default function SuppliersPage() {
     }
   }, [form]);
 
-  useEffect(() => {
-    const el = deleteDialogRef.current;
-    if (!el) return;
-    try {
-      if (pendingDelete) el.showModal();
-      else el.close();
-    } catch {
-      /* showModal indisponível (jsdom) */
-    }
-  }, [pendingDelete]);
-
   const openCreate = () => {
     setFormError(null);
     setForm({ mode: 'create' });
@@ -129,25 +110,7 @@ export default function SuppliersPage() {
     }
   };
 
-  const confirmDelete = async () => {
-    if (!pendingDelete) return;
-    setDeleting(true);
-    setError(null);
-    try {
-      await deleteSupplier(pendingDelete.sk_supplier);
-      setNotice('Fornecedor removido.');
-      setPendingDelete(null);
-      await load();
-    } catch (e) {
-      // Ex.: 409 (possui contas vinculadas) — mensagem leiga vinda do backend.
-      setError(getErrorMessage(e));
-      setPendingDelete(null);
-    } finally {
-      setDeleting(false);
-    }
-  };
-
-  const columns = getSupplierColumns(openEdit, setPendingDelete);
+  const columns = getSupplierColumns(openEdit);
   const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
 
   return (
@@ -248,38 +211,6 @@ export default function SuppliersPage() {
               submitError={formError}
               submitting={submitting}
             />
-          </div>
-        </dialog>
-      )}
-
-      {/* Modal de confirmação de exclusão */}
-      {pendingDelete && (
-        <dialog
-          ref={deleteDialogRef}
-          aria-label="Confirmar exclusão de fornecedor"
-          onCancel={() => setPendingDelete(null)}
-          className="fixed inset-0 m-auto h-fit max-h-[90vh] w-full max-w-md overflow-y-auto rounded-xl border-0 bg-white p-0 shadow-lg backdrop:bg-black/50"
-        >
-          <div className="p-6">
-            <h2 className="text-base font-semibold text-gray-900 mb-2">Remover fornecedor</h2>
-            <p className="text-sm text-gray-600 mb-5">
-              Confirma a baixa de{' '}
-              <strong>{pendingDelete.trade_name ?? pendingDelete.legal_name ?? `#${pendingDelete.sk_supplier}`}</strong>?
-              Fornecedores com contas vinculadas não podem ser removidos.
-            </p>
-            <div className="flex justify-end gap-2">
-              <button type="button" onClick={() => setPendingDelete(null)} className="btn" disabled={deleting}>
-                Cancelar
-              </button>
-              <button
-                type="button"
-                onClick={confirmDelete}
-                disabled={deleting}
-                className="inline-flex items-center gap-1.5 rounded-lg border border-status-error-fg bg-status-error-fg px-3 py-1.5 text-sm font-medium text-white shadow-xs transition-all hover:opacity-90 active:scale-95 disabled:opacity-50"
-              >
-                {deleting ? 'Removendo…' : 'Remover'}
-              </button>
-            </div>
           </div>
         </dialog>
       )}

@@ -71,7 +71,3 @@ export async function updateSupplier(sk: number, input: SupplierUpdateInput): Pr
   const body = await call<Supplier>(`/suppliers/${sk}`, { method: 'PATCH', body: JSON.stringify(input) });
   return body.data as Supplier;
 }
-
-export async function deleteSupplier(sk: number): Promise<void> {
-  await call<{ sk_supplier: number }>(`/suppliers/${sk}`, { method: 'DELETE' });
-}

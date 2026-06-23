@@ -7,7 +7,6 @@ vi.mock('../services/suppliers', () => ({
   listSuppliers: vi.fn(),
   createSupplier: vi.fn(),
   updateSupplier: vi.fn(),
-  deleteSupplier: vi.fn(),
 }));
 
 import SuppliersPage from './SuppliersPage';
