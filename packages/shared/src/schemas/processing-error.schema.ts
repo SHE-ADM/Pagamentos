@@ -6,7 +6,7 @@ import { z } from 'zod';
 export const PROCESSING_ERROR_TYPES = [
   'erro_api', // API Anthropic indisponível (crédito/auth/limite) — falha crítica
   'sem_valor', // amount ausente ou zero no documento extraído
-  'sem_fornecedor', // cnpj, cpf e nome do fornecedor ausentes
+  'sem_fornecedor', // cnpj, cpf, nome e e-mail do fornecedor ausentes
   'extracao_falhou', // extract_pdf.py não gerou CSV para o PDF
   'db_erro', // falha ao gravar em financial_account_control (HTTP error)
   'processamento_erro', // exceção inesperada no processamento do e-mail
