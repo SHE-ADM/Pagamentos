@@ -170,8 +170,19 @@ Tipo de pagamento → Valor → Vencimento → …**. **Sem botão de exclusão*
 Cliente Next API em `services/contas.ts` (proxy `/data-api`). Spec/template em
 `docs/prompts/api-contas-crud-spec.md`.
 
+**Usuários / autenticação (`apps/api-backend/lib/users.ts` + `app/api/users|auth/**`):** sobre
+o **Supabase Auth** — sem tabela própria, sem JWT customizado, sem bcrypt (regras de
+`auth-specs.md`). `POST /api/users` cria usuário (**admin-only**, via `auth.admin.createUser`
+com `email_confirm: true`; **SEM AUTO-REGISTRO** — fica atrás do guard do middleware) → `201`
+`{ id, name, email }`; `POST /api/auth/login` é **público** (exceção no matcher:
+`/api/((?!health|auth/login).*)`) e devolve `{ access_token, expires_in }` via
+`signInWithPassword`; `GET /api/users/me` usa `getAuthenticatedUser` (`lib/auth.ts`) → perfil.
+Schema `createUserSchema` em `@sheild/shared` (reusa `loginSchema`). Nunca expõe `password_hash`.
+Spec/template em `docs/prompts/api-users-auth-spec.md`.
+
 **Auth das rotas Next (`apps/api-backend/middleware.ts` + `lib/auth.ts`):** o middleware
-protege `/api/*` (matcher `/api/((?!health).*)` — `/api/health` fica público) exigindo
+protege `/api/*` (matcher `/api/((?!health|auth/login).*)` — `/api/health` e `/api/auth/login`
+ficam públicos) exigindo
 `Authorization: Bearer <token>`. O token é validado contra o Supabase Auth (`auth.getUser`)
 com a **chave anon** (`SUPABASE_ANON_KEY`, nunca a service_role); sem token/ inválido →
 `401`, falha de validação → `500` (envelope `fail`). A lógica fica em `lib/auth.ts`
