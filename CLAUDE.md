@@ -136,6 +136,19 @@ Service → Route, conforme `monorepo-crud-spec.md`). A exceção aceita: a leit
 `GET /api/emails/progress`) usa POST + corpo de parâmetros porque é uma **ação de disparo**,
 não um recurso CRUD.
 
+**CRUD de fornecedores (`apps/api-backend/lib/suppliers.ts` + `app/api/suppliers/**`):** primeiro
+CRUD completo da Next API (Repository → Service → Route, escrita via `getSupabaseAdmin`).
+`GET /api/suppliers` (paginado `page`/`limit`≤100 + `search` por nome/CNPJ/CPF/4 e-mails via
+`ilike`, índices trgm da migration 029) · `GET/PATCH/DELETE /api/suppliers/:sk` (por
+`sk_supplier`) · `POST /api/suppliers`. Validação Zod em `@sheild/shared`
+(`supplierCreateSchema`/`supplierUpdateSchema` — CNPJ/CPF com strip de máscara; ao menos um
+identificador, espelhando `chk_supplier_has_identifier`). `DELETE` é **soft delete**
+(`deleted_at`, migration 045) e **bloqueia com 409** quando há contas vinculadas
+(`financial_account_control.sk_supplier`) — fornecedor é PRESERVADO, nunca hard delete.
+`sk_supplier`/`supplier_id` nunca entram no corpo (gerados pelo banco + trigger
+`trg_supplier_mirror_id`). Status: `201` criação · `409` UNIQUE (23505) de CNPJ/CPF · `404` ·
+`422` Zod · `400` sk inválido. Spec/template em `docs/prompts/api-supplier-crud-spec.md`.
+
 **Auth das rotas Next (`apps/api-backend/middleware.ts` + `lib/auth.ts`):** o middleware
 protege `/api/*` (matcher `/api/((?!health).*)` — `/api/health` fica público) exigindo
 `Authorization: Bearer <token>`. O token é validado contra o Supabase Auth (`auth.getUser`)
@@ -1176,7 +1189,9 @@ faturas SIEG em `ignorado`; o handler A1 (baixar o boleto real) segue como melho
 ## Banco de dados (Supabase)
 
 Migrations em `supabase/migrations/`, aplicadas **manualmente no SQL Editor** em ordem
-numérica (`001` → `043`). Não há migration automática. (A `037` cria as tabelas de log da
+numérica (`001` → `045`). Não há migration automática. (A `045` adiciona `supplier.deleted_at`
++ índice parcial — soft delete do CRUD de fornecedores, ver "CRUD de fornecedores (Next API)".
+A `037` cria as tabelas de log da
 cobrança de vencidos — ver "Pipeline de cobrança de vencidos". A `040` cria a RPC
 `resolve_supplier_for_account`; a `041` dropa o trigger de resolução, a RPC
 `financial_dup_by_name` e as colunas `supplier_name`/`supplier_cnpj`/`supplier_cpf`. A `042`
@@ -1191,7 +1206,7 @@ internet` ao CHECK de `document_type` e faz backfill — ver "Normalização de 
 | `email_control` | Dedup/controle. `status` ∈ (`extraído`, `recebido`, `pendente`, `falha`, `ignorado`, `duplicidade`) — **migrations 022/031**. `extraído`=PDF extraído (CSV gerado); `recebido`=sem PDF, conta via corpo; `pendente`=PDF salvo sem CSV (substitui `baixado`); `falha`=casou keyword mas sem PDF e sem conta no corpo; `ignorado`=não-financeiro (sem keyword) **ou NF-e pura sem conta a pagar** (`subject_is_pure_nfe`); `duplicidade`=pagável do corpo duplica conta já registrada por outro e-mail (**migration 031**; card/filtro próprios em `/emails`). O status é calculado em `process_message` pelo resultado real (conta/CSV/corpo/duplicata), não por `pdf_extracted` |
 | `financial_account_control` | Tabela principal de contas a pagar — uma linha por documento; alimentada pelo pipeline de e-mail **e** por CRUD manual (baixas, consolidações, dashboards). Substitui a antiga `financial_emails` (dropada na migration 020). O fornecedor é referenciado **só pela FK `sk_supplier`** (surrogate key snowflake, NOT NULL — **migration 042**, antes era `supplier_id`) — nome/CNPJ vêm do JOIN com `supplier` (colunas denormalizadas dropadas na **migration 041**). Tem `sender_email` (migration 023; backfill em 025) usado na resolução p/ alinhar `supplier.email`, e `subject` (migration 025) — exibidos/buscados em `/consulta` |
 | `email_processing_errors` | Log de falhas com `raw_payload` JSON |
-| `supplier` | Fornecedores. PK = `sk_supplier` (surrogate key snowflake auto-incremental — **migration 042**); `supplier_id` é **chave de negócio** (NOT NULL UNIQUE, só nesta tabela; = `sk_supplier` nos fornecedores criados pela extração, via trigger de espelho `trg_supplier_mirror_id`, podendo divergir em cargas externas). Auto-criados pelo trigger de resolução, mas **cadastro PRESERVADO** (curadoria manual de `email`/`email2`/`email3`/`email4`) — **nunca truncar** em limpezas (ver "Limpeza / reset de dados"). Reconhecimento por **e-mail** em `email`/`email2`/`email3`/`email4` (migrations 023/027/028) — ver "Auto-resolução de fornecedor" |
+| `supplier` | Fornecedores. PK = `sk_supplier` (surrogate key snowflake auto-incremental — **migration 042**); `supplier_id` é **chave de negócio** (NOT NULL UNIQUE, só nesta tabela; = `sk_supplier` nos fornecedores criados pela extração, via trigger de espelho `trg_supplier_mirror_id`, podendo divergir em cargas externas). Auto-criados pelo trigger de resolução, mas **cadastro PRESERVADO** (curadoria manual de `email`/`email2`/`email3`/`email4`) — **nunca truncar** em limpezas (ver "Limpeza / reset de dados"). Reconhecimento por **e-mail** em `email`/`email2`/`email3`/`email4` (migrations 023/027/028) — ver "Auto-resolução de fornecedor". **Soft delete** via `deleted_at` (migration 045) — a baixa pelo CRUD da Next API marca `deleted_at` (nunca hard delete) e é bloqueada quando há contas vinculadas; ver "CRUD de fornecedores (Next API)" |
 | `company` | Empresa pagadora (**cadastro**, tem campo `email`). Auto-resolvida pelo trigger `resolve_company_id` a partir de `payer_cnpj`/`payer_name`. **Preservada em limpezas** (ver abaixo) |
 | `status` | **Dimensão** de situação (`status_id`, `status_name`, `status_short_name`, `has_opened`/`has_closed`/`has_invoiced`). 10 linhas = domínio de `financial_account_control.status`. A trigger resolve `financial_account_control.status_id` por `status_name` (migration 035). **Cadastro/configuração — preservar em limpezas** |
 | `cobranca_envios_log` | Cobranças de vencidos **enviadas com sucesso** (migration 037). `document_id` (= TÍTULO no Firebird) **UNIQUE** = chave de deduplicação: `already_sent()` consulta aqui antes de enviar. Exibida em `/cobranca/envios`. Alvo de limpeza (dados de teste) |
