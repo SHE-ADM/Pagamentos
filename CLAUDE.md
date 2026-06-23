@@ -158,11 +158,15 @@ em `@sheild/shared` — `financialAccountControlCreateSchema` (criação manual 
 `amount`>0; demais campos opcionais, o banco aplica DEFAULT/NULL) e
 `financialAccountControlUpdateSchema` (partial). `status_id`/`company_id`/`created_at`/`updated_at`
 são derivados (trigger) — não entram no corpo. Status: `201` · `409` (23505) · `404` · `422` ·
-`400` id inválido. Frontend: **página `/contas`** (lançamento rápido — `pages/ContasNovaPage.tsx` +
-`organisms/ContaForm.tsx`) e **botão "Editar conta"** no painel de detalhe de `/consulta` (modal
-`ContaForm` → `PATCH`). Fornecedor via **react-select** (`molecules/SupplierSelect.tsx` —
-`AsyncCreatableSelect`: busca + cria fornecedor inline via `POST /api/suppliers`); **tipo de
-documento e tipo de pagamento** são `<select>` de enum (valores pré-definidos, obrigatórios).
+`400` id inválido. Frontend: **página `/contas`** (lançamento rápido — `pages/ContasNovaPage.tsx`
+com o card centralizado `mx-auto` + `organisms/ContaForm.tsx`) e **edição da conta em `/consulta`
+por DUAS vias**: a **coluna "Ações"** do `DataGrid` (botão lápis por linha — `getConsultaColumns`
+ganhou o 3º parâmetro `onEdit` + a coluna de ação) **e** o botão "Editar conta" no painel de
+detalhe; ambos abrem o mesmo modal `ContaForm` → `PATCH /api/contas/:id`. Fornecedor via
+**react-select** (`molecules/SupplierSelect.tsx` — `AsyncCreatableSelect`: busca + cria fornecedor
+inline via `POST /api/suppliers`); **tipo de documento e tipo de pagamento** são `<select>` de enum
+(valores pré-definidos, obrigatórios). Ordem dos campos do form: **Fornecedor → Tipo de documento →
+Tipo de pagamento → Valor → Vencimento → …**. **Sem botão de exclusão** em nenhuma das telas.
 Cliente Next API em `services/contas.ts` (proxy `/data-api`). Spec/template em
 `docs/prompts/api-contas-crud-spec.md`.
 
@@ -544,10 +548,11 @@ ordem/visibilidade/larguras/fixação/densidade — persistido em `localStorage`
 setters no formato `OnChangeFn` do TanStack + `reset()`; ver seção do DataGrid) e
 `useGridColumns.ts` (metadados de coluna — `ColumnDef` com `size?` opcional, `getConsultaColumns`,
 `getEmailColumns`; é módulo de **definições**, não um hook,
-apesar do nome). `getConsultaColumns(onToggleFlag, onStatusChange)` é factory porque as colunas
-"NF" e "BOL" (curadoria) renderizam o atom `CheckToggle` (checkbox que escreve no banco) e a
-coluna "Situação" renderiza o `StatusSelectCell` (dropdown inline que altera o status) — precisam
-dos callbacks da página. Os cabeçalhos são abreviados (`NF`/`BOL`) para poupar
+apesar do nome). `getConsultaColumns(onToggleFlag, onStatusChange, onEdit)` é factory porque as
+colunas "NF" e "BOL" (curadoria) renderizam o atom `CheckToggle` (checkbox que escreve no banco), a
+coluna "Situação" renderiza o `StatusSelectCell` (dropdown inline que altera o status) e a coluna
+"Ações" renderiza o botão de editar (lápis) que chama `onEdit` (abre o modal `ContaForm` na página)
+— todos precisam dos callbacks da página. Os cabeçalhos são abreviados (`NF`/`BOL`) para poupar
 largura, mas o `aria-label` do checkbox continua descritivo (`Tem NF`/`Tem Boleto`). As colunas
 **"Fornecedor" e "CNPJ/CPF" derivam do JOIN com `supplier`** (`r.supplier?.trade_name ??
 legal_name` e `r.supplier?.cnpj ?? cpf`) — `financial_account_control` não guarda mais essas
@@ -555,9 +560,10 @@ colunas (migrations 040/041); por isso **não têm `sortKey`** (não são orden�
 por recurso embutido no PostgREST é frágil) e seu `key` no `ColumnDef` é uma string sintética
 (`ColumnDef.key` é `keyof T | (string & {})`; no `DataGrid` o `accessorFn` faz `row[key as keyof T]`,
 inócuo pois o accessor só alimenta sort/filter client-side, que não usamos). Ordem
-das colunas finais de `/consulta`: **… Valor → NF → BOL → Situação → Extração** (`Extração`
-por último, após `Situação`). A coluna `Extração` mostra `extraction_source` (badge), mas foi
-removida do painel de detalhe e da exportação CSV — aparece **apenas** como coluna do grid.
+das colunas finais de `/consulta`: **… Valor → NF → BOL → Situação → Extração → Ações** (a coluna
+`Ações` é a última e traz o botão de editar a conta; `Extração` vem logo antes). A coluna `Extração`
+mostra `extraction_source` (badge), mas foi removida do painel de detalhe e da exportação CSV —
+aparece **apenas** como coluna do grid.
 A coluna **"Situação" ordena alfabeticamente pelo texto** (`sortKey: 'status'`), **não** por
 `status_id`: decisão de negócio — o ciclo de vida não é linear (de `a vencer` pode-se ir direto a
 `cancelado`/`falha`), então a ordem alfabética é mais previsível (`status_name` só existe na

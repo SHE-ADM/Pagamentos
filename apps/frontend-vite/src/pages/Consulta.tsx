@@ -291,9 +291,15 @@ export default function Consulta() {
     }
   }, [editing]);
 
+  // Abre o modal de edição a partir do botão de ação no grid.
+  const handleEditRow = useCallback((r: FinancialAccountControl) => {
+    setEditError(null);
+    setEditing(r);
+  }, []);
+
   const columns = useMemo(
-    () => getConsultaColumns(handleToggleFlag, handleStatusChange),
-    [handleToggleFlag, handleStatusChange],
+    () => getConsultaColumns(handleToggleFlag, handleStatusChange, handleEditRow),
+    [handleToggleFlag, handleStatusChange, handleEditRow],
   );
 
   // "Atualizar": dispara a leitura IMAP dos últimos 7 dias (job em background no

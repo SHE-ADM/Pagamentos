@@ -120,17 +120,6 @@ export default function ContaForm({ mode, defaultValues, onSubmit, onCancel, sub
       />
 
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-        <AuthInput
-          label="Valor (R$)"
-          type="number"
-          step="0.01"
-          min="0"
-          placeholder="0,00"
-          error={errors.amount?.message}
-          {...register('amount')}
-        />
-        <AuthInput label="Vencimento" type="date" error={errors.due_date?.message} {...register('due_date')} />
-
         <label className="block">
           <span className="block text-sm font-medium text-gray-700 mb-1">Tipo de documento</span>
           <select
@@ -160,6 +149,17 @@ export default function ContaForm({ mode, defaultValues, onSubmit, onCancel, sub
           </select>
           {errors.payment_method && <span className="block mt-1 text-xs text-status-error-fg">{errors.payment_method.message}</span>}
         </label>
+
+        <AuthInput
+          label="Valor (R$)"
+          type="number"
+          step="0.01"
+          min="0"
+          placeholder="0,00"
+          error={errors.amount?.message}
+          {...register('amount')}
+        />
+        <AuthInput label="Vencimento" type="date" error={errors.due_date?.message} {...register('due_date')} />
 
         <AuthInput label="Emissão" type="date" error={errors.issue_date?.message} {...register('issue_date')} />
         <AuthInput label="Nº do documento" error={errors.invoice_number?.message} {...register('invoice_number')} />

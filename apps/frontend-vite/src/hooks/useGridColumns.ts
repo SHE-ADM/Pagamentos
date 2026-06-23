@@ -32,6 +32,9 @@ export type ToggleFlag = (
 /** Callback acionado ao alterar o status de uma conta no dropdown inline. */
 export type StatusChangeCallback = (rowId: number, newStatus: string) => Promise<void>;
 
+/** Callback acionado pelo botão de editar conta na coluna de ação do grid de /consulta. */
+type ContaRowAction = (conta: FinancialAccountControl) => void;
+
 // Formatters — cópia das implementações de Consulta.tsx. A consolidação num
 // módulo único (src/lib) é follow-up de quando Consulta.tsx for migrado ao hook.
 const fmtDate = (d: string | null): string =>
@@ -98,6 +101,7 @@ export interface ColumnDef<T> {
 export function getConsultaColumns(
   onToggleFlag: ToggleFlag,
   onStatusChange: StatusChangeCallback,
+  onEdit: ContaRowAction,
 ): ColumnDef<FinancialAccountControl>[] {
   return [
   {
@@ -221,6 +225,22 @@ export function getConsultaColumns(
     sortKey: 'extraction_source',
     hideOn: ['sm', 'md'],
     render: (r) => createElement(StatusBadge, { value: r.extraction_source }),
+  },
+  {
+    // Coluna de ação — botão de editar a conta (abre o modal de edição na página).
+    key: '__actions__',
+    header: 'Ações',
+    size: 72,
+    align: 'center',
+    render: (r) => {
+      const nome = r.supplier?.trade_name ?? r.supplier?.legal_name ?? `#${r.id}`;
+      return actionButton(
+        Pencil,
+        `Editar conta de ${nome}`,
+        'inline-flex h-7 w-7 items-center justify-center rounded-md text-slate-500 hover:bg-slate-100 hover:text-brand transition-colors',
+        () => onEdit(r),
+      );
+    },
   },
   ];
 }

@@ -39,11 +39,11 @@ export default function ContasNovaPage() {
 
       <div className="flex-1 overflow-y-auto px-6 py-5">
         {notice && (
-          <Alert variant="success" className="mb-4 max-w-3xl">
+          <Alert variant="success" className="mb-4 max-w-3xl mx-auto">
             {notice}
           </Alert>
         )}
-        <div className="card p-6 max-w-3xl">
+        <div className="card p-6 max-w-3xl mx-auto">
           <ContaForm
             key={formKey}
             mode="create"
