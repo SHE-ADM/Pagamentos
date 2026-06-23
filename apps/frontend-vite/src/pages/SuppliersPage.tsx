@@ -228,7 +228,7 @@ export default function SuppliersPage() {
           ref={formDialogRef}
           aria-label={form.mode === 'edit' ? 'Editar fornecedor' : 'Novo fornecedor'}
           onCancel={closeForm}
-          className="w-full max-w-2xl rounded-xl border-0 bg-white p-0 shadow-lg backdrop:bg-black/50"
+          className="fixed inset-0 m-auto h-fit max-h-[90vh] w-full max-w-2xl overflow-y-auto rounded-xl border-0 bg-white p-0 shadow-lg backdrop:bg-black/50"
         >
           <div className="p-6">
             <div className="mb-4 flex items-center gap-2">
@@ -258,7 +258,7 @@ export default function SuppliersPage() {
           ref={deleteDialogRef}
           aria-label="Confirmar exclusão de fornecedor"
           onCancel={() => setPendingDelete(null)}
-          className="w-full max-w-md rounded-xl border-0 bg-white p-0 shadow-lg backdrop:bg-black/50"
+          className="fixed inset-0 m-auto h-fit max-h-[90vh] w-full max-w-md overflow-y-auto rounded-xl border-0 bg-white p-0 shadow-lg backdrop:bg-black/50"
         >
           <div className="p-6">
             <h2 className="text-base font-semibold text-gray-900 mb-2">Remover fornecedor</h2>
