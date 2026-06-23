@@ -857,8 +857,15 @@ pagamento é forçado a `pix` tanto no corpo (`extract_from_email_body`) quanto 
 O pipeline resolve o fornecedor **antes do INSERT** via RPC `resolve_supplier_for_account`
 (`migration 040`; `_finalize_supplier` → `SupabaseControl.resolve_supplier`), que chama
 `resolve_supplier_id(cnpj, cpf, name, email)` + `_add_supplier_email`. Ordem de busca
-(`migration 027`/`028`): **CNPJ → CPF → e-mail exato → nome normalizado → auto-insert** em
-`supplier`. Função `normalize_search()` é SECURITY DEFINER. `financial_account_control`
+(**corrigida na `migration 046`**): **CNPJ → CPF → nome normalizado → e-mail exato → auto-insert**
+em `supplier`. **O e-mail só é usado para busca na AUSÊNCIA TOTAL de nome de fornecedor** — antes
+(027/028) o e-mail vinha antes do nome, o que fazia pagamentos internos encaminhados por
+remetentes internos (ex.: `ester@otimotex.com.br`) colapsarem todos num único fornecedor,
+ignorando o NOME do corpo/anexo. **Domínios internos não viram fornecedor** (`migration 046`):
+`_is_internal_email` (`%@otimotex.com.br`/`%@lebianco.com.br`) bloqueia esses e-mails tanto no
+`_add_supplier_email` quanto no auto-insert do `resolve_supplier_id`. A precedência **anexo → corpo**
+do nome é garantida antes, no pipeline Python (o corpo só alimenta o resolver quando o anexo não
+gera conta). Função `normalize_search()` é SECURITY DEFINER. `financial_account_control`
 referencia o fornecedor **apenas pela FK `sk_supplier`** (surrogate key snowflake, NOT NULL —
 `migration 042`): a RPC e as funções de resolução retornam/keyam `sk_supplier`; `supplier_id`
 virou **chave de negócio** e ficou só na tabela `supplier` (NOT NULL UNIQUE, igualada ao `sk`
@@ -1189,7 +1196,10 @@ faturas SIEG em `ignorado`; o handler A1 (baixar o boleto real) segue como melho
 ## Banco de dados (Supabase)
 
 Migrations em `supabase/migrations/`, aplicadas **manualmente no SQL Editor** em ordem
-numérica (`001` → `045`). Não há migration automática. (A `045` adiciona `supplier.deleted_at`
+numérica (`001` → `046`). Não há migration automática. (A `046` corrige a **ordem de resolução de
+fornecedor** — nome antes do e-mail; e-mail só sem nome — e bloqueia e-mails de domínio interno
+(`otimotex.com.br`/`lebianco.com.br`) em `supplier`; ver "Auto-resolução de fornecedor". A `045`
+adiciona `supplier.deleted_at`
 + índice parcial — soft delete do CRUD de fornecedores, ver "CRUD de fornecedores (Next API)".
 A `037` cria as tabelas de log da
 cobrança de vencidos — ver "Pipeline de cobrança de vencidos". A `040` cria a RPC
