@@ -2,12 +2,14 @@
 // Página "Cadastro de contas" — lançamento RÁPIDO de contas a pagar via Next API
 // (createConta). A escrita não passa pelo REST direto do Supabase (RLS só-leitura
 // para authenticated); a Next API grava com service_role.
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import type { FinancialAccountControlCreate } from '@sheild/shared';
 import { createConta } from '../services/contas';
 import { getErrorMessage } from '../lib/getErrorMessage';
 import ContaForm from '../components/organisms/ContaForm';
 import Alert from '../components/atoms/Alert';
+
+const NOTICE_DISMISS_MS = 5000; // banner de sucesso some sozinho após este tempo
 
 export default function ContasNovaPage() {
   const [submitting, setSubmitting] = useState(false);
@@ -29,6 +31,13 @@ export default function ContasNovaPage() {
       setSubmitting(false);
     }
   };
+
+  // Auto-dispensa o banner de sucesso (evita `notice` stale entre lançamentos).
+  useEffect(() => {
+    if (!notice) return;
+    const t = setTimeout(() => setNotice(null), NOTICE_DISMISS_MS);
+    return () => clearTimeout(t);
+  }, [notice]);
 
   return (
     <div className="flex flex-col h-full">

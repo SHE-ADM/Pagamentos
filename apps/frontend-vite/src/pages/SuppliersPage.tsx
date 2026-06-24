@@ -15,6 +15,7 @@ import Alert from '../components/atoms/Alert';
 
 const PAGE_SIZE = 20;
 const SEARCH_DEBOUNCE_MS = 350;
+const NOTICE_DISMISS_MS = 5000; // banner de sucesso some sozinho após este tempo
 
 type FormState = { mode: 'create' | 'edit'; supplier?: Supplier } | null;
 
@@ -78,6 +79,13 @@ export default function SuppliersPage() {
       /* showModal indisponível (jsdom) */
     }
   }, [form]);
+
+  // Auto-dispensa o banner de sucesso (evita `notice` stale aparecer para uma ação nova).
+  useEffect(() => {
+    if (!notice) return;
+    const t = setTimeout(() => setNotice(null), NOTICE_DISMISS_MS);
+    return () => clearTimeout(t);
+  }, [notice]);
 
   const openCreate = () => {
     setFormError(null);

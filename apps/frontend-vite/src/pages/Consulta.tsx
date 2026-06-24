@@ -14,6 +14,7 @@ import {
   Pencil,
   type LucideIcon,
 } from 'lucide-react';
+import { DOCUMENT_TYPES, PAYMENT_METHODS } from '@sheild/shared';
 import type { FinancialAccountControl, FinancialAccountControlCreate } from '@sheild/shared';
 import {
   getFinancialAccountControl,
@@ -107,8 +108,10 @@ const CSV_COLS: CsvCol[] = [
 
 function exportCsv(rows: FinancialAccountControl[]) {
   const header = CSV_COLS.map((c) => c.header).join(';');
+  // Sanitiza cada célula: escapa aspas (`"`→`""`) e troca quebras de linha por espaço —
+  // um `\n`/`\r` interno (ex.: description, email_body_excerpt) quebraria a linha do CSV.
   const body = rows.map((r) =>
-    CSV_COLS.map((c) => `"${(c.get(r) ?? '').toString().replace(/"/g, '""')}"`).join(';'),
+    CSV_COLS.map((c) => `"${(c.get(r) ?? '').toString().replace(/"/g, '""').replace(/[\r\n]+/g, ' ')}"`).join(';'),
   );
   const blob = new Blob(['﻿' + [header, ...body].join('\n')], { type: 'text/csv;charset=utf-8' });
   const a = document.createElement('a');
@@ -293,11 +296,16 @@ export default function Consulta() {
 
   const handleBulkStatusChange = useCallback(async (selected: FinancialAccountControl[], newStatus: string) => {
     const ids = selected.map((r) => r.id);
-    await setFinancialAccountStatusBulk(ids, newStatus);
-    setRows((prev) =>
-      prev.map((r) => (ids.includes(r.id) ? { ...r, status: newStatus as FinancialAccountControl['status'] } : r)),
-    );
-    void refreshStats();
+    setError(null);
+    try {
+      await setFinancialAccountStatusBulk(ids, newStatus);
+      setRows((prev) =>
+        prev.map((r) => (ids.includes(r.id) ? { ...r, status: newStatus as FinancialAccountControl['status'] } : r)),
+      );
+      void refreshStats();
+    } catch (e) {
+      setError(getErrorMessage(e));
+    }
   }, [refreshStats]);
 
   // Salva a edição da conta via Next API (PATCH) e recarrega o grid + KPIs.
@@ -504,7 +512,7 @@ export default function Consulta() {
         <h1 className="text-sm font-semibold text-slate-800">Consulta de movimentações</h1>
         <div className="flex gap-2">
           <button onClick={() => exportCsv(rows)} className="btn" disabled={!rows.length}>
-            <Download size={14} /> Exportar página ({rows.length})
+            <Download size={14} /> Exportar carregados ({rows.length})
           </button>
           <button
             onClick={handleRefresh}
@@ -603,13 +611,13 @@ export default function Consulta() {
           </div>
           <select id="consulta-doc-type" name="consulta-doc-type" aria-label="Filtrar por tipo de documento" className="input w-40" value={f.docType} onChange={(e) => sf('docType', e.target.value)}>
             <option value="">Tipo Documento</option>
-            {['darf','das','dae','dam / duam','gare','gnre','gps','gru','iss','iptu','ipva','itbi','pix','tributo','boleto','cte','nfe','nfse','recibo','seguro','outro'].map((t) => (
+            {DOCUMENT_TYPES.map((t) => (
               <option key={t}>{t}</option>
             ))}
           </select>
           <select id="consulta-payment-method" name="consulta-payment-method" aria-label="Filtrar por tipo de pagamento" className="input w-36" value={f.paymentMethod} onChange={(e) => sf('paymentMethod', e.target.value)}>
             <option value="">Tipo Pagamento</option>
-            {['boleto','pix','ted','cartão','depósito','duplicata','bancário','carteira','vale','crédito','débito','dinheiro','transferência','cheque','outro'].map((m) => (
+            {PAYMENT_METHODS.map((m) => (
               <option key={m}>{m}</option>
             ))}
           </select>

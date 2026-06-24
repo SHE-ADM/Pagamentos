@@ -307,6 +307,7 @@ export default function DataGrid<T>({
   const { ref: viewportRef, breakpoint } = useContainerBreakpoint<HTMLDivElement>();
   const [rowSelection, setRowSelection] = useState<Record<string, boolean>>({});
   const [bulkStatus, setBulkStatus] = useState('');
+  const [applyingBulk, setApplyingBulk] = useState(false);
   // Altura medida do viewport rolável — 0 sem layout real (jsdom/testes) → desliga a
   // virtualização e renderiza tudo (fallback que mantém os testes verdes).
   const [viewportH, setViewportH] = useState(0);
@@ -789,12 +790,18 @@ export default function DataGrid<T>({
                     </select>
                     <button
                       type="button"
-                      disabled={!bulkStatus}
+                      disabled={!bulkStatus || applyingBulk}
                       onClick={async () => {
-                        const rows = selectedRows.map((r) => r.original);
-                        await onBulkStatusChange(rows, bulkStatus);
-                        setBulkStatus('');
-                        table.resetRowSelection();
+                        // Trava durante o await — evita duplo clique disparar dois PATCH.
+                        setApplyingBulk(true);
+                        try {
+                          const rows = selectedRows.map((r) => r.original);
+                          await onBulkStatusChange(rows, bulkStatus);
+                          setBulkStatus('');
+                          table.resetRowSelection();
+                        } finally {
+                          setApplyingBulk(false);
+                        }
                       }}
                       className="btn btn-primary disabled:opacity-40 disabled:cursor-not-allowed"
                     >

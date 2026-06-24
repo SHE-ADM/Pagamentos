@@ -14,10 +14,6 @@
   --color-surface: #ffffff;
   --color-surface-page: #f8fafc;
 
-  --color-danger: #ef4444;
-  --color-warning: #f59e0b;
-  --color-info: #3b82f6;
-
   --color-status-error-bg: #fef2f2;
   --color-status-error-fg: #b91c1c;
   --color-status-error-border: #fecaca;
@@ -67,7 +63,6 @@
   --color-loginGreen-accent: #1e7a40;
   --color-loginGreen-accentHover: #165c30;
   --color-loginGreen-accentMuted: #6aaa85;
-  --color-loginGreen-accentDark: #165c30;
 
   --background-image-gradient-auth: linear-gradient(
     135deg,
@@ -131,12 +126,6 @@
            shadow-xs hover:shadow-md hover:shadow-brand/25 active:scale-95;
 }
 
-@utility btn-ghost {
-  /* uso dentro do sidebar escuro */
-  @apply bg-transparent border-transparent shadow-none text-slate-300
-           hover:bg-white/10 hover:text-white;
-}
-
 @utility input {
   @apply w-full px-3 py-1.5 text-sm border border-slate-200 rounded-lg bg-white
            transition-all focus:outline-hidden focus:ring-2 focus:ring-brand/20 focus:border-brand;
@@ -188,11 +177,6 @@
   @apply px-3 py-2.5 text-sm text-zinc-500 border-b border-zinc-300/60;
 }
 
-@utility table-row-hover {
-  /* preparada para a futura passada de estilo das páginas */
-  @apply hover:bg-slate-50/80 transition-colors duration-100;
-}
-
 @utility nav-link {
   @apply flex items-center gap-2 px-3 py-2 text-sm text-slate-400 rounded-lg
            border-l-2 border-transparent transition-all duration-150
@@ -207,22 +191,6 @@
     @apply opacity-100;
   }
   &.is-disabled {
-    /* itens "Em breve": não clicáveis, sem realce de hover */
-    @apply cursor-not-allowed hover:bg-transparent hover:text-slate-400;
-  }
-}
-
-@utility active {
-  &.nav-link {
-    @apply bg-brand/15 text-brand-light font-medium border-brand;
-  }
-  &.nav-link > svg {
-    @apply opacity-100;
-  }
-}
-
-@utility is-disabled {
-  &.nav-link {
     /* itens "Em breve": não clicáveis, sem realce de hover */
     @apply cursor-not-allowed hover:bg-transparent hover:text-slate-400;
   }
