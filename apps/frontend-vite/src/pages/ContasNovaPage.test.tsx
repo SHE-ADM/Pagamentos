@@ -11,6 +11,13 @@ vi.mock('../components/molecules/SupplierSelect', () => ({
   ),
 }));
 
+vi.mock('../components/molecules/CostCenterSelect', () => ({
+  default: ({ label }: { label: string }) => <input aria-label={label} />,
+}));
+vi.mock('../components/molecules/ChartAccountSelect', () => ({
+  default: ({ label }: { label: string }) => <input aria-label={label} />,
+}));
+
 import ContasNovaPage from './ContasNovaPage';
 
 describe('ContasNovaPage', () => {

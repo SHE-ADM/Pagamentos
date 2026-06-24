@@ -12,6 +12,23 @@ vi.mock('../components/molecules/SupplierSelect', () => ({
   ),
 }));
 
+vi.mock('../components/molecules/CostCenterSelect', () => ({
+  default: ({ label }: { label: string }) => (
+    <label>
+      {label}
+      <input aria-label={label} />
+    </label>
+  ),
+}));
+vi.mock('../components/molecules/ChartAccountSelect', () => ({
+  default: ({ label }: { label: string }) => (
+    <label>
+      {label}
+      <input aria-label={label} />
+    </label>
+  ),
+}));
+
 import ContasNovaPage from './ContasNovaPage';
 
 describe('ContasNovaPage a11y', () => {

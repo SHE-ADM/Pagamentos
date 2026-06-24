@@ -25,15 +25,17 @@ interface SupplierSelectProps {
 const supplierLabel = (s: { trade_name: string | null; legal_name: string | null; cnpj: string | null; sk_supplier: number }): string =>
   s.trade_name ?? s.legal_name ?? s.cnpj ?? `#${s.sk_supplier}`;
 
-// Carrega opções pela busca textual (nome/CNPJ/CPF/e-mails) na Next API.
+// Carrega opções pela busca textual (nome/CNPJ/CPF/e-mails) na Next API, já
+// ordenadas alfabeticamente por nome fantasia (sort=name no backend — ordem global,
+// não só do subconjunto retornado).
 async function loadOptions(input: string): Promise<SupplierOption[]> {
-  const { data } = await listSuppliers({ search: input || undefined, limit: 20 });
+  const { data } = await listSuppliers({ search: input || undefined, limit: 20, sort: 'name' });
   return data.map((s) => ({ value: s.sk_supplier, label: supplierLabel(s) }));
 }
 
 export default function SupplierSelect({ value, defaultLabel, onChange, label, error, id }: Readonly<SupplierSelectProps>) {
   const [selected, setSelected] = useState<SupplierOption | null>(
-    value != null ? { value, label: defaultLabel ?? `#${value}` } : null,
+    value == null ? null : { value, label: defaultLabel ?? `#${value}` },
   );
   const [creating, setCreating] = useState(false);
 

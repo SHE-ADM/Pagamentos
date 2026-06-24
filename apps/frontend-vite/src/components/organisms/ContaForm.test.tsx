@@ -14,6 +14,14 @@ vi.mock('../molecules/SupplierSelect', () => ({
   ),
 }));
 
+// Stubs dos lookups (react-select async) — evitam o react-select + rede no teste.
+vi.mock('../molecules/CostCenterSelect', () => ({
+  default: ({ label }: { label: string }) => <input aria-label={label} />,
+}));
+vi.mock('../molecules/ChartAccountSelect', () => ({
+  default: ({ label }: { label: string }) => <input aria-label={label} />,
+}));
+
 import ContaForm from './ContaForm';
 
 function setup() {

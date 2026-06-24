@@ -20,8 +20,12 @@ import { getSupabaseAdmin } from './supabase-admin';
 
 const TABLE = 'financial_account_control';
 const SUPPLIER_TABLE = 'supplier';
-// Recurso embutido: nome/CNPJ/CPF do fornecedor vêm do JOIN (não há colunas próprias).
-const SELECT_WITH_SUPPLIER = '*,supplier(trade_name,legal_name,cnpj,cpf)';
+// Recursos embutidos: fornecedor (nome/CNPJ/CPF) + classificação contábil (centro
+// de custo / plano de contas) vêm de JOINs — não há colunas próprias para exibição.
+const SELECT_WITH_SUPPLIER =
+  '*,supplier(trade_name,legal_name,cnpj,cpf),' +
+  'cost_center:financial_cost_center(cost_center_code,cost_center_description),' +
+  'chart_account:financial_chart_of_account(account_code,account_description)';
 const DEFAULT_LIMIT = 20;
 const MAX_LIMIT = 100;
 

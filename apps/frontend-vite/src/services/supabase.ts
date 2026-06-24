@@ -176,6 +176,13 @@ export async function getEmailStats(): Promise<EmailStats> {
 
 // ── financial_account_control ───────────────────────────────────────────────
 
+// SELECT com os JOINs de exibição: fornecedor (nome/CNPJ/CPF) + classificação
+// contábil (centro de custo / plano de contas) via aliases de embed do PostgREST.
+const SELECT_WITH_EMBEDS =
+  '*,supplier(trade_name,legal_name,cnpj,cpf),' +
+  'cost_center:financial_cost_center(cost_center_code,cost_center_description),' +
+  'chart_account:financial_chart_of_account(account_code,account_description)';
+
 interface FinancialAccountControlFilters {
   supplier?: string;
   docType?: string;
@@ -278,7 +285,8 @@ export async function getFinancialAccountControl({
   const url = new URL(`${BASE_URL}/rest/v1/financial_account_control`);
   // JOIN com supplier via FK sk_supplier — retorna dados canônicos do cadastro
   // (nome/CNPJ/CPF). Fonte de verdade única; não há mais colunas denormalizadas.
-  url.searchParams.set('select', '*,supplier(trade_name,legal_name,cnpj,cpf)');
+  // Embeds de classificação contábil (FKs cost_center_id / chart_account_id).
+  url.searchParams.set('select', SELECT_WITH_EMBEDS);
   // Ordenação padrão = criação (created_at) descendente — mais recente no topo (igual ao /emails).
   // Sort explícito do usuário sobrescreve.
   url.searchParams.set('order', sortCol ? `${sortCol}.${sortDir ?? 'asc'}` : 'created_at.desc');
@@ -415,7 +423,7 @@ export async function getProcessingErrorStats(): Promise<ProcessingErrorStats> {
 export async function getAccountsByMessageId(messageId: string | null): Promise<FinancialAccountControl[]> {
   if (!messageId) return [];
   return query<FinancialAccountControl[]>('financial_account_control', {
-    select: '*,supplier(trade_name,legal_name,cnpj,cpf)',
+    select: SELECT_WITH_EMBEDS,
     gmail_message_id: `like.${messageId}*`,
     order: 'due_date.asc',
   });

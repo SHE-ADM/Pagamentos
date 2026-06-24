@@ -40,6 +40,8 @@ export interface SupplierListParams {
   page?: number;
   limit?: number;
   search?: string;
+  /** Ordenação: `name` = alfabética por nome fantasia (lookup); padrão = mais recentes. */
+  sort?: 'name';
 }
 
 export interface SupplierListResult {
@@ -62,7 +64,7 @@ function duplicateMessage(detail: string): string {
 
 // Camada de acesso ao banco. Interna ao módulo — os testes exercitam-na via service.
 const supplierRepository = {
-  async findAll(params: { from: number; to: number; search?: string }) {
+  async findAll(params: { from: number; to: number; search?: string; sort?: 'name' }) {
     let query = getSupabaseAdmin()
       .from(SUPPLIER_TABLE)
       .select('*', { count: 'exact' })
@@ -73,7 +75,14 @@ const supplierRepository = {
       query = query.or(SEARCH_COLUMNS.map((c) => `${c}.ilike.%${term}%`).join(','));
     }
 
-    return query.order('sk_supplier', { ascending: false }).range(params.from, params.to);
+    // `name` = alfabética por nome fantasia (usada pelo lookup do modal de contas);
+    // padrão = mais recentes primeiro (sk_supplier desc — usado pela página /fornecedores).
+    const ordered =
+      params.sort === 'name'
+        ? query.order('trade_name', { ascending: true, nullsFirst: false })
+        : query.order('sk_supplier', { ascending: false });
+
+    return ordered.range(params.from, params.to);
   },
 
   findBySk(sk: number) {
@@ -134,6 +143,7 @@ export const supplierService = {
       from,
       to: from + limit - 1,
       search: params.search?.trim() || undefined,
+      sort: params.sort,
     });
     if (error) throw new SupplierServiceError(error.message, 500);
 

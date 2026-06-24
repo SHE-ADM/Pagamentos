@@ -1,4 +1,5 @@
-import { Fragment, useMemo, useState, type CSSProperties, type ReactNode } from 'react';
+import { useEffect, useMemo, useState, type CSSProperties, type ReactNode } from 'react';
+import { useVirtualizer } from '@tanstack/react-virtual';
 import { Inbox, ArrowUp, ArrowDown, ArrowUpDown, GripVertical, type LucideIcon } from 'lucide-react';
 import {
   useReactTable,
@@ -10,6 +11,7 @@ import {
   type Column,
   type Cell,
   type Header,
+  type Row,
 } from '@tanstack/react-table';
 import {
   DndContext,
@@ -30,8 +32,9 @@ import {
 import { restrictToHorizontalAxis } from '@dnd-kit/modifiers';
 import { CSS } from '@dnd-kit/utilities';
 import { useContainerBreakpoint } from '../../hooks/useContainerBreakpoint';
-import { useGridPreferences, type GridDensity } from '../../hooks/useGridPreferences';
+import { useGridPreferences, type GridDensity, type GridDefaults } from '../../hooks/useGridPreferences';
 import type { ColumnDef } from '../../hooks/useGridColumns';
+import { buildRenderItems, type RenderItem } from './dataGrid.rows';
 import { cn } from '../../lib/cn';
 import GridToolbar from '../molecules/GridToolbar';
 import type { ColumnMenuItem, PinSide } from '../molecules/ColumnVisibilityMenu';
@@ -88,6 +91,18 @@ interface DataGridProps<T> {
   renderSelectionActions?: (rows: T[], clearSelection: () => void) => ReactNode;
   /** Altura máxima do corpo rolável (habilita cabeçalho fixo). px ou string CSS. */
   maxBodyHeight?: number | string;
+  /** Liga a virtualização de LINHAS (só renderiza o que está visível). Exige `maxBodyHeight`. */
+  enableRowVirtualization?: boolean;
+  /** Há mais páginas a carregar (scroll infinito) — habilita o auto-load ao chegar ao fim. */
+  hasMore?: boolean;
+  /** Uma página adicional está sendo carregada (evita disparos concorrentes de `onLoadMore`). */
+  loadingMore?: boolean;
+  /** Dispara o carregamento da próxima página quando a rolagem alcança o fim da lista. */
+  onLoadMore?: () => void;
+  /** Fixação inicial das colunas (semeada na 1ª carga e no "restaurar layout"). */
+  defaultPinning?: ColumnPinningState;
+  /** Densidade inicial (ex.: `compact` para abrir denso). */
+  defaultDensity?: GridDensity;
 }
 
 const SKELETON_ROWS = 5;
@@ -95,6 +110,16 @@ const SELECT_ID = '__select__';
 const DEFAULT_COL_SIZE = 160;
 
 const hasValue = (v: unknown): boolean => v != null && v !== '';
+
+/** Dados pré-computados de uma linha para o render (principal + sub-linha + detalhe). */
+interface RowRender<T> {
+  key: string;
+  original: T;
+  row: Row<T>;
+  isSelected: boolean;
+  mainCells: Cell<T, unknown>[];
+  secondLineItems: Cell<T, unknown>[];
+}
 
 /** Acesso tipado ao `meta` customizado da coluna (todos os campos são opcionais). */
 const colMeta = <T,>(column: Column<T, unknown>): ColumnMeta<T, unknown> =>
@@ -272,14 +297,27 @@ export default function DataGrid<T>({
   onBulkStatusChange,
   renderSelectionActions,
   maxBodyHeight,
+  enableRowVirtualization = false,
+  hasMore = false,
+  loadingMore = false,
+  onLoadMore,
+  defaultPinning,
+  defaultDensity,
 }: Readonly<DataGridProps<T>>) {
-  const { ref, breakpoint } = useContainerBreakpoint<HTMLDivElement>();
+  const { ref: viewportRef, breakpoint } = useContainerBreakpoint<HTMLDivElement>();
   const [rowSelection, setRowSelection] = useState<Record<string, boolean>>({});
   const [bulkStatus, setBulkStatus] = useState('');
+  // Altura medida do viewport rolável — 0 sem layout real (jsdom/testes) → desliga a
+  // virtualização e renderiza tudo (fallback que mantém os testes verdes).
+  const [viewportH, setViewportH] = useState(0);
 
+  const gridDefaults = useMemo<GridDefaults>(
+    () => ({ pinning: defaultPinning, density: defaultDensity }),
+    [defaultPinning, defaultDensity],
+  );
   const columnIds = useMemo(() => columns.map((c) => String(c.key)), [columns]);
   const { prefs, setColumnSizing, setColumnVisibility, setColumnPinning, setColumnOrder, setDensity, reset } =
-    useGridPreferences(gridId, columnIds);
+    useGridPreferences(gridId, columnIds, gridDefaults);
 
   const managed = enableColumnManagement;
   const density = managed ? prefs.density : 'comfortable';
@@ -297,6 +335,7 @@ export default function DataGrid<T>({
       header: col.header,
       cell: ({ row }) => col.render(row.original),
       size: col.size ?? DEFAULT_COL_SIZE,
+      minSize: col.minSize ?? 56,
       meta: {
         hideOn: col.hideOn,
         secondLine: col.secondLine,
@@ -304,6 +343,7 @@ export default function DataGrid<T>({
         sortKey: col.sortKey,
         align: col.align,
         truncate: col.truncate,
+        wrap: col.wrap,
         className: col.className,
       },
     }));
@@ -486,7 +526,153 @@ export default function DataGrid<T>({
     </thead>
   );
 
+  // ── Virtualização de linhas (opt-in) ─────────────────────────────────────────
+  // Mede a altura do viewport rolável; 0 = sem layout (jsdom/testes) → não virtualiza
+  // e renderiza tudo (fallback). Em navegador real, ativa a virtualização.
+  useEffect(() => {
+    const el = viewportRef.current;
+    if (!el || typeof ResizeObserver === 'undefined') return;
+    const ro = new ResizeObserver((entries) => {
+      setViewportH(entries[0]?.contentRect.height ?? el.clientHeight);
+    });
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [viewportRef]);
+
+  // Achata as linhas em itens de render (1 item = 1 <tr>: principal/sub-linha/detalhe),
+  // base tanto do caminho virtualizado quanto do plano (fallback).
+  const modelRows = table.getRowModel().rows;
+  const rowRenders: RowRender<T>[] = modelRows.map((row) => {
+    const cells = row.getVisibleCells();
+    return {
+      key: row.id,
+      original: row.original,
+      row,
+      isSelected: selectedId != null && row.id === selectedId,
+      mainCells: cells.filter((c) => !isHidden(colMeta(c.column))),
+      secondLineItems: cells.filter(
+        (c) => colMeta(c.column).secondLine && isHidden(colMeta(c.column)) && hasValue(c.getValue()),
+      ),
+    };
+  });
+  const renderItems = buildRenderItems(
+    rowRenders.map((rr) => ({ key: rr.key, hasSecondLine: rr.secondLineItems.length > 0, isSelected: rr.isSelected })),
+    !!renderDetail,
+  );
+
+  const rowEstimate = density === 'compact' ? 33 : 41;
+  const rowVirtualizer = useVirtualizer({
+    count: renderItems.length,
+    getScrollElement: () => viewportRef.current,
+    estimateSize: (index) => {
+      const kind = renderItems[index]?.kind;
+      if (kind === 'detail') return 320;
+      if (kind === 'second') return 28;
+      return rowEstimate;
+    },
+    overscan: 10,
+  });
+
+  const effectiveVirtualize =
+    enableRowVirtualization && maxBodyHeight != null && viewportH > 0 && renderItems.length > 0;
+
+  // Scroll infinito: ao alcançar o fim da lista virtual, pede a próxima página.
+  const virtualItems = rowVirtualizer.getVirtualItems();
+  const lastVirtualIndex = virtualItems.length ? virtualItems[virtualItems.length - 1].index : -1;
+  useEffect(() => {
+    if (!effectiveVirtualize || !hasMore || loadingMore || !onLoadMore) return;
+    if (lastVirtualIndex >= renderItems.length - 1) onLoadMore();
+  }, [effectiveVirtualize, hasMore, loadingMore, onLoadMore, lastVirtualIndex, renderItems.length]);
+
+  // ── Render de cada item (tr) — reutilizado pelo caminho virtual e pelo plano ──
+  type MeasureRef = ((node: Element | null) => void) | undefined;
+
+  const renderBodyRowTr = (rr: RowRender<T>, itemKey: string, dataIndex: number | undefined, measureRef: MeasureRef): ReactNode => (
+    <tr
+      key={itemKey}
+      data-index={dataIndex}
+      ref={measureRef}
+      onClick={() => onRowClick(rr.original)}
+      className={bodyRow({ variant, selected: rr.isSelected })}
+    >
+      {rr.mainCells.map((cell) => {
+        const column = cell.column;
+        const m = colMeta(column);
+        const accent = rr.isSelected && column.id === firstLeftPinnedId;
+        const cls = cn(
+          bodyCell({ variant, align: m.align ?? 'left', dense: column.id !== SELECT_ID, density, wrap: !!m.wrap }),
+          managed && m.truncate && 'max-w-56',
+          m.className,
+          pinClass(column, 'body', accent),
+        );
+        if (column.id === SELECT_ID) {
+          return (
+            <td key={cell.id} style={cellStyle(column)} className={cls}>
+              <SelectCheckbox
+                checked={rr.row.getIsSelected()}
+                onToggle={(v) => rr.row.toggleSelected(v)}
+                ariaLabel={`Selecionar linha ${rr.key}`}
+              />
+            </td>
+          );
+        }
+        const value = cellValue(cell);
+        const title = typeof value === 'string' ? value : undefined;
+        const content = m.truncate ? (
+          <span className="block truncate" title={title}>
+            {value}
+          </span>
+        ) : (
+          value
+        );
+        return (
+          <td key={cell.id} style={cellStyle(column)} className={cls}>
+            {content}
+          </td>
+        );
+      })}
+    </tr>
+  );
+
+  const renderSecondLineTr = (rr: RowRender<T>, itemKey: string, dataIndex: number | undefined, measureRef: MeasureRef): ReactNode => (
+    <tr key={itemKey} data-index={dataIndex} ref={measureRef} aria-label="Campos adicionais do registro">
+      <td colSpan={colSpan} className={secondCell({ variant })}>
+        <div className="flex flex-wrap items-center gap-x-1.5 gap-y-0.5">
+          {rr.secondLineItems.map((cell, idx) => {
+            const m = colMeta(cell.column);
+            return (
+              <span key={cell.id} className="inline-flex items-center gap-1 whitespace-nowrap">
+                {idx > 0 && <span className={secondText({ variant, tone: 'sep' })}>·</span>}
+                <span className={secondText({ variant, tone: 'label' })}>
+                  {m.secondLineLabel ?? colHeaderText(cell.column)}:
+                </span>
+                <span className={secondText({ variant, tone: 'value' })}>{cellValue(cell)}</span>
+              </span>
+            );
+          })}
+        </div>
+      </td>
+    </tr>
+  );
+
+  const renderDetailRowTr = (rr: RowRender<T>, itemKey: string, dataIndex: number | undefined, measureRef: MeasureRef): ReactNode => (
+    <tr key={itemKey} data-index={dataIndex} ref={measureRef}>
+      <td colSpan={colSpan} className={detailCell({ variant })}>
+        <div className="animate-fade-in-up">{renderDetail?.(rr.original)}</div>
+      </td>
+    </tr>
+  );
+
+  const renderOneItem = (item: RenderItem, dataIndex?: number): ReactNode => {
+    const rr = rowRenders[item.rowIndex];
+    const measureRef: MeasureRef = dataIndex != null ? rowVirtualizer.measureElement : undefined;
+    if (item.kind === 'second') return renderSecondLineTr(rr, item.key, dataIndex, measureRef);
+    if (item.kind === 'detail') return renderDetailRowTr(rr, item.key, dataIndex, measureRef);
+    return renderBodyRowTr(rr, item.key, dataIndex, measureRef);
+  };
+
   // ── Corpo ───────────────────────────────────────────────────────────────────
+  const spacerStyle = (height: number): CSSProperties => ({ height, padding: 0, borderWidth: 0 });
   let body: ReactNode;
   if (loading && rows.length === 0) {
     body = Array.from({ length: SKELETON_ROWS }, (_, i) => (
@@ -511,87 +697,30 @@ export default function DataGrid<T>({
         </td>
       </tr>
     );
-  } else {
-    body = table.getRowModel().rows.map((row) => {
-      const key = row.id;
-      const isSelected = selectedId != null && key === selectedId;
-      const cells = row.getVisibleCells();
-      const mainCells = cells.filter((c) => !isHidden(colMeta(c.column)));
-      const secondLineItems = cells.filter(
-        (c) => colMeta(c.column).secondLine && isHidden(colMeta(c.column)) && hasValue(c.getValue()),
-      );
-      return (
-        <Fragment key={key}>
-          <tr onClick={() => onRowClick(row.original)} className={bodyRow({ variant, selected: isSelected })}>
-            {mainCells.map((cell) => {
-              const column = cell.column;
-              const m = colMeta(column);
-              const accent = isSelected && column.id === firstLeftPinnedId;
-              const cls = cn(
-                bodyCell({ variant, align: m.align ?? 'left', dense: column.id !== SELECT_ID, density }),
-                managed && m.truncate && 'max-w-56',
-                m.className,
-                pinClass(column, 'body', accent),
-              );
-              if (column.id === SELECT_ID) {
-                return (
-                  <td key={cell.id} style={cellStyle(column)} className={cls}>
-                    <SelectCheckbox
-                      checked={row.getIsSelected()}
-                      onToggle={(v) => row.toggleSelected(v)}
-                      ariaLabel={`Selecionar linha ${key}`}
-                    />
-                  </td>
-                );
-              }
-              const value = cellValue(cell);
-              const title = typeof value === 'string' ? value : undefined;
-              const content = m.truncate ? (
-                <span className="block truncate" title={title}>
-                  {value}
-                </span>
-              ) : (
-                value
-              );
-              return (
-                <td key={cell.id} style={cellStyle(column)} className={cls}>
-                  {content}
-                </td>
-              );
-            })}
+  } else if (effectiveVirtualize) {
+    // Janela virtual: linhas em fluxo normal entre dois <tr> espaçadores (preserva
+    // table-fixed, larguras, fixação sticky e o cabeçalho fixo).
+    const padTop = virtualItems.length ? virtualItems[0].start : 0;
+    const padBottom = virtualItems.length
+      ? rowVirtualizer.getTotalSize() - virtualItems[virtualItems.length - 1].end
+      : 0;
+    body = (
+      <>
+        {padTop > 0 && (
+          <tr aria-hidden="true">
+            <td colSpan={colSpan} style={spacerStyle(padTop)} />
           </tr>
-
-          {secondLineItems.length > 0 && (
-            <tr aria-label="Campos adicionais do registro">
-              <td colSpan={colSpan} className={secondCell({ variant })}>
-                <div className="flex flex-wrap items-center gap-x-1.5 gap-y-0.5">
-                  {secondLineItems.map((cell, idx) => {
-                    const m = colMeta(cell.column);
-                    return (
-                      <span key={cell.id} className="inline-flex items-center gap-1 whitespace-nowrap">
-                        {idx > 0 && <span className={secondText({ variant, tone: 'sep' })}>·</span>}
-                        <span className={secondText({ variant, tone: 'label' })}>
-                          {m.secondLineLabel ?? colHeaderText(cell.column)}:
-                        </span>
-                        <span className={secondText({ variant, tone: 'value' })}>{cellValue(cell)}</span>
-                      </span>
-                    );
-                  })}
-                </div>
-              </td>
-            </tr>
-          )}
-
-          {isSelected && renderDetail && (
-            <tr>
-              <td colSpan={colSpan} className={detailCell({ variant })}>
-                <div className="animate-fade-in-up">{renderDetail(row.original)}</div>
-              </td>
-            </tr>
-          )}
-        </Fragment>
-      );
-    });
+        )}
+        {virtualItems.map((vi) => renderOneItem(renderItems[vi.index], vi.index))}
+        {padBottom > 0 && (
+          <tr aria-hidden="true">
+            <td colSpan={colSpan} style={spacerStyle(padBottom)} />
+          </tr>
+        )}
+      </>
+    );
+  } else {
+    body = renderItems.map((item) => renderOneItem(item));
   }
 
   // ── Toolbar (gestão de colunas + densidade + seleção) ─────────────────────────
@@ -617,7 +746,7 @@ export default function DataGrid<T>({
   const tableStyle: CSSProperties | undefined = managed ? { width: table.getTotalSize() } : undefined;
 
   const grid = (
-    <div ref={ref} className={viewportClass} style={viewportStyle}>
+    <div ref={viewportRef} className={viewportClass} style={viewportStyle}>
       <table aria-label={ariaLabel} className={tableClass} style={tableStyle}>
         {head}
         <tbody>{body}</tbody>

@@ -11,6 +11,23 @@ vi.mock('../molecules/SupplierSelect', () => ({
   ),
 }));
 
+vi.mock('../molecules/CostCenterSelect', () => ({
+  default: ({ label }: { label: string }) => (
+    <label>
+      {label}
+      <input aria-label={label} />
+    </label>
+  ),
+}));
+vi.mock('../molecules/ChartAccountSelect', () => ({
+  default: ({ label }: { label: string }) => (
+    <label>
+      {label}
+      <input aria-label={label} />
+    </label>
+  ),
+}));
+
 import ContaForm from './ContaForm';
 
 describe('ContaForm a11y', () => {

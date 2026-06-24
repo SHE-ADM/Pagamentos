@@ -41,7 +41,23 @@ const fmtMoney = (v: number | null): string =>
 const fmtCnpj = (c: string | null): string =>
   c?.length === 14 ? `${c.slice(0, 2)}.${c.slice(2, 5)}.${c.slice(5, 8)}/${c.slice(8, 12)}-${c.slice(12)}` : c || '—';
 
-const PAGE_SIZE = 20;
+// Classificação contábil (embeds cost_center / chart_account). id 0 = "não
+// informado" (sentinela) → '—'. O plano de contas id 0 tem código literal '0'.
+const fmtCostCenter = (r: FinancialAccountControl): string =>
+  r.cost_center_id
+    ? [r.cost_center?.cost_center_code, r.cost_center?.cost_center_description].filter(Boolean).join(' — ') || `#${r.cost_center_id}`
+    : '—';
+
+const fmtChartAccount = (r: FinancialAccountControl): string =>
+  r.chart_account_id
+    ? [r.chart_account?.account_code, r.chart_account?.account_description].filter(Boolean).join(' — ') || `#${r.chart_account_id}`
+    : '—';
+
+const PAGE_SIZE = 50;
+
+// Fixação inicial do grid de /consulta: as 3 colunas-chave de contexto à esquerda.
+// Constante de módulo (ref estável) — evita recriar o objeto a cada render.
+const CONSULTA_DEFAULT_PINNING = { left: ['invoice_number', 'issue_date', 'supplier_name'], right: [] };
 
 // Intervalo [hoje, hoje+7d] em YYYY-MM-DD. Função de MÓDULO (fora do componente) para
 // não disparar a regra de pureza do React Compiler — Date.now/new Date são impuros e não
@@ -72,6 +88,8 @@ const CSV_COLS: CsvCol[] = [
   { header: 'supplier_name', get: (r) => r.supplier?.trade_name ?? r.supplier?.legal_name },
   { header: 'supplier_cnpj', get: (r) => r.supplier?.cnpj ?? r.supplier?.cpf },
   { header: 'document_type', get: (r) => r.document_type },
+  { header: 'cost_center', get: (r) => fmtCostCenter(r) },
+  { header: 'chart_account', get: (r) => fmtChartAccount(r) },
   { header: 'amount', get: (r) => r.amount },
   { header: 'amount_charged', get: (r) => r.amount_charged },
   { header: 'discount', get: (r) => r.discount },
@@ -159,43 +177,68 @@ export default function Consulta() {
   const sf = <K extends keyof ConsultaFilters>(k: K, v: ConsultaFilters[K]) =>
     setF((x) => ({ ...x, [k]: v }));
 
-  // load depends on applied (snapshot do filtro no momento do Buscar) e page.
-  // useEffect dispara automaticamente quando qualquer dos dois muda.
-  const load = useCallback(async () => {
-    setLoading(true);
-    setError(null);
-    try {
-      const [result, st] = await Promise.all([
-        getFinancialAccountControl({
+  const [loadingMore, setLoadingMore] = useState(false);
+  const loadingMoreRef = useRef(false);
+
+  // Recarrega os KPIs (independente da paginação do grid).
+  const refreshStats = useCallback(async () => {
+    const st = await getFinancialStats();
+    setStats(st);
+  }, []);
+
+  // Busca uma página de contas e a aplica: `replace` (1ª página / reset de filtro/sort)
+  // ou `append` (scroll infinito). `loadingMoreRef` evita disparos concorrentes no append.
+  // `result.total` pode ser estimativa (totalIsEstimate) — tratada de forma transparente
+  // pelo "hasMore" (rows.length < total), sem mudança visual no rodapé.
+  const load = useCallback(
+    async (pageNum: number, mode: 'replace' | 'append') => {
+      if (mode === 'append') {
+        if (loadingMoreRef.current) return;
+        loadingMoreRef.current = true;
+        setLoadingMore(true);
+      } else {
+        setLoading(true);
+      }
+      setError(null);
+      try {
+        const result = await getFinancialAccountControl({
           ...applied,
-          page,
+          page: pageNum,
           pageSize: PAGE_SIZE,
           sortCol: sort.col ?? undefined,
           sortDir: sort.dir ?? undefined,
-        }),
-        getFinancialStats(),
-      ]);
-      setRows(result.data);
-      // `result.total` pode ser estimativa quando o PostgREST não devolve contagem exata
-      // (result.totalIsEstimate=true). A paginação a trata de forma transparente: a
-      // estimativa projeta "há mais páginas" e habilita/desabilita "Próxima" corretamente,
-      // sem leitura do flag aqui nem mudança visual no footer.
-      setTotal(result.total);
-      setStats(st);
-    } catch (e) {
-      setError(getErrorMessage(e));
-    } finally {
-      setLoading(false);
-    }
-  }, [applied, page, sort]);
+        });
+        setRows((prev) => (mode === 'append' ? [...prev, ...result.data] : result.data));
+        setTotal(result.total);
+        setPage(pageNum);
+      } catch (e) {
+        setError(getErrorMessage(e));
+      } finally {
+        if (mode === 'append') {
+          loadingMoreRef.current = false;
+          setLoadingMore(false);
+        } else {
+          setLoading(false);
+        }
+      }
+    },
+    [applied, sort],
+  );
 
+  // Próxima página (append) — chamado pelo grid (auto ao rolar) e pelo botão "Carregar mais".
+  const loadMore = useCallback(() => {
+    if (loadingMoreRef.current) return;
+    void load(page + 1, 'append');
+  }, [load, page]);
+
+  // Reset: quando o filtro aplicado ou a ordenação mudam (e no mount), recomeça da
+  // página 1 e recarrega os KPIs. load() seta `loading` no início — o effect é a
+  // ferramenta certa para o fetch-on-change.
   useEffect(() => {
-    // load() é fetch-on-change (seta `loading` no início) — o effect é a ferramenta certa
-    // para buscar quando applied/page/sort mudam. A regra do React Compiler é conservadora
-    // aqui; sem uma lib de dados (react-query) não há como evitar o setState síncrono.
     // eslint-disable-next-line react-hooks/set-state-in-effect
-    void load();
-  }, [load]);
+    void load(1, 'replace');
+    void refreshStats();
+  }, [load, refreshStats]);
 
   // Debounce da busca por fornecedor (fonte única — sem ref): 350ms após a última tecla,
   // congela f.supplier em applied. O cleanup cancela o timeout pendente quando f.supplier
@@ -239,11 +282,6 @@ export default function Consulta() {
     });
   }, []);
 
-  const refreshStats = useCallback(async () => {
-    const st = await getFinancialStats();
-    setStats(st);
-  }, []);
-
   // Altera o status de uma conta no dropdown inline com update otimista.
   // O pai (Consulta) atualiza `rows` após confirmação da API para manter consistência
   // entre a célula editada e o painel de detalhe lateral.
@@ -268,9 +306,11 @@ export default function Consulta() {
     setEditSubmitting(true);
     setEditError(null);
     try {
-      await updateConta(editing.id, data);
+      const updated = await updateConta(editing.id, data);
       setEditing(null);
-      await load();
+      // Atualiza a linha no lugar (preserva a posição de rolagem do scroll infinito).
+      setRows((prev) => prev.map((r) => (r.id === updated.id ? updated : r)));
+      setSel((s) => (s && s.id === updated.id ? updated : s));
       void refreshStats();
     } catch (e) {
       setEditError(getErrorMessage(e));
@@ -342,7 +382,10 @@ export default function Consulta() {
         }
         setProgress(p);
         ticks += 1;
-        if (ticks % GRID_REFRESH_EVERY === 0) void load(); // grid sobe ao vivo
+        if (ticks % GRID_REFRESH_EVERY === 0) {
+          void load(1, 'replace'); // grid sobe ao vivo (recomeça da 1ª página)
+          void refreshStats();
+        }
         if (!p.running) {
           final = p;
           polling = false;
@@ -356,9 +399,10 @@ export default function Consulta() {
       setReading(false);
       setProgress(null);
       resumeIdleLogout();
-      await load();
+      await load(1, 'replace');
+      void refreshStats();
     }
-  }, [load]);
+  }, [load, refreshStats]);
 
   // Buscar: congela filtro atual em applied e volta para pagina 1.
   // React 18 faz batch dos dois setState — gera um unico load novo.
@@ -385,8 +429,6 @@ export default function Consulta() {
     });
     setPage(1);
   };
-  const goPage = (n: number) => setPage(n);
-  const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
 
   const handleCardFilter = (cardId: string, filterOverride: Partial<ConsultaFilters>) => {
     setSort({ col: null, dir: null });
@@ -618,6 +660,12 @@ export default function Consulta() {
             gridId="consulta"
             enableColumnManagement
             enableSelection
+            enableRowVirtualization
+            hasMore={rows.length < total}
+            loadingMore={loadingMore}
+            onLoadMore={loadMore}
+            defaultPinning={CONSULTA_DEFAULT_PINNING}
+            defaultDensity="compact"
             onExportSelected={exportCsv}
             bulkStatusOptions={STATUS_OPTIONS}
             onBulkStatusChange={handleBulkStatusChange}
@@ -684,6 +732,8 @@ export default function Consulta() {
                                   ['Mora / multa', fmtMoney(r.fine_interest)],
                                   ['Outros acréscimos', fmtMoney(r.other_additions)],
                                   ['Nosso número', r.nosso_numero || '—'],
+                                  ['Centro de custo', fmtCostCenter(r)],
+                                  ['Plano de contas', fmtChartAccount(r)],
                                   ['Forma de pag.', r.payment_method],
                                   ['Código de barras', r.barcode || '—'],
                                   ['Origem', r.source_file],
@@ -719,26 +769,18 @@ export default function Consulta() {
         </div>
 
         <div className="flex items-center justify-between py-2 px-1 mb-4">
-          <span className="text-xs text-slate-500">{total} registros</span>
-          <div className="flex items-center gap-2">
+          <span className="text-xs text-slate-500">
+            {rows.length} de {total} registros
+          </span>
+          {rows.length < total && (
             <button
-              onClick={() => goPage(page - 1)}
-              disabled={page <= 1 || loading}
+              onClick={loadMore}
+              disabled={loadingMore || loading}
               className="btn disabled:opacity-40 disabled:cursor-not-allowed"
             >
-              ← Anterior
+              {loadingMore ? 'Carregando…' : 'Carregar mais'}
             </button>
-            <span className="badge bg-slate-100 text-slate-600">
-              Página {page} de {totalPages}
-            </span>
-            <button
-              onClick={() => goPage(page + 1)}
-              disabled={page >= totalPages || loading}
-              className="btn disabled:opacity-40 disabled:cursor-not-allowed"
-            >
-              Próxima →
-            </button>
-          </div>
+          )}
         </div>
       </div>
 

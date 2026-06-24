@@ -25,6 +25,8 @@ declare module '@tanstack/react-table' {
     align?: 'left' | 'right' | 'center';
     /** Trunca texto longo na célula (com `title`) — evita estourar largura no mobile. */
     truncate?: boolean;
+    /** Quebra o texto em várias linhas (word-wrap) em vez de truncar — colunas largas. */
+    wrap?: boolean;
     /** Classes extras aplicadas à célula (td). */
     className?: string;
   }

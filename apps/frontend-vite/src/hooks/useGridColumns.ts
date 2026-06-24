@@ -51,8 +51,17 @@ const fmtCnpj = (c: string | null): string =>
 const fmtCpf = (c: string | null): string =>
   c?.length === 11 ? `${c.slice(0, 3)}.${c.slice(3, 6)}.${c.slice(6, 9)}-${c.slice(9)}` : c || '—';
 
-const fmtCnpjOrCpf = (cnpj: string | null, cpf: string | null): string =>
-  cpf != null && cpf !== '' ? fmtCpf(cpf) : fmtCnpj(cnpj);
+// Classificação contábil (embeds cost_center / chart_account — código + descrição).
+// id 0 = "não informado" (sentinela) → exibe '—' (o plano id 0 tem código literal '0').
+const fmtCostCenter = (r: FinancialAccountControl): string =>
+  r.cost_center_id
+    ? [r.cost_center?.cost_center_code, r.cost_center?.cost_center_description].filter(Boolean).join(' — ') || `#${r.cost_center_id}`
+    : '—';
+
+const fmtChartAccount = (r: FinancialAccountControl): string =>
+  r.chart_account_id
+    ? [r.chart_account?.account_code, r.chart_account?.account_description].filter(Boolean).join(' — ') || `#${r.chart_account_id}`
+    : '—';
 
 // Data + hora (coluna "Recebido" do grid de /emails — cópia do `fmt` de Emails.tsx).
 const fmtDateTime = (iso: string | null): string =>
@@ -87,9 +96,13 @@ export interface ColumnDef<T> {
   secondLineLabel?: string;
   /** Trunca texto longo na célula (com `title`) — evita estourar a largura no mobile. */
   truncate?: boolean;
+  /** Quebra o texto em várias linhas (word-wrap) em vez de truncar — colunas largas. */
+  wrap?: boolean;
   className?: string;
   /** Largura inicial (px) da coluna no layout gerenciável (resize/pin). Default 160. */
   size?: number;
+  /** Largura mínima (px) no resize — evita comprimir números/datas a ponto de ilegíveis. */
+  minSize?: number;
 }
 
 /**
@@ -108,6 +121,7 @@ export function getConsultaColumns(
     key: 'invoice_number',
     header: 'Nº Documento',
     size: 130,
+    minSize: 110,
     sortKey: 'invoice_number',
     hideOn: ['sm'],
     render: (r) => r.invoice_number ?? '—',
@@ -116,34 +130,27 @@ export function getConsultaColumns(
     key: 'issue_date',
     header: 'Emissão',
     size: 100,
+    minSize: 90,
     sortKey: 'issue_date',
     hideOn: ['sm', 'md'],
     render: (r) => fmtDate(r.issue_date),
   },
   {
-    // Fornecedor e CNPJ/CPF vêm do JOIN com `supplier` (migrations 040/041); não há
-    // mais coluna própria em financial_account_control, então não são ordenáveis
-    // server-side (order por recurso embutido no PostgREST é frágil).
+    // Fornecedor vem do JOIN com `supplier` (migrations 040/041); não é coluna própria
+    // de financial_account_control, então não é ordenável server-side. Texto longo
+    // QUEBRA em várias linhas (wrap) em vez de truncar — coluna mais estreita.
     key: 'supplier_name',
     header: 'Fornecedor',
-    size: 200,
-    truncate: true,
+    size: 170,
+    minSize: 130,
+    wrap: true,
     render: (r) => r.supplier?.trade_name ?? r.supplier?.legal_name ?? '—',
-  },
-  {
-    key: 'supplier_cnpj',
-    header: 'CNPJ / CPF',
-    size: 165,
-    hideOn: ['sm'],
-    secondLine: true,
-    secondLineLabel: 'CNPJ',
-    truncate: true,
-    render: (r) => fmtCnpjOrCpf(r.supplier?.cnpj ?? null, r.supplier?.cpf ?? null),
   },
   {
     key: 'document_type',
     header: 'Tipo Documento',
     size: 100,
+    minSize: 90,
     sortKey: 'document_type',
     hideOn: ['sm', 'md'],
     secondLine: true,
@@ -154,6 +161,7 @@ export function getConsultaColumns(
     key: 'payment_method',
     header: 'Tipo Pagamento',
     size: 110,
+    minSize: 90,
     sortKey: 'payment_method',
     hideOn: ['sm', 'md'],
     secondLine: true,
@@ -161,9 +169,34 @@ export function getConsultaColumns(
     render: (r) => r.payment_method ?? '—',
   },
   {
+    // Classificação contábil — vem dos embeds (JOIN); não é ordenável server-side.
+    // Texto longo QUEBRA em várias linhas (wrap) em vez de truncar.
+    key: 'cost_center',
+    header: 'Centro de custo',
+    size: 140,
+    minSize: 120,
+    hideOn: ['sm', 'md'],
+    secondLine: true,
+    secondLineLabel: 'C. Custo',
+    wrap: true,
+    render: fmtCostCenter,
+  },
+  {
+    key: 'chart_account',
+    header: 'Plano de contas',
+    size: 180,
+    minSize: 120,
+    hideOn: ['sm', 'md'],
+    secondLine: true,
+    secondLineLabel: 'Plano',
+    wrap: true,
+    render: fmtChartAccount,
+  },
+  {
     key: 'due_date',
     header: 'Vencimento',
     size: 110,
+    minSize: 90,
     sortKey: 'due_date',
     render: (r) => fmtDate(r.due_date),
   },
@@ -171,6 +204,7 @@ export function getConsultaColumns(
     key: 'amount',
     header: 'Valor',
     size: 120,
+    minSize: 90,
     sortKey: 'amount',
     align: 'right',
     render: (r) => fmtMoney(r.amount),
@@ -179,6 +213,7 @@ export function getConsultaColumns(
     key: 'has_invoice',
     header: 'NF',
     size: 56,
+    minSize: 48,
     align: 'center',
     render: (r) =>
       createElement(CheckToggle, {
@@ -191,6 +226,7 @@ export function getConsultaColumns(
     key: 'has_bank_slip',
     header: 'BOL',
     size: 56,
+    minSize: 48,
     align: 'center',
     render: (r) =>
       createElement(CheckToggle, {
@@ -203,6 +239,7 @@ export function getConsultaColumns(
     key: 'status',
     header: 'Situação',
     size: 148,
+    minSize: 120,
     // Ordenação de "Situação" é ALFABÉTICA pelo nome (equivale a ORDER BY status_name na
     // dimensão `status`). Decisão de negócio: o ciclo de vida não é estritamente linear —
     // de "a vencer" pode-se ir direto para "cancelado", "falha" etc. —, então a ordem por
@@ -222,6 +259,7 @@ export function getConsultaColumns(
     key: 'extraction_source',
     header: 'Extração',
     size: 120,
+    minSize: 100,
     sortKey: 'extraction_source',
     hideOn: ['sm', 'md'],
     render: (r) => createElement(StatusBadge, { value: r.extraction_source }),
@@ -231,6 +269,7 @@ export function getConsultaColumns(
     key: '__actions__',
     header: 'Ações',
     size: 72,
+    minSize: 64,
     align: 'center',
     render: (r) => {
       const nome = r.supplier?.trade_name ?? r.supplier?.legal_name ?? `#${r.id}`;

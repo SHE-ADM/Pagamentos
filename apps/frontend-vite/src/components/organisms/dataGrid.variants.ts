@@ -16,8 +16,8 @@ export const headerCell = cva('relative select-none transition-colors', {
     align: { left: '', right: 'text-right', center: 'text-center' },
     sortable: { true: 'cursor-pointer', false: '' },
     active: { true: 'bg-slate-100', false: '' },
-    // Densidade: `compact` reduz o padding vertical (utility vence o @apply base).
-    density: { comfortable: '', compact: 'py-1' },
+    // Densidade: `compact` reduz o padding (utility vence o @apply base do table-header).
+    density: { comfortable: '', compact: 'px-2 py-1' },
   },
   // Hover só em coluna ordenável que ainda não é a ativa.
   compoundVariants: [{ sortable: true, active: false, class: 'hover:bg-slate-100' }],
@@ -60,10 +60,13 @@ export const bodyCell = cva('', {
     variant: { default: 'table-cell text-slate-600', silver: 'table-cell-silver text-zinc-600' },
     align: { left: '', right: 'text-right', center: 'text-center' },
     dense: { true: 'text-xs font-mono', false: '' },
-    // Densidade: `compact` reduz o padding vertical (utility vence o @apply base).
-    density: { comfortable: '', compact: 'py-1' },
+    // `compact` reduz padding (px-2 py-1) e o tipo (text-xs) — utility vence o @apply base.
+    density: { comfortable: '', compact: 'px-2 py-1 text-xs' },
+    // `wrap`: quebra o texto em várias linhas (sem ellipsis) e alinha ao topo, para a
+    // virtualização medir a altura. Alternativa ao `truncate` nas colunas largas.
+    wrap: { true: 'whitespace-normal break-words align-top', false: '' },
   },
-  defaultVariants: { variant: 'default', align: 'left', dense: false, density: 'comfortable' },
+  defaultVariants: { variant: 'default', align: 'left', dense: false, density: 'comfortable', wrap: false },
 });
 
 /**

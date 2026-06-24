@@ -15,12 +15,14 @@ export async function GET(req: NextRequest) {
   const page = Number(sp.get('page') ?? '1');
   const limit = Number(sp.get('limit') ?? '20');
   const search = sp.get('search') ?? undefined;
+  const sort = sp.get('sort') === 'name' ? 'name' : undefined;
 
   try {
     const result = await supplierService.list({
       page: Number.isFinite(page) ? page : 1,
       limit: Number.isFinite(limit) ? limit : 20,
       search,
+      sort,
     });
     return ok(result.data, { total: result.total, page: result.page, limit: result.limit });
   } catch (e) {
