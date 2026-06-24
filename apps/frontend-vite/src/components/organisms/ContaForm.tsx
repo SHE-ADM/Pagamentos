@@ -16,6 +16,13 @@ import {
 import AuthInput from '../atoms/AuthInput';
 import Alert from '../atoms/Alert';
 import SupplierSelect from '../molecules/SupplierSelect';
+import CostCenterSelect from '../molecules/CostCenterSelect';
+import ChartAccountSelect from '../molecules/ChartAccountSelect';
+
+// Opções dos selects de enum ordenadas alfabeticamente (pt-BR) — os valores são os
+// mesmos dos CHECK do banco; só a ordem de exibição muda.
+const DOCUMENT_TYPE_OPTIONS = [...DOCUMENT_TYPES].sort((a, b) => a.localeCompare(b, 'pt-BR'));
+const PAYMENT_METHOD_OPTIONS = [...PAYMENT_METHODS].sort((a, b) => a.localeCompare(b, 'pt-BR'));
 
 interface ContaFormValues {
   amount: string;
@@ -52,6 +59,21 @@ function toFormValues(c?: FinancialAccountControl): ContaFormValues {
 
 const blankToNull = (v: string): string | null => (v.trim() ? v.trim() : null);
 
+// id 0 = "não informado" (sentinela do banco) → tratado como vazio na UI.
+const orNull = (id: number | null | undefined): number | null => (id ? id : null);
+
+// Rótulo do centro de custo já vinculado (modo edição) — usa o embed do JOIN;
+// undefined quando não há classificação (id 0/ausente).
+const costCenterDefaultLabel = (c?: FinancialAccountControl): string | undefined => {
+  if (!c?.cost_center_id) return undefined;
+  return c.cost_center?.cost_center_description ?? c.cost_center?.cost_center_code ?? `#${c.cost_center_id}`;
+};
+
+const chartAccountDefaultLabel = (c?: FinancialAccountControl): string | undefined => {
+  if (!c?.chart_account_id) return undefined;
+  return c.chart_account?.account_description ?? c.chart_account?.account_code ?? `#${c.chart_account_id}`;
+};
+
 export default function ContaForm({ mode, defaultValues, onSubmit, onCancel, submitError, submitting = false }: Readonly<ContaFormProps>) {
   const {
     register,
@@ -62,6 +84,17 @@ export default function ContaForm({ mode, defaultValues, onSubmit, onCancel, sub
 
   const [skSupplier, setSkSupplier] = useState<number | null>(defaultValues?.sk_supplier ?? null);
   const [supplierError, setSupplierError] = useState<string | null>(null);
+  // Classificação contábil (opcional) — FKs cost_center_id / chart_account_id.
+  // id 0 (sentinela "não informado") aparece vazio no select.
+  const [costCenterId, setCostCenterId] = useState<number | null>(orNull(defaultValues?.cost_center_id));
+  const [chartAccountId, setChartAccountId] = useState<number | null>(orNull(defaultValues?.chart_account_id));
+
+  // Cascata: trocar (ou limpar) o centro de custo zera o plano de contas, que pode não
+  // pertencer ao novo centro. O ChartAccountSelect remonta via `key={costCenterId}`.
+  const handleCostCenterChange = (id: number | null) => {
+    setCostCenterId(id);
+    setChartAccountId(null);
+  };
 
   const submit = handleSubmit(async (raw) => {
     setSupplierError(null);
@@ -81,6 +114,9 @@ export default function ContaForm({ mode, defaultValues, onSubmit, onCancel, sub
 
     const payload = {
       sk_supplier: skSupplier ?? undefined,
+      // Não informado → 0 (sentinela). A coluna é NOT NULL DEFAULT 0 (migration 048).
+      cost_center_id: costCenterId ?? 0,
+      chart_account_id: chartAccountId ?? 0,
       amount: raw.amount ? Number(raw.amount.replace(',', '.')) : undefined,
       document_type: raw.document_type || null,
       payment_method: raw.payment_method || null,
@@ -119,6 +155,26 @@ export default function ContaForm({ mode, defaultValues, onSubmit, onCancel, sub
         error={supplierError ?? undefined}
       />
 
+      <CostCenterSelect
+        id="conta-cost-center"
+        label="Centro de custo"
+        value={costCenterId}
+        defaultLabel={costCenterDefaultLabel(defaultValues)}
+        onChange={handleCostCenterChange}
+      />
+
+      <ChartAccountSelect
+        // Remonta ao trocar o centro de custo: reinicia o select (vazio) e recarrega as
+        // opções do novo centro, sem efeito de sincronização de estado.
+        key={`chart-${costCenterId ?? 'none'}`}
+        id="conta-chart-account"
+        label="Plano de contas"
+        value={chartAccountId}
+        costCenterId={costCenterId}
+        defaultLabel={chartAccountDefaultLabel(defaultValues)}
+        onChange={setChartAccountId}
+      />
+
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
         <label className="block">
           <span className="block text-sm font-medium text-gray-700 mb-1">Tipo de documento</span>
@@ -128,7 +184,7 @@ export default function ContaForm({ mode, defaultValues, onSubmit, onCancel, sub
             {...register('document_type')}
           >
             <option value="">Selecione…</option>
-            {DOCUMENT_TYPES.map((t) => (
+            {DOCUMENT_TYPE_OPTIONS.map((t) => (
               <option key={t} value={t}>{t}</option>
             ))}
           </select>
@@ -143,7 +199,7 @@ export default function ContaForm({ mode, defaultValues, onSubmit, onCancel, sub
             {...register('payment_method')}
           >
             <option value="">Selecione…</option>
-            {PAYMENT_METHODS.map((m) => (
+            {PAYMENT_METHOD_OPTIONS.map((m) => (
               <option key={m} value={m}>{m}</option>
             ))}
           </select>

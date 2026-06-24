@@ -108,6 +108,23 @@ export const supplierEmbeddedSchema = z.object({
 
 export type SupplierEmbedded = z.infer<typeof supplierEmbeddedSchema>;
 
+// ── Classificação contábil embutida (JOIN via cost_center_id / chart_account_id) ─
+// Retornado pelo PostgREST quando o select inclui os aliases
+// cost_center:financial_cost_center(...) e chart_account:financial_chart_of_account(...).
+
+export const costCenterEmbeddedSchema = z.object({
+  cost_center_code: z.string().nullable(),
+  cost_center_description: z.string().nullable(),
+}).nullable();
+
+export const chartAccountEmbeddedSchema = z.object({
+  account_code: z.string().nullable(),
+  account_description: z.string().nullable(),
+}).nullable();
+
+export type CostCenterEmbedded = z.infer<typeof costCenterEmbeddedSchema>;
+export type ChartAccountEmbedded = z.infer<typeof chartAccountEmbeddedSchema>;
+
 // ── Linha completa (leitura) ────────────────────────────────────────────────
 
 export const financialAccountControlSchema = z.object({
@@ -126,6 +143,13 @@ export const financialAccountControlSchema = z.object({
   // (migration 042). Os dados denormalizados (nome/CNPJ/CPF) foram removidos
   // (migrations 040/041); a fonte de verdade é `supplier`, lida via JOIN (campo `supplier`).
   sk_supplier: z.number().int(),
+
+  // Classificação contábil (FKs para os cadastros — migrations 047/048). NOT NULL
+  // DEFAULT 0: "não informado" grava o id 0 (linha-sentinela existente em ambos os
+  // cadastros), nunca NULL. cost_center_id → financial_cost_center,
+  // chart_account_id → financial_chart_of_account.
+  cost_center_id: z.number().int().default(0),
+  chart_account_id: z.number().int().default(0),
 
   // Documento
   invoice_number: z.string().nullable(),
@@ -181,6 +205,11 @@ export const financialAccountControlSchema = z.object({
   // Fornecedor embutido — presente quando o select inclui supplier(...).
   // Fonte de verdade única para exibição (nome/CNPJ/CPF vêm daqui via JOIN).
   supplier: supplierEmbeddedSchema.optional(),
+
+  // Classificação contábil embutida — presente quando o select inclui os aliases
+  // cost_center:financial_cost_center(...) / chart_account:financial_chart_of_account(...).
+  cost_center: costCenterEmbeddedSchema.optional(),
+  chart_account: chartAccountEmbeddedSchema.optional(),
 });
 
 // ── Entrada (gravação pelo pipeline/API) ────────────────────────────────────
@@ -197,6 +226,8 @@ export const financialAccountControlInputSchema = financialAccountControlSchema.
   created_at: true,
   updated_at: true,
   supplier: true,
+  cost_center: true,
+  chart_account: true,
 });
 
 // ── Criação manual (CRUD — POST /api/contas) ─────────────────────────────────

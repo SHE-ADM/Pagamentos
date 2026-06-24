@@ -160,7 +160,8 @@ export default function SuppliersPage() {
             columns={columns}
             rows={rows}
             rowKey={(s) => String(s.sk_supplier)}
-            onRowClick={openEdit}
+            // Edição abre SÓ pelo botão de lápis (coluna "Ações"); clicar na linha não abre.
+            onRowClick={() => undefined}
             sortCol={null}
             sortDir={null}
             onSort={() => undefined}

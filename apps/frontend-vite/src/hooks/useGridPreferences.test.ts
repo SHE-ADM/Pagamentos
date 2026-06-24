@@ -67,4 +67,40 @@ describe('useGridPreferences', () => {
     expect(localStorage.length).toBe(0);
     expect(result.current.prefs.density).toBe('compact');
   });
+
+  it('semeia defaultPinning/defaultDensity quando não há prefs salvas', () => {
+    const { result } = renderHook(() =>
+      useGridPreferences('g2', ['a', 'b', 'c'], { pinning: { left: ['a', 'b'], right: [] }, density: 'compact' }),
+    );
+    expect(result.current.prefs.pinning).toEqual({ left: ['a', 'b'], right: [] });
+    expect(result.current.prefs.density).toBe('compact');
+  });
+
+  it('reset restaura os defaults (não vazio) quando informados', () => {
+    const defaults = { pinning: { left: ['a'], right: [] }, density: 'compact' as const };
+    const { result } = renderHook(() => useGridPreferences('g3', ['a', 'b'], defaults));
+    act(() => result.current.setColumnPinning({ left: [], right: ['b'] }));
+    act(() => result.current.setDensity('comfortable'));
+    act(() => result.current.reset());
+    expect(result.current.prefs.pinning).toEqual({ left: ['a'], right: [] });
+    expect(result.current.prefs.density).toBe('compact');
+  });
+
+  it('prefs salvas prevalecem sobre os defaults', () => {
+    localStorage.setItem(
+      'pag:grid:g4:v3',
+      JSON.stringify({
+        order: ['a', 'b'],
+        visibility: {},
+        sizing: {},
+        pinning: { left: ['b'], right: [] },
+        density: 'comfortable',
+      }),
+    );
+    const { result } = renderHook(() =>
+      useGridPreferences('g4', ['a', 'b'], { pinning: { left: ['a'], right: [] }, density: 'compact' }),
+    );
+    expect(result.current.prefs.pinning).toEqual({ left: ['b'], right: [] });
+    expect(result.current.prefs.density).toBe('comfortable');
+  });
 });

@@ -51,6 +51,20 @@ describe('GET /api/suppliers', () => {
     const body = await res.json();
     expect(body).toEqual({ success: true, data: [{ sk_supplier: 1 }], meta: { total: 1, page: 1, limit: 20 } });
   });
+
+  it('encaminha sort=name ao service (ordenação do lookup)', async () => {
+    requireAuthMock.mockResolvedValue(null);
+    listMock.mockResolvedValue({ data: [] as never, total: 0, page: 1, limit: 20 });
+    await GET(getRequest('page=1&limit=20&sort=name'));
+    expect(listMock).toHaveBeenCalledWith(expect.objectContaining({ sort: 'name' }));
+  });
+
+  it('ignora sort inválido (default = mais recentes)', async () => {
+    requireAuthMock.mockResolvedValue(null);
+    listMock.mockResolvedValue({ data: [] as never, total: 0, page: 1, limit: 20 });
+    await GET(getRequest('sort=xyz'));
+    expect(listMock).toHaveBeenCalledWith(expect.objectContaining({ sort: undefined }));
+  });
 });
 
 describe('POST /api/suppliers', () => {

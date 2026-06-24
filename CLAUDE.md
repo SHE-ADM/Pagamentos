@@ -147,7 +147,12 @@ identificador, espelhando `chk_supplier_has_identifier`). `DELETE` é **soft del
 (`financial_account_control.sk_supplier`) — fornecedor é PRESERVADO, nunca hard delete.
 `sk_supplier`/`supplier_id` nunca entram no corpo (gerados pelo banco + trigger
 `trg_supplier_mirror_id`). Status: `201` criação · `409` UNIQUE (23505) de CNPJ/CPF · `404` ·
-`422` Zod · `400` sk inválido. Spec/template em `docs/prompts/api-supplier-crud-spec.md`.
+`422` Zod · `400` sk inválido. **Ordenação `?sort=name`** (opcional): ordena por `trade_name` asc —
+usado pelo **lookup de fornecedor** do modal de contas (`SupplierSelect`, ordem alfabética global);
+**sem `sort`** o padrão é `sk_supplier` desc (página `/fornecedores`). Spec/template em
+`docs/prompts/api-supplier-crud-spec.md`. **`/fornecedores` (`SuppliersPage`):** a edição abre
+**apenas pelo botão de lápis** (coluna "Ações") — `onRowClick` do grid é no-op; clicar na linha
+não abre o modal.
 
 **CRUD de contas (`apps/api-backend/lib/contas.ts` + `app/api/contas/**`):** CRUD da tabela
 principal `financial_account_control` (PK = **`id`**, não `sk_*`; fornecedor pela FK obrigatória
@@ -165,10 +170,26 @@ ganhou o 3º parâmetro `onEdit` + a coluna de ação) **e** o botão "Editar co
 detalhe; ambos abrem o mesmo modal `ContaForm` → `PATCH /api/contas/:id`. Fornecedor via
 **react-select** (`molecules/SupplierSelect.tsx` — `AsyncCreatableSelect`: busca + cria fornecedor
 inline via `POST /api/suppliers`); **tipo de documento e tipo de pagamento** são `<select>` de enum
-(valores pré-definidos, obrigatórios). Ordem dos campos do form: **Fornecedor → Tipo de documento →
+(valores pré-definidos, obrigatórios, **ordenados alfabeticamente** — `DOCUMENT_TYPE_OPTIONS`/
+`PAYMENT_METHOD_OPTIONS` em `ContaForm`). **Classificação contábil** via dois lookups react-select —
+**Centro de custo** (`molecules/CostCenterSelect.tsx`) e **Plano de contas**
+(`molecules/ChartAccountSelect.tsx`), em CASCATA: ver "Lookups de classificação contábil (cascata)".
+Ordem dos campos do form: **Fornecedor → Centro de custo → Plano de contas → Tipo de documento →
 Tipo de pagamento → Valor → Vencimento → …**. **Sem botão de exclusão** em nenhuma das telas.
 Cliente Next API em `services/contas.ts` (proxy `/data-api`). Spec/template em
 `docs/prompts/api-contas-crud-spec.md`.
+
+**Lookups de classificação contábil (cascata Centro de custo → Plano de contas):** cadastros
+pré-existentes só-leitura `financial_cost_center` e `financial_chart_of_account` (este com FK
+`cost_center_id`). Backend: `apps/api-backend/lib/lookups.ts` (`costCenterService`/`chartAccountService`,
+service_role) + rotas `GET /api/cost-centers` e `GET /api/chart-accounts`. Cliente: `services/lookups.ts`
+(`listCostCenters`/`listChartAccounts`). **Regra de cascata:** o plano de contas só lista os planos
+**do centro selecionado** (`chartAccountService.list({ costCenterId })` filtra `cost_center_id`;
+**sem centro → `[]` sem consultar o banco**, e `ChartAccountSelect` fica **desabilitado**). No
+`ContaForm`, trocar o centro **zera o plano** (`handleCostCenterChange`) e o `ChartAccountSelect`
+**remonta via `key={costCenterId}`** (reset visual sem `setState`-in-effect). Os planos só listam
+`is_postable=true`, ordenados por `account_description`; os centros, por `cost_center_description`
+(descartando o placeholder id 0). Os selects exibem **só a descrição** (fallback código → `#id`).
 
 **Usuários / autenticação (`apps/api-backend/lib/users.ts` + `app/api/users|auth/**`):** sobre
 o **Supabase Auth** — sem tabela própria, sem JWT customizado, sem bcrypt (regras de
@@ -521,14 +542,20 @@ apps/frontend-vite/src/components/
 │   ├── SocialLinksBar.tsx     # (v2) círculos Otimotex/Lebianco/WhatsApp
 │   ├── AuthHeroHeader.tsx     # (gradient) header decorativo com círculos sobrepostos
 │   ├── InlineMessage.tsx      # (gradient) banner sucesso/erro — nunca alert()
+│   ├── SupplierSelect.tsx     # (contas) react-select AsyncCreatable — busca/cria fornecedor (sort=name)
+│   ├── CostCenterSelect.tsx   # (contas) react-select Async — centro de custo (lookup)
+│   ├── ChartAccountSelect.tsx # (contas) react-select Async — plano de contas (CASCATA: filtrado por centro)
 │   ├── ColumnVisibilityMenu.tsx # (grid) popover mostrar/ocultar + fixar coluna (pin esq/dir)
 │   └── GridToolbar.tsx        # (grid) barra: colunas + densidade + restaurar + ações de seleção
 ├── organisms/
 │   ├── LoginForm.tsx          # (v2) estado + validação + supabase.auth.signInWithPassword
 │   ├── ForgotPasswordForm.tsx # (gradient) resetPasswordForEmail + mensagem genérica
 │   ├── ResetPasswordForm.tsx  # (gradient) updateUser + signOut + redirect
+│   ├── ContaForm.tsx          # (contas) form criar/editar conta — supplier/centro/plano + cascata
+│   ├── SupplierForm.tsx       # (fornecedores) form criar/editar fornecedor
 │   ├── DataGrid.tsx           # grid sobre TanStack Table v8 (+ DataGrid.test.tsx) — ver seção própria
-│   └── dataGrid.variants.ts   # cva por slot (header/row/cell/skeleton/empty/pin/resize/grip/densidade) default|silver
+│   ├── dataGrid.variants.ts   # cva por slot (header/row/cell/skeleton/empty/pin/resize/grip/densidade/wrap) default|silver
+│   └── dataGrid.rows.ts       # buildRenderItems (achata linhas→itens row/second/detail p/ virtualização)
 ├── AuthLayout.tsx             # (gradient) wrapper full-page para Forgot/Reset
 ├── AttachmentViewer.tsx       # visualizador de PDF (signed URL do Storage) em <dialog> nativo (showModal: role/foco/trap/Esc nativos) + iframe
 ├── Layout.tsx (+ Layout.test.tsx)   # sidebar; navLink = cva local (estado active); menu em 5 grupos (ver abaixo)
@@ -556,33 +583,30 @@ Hooks em `src/hooks/`: `useContainerBreakpoint.ts` (faixa `sm`/`md`/`lg` pela la
 **real do container** via `ResizeObserver` — não da janela; usado pelo `DataGrid` p/ ocultar
 colunas considerando sidebar/paddings), `useGridPreferences.ts` (estado de layout do grid —
 ordem/visibilidade/larguras/fixação/densidade — persistido em `localStorage` por `gridId`;
-setters no formato `OnChangeFn` do TanStack + `reset()`; ver seção do DataGrid) e
-`useGridColumns.ts` (metadados de coluna — `ColumnDef` com `size?` opcional, `getConsultaColumns`,
-`getEmailColumns`; é módulo de **definições**, não um hook,
+setters no formato `OnChangeFn` do TanStack + `reset()`; aceita **`defaultPinning`/`defaultDensity`**
+semeados na 1ª carga e no `reset()` — prefs salvas prevalecem; ver seção do DataGrid) e
+`useGridColumns.ts` (metadados de coluna — `ColumnDef` com `size?`/`minSize?`/`wrap?` opcionais,
+`getConsultaColumns`, `getEmailColumns`; é módulo de **definições**, não um hook,
 apesar do nome). `getConsultaColumns(onToggleFlag, onStatusChange, onEdit)` é factory porque as
 colunas "NF" e "BOL" (curadoria) renderizam o atom `CheckToggle` (checkbox que escreve no banco), a
 coluna "Situação" renderiza o `StatusSelectCell` (dropdown inline que altera o status) e a coluna
 "Ações" renderiza o botão de editar (lápis) que chama `onEdit` (abre o modal `ContaForm` na página)
 — todos precisam dos callbacks da página. Os cabeçalhos são abreviados (`NF`/`BOL`) para poupar
-largura, mas o `aria-label` do checkbox continua descritivo (`Tem NF`/`Tem Boleto`). As colunas
-**"Fornecedor" e "CNPJ/CPF" derivam do JOIN com `supplier`** (`r.supplier?.trade_name ??
-legal_name` e `r.supplier?.cnpj ?? cpf`) — `financial_account_control` não guarda mais essas
-colunas (migrations 040/041); por isso **não têm `sortKey`** (não são ordenáveis server-side: order
-por recurso embutido no PostgREST é frágil) e seu `key` no `ColumnDef` é uma string sintética
-(`ColumnDef.key` é `keyof T | (string & {})`; no `DataGrid` o `accessorFn` faz `row[key as keyof T]`,
-inócuo pois o accessor só alimenta sort/filter client-side, que não usamos). Ordem
-das colunas finais de `/consulta`: **… Valor → NF → BOL → Situação → Extração → Ações** (a coluna
-`Ações` é a última e traz o botão de editar a conta; `Extração` vem logo antes). A coluna `Extração`
-mostra `extraction_source` (badge), mas foi removida do painel de detalhe e da exportação CSV —
-aparece **apenas** como coluna do grid.
+largura, mas o `aria-label` do checkbox continua descritivo (`Tem NF`/`Tem Boleto`). A coluna **"Fornecedor" deriva do JOIN com `supplier`** (`r.supplier?.trade_name ?? legal_name`);
+a antiga coluna **"CNPJ/CPF" foi REMOVIDA do grid** (segue no card de detalhe + embed). As colunas
+**"Centro de custo" e "Plano de contas" derivam dos embeds** `cost_center`/`chart_account`
+(`código — descrição`; id 0 = "não informado" → "—"). Essas três colunas de JOIN/embed **não têm
+`sortKey`** (não ordenáveis server-side: order por recurso embutido no PostgREST é frágil) e seu
+`key` no `ColumnDef` é sintético (`ColumnDef.key` é `keyof T | (string & {})`; o `accessorFn` só
+alimenta sort/filter client-side, que não usamos). Ordem das colunas de `/consulta`: **… Tipo
+Pagamento → Centro de custo → Plano de contas → Vencimento → Valor → NF → BOL → Situação → Extração →
+Ações** (`Ações` é a última, com o lápis de editar). `Extração` (badge `extraction_source`) aparece
+**só** no grid (removida do detalhe e do CSV).
 A coluna **"Situação" ordena alfabeticamente pelo texto** (`sortKey: 'status'`), **não** por
-`status_id`: decisão de negócio — o ciclo de vida não é linear (de `a vencer` pode-se ir direto a
-`cancelado`/`falha`), então a ordem alfabética é mais previsível (`status_name` só existe na
-dimensão `status`, não é coluna ordenável deste endpoint). As **larguras (`size`) das colunas de
-`/consulta` foram ajustadas** (soma ~1.459px, de ~1.673px) para caber no viewport desktop sem
-estourar scroll horizontal (descontando a sidebar de 208px + padding `px-6`); o ajuste foi só nos
-tamanhos — as regras `hideOn` (responsividade mobile/tablet) permanecem como o mecanismo de
-ocultação por breakpoint.
+`status_id` (o ciclo de vida não é linear). **`ColumnDef` ganhou `wrap?`** (quebra de linha em vez de
+truncar — usado em Fornecedor/Centro de custo/Plano de contas) e **`minSize?`** (largura mínima por
+tipo de dado, ~48–120px, respeitada no resize). `hideOn` (responsividade mobile/tablet) segue como o
+mecanismo de ocultação por breakpoint.
 `useIdleLogout.ts` e `useAuth` cobrem sessão (ver Autenticação).
 
 Tipos compartilhados vêm de `@sheild/shared` (ex.: `FinancialEmail`, `EmailControl`).
@@ -1111,7 +1135,7 @@ faturas SIEG em `ignorado`; o handler A1 (baixar o boleto real) segue como melho
 | Rota | Componente | Tabela |
 |---|---|---|
 | `/emails` | `Emails.tsx` | `email_control` + `financial_account_control` por `message_id` |
-| `/consulta` | `Consulta.tsx` | `financial_account_control` (paginado, filtros, CSV client-side) |
+| `/consulta` | `Consulta.tsx` | `financial_account_control` (scroll infinito + virtualização, filtros, CSV client-side) |
 | `/erros` | `Erros.tsx` | `email_processing_errors` |
 | `/cobranca/envios` | `cobranca/CobrancaEnvios.tsx` | `cobranca_envios_log` (ver "Pipeline de cobrança de vencidos") |
 | `/cobranca/erros` | `cobranca/CobrancaErros.tsx` | `cobranca_erros_log` |
@@ -1150,11 +1174,13 @@ faturas SIEG em `ignorado`; o handler A1 (baixar o boleto real) segue como melho
   cancela o timeout pendente quando o aplicado muda por outra via (Enter, card, limpar), eliminando a
   corrida em que um debounce antigo sobrescreveria o valor recém-aplicado. Isso evita o refetch a cada
   tecla (antes `/emails` recarregava por caractere porque `load` dependia de `filters` inteiro).
-- **Fornecedor vem do JOIN com `supplier` (migrations 040/041/042):** `financial_account_control`
-  não guarda mais nome/CNPJ/CPF — só a FK `sk_supplier` (surrogate key snowflake).
-  `getFinancialAccountControl` e `getAccountsByMessageId` usam
-  `select=*,supplier(trade_name,legal_name,cnpj,cpf)`; o grid, o card de detalhe e a exportação CSV
-  exibem `r.supplier?.trade_name ?? r.supplier?.legal_name` e `r.supplier?.cnpj ?? r.supplier?.cpf`.
+- **Fornecedor + classificação vêm de JOIN/embeds (migrations 040/041/042 + 047):**
+  `financial_account_control` não guarda nome/CNPJ/CPF — só a FK `sk_supplier`.
+  `getFinancialAccountControl` e `getAccountsByMessageId` usam o `SELECT_WITH_EMBEDS`:
+  `*,supplier(trade_name,legal_name,cnpj,cpf),cost_center:financial_cost_center(cost_center_code,cost_center_description),chart_account:financial_chart_of_account(account_code,account_description)`.
+  O grid (e o card de detalhe e o CSV) exibem fornecedor (`trade_name ?? legal_name`), **Centro de
+  custo** e **Plano de contas** (`código — descrição`; id 0 → "—"); a coluna **CNPJ/CPF foi removida
+  do grid** (segue no detalhe). Lookups da Next API em `services/lookups.ts`.
   As colunas "Fornecedor" e "CNPJ/CPF" **não são ordenáveis** server-side (order por recurso embutido
   no PostgREST é frágil). A **busca por fornecedor** resolve antes os `sk_supplier` que casam o termo
   na tabela `supplier` (nome/CNPJ/CPF + 4 e-mails, via `findSupplierIdsByTerm`) e filtra
@@ -1171,11 +1197,20 @@ faturas SIEG em `ignorado`; o handler A1 (baixar o boleto real) segue como melho
   (`getConsultaColumns` / `getEmailColumns`). O TanStack é **headless**: fornece row model (core),
   header groups e os estados de layout. A interface pública `DataGridProps<T>` é retrocompatível —
   features novas são **opt-in** via props.
-  - **Sort, filtro e paginação seguem SERVER-SIDE** (Supabase): `manualSorting` ligado, sort via
-    `onSort`/`sortCol`/`sortDir`, filtros e paginação nas páginas. **Nunca** ligar
-    `getSortedRowModel`/`getFilteredRowModel`/`getPaginationRowModel` nem virtualização: o grid só
-    recebe a página atual (~20 linhas), então esses modelos client-side agiriam sobre um subconjunto
-    = bug. Virtualização fica como opção futura **se** migrar para scroll infinito/páginas grandes.
+  - **Sort e filtro seguem SERVER-SIDE** (Supabase): `manualSorting` ligado, sort via
+    `onSort`/`sortCol`/`sortDir`, filtros nas páginas. **Nunca** ligar
+    `getSortedRowModel`/`getFilteredRowModel`/`getPaginationRowModel`: o grid recebe linhas já
+    filtradas/ordenadas pelo servidor, então esses modelos client-side agiriam sobre um subconjunto = bug.
+  - **Virtualização de LINHAS + scroll infinito (opt-in `enableRowVirtualization`, usado em `/consulta`)** —
+    `@tanstack/react-virtual`. `/consulta` deixou de paginar em botões e passou a **scroll infinito**
+    (`Consulta.tsx`: `PAGE_SIZE=50`, acumula linhas, `loadMore` por `onLoadMore` do grid + botão
+    "Carregar mais"; rodapé "{carregadas} de {total}"). Técnica **spacer-rows** (linhas em fluxo normal
+    entre dois `<tr>` espaçadores — **preserva `table-fixed`, larguras, fixação sticky e o `<thead>`
+    fixo**, sem posicionamento absoluto); cada `<tr>` real leva `data-index` + `ref={measureElement}`
+    para **altura dinâmica** (cobre word-wrap, sub-linha e o detalhe expandido). `buildRenderItems`
+    (`dataGrid.rows.ts`) achata as linhas em itens `row/second/detail` (1 item = 1 `<tr>`). **Fallback
+    sem layout (jsdom/testes):** altura do viewport `0` → renderiza tudo (não virtualiza), mantendo os
+    testes verdes. `/emails` **não** liga virtualização.
   - **Camadas responsivas** (própria, não do TanStack): (1) breakpoint pela largura **real do
     container** (`useContainerBreakpoint`/`ResizeObserver`) oculta `hideOn` e desce `secondLine`
     para a sub-linha; (2) truncagem (`truncate`) com `title`; (3) rolagem horizontal no viewport.
@@ -1186,9 +1221,13 @@ faturas SIEG em `ignorado`; o handler A1 (baixar o boleto real) segue como melho
     **restaurar layout**; **redimensionar** (resize handle) e **reordenar por arraste** (@dnd-kit nos
     cabeçalhos — grip separado do clique de ordenação e da alça de resize). Layout persiste em
     `localStorage` por `gridId` (`useGridPreferences`). Nesse modo a `<table>` vira `table-fixed` com
-    larguras de `column.getSize()` (default 160 ou `ColumnDef.size`) e `width = getTotalSize()` — daí
-    o **cabeçalho fixo** (`maxBodyHeight` cria viewport rolável) e a **fixação** (sticky + offset via
-    `column.getStart/ getAfter`) funcionarem; sem gestão, mantém o layout `w-full` antigo.
+    larguras de `column.getSize()` (default 160 ou `ColumnDef.size`, respeitando `minSize`) e
+    `width = getTotalSize()` — daí o **cabeçalho fixo** (`maxBodyHeight` cria viewport rolável) e a
+    **fixação** (sticky + offset via `column.getStart/ getAfter`, com sombra na borda) funcionarem; sem
+    gestão, mantém o layout `w-full` antigo. **Defaults por grid (props `defaultPinning`/`defaultDensity`,
+    semeados em `useGridPreferences` e no `reset()`; prefs salvas do usuário prevalecem):** `/consulta`
+    abre **compacto** (`defaultDensity="compact"` — padding `px-2 py-1` + `text-xs`) e com **Nº Documento,
+    Emissão e Fornecedor fixados à esquerda** (`defaultPinning`). `columnResizeMode: 'onChange'`.
   - **Seleção múltipla (opt-in `enableSelection`)**: coluna de checkbox (`SelectCheckbox`, sempre 1ª e
     fixada à esquerda) + barra de ações com **"Exportar selecionadas"** (`onExportSelected` — em
     `/consulta` reusa o `exportCsv`) e **alteração de situação em lote** (`bulkStatusOptions` +
@@ -1201,7 +1240,7 @@ faturas SIEG em `ignorado`; o handler A1 (baixar o boleto real) segue como melho
     `cellValue`) para preservar o **valor cru** (string) que o `title` da truncagem exige — `flexRender`
     o envolveria num componente. Não regredir.
   A **sidebar** (`Layout.tsx`) colapsa em drawer com hambúrguer abaixo de `lg`; em `lg+` é estática.
-  Dependências do grid: `@tanstack/react-table`, `@dnd-kit/core|sortable|modifiers`.
+  Dependências do grid: `@tanstack/react-table`, `@tanstack/react-virtual`, `@dnd-kit/core|sortable|modifiers`.
 
 ### Build e code-splitting (`frontend-vite`)
 
@@ -1230,7 +1269,12 @@ faturas SIEG em `ignorado`; o handler A1 (baixar o boleto real) segue como melho
 ## Banco de dados (Supabase)
 
 Migrations em `supabase/migrations/`, aplicadas **manualmente no SQL Editor** em ordem
-numérica (`001` → `046`). Não há migration automática. (A `046` corrige a **ordem de resolução de
+numérica (`001` → `048`). Não há migration automática. (As `047`/`048` adicionam a **classificação
+contábil** em `financial_account_control`: a `047` cria `cost_center_id` SMALLINT (FK →
+`financial_cost_center`) e `chart_account_id` SMALLINT (FK → `financial_chart_of_account`) +
+índices; a `048` torna ambas **NOT NULL DEFAULT 0** — id 0 = sentinela "não informado" (a linha id 0
+existe nos dois cadastros, então o JOIN sempre casa; a UI trata 0 como vazio "—"). Ver "CRUD de
+contas" e "Lookups de classificação contábil". A `046` corrige a **ordem de resolução de
 fornecedor** — nome antes do e-mail; e-mail só sem nome — e bloqueia e-mails de domínio interno
 (`otimotex.com.br`/`lebianco.com.br`) em `supplier`; ver "Auto-resolução de fornecedor". A `045`
 adiciona `supplier.deleted_at`
@@ -1248,7 +1292,8 @@ internet` ao CHECK de `document_type` e faz backfill — ver "Normalização de 
 | Tabela | Propósito |
 |---|---|
 | `email_control` | Dedup/controle. `status` ∈ (`extraído`, `recebido`, `pendente`, `falha`, `ignorado`, `duplicidade`) — **migrations 022/031**. `extraído`=PDF extraído (CSV gerado); `recebido`=sem PDF, conta via corpo; `pendente`=PDF salvo sem CSV (substitui `baixado`); `falha`=casou keyword mas sem PDF e sem conta no corpo; `ignorado`=não-financeiro (sem keyword) **ou NF-e pura sem conta a pagar** (`subject_is_pure_nfe`); `duplicidade`=pagável do corpo duplica conta já registrada por outro e-mail (**migration 031**; card/filtro próprios em `/emails`). O status é calculado em `process_message` pelo resultado real (conta/CSV/corpo/duplicata), não por `pdf_extracted` |
-| `financial_account_control` | Tabela principal de contas a pagar — uma linha por documento; alimentada pelo pipeline de e-mail **e** por CRUD manual (baixas, consolidações, dashboards). Substitui a antiga `financial_emails` (dropada na migration 020). O fornecedor é referenciado **só pela FK `sk_supplier`** (surrogate key snowflake, NOT NULL — **migration 042**, antes era `supplier_id`) — nome/CNPJ vêm do JOIN com `supplier` (colunas denormalizadas dropadas na **migration 041**). Tem `sender_email` (migration 023; backfill em 025) usado na resolução p/ alinhar `supplier.email`, e `subject` (migration 025) — exibidos/buscados em `/consulta` |
+| `financial_account_control` | Tabela principal de contas a pagar — uma linha por documento; alimentada pelo pipeline de e-mail **e** por CRUD manual (baixas, consolidações, dashboards). Substitui a antiga `financial_emails` (dropada na migration 020). O fornecedor é referenciado **só pela FK `sk_supplier`** (surrogate key snowflake, NOT NULL — **migration 042**, antes era `supplier_id`) — nome/CNPJ vêm do JOIN com `supplier` (colunas denormalizadas dropadas na **migration 041**). Tem `sender_email` (migration 023; backfill em 025) usado na resolução p/ alinhar `supplier.email`, e `subject` (migration 025) — exibidos/buscados em `/consulta`. **Classificação contábil** (migrations 047/048): `cost_center_id`/`chart_account_id` SMALLINT, NOT NULL DEFAULT 0 (FKs para os cadastros; id 0 = "não informado") — preenchidos no CRUD manual (cascata centro→plano) |
+| `financial_cost_center` / `financial_chart_of_account` | **Cadastros de classificação contábil** (pré-existentes, **preservados em limpezas**) usados como lookup no modal de contas. `financial_chart_of_account` tem `cost_center_id` (relaciona o plano ao centro — base da CASCATA) e `is_postable` (só os postáveis são lançáveis). Lidos via `lib/lookups.ts` (service_role); RLS habilitado |
 | `email_processing_errors` | Log de falhas com `raw_payload` JSON |
 | `supplier` | Fornecedores. PK = `sk_supplier` (surrogate key snowflake auto-incremental — **migration 042**); `supplier_id` é **chave de negócio** (NOT NULL UNIQUE, só nesta tabela; = `sk_supplier` nos fornecedores criados pela extração, via trigger de espelho `trg_supplier_mirror_id`, podendo divergir em cargas externas). Auto-criados pelo trigger de resolução, mas **cadastro PRESERVADO** (curadoria manual de `email`/`email2`/`email3`/`email4`) — **nunca truncar** em limpezas (ver "Limpeza / reset de dados"). Reconhecimento por **e-mail** em `email`/`email2`/`email3`/`email4` (migrations 023/027/028) — ver "Auto-resolução de fornecedor". **Soft delete** via `deleted_at` (migration 045) — a baixa pelo CRUD da Next API marca `deleted_at` (nunca hard delete) e é bloqueada quando há contas vinculadas; ver "CRUD de fornecedores (Next API)" |
 | `company` | Empresa pagadora (**cadastro**, tem campo `email`). Auto-resolvida pelo trigger `resolve_company_id` a partir de `payer_cnpj`/`payer_name`. **Preservada em limpezas** (ver abaixo) |
@@ -1305,6 +1350,14 @@ FK surrogate; `supplier_id` ficou só na tabela `supplier`) e um recurso embutid
 `supplier(...)`. O `financialAccountControlInputSchema` **inclui `sk_supplier`** (entrada obrigatória
 — o pipeline resolve via RPC, que devolve o surrogate, antes de gravar) e omite o recurso `supplier`
 (leitura).
+
+**Classificação contábil no schema (migrations 047/048):** `financialAccountControlSchema` tem
+`cost_center_id`/`chart_account_id` (`z.number().int().default(0)` — NOT NULL DEFAULT 0 no banco) +
+embeds opcionais de leitura `cost_center` (`cost_center_code`/`cost_center_description`) e
+`chart_account` (`account_code`/`account_description`), presentes quando o select usa os aliases
+`cost_center:financial_cost_center(...)` / `chart_account:financial_chart_of_account(...)`. Schemas
+`costCenterSchema`/`chartAccountSchema` em `@sheild/shared`. No input/create/update os embeds são
+omitidos; os ids entram como opcionais (a UI envia `0` quando não informado).
 
 **Schema base vs. criação manual:** `amount` é `nullable` no schema base (o pipeline pode
 gravar sem valor → vira erro `sem_valor`, não cria conta). A criação manual via API usa

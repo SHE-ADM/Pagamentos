@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import type {
   ColumnOrderState,
   ColumnPinningState,
@@ -29,12 +29,18 @@ const purgeOldVersions = (gridId: string) => {
   });
 };
 
-const defaultPrefs = (order: string[]): GridPreferences => ({
+/** Defaults por grid (fixação/densidade iniciais) — semeados na 1ª carga e no `reset()`. */
+export interface GridDefaults {
+  pinning?: ColumnPinningState;
+  density?: GridDensity;
+}
+
+const defaultPrefs = (order: string[], defaults?: GridDefaults): GridPreferences => ({
   order,
   visibility: {},
   sizing: {},
-  pinning: { left: [], right: [] },
-  density: 'comfortable',
+  pinning: { left: defaults?.pinning?.left ?? [], right: defaults?.pinning?.right ?? [] },
+  density: defaults?.density ?? 'comfortable',
 });
 
 // Mantém a ordem salva das colunas ainda existentes e insere as NOVAS na POSIÇÃO da
@@ -73,9 +79,17 @@ const sameOrder = (a: string[], b: string[]): boolean =>
  * em `onColumnOrderChange`/`onColumnVisibilityChange`/etc. `columnIds` deve ser estável
  * (memoizado pelo chamador) — é a base da ordem padrão e da reconciliação.
  */
-export function useGridPreferences(gridId: string | undefined, columnIds: string[]) {
+export function useGridPreferences(gridId: string | undefined, columnIds: string[], defaults?: GridDefaults) {
+  // Ref dos defaults — evita que um objeto inline (novo a cada render) entre nas deps do
+  // `reset`; lê sempre o valor mais recente sem recriar o callback. Sincronizado em
+  // effect (não em render) para não violar a regra de refs do React Compiler.
+  const defaultsRef = useRef(defaults);
+  useEffect(() => {
+    defaultsRef.current = defaults;
+  }, [defaults]);
+
   const [prefs, setPrefs] = useState<GridPreferences>(() => {
-    const base = defaultPrefs(columnIds);
+    const base = defaultPrefs(columnIds, defaults);
     if (!gridId || typeof localStorage === 'undefined') return base;
     purgeOldVersions(gridId);
     try {
@@ -135,7 +149,7 @@ export function useGridPreferences(gridId: string | undefined, columnIds: string
     (density: GridDensity) => setPrefs((p) => ({ ...p, density })),
     [],
   );
-  const reset = useCallback(() => setPrefs(defaultPrefs(columnIds)), [columnIds]);
+  const reset = useCallback(() => setPrefs(defaultPrefs(columnIds, defaultsRef.current)), [columnIds]);
 
   return {
     prefs,
