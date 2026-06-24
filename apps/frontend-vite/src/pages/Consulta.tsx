@@ -504,7 +504,10 @@ export default function Consulta() {
       {/* Barra superior em gradiente (2px) — acento de marca */}
       <div className="h-0.5 bg-linear-to-r from-brand to-brand-dark" />
       <div className="px-6 py-1 border-b border-slate-200 bg-white flex items-center justify-between">
-        <h1 className="text-sm font-semibold text-slate-800">Consulta de movimentações</h1>
+        <div>
+          <h1 className="text-sm font-semibold text-slate-800">Consulta de movimentações</h1>
+          <p className="text-xs text-slate-500 mt-0.5">Contas a pagar</p>
+        </div>
         <div className="flex gap-2">
           <button onClick={() => exportCsv(rows)} className="btn" disabled={!rows.length}>
             <Download size={14} /> Exportar carregados ({rows.length})

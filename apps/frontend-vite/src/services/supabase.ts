@@ -36,6 +36,20 @@ async function query<T>(table: string, params: QueryParams = {}): Promise<T> {
   return res.json() as Promise<T>;
 }
 
+// ── company ──────────────────────────────────────────────────────────────────
+
+// E-mail da empresa pagadora (cadastro `company`, company_id=1) — exibido como
+// subtítulo em /emails: é a caixa de onde os e-mails são lidos. RLS: policy
+// `authenticated read` (qual `true`). Retorna null se não encontrado/sem acesso.
+export async function getCompanyEmail(companyId = 1): Promise<string | null> {
+  const rows = await query<{ email: string | null }[]>('company', {
+    select: 'email',
+    company_id: `eq.${companyId}`,
+    limit: 1,
+  });
+  return rows[0]?.email ?? null;
+}
+
 // ── email_control ──────────────────────────────────────────────────────────
 
 interface EmailControlFilters {
