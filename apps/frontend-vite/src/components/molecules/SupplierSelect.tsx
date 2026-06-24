@@ -5,6 +5,7 @@
 import { useState } from 'react';
 import AsyncCreatableSelect from 'react-select/async-creatable';
 import { listSuppliers, createSupplier } from '../../services/suppliers';
+import { getErrorMessage } from '../../lib/getErrorMessage';
 
 interface SupplierOption {
   value: number; // sk_supplier
@@ -38,19 +39,27 @@ export default function SupplierSelect({ value, defaultLabel, onChange, label, e
     value == null ? null : { value, label: defaultLabel ?? `#${value}` },
   );
   const [creating, setCreating] = useState(false);
+  // Erro da criação inline (ex.: 500/rede) — exibido inline; sem isso a falha era engolida.
+  const [createError, setCreateError] = useState<string | null>(null);
 
   // Cria um fornecedor novo a partir do texto digitado (apenas nome fantasia) e o seleciona.
   const handleCreate = async (inputValue: string): Promise<void> => {
     setCreating(true);
+    setCreateError(null);
     try {
       const supplier = await createSupplier({ trade_name: inputValue.trim() });
       const opt: SupplierOption = { value: supplier.sk_supplier, label: supplierLabel(supplier) };
       setSelected(opt);
       onChange(opt.value);
+    } catch (e) {
+      setCreateError(getErrorMessage(e));
     } finally {
       setCreating(false);
     }
   };
+
+  // Erro externo (validação do form) tem precedência sobre o erro de criação inline.
+  const shownError = error ?? createError ?? undefined;
 
   return (
     <div>
@@ -58,7 +67,7 @@ export default function SupplierSelect({ value, defaultLabel, onChange, label, e
       <AsyncCreatableSelect<SupplierOption>
         inputId={id}
         aria-label={label}
-        aria-invalid={error ? true : undefined}
+        aria-invalid={shownError ? true : undefined}
         value={selected}
         isClearable
         isLoading={creating}
@@ -67,6 +76,7 @@ export default function SupplierSelect({ value, defaultLabel, onChange, label, e
         loadOptions={loadOptions}
         onChange={(opt) => {
           setSelected(opt);
+          setCreateError(null);
           onChange(opt ? opt.value : null);
         }}
         onCreateOption={handleCreate}
@@ -81,7 +91,7 @@ export default function SupplierSelect({ value, defaultLabel, onChange, label, e
           option: ({ isFocused }) => (isFocused ? 'bg-brand/10 px-3 py-2' : 'px-3 py-2'),
         }}
       />
-      {error && <span className="block mt-1 text-xs text-status-error-fg">{error}</span>}
+      {shownError && <span className="block mt-1 text-xs text-status-error-fg">{shownError}</span>}
     </div>
   );
 }

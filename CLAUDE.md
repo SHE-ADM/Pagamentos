@@ -659,6 +659,16 @@ vez de cores default do Tailwind. Cada grupo tem `bg` (fundo suave), `fg` (texto
 `border`; `error` ainda tem `solid`/`solidBorder` (badge crítico de fundo cheio). Todos
 cumprem WCAG AA (verificado em `tests/contrast.a11y.test.ts`).
 
+> **Não reintroduzir tokens semânticos não-`status-*`:** os tokens legados `--color-danger`/
+> `--color-warning`/`--color-info` foram **removidos** (mortos — limpeza de CSS) por
+> duplicarem `status-error-*`/`status-warning-*`/`status-info-*`. Também foram removidos do
+> `index.css` os `@utility` órfãos `btn-ghost` e `table-row-hover`, o token duplicado
+> `loginGreen-accentDark` (= `accentHover`) e os `@utility active`/`is-disabled` **standalone**
+> (o `@utility nav-link` já cobre os estados via `&.active`/`&.is-disabled` — o uso
+> `nav-link is-disabled` segue intacto). Pendência conhecida: o `@keyframes fadeInUp` ainda é
+> definido 2× (em `@theme` + standalone) — consolidação adiada por risco de quebrar a animação
+> de `card`/`metric-card` (que usam `animation: fadeInUp` cru).
+
 | Token | fg / bg | Uso |
 |---|---|---|
 | `status-error-*` | `#b91c1c` / `#fef2f2` (border `#fecaca`) | erro, vencido, falha |

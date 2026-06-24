@@ -66,6 +66,15 @@ const reconcileOrder = (saved: string[], ids: string[]): string[] => {
   return result;
 };
 
+// Remove do estado persistido as keys de colunas que não existem mais (renomeadas/
+// removidas em uma atualização do app) — evita acumular lixo no localStorage. TanStack
+// ignora ids desconhecidos, então é só higiene; aplicado na carga inicial.
+const pruneRecord = <T,>(rec: Record<string, T> | undefined, ids: Set<string>): Record<string, T> =>
+  Object.fromEntries(Object.entries(rec ?? {}).filter(([k]) => ids.has(k)));
+
+const pruneList = (list: string[] | undefined, ids: Set<string>): string[] =>
+  (list ?? []).filter((id) => ids.has(id));
+
 const applyUpdater = <T,>(updater: T | ((old: T) => T), old: T): T =>
   typeof updater === 'function' ? (updater as (o: T) => T)(old) : updater;
 
@@ -96,11 +105,12 @@ export function useGridPreferences(gridId: string | undefined, columnIds: string
       const raw = localStorage.getItem(storageKey(gridId));
       if (!raw) return base;
       const parsed = JSON.parse(raw) as Partial<GridPreferences>;
+      const idsSet = new Set(columnIds);
       return {
         order: reconcileOrder(parsed.order ?? [], columnIds),
-        visibility: parsed.visibility ?? {},
-        sizing: parsed.sizing ?? {},
-        pinning: { left: parsed.pinning?.left ?? [], right: parsed.pinning?.right ?? [] },
+        visibility: pruneRecord(parsed.visibility, idsSet),
+        sizing: pruneRecord(parsed.sizing, idsSet),
+        pinning: { left: pruneList(parsed.pinning?.left, idsSet), right: pruneList(parsed.pinning?.right, idsSet) },
         density: parsed.density === 'compact' ? 'compact' : 'comfortable',
       };
     } catch {
