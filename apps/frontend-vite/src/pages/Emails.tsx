@@ -4,6 +4,7 @@ import { RefreshCw, Mail, FileCheck, AlertCircle, CopyMinus, Copy, Inbox, Ban, C
 import type { EmailControl, FinancialAccountControl } from '@sheild/shared';
 import { getEmailControl, getEmailStats, getAccountsByMessageId, getInvoiceNumbersByMessageIds, markEmailReviewed, type EmailStats } from '../services/supabase';
 import { startEmailRead, getEmailReadProgress, type ReadProgress } from '../services/emailReader';
+import { EMAIL_READER_ENABLED } from '../lib/featureFlags';
 import { suspendIdleLogout, resumeIdleLogout } from '../hooks/useIdleLogout';
 import { getEmailColumns } from '../hooks/useGridColumns';
 import { getErrorMessage } from '../lib/getErrorMessage';
@@ -250,6 +251,7 @@ export default function Emails() {
   // meio do processamento), retoma o banner + poll em vez de parecer "pronto".
   // trackJob é idempotente (trackingRef), então não inicia um segundo loop.
   useEffect(() => {
+    if (!EMAIL_READER_ENABLED) return; // sem Flask (produção): não tenta reconectar ao job
     let cancelled = false;
     getEmailReadProgress()
       .then((p) => {
@@ -319,34 +321,40 @@ export default function Emails() {
           </p>
         </div>
         <div className="flex gap-2">
-          <button onClick={() => handleRead('novos')} className="btn btn-primary" disabled={reading || loading}>
-            <Inbox size={14} className={readMode === 'novos' ? 'animate-pulse' : ''} />
-            {labelNovos}
-          </button>
-          <div className="flex mx-2">
-            <select
-              id="emails-read-days"
-              name="emails-read-days"
-              aria-label="Período da Busca Geral"
-              className="input rounded-r-none border-r-0 w-44 text-sm"
-              value={readDays}
-              onChange={(e) => setReadDays(+e.target.value)}
-              disabled={reading || loading}
-            >
-              <option value={7}>Busca Geral (7d)</option>
-              <option value={15}>Busca Geral (15d)</option>
-              <option value={30}>Busca Geral (30d)</option>
-              <option value={0}>Busca Geral</option>
-            </select>
-            <button
-              onClick={() => handleRead('geral')}
-              className="btn rounded-l-none"
-              disabled={reading || loading}
-            >
-              <CalendarDays size={14} className={readMode === 'geral' ? 'animate-pulse' : ''} />
-              {labelGeralBtn}
-            </button>
-          </div>
+          {/* Disparo manual da leitura IMAP — depende do Flask local; oculto em produção
+              (sem backend Flask). A leitura automática (agendada) segue rodando. */}
+          {EMAIL_READER_ENABLED && (
+            <>
+              <button onClick={() => handleRead('novos')} className="btn btn-primary" disabled={reading || loading}>
+                <Inbox size={14} className={readMode === 'novos' ? 'animate-pulse' : ''} />
+                {labelNovos}
+              </button>
+              <div className="flex mx-2">
+                <select
+                  id="emails-read-days"
+                  name="emails-read-days"
+                  aria-label="Período da Busca Geral"
+                  className="input rounded-r-none border-r-0 w-44 text-sm"
+                  value={readDays}
+                  onChange={(e) => setReadDays(+e.target.value)}
+                  disabled={reading || loading}
+                >
+                  <option value={7}>Busca Geral (7d)</option>
+                  <option value={15}>Busca Geral (15d)</option>
+                  <option value={30}>Busca Geral (30d)</option>
+                  <option value={0}>Busca Geral</option>
+                </select>
+                <button
+                  onClick={() => handleRead('geral')}
+                  className="btn rounded-l-none"
+                  disabled={reading || loading}
+                >
+                  <CalendarDays size={14} className={readMode === 'geral' ? 'animate-pulse' : ''} />
+                  {labelGeralBtn}
+                </button>
+              </div>
+            </>
+          )}
           <button onClick={load} className="btn" disabled={loading}>
             <RefreshCw size={14} className={loading ? 'animate-spin' : ''} />
             {loading ? 'Carregando…' : 'Atualizar'}
@@ -548,7 +556,7 @@ export default function Emails() {
             onSort={() => undefined}
             gridId="emails"
             enableColumnManagement
-            maxBodyHeight="68vh"
+            maxBodyHeight="72vh"
             loading={loading}
             emptyMessage={loading ? 'Buscando registros…' : 'Nenhum e-mail encontrado com os filtros aplicados'}
             ariaLabel="Recebimento de e-mails"

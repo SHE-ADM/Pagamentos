@@ -26,6 +26,7 @@ import {
   type FinancialStats,
 } from '../services/supabase';
 import { startEmailRead, getEmailReadProgress, type ReadProgress } from '../services/emailReader';
+import { EMAIL_READER_ENABLED } from '../lib/featureFlags';
 import { updateConta } from '../services/contas';
 import { suspendIdleLogout, resumeIdleLogout } from '../hooks/useIdleLogout';
 import { getErrorMessage } from '../lib/getErrorMessage';
@@ -339,15 +340,9 @@ export default function Consulta() {
     }
   }, [editing]);
 
-  // Abre o modal de edição a partir do botão de ação no grid.
-  const handleEditRow = useCallback((r: FinancialAccountControl) => {
-    setEditError(null);
-    setEditing(r);
-  }, []);
-
   const columns = useMemo(
-    () => getConsultaColumns(handleToggleFlag, handleStatusChange, handleEditRow),
-    [handleToggleFlag, handleStatusChange, handleEditRow],
+    () => getConsultaColumns(handleToggleFlag, handleStatusChange),
+    [handleToggleFlag, handleStatusChange],
   );
 
   // "Atualizar": dispara a leitura IMAP dos últimos 7 dias (job em background no
@@ -514,15 +509,18 @@ export default function Consulta() {
           <button onClick={() => exportCsv(rows)} className="btn" disabled={!rows.length}>
             <Download size={14} /> Exportar carregados ({rows.length})
           </button>
-          <button
-            onClick={handleRefresh}
-            className="btn"
-            disabled={reading || loading}
-            title="Buscar e-mails dos últimos 7 dias e atualizar a consulta"
-          >
-            <RefreshCw size={14} className={reading || loading ? 'animate-spin' : ''} />
-            Atualizar
-          </button>
+          {/* "Atualizar" dispara a leitura IMAP (Flask local) — oculto em produção. */}
+          {EMAIL_READER_ENABLED && (
+            <button
+              onClick={handleRefresh}
+              className="btn"
+              disabled={reading || loading}
+              title="Buscar e-mails dos últimos 7 dias e atualizar a consulta"
+            >
+              <RefreshCw size={14} className={reading || loading ? 'animate-spin' : ''} />
+              Atualizar
+            </button>
+          )}
         </div>
       </div>
 
@@ -677,7 +675,7 @@ export default function Consulta() {
             onExportSelected={exportCsv}
             bulkStatusOptions={STATUS_OPTIONS}
             onBulkStatusChange={handleBulkStatusChange}
-            maxBodyHeight="74vh"
+            maxBodyHeight="78vh"
             loading={loading}
             emptyMessage={loading ? 'Buscando registros…' : 'Nenhum registro encontrado — ajuste os filtros e clique em Buscar'}
             renderDetail={(r) => (
