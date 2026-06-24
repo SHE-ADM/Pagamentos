@@ -165,9 +165,9 @@ em `@sheild/shared` — `financialAccountControlCreateSchema` (criação manual 
 são derivados (trigger) — não entram no corpo. Status: `201` · `409` (23505) · `404` · `422` ·
 `400` id inválido. Frontend: **página `/contas`** (lançamento rápido — `pages/ContasNovaPage.tsx`
 com o card centralizado `mx-auto` + `organisms/ContaForm.tsx`) e **edição da conta em `/consulta`
-por DUAS vias**: a **coluna "Ações"** do `DataGrid` (botão lápis por linha — `getConsultaColumns`
-ganhou o 3º parâmetro `onEdit` + a coluna de ação) **e** o botão "Editar conta" no painel de
-detalhe; ambos abrem o mesmo modal `ContaForm` → `PATCH /api/contas/:id`. Fornecedor via
+pelo botão "Editar conta" do painel de detalhe** (abre o modal `ContaForm` → `PATCH /api/contas/:id`).
+A antiga coluna **"Ações"** do grid (botão lápis por linha) foi **REMOVIDA** — o grid não tem mais
+coluna de ação; clicar na linha abre o detalhe e a edição parte de lá. Fornecedor via
 **react-select** (`molecules/SupplierSelect.tsx` — `AsyncCreatableSelect`: busca + cria fornecedor
 inline via `POST /api/suppliers`); **tipo de documento e tipo de pagamento** são `<select>` de enum
 (valores pré-definidos, obrigatórios, **ordenados alfabeticamente** — `DOCUMENT_TYPE_OPTIONS`/
@@ -587,11 +587,11 @@ setters no formato `OnChangeFn` do TanStack + `reset()`; aceita **`defaultPinnin
 semeados na 1ª carga e no `reset()` — prefs salvas prevalecem; ver seção do DataGrid) e
 `useGridColumns.ts` (metadados de coluna — `ColumnDef` com `size?`/`minSize?`/`wrap?` opcionais,
 `getConsultaColumns`, `getEmailColumns`; é módulo de **definições**, não um hook,
-apesar do nome). `getConsultaColumns(onToggleFlag, onStatusChange, onEdit)` é factory porque as
-colunas "NF" e "BOL" (curadoria) renderizam o atom `CheckToggle` (checkbox que escreve no banco), a
-coluna "Situação" renderiza o `StatusSelectCell` (dropdown inline que altera o status) e a coluna
-"Ações" renderiza o botão de editar (lápis) que chama `onEdit` (abre o modal `ContaForm` na página)
-— todos precisam dos callbacks da página. Os cabeçalhos são abreviados (`NF`/`BOL`) para poupar
+apesar do nome). `getConsultaColumns(onToggleFlag, onStatusChange)` é factory porque as
+colunas "NF" e "BOL" (curadoria) renderizam o atom `CheckToggle` (checkbox que escreve no banco) e a
+coluna "Situação" renderiza o `StatusSelectCell` (dropdown inline que altera o status) — ambos
+precisam dos callbacks da página. (A coluna "Ações"/`onEdit` foi removida — a edição da conta parte
+do botão "Editar conta" do painel de detalhe.) Os cabeçalhos são abreviados (`NF`/`BOL`) para poupar
 largura, mas o `aria-label` do checkbox continua descritivo (`Tem NF`/`Tem Boleto`). A coluna **"Fornecedor" deriva do JOIN com `supplier`** (`r.supplier?.trade_name ?? legal_name`);
 a antiga coluna **"CNPJ/CPF" foi REMOVIDA do grid** (segue no card de detalhe + embed). As colunas
 **"Centro de custo" e "Plano de contas" derivam dos embeds** `cost_center`/`chart_account`
@@ -599,8 +599,8 @@ a antiga coluna **"CNPJ/CPF" foi REMOVIDA do grid** (segue no card de detalhe + 
 `sortKey`** (não ordenáveis server-side: order por recurso embutido no PostgREST é frágil) e seu
 `key` no `ColumnDef` é sintético (`ColumnDef.key` é `keyof T | (string & {})`; o `accessorFn` só
 alimenta sort/filter client-side, que não usamos). Ordem das colunas de `/consulta`: **… Tipo
-Pagamento → Centro de custo → Plano de contas → Vencimento → Valor → NF → BOL → Situação → Extração →
-Ações** (`Ações` é a última, com o lápis de editar). `Extração` (badge `extraction_source`) aparece
+Pagamento → Centro de custo → Plano de contas → Vencimento → Valor → NF → BOL → Situação → Extração**
+(`Extração` é a última; **não há mais coluna "Ações"**). `Extração` (badge `extraction_source`) aparece
 **só** no grid (removida do detalhe e do CSV).
 A coluna **"Situação" ordena alfabeticamente pelo texto** (`sortKey: 'status'`), **não** por
 `status_id` (o ciclo de vida não é linear). **`ColumnDef` ganhou `wrap?`** (quebra de linha em vez de
@@ -1176,6 +1176,15 @@ faturas SIEG em `ignorado`; o handler A1 (baixar o boleto real) segue como melho
   suspende/retoma o logout por inatividade) — assim traz e-mails novos **sem abrir `/emails`**.
   O **label permanece "Atualizar"** (só ganha spinner + disabled enquanto processa); a guarda
   `readingRef` evita disparos concorrentes. Não há reconexão ao job aqui (escopo do `/emails`).
+- **Disparo de leitura IMAP é OCULTO em produção (`src/lib/featureFlags.ts` → `EMAIL_READER_ENABLED`):**
+  os 3 botões que acionam o Flask — `/emails` **"Buscar novos"** + **"Busca Geral"** e `/consulta`
+  **"Atualizar"** — só renderizam quando a flag está ligada. A flag é `import.meta.env.PROD ? false :
+  true` por padrão (LIGADA em dev, DESLIGADA no build do Vercel, onde **não há Flask**); override
+  `VITE_EMAIL_READER_ENABLED='true'` reativa (quando o Flask for exposto numa VM). O efeito de
+  **reconexão ao job** em `/emails` (poll de `GET /progress` no mount) também é pulado quando a flag
+  está desligada (não tenta falar com um backend inexistente). Os botões **"Buscar"** (filtro) e
+  os **"Atualizar"** que só recarregam do Supabase (`/emails`, `/erros`, `/fornecedores`) **não** são
+  afetados — funcionam no domínio. Ver memória [[vercel-deploy]].
 - **Busca textual com debounce (form vs. aplicado) — padrão em `/consulta` e `/emails`:** o input de
   busca escreve num estado de **formulário** (`f.supplier` / `senderInput`), separado do valor
   **aplicado** que dispara o fetch (`applied.supplier` / `filters.sender`). Um `useEffect` com debounce
