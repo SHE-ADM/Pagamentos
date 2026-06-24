@@ -2,7 +2,7 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { RefreshCw, Mail, FileCheck, AlertCircle, CopyMinus, Copy, Inbox, Ban, CalendarDays, X, Eye } from 'lucide-react';
 import type { EmailControl, FinancialAccountControl } from '@sheild/shared';
-import { getEmailControl, getEmailStats, getAccountsByMessageId, getInvoiceNumbersByMessageIds, markEmailReviewed, type EmailStats } from '../services/supabase';
+import { getEmailControl, getEmailStats, getAccountsByMessageId, getInvoiceNumbersByMessageIds, markEmailReviewed, getCompanyEmail, type EmailStats } from '../services/supabase';
 import { startEmailRead, getEmailReadProgress, type ReadProgress } from '../services/emailReader';
 import { EMAIL_READER_ENABLED } from '../lib/featureFlags';
 import { suspendIdleLogout, resumeIdleLogout } from '../hooks/useIdleLogout';
@@ -75,6 +75,8 @@ const CARD_TONE: Record<string, { fg: string; activeRing: string }> = {
 export default function Emails() {
   const [rows, setRows] = useState<EmailControl[]>([]);
   const [stats, setStats] = useState<Partial<EmailStats>>({});
+  // E-mail da caixa (company.email, company_id=1) — subtítulo do cabeçalho.
+  const [mailbox, setMailbox] = useState<string | null>(null);
   const [sel, setSel] = useState<EmailControl | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -152,6 +154,15 @@ export default function Emails() {
       .catch(() => { if (active) setAccounts([]); });
     return () => { active = false; };
   }, [sel]);
+
+  // E-mail da caixa (company.email, company_id=1) — carregado uma vez para o subtítulo.
+  useEffect(() => {
+    let active = true;
+    getCompanyEmail()
+      .then((e) => { if (active) setMailbox(e); })
+      .catch(() => undefined);
+    return () => { active = false; };
+  }, []);
 
   // Acompanha o job de leitura (poll de GET /progress) até concluir/falhar.
   // Reutilizado por handleRead E pela reconexão no carregamento (efeito abaixo):
@@ -317,7 +328,7 @@ export default function Emails() {
         <div>
           <h1 className="text-base font-semibold text-slate-800">Recebimento de e-mails</h1>
           <p className="text-xs text-gray-500 mt-0.5">
-            {import.meta.env.VITE_IMAP_USER ?? 'Caixa IMAP'}
+            {mailbox ?? import.meta.env.VITE_IMAP_USER ?? 'Caixa IMAP'}
           </p>
         </div>
         <div className="flex gap-2">

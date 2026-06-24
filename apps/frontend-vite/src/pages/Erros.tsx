@@ -95,7 +95,7 @@ export default function Erros() {
         <div>
           <h1 className="text-base font-semibold text-gray-900">Log de erros de processamento</h1>
           <p className="text-xs text-gray-500 mt-0.5">
-            Registros com falha — tabela email_processing_errors
+            E-mails com falhas
           </p>
         </div>
         <button onClick={load} className="btn" disabled={loading}>

@@ -8,6 +8,7 @@ const getEmailStats = vi.fn();
 const getAccountsByMessageId = vi.fn();
 const getInvoiceNumbersByMessageIds = vi.fn();
 const markEmailReviewed = vi.fn();
+const getCompanyEmail = vi.fn();
 
 vi.mock('../services/supabase', () => ({
   getEmailControl: (...a: unknown[]) => getEmailControl(...a),
@@ -15,6 +16,7 @@ vi.mock('../services/supabase', () => ({
   getAccountsByMessageId: (...a: unknown[]) => getAccountsByMessageId(...a),
   getInvoiceNumbersByMessageIds: (...a: unknown[]) => getInvoiceNumbersByMessageIds(...a),
   markEmailReviewed: (...a: unknown[]) => markEmailReviewed(...a),
+  getCompanyEmail: (...a: unknown[]) => getCompanyEmail(...a),
 }));
 
 const falhaRow = {
@@ -40,6 +42,12 @@ describe('Emails', () => {
     getEmailStats.mockResolvedValue({});
     getAccountsByMessageId.mockResolvedValue([]);
     getInvoiceNumbersByMessageIds.mockResolvedValue({});
+    getCompanyEmail.mockResolvedValue('financeiro@otimotex.com.br');
+  });
+
+  it('exibe o e-mail da caixa (company.email) no subtítulo do cabeçalho', async () => {
+    render(<Emails />);
+    expect(await screen.findByText('financeiro@otimotex.com.br')).toBeInTheDocument();
   });
 
   it('o ícone de limpar aparece com texto e zera a busca', async () => {
