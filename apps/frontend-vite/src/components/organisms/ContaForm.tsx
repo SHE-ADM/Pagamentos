@@ -155,6 +155,8 @@ export default function ContaForm({ mode, defaultValues, onSubmit, onCancel, sub
         error={supplierError ?? undefined}
       />
 
+      <AuthInput label="Descrição" error={errors.description?.message} {...register('description')} />
+
       <CostCenterSelect
         id="conta-cost-center"
         label="Centro de custo"
@@ -206,6 +208,9 @@ export default function ContaForm({ mode, defaultValues, onSubmit, onCancel, sub
           {errors.payment_method && <span className="block mt-1 text-xs text-status-error-fg">{errors.payment_method.message}</span>}
         </label>
 
+        <AuthInput label="Nº do documento" error={errors.invoice_number?.message} {...register('invoice_number')} />
+        <AuthInput label="Emissão" type="date" error={errors.issue_date?.message} {...register('issue_date')} />
+
         <AuthInput
           label="Valor (R$)"
           type="number"
@@ -216,12 +221,9 @@ export default function ContaForm({ mode, defaultValues, onSubmit, onCancel, sub
           {...register('amount')}
         />
         <AuthInput label="Vencimento" type="date" error={errors.due_date?.message} {...register('due_date')} />
-
-        <AuthInput label="Emissão" type="date" error={errors.issue_date?.message} {...register('issue_date')} />
-        <AuthInput label="Nº do documento" error={errors.invoice_number?.message} {...register('invoice_number')} />
-        <AuthInput label="Código de barras" error={errors.barcode?.message} {...register('barcode')} />
-        <AuthInput label="Descrição" error={errors.description?.message} {...register('description')} />
       </div>
+
+      <AuthInput label="Código de barras" error={errors.barcode?.message} {...register('barcode')} />
 
       <div className="flex justify-end gap-2 pt-2">
         {onCancel && (

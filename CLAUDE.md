@@ -1436,7 +1436,7 @@ registrando sucesso/falha no Supabase. Roda por `py -3` (Task Scheduler), **inde
 Flask/Next.
 
 ```
-Firebird (VW_PSQ_FIN_REC_BAN + _004)  →  run.py  →  SMTP Locaweb (email-ssl.com.br)
+Firebird (VW_PSQ_FIN_REC_BAN + _004)  →  run.py  →  SMTP transacional Locaweb (smtplw.com.br)
    títulos vencidos (STFI='VENCIDO',          │         To: cliente · Cc: representante
    DTVC >= hoje-7)                            │
                                               ├─ dedup: already_sent() consulta cobranca_envios_log (UNIQUE document_id)
@@ -1460,17 +1460,18 @@ Firebird (VW_PSQ_FIN_REC_BAN + _004)  →  run.py  →  SMTP Locaweb (email-ssl.
 | `template.py` | HTML do e-mail de cobrança (`render_html`) |
 | `failure_notify.py` | **Notificação ao representante (CC)** das falhas **definitivas** (`DEFINITIVE_ERROR_TYPES` = email_ausente/email_invalido/smtp_bloqueio): `group_by_cc` (resumo por CC, ignora falha sem CC) + `render_failure_digest` (HTML com cliente/título/vencimento/valor/motivo) + `build_subject`. Só no batch (`run.py`) |
 
-**SMTP (não óbvio — não regredir):** remetente = `company.email` (`company_id=1` =
-`financeiro@otimotex.com.br`), **o mesmo mailbox do recebimento (IMAP)**. Por isso o envio
-**reaproveita as credenciais IMAP** do `.env`: host → `SMTP_HOST` ou `IMAP_HOST`
-(**`email-ssl.com.br`** — `smtp.locaweb.com.br` dá timeout nesta conta); senha → `SMTP_PASSWORD`
-ou **`IMAP_PASS`** (senha nunca no banco); porta 587 STARTTLS. `fetch_company_smtp` só lê colunas
-existentes (`email,legal_name,trade_name`) — a tabela `company` **não** tem colunas `smtp_*`.
-A conexão é **reaproveitada no lote** (`SmtpSession`) — não mais uma conexão por e-mail — para
-aliviar a pressão sobre o relay (`451 queue file write error`). **Migração para SMTP transacional
-da Locaweb** (`smtp.locaweb.com.br`, produto de alto volume com credencial/token próprios, não a
-senha do mailbox): é **só `.env`** — setar `SMTP_HOST`/`SMTP_PORT`/`SMTP_USER`/`SMTP_PASSWORD`
-(têm prioridade sobre os `IMAP_*` em `_load_smtp_config`), sem mudança de código.
+**SMTP (não óbvio — não regredir):** remetente (`From`) = `company.email` (`company_id=1` =
+`financeiro@otimotex.com.br`). **Desde 2026-06-25 o envio usa o SMTP transacional da Locaweb**
+(`smtplw.com.br`, produto de alto volume — credencial/token PRÓPRIA do painel, **não** a senha
+do mailbox): `.env` tem `SMTP_HOST=smtplw.com.br` · `SMTP_PORT=587` (STARTTLS) · `SMTP_USER=otimotex1`
+(usuário do painel, não o e-mail) · `SMTP_PASSWORD=<token>`. `_load_smtp_config` dá **prioridade às
+`SMTP_*` sobre as `IMAP_*`** — a virada foi **só `.env`**, sem mudança de código. O domínio
+`otimotex.com.br` precisa estar autorizado no painel (Domínio de Remetente). **Fallback** (sem
+`SMTP_*`): caminho legado pelo mailbox IMAP — host `IMAP_HOST` (**`email-ssl.com.br`** —
+`smtp.locaweb.com.br` dá timeout nesta conta) + senha `IMAP_PASS`, porta 587 STARTTLS.
+`fetch_company_smtp` só lê colunas existentes (`email,legal_name,trade_name`) — a tabela `company`
+**não** tem colunas `smtp_*`. A conexão é **reaproveitada no lote** (`SmtpSession`) — não mais uma
+conexão por e-mail — para aliviar a pressão sobre o relay (`451 queue file write error`).
 
 **Classificação de falha (regra de negócio):** `smtp_falha` = **instabilidade** (timeout,
 queda, 450/451/452) → o próximo run **retenta**; `smtp_bloqueio` = **negação** (auth 535, 421,
@@ -1489,9 +1490,12 @@ error_type + motivo) para o `run.py` filtrar as definitivas sem reclassificar. E
 reenvio manual (`resend.py`) **não** notifica (o usuário já vê os erros na tela).
 
 **`.env` (raiz):** `FB_HOST/FB_PORT/FB_DATABASE/FB_USER/FB_PASSWORD/FB_CHARSET`;
-`DEV_MODE=true` + `DEV_OVERRIDE_EMAIL` (To de teste) + `DEV_OVERRIDE_CC_EMAIL` (Cc de teste);
-`COBRANCA_SEND_DELAY_SECONDS` (throttle anti-bloqueio Locaweb, default 10s, `0` desliga).
-Em **DEV_MODE** todos os envios vão para as caixas de teste (To→`DEV_OVERRIDE_EMAIL`,
+**SMTP transacional Locaweb** (ATIVO desde 2026-06-25) — `SMTP_HOST=smtplw.com.br` ·
+`SMTP_PORT=587` · `SMTP_USER=otimotex1` (usuário do PAINEL, não o e-mail) · `SMTP_PASSWORD=<token>`
+(prioridade sobre `IMAP_*` em `_load_smtp_config`; sem o bloco, cai no fallback IMAP
+`email-ssl.com.br`); `DEV_MODE=true` + `DEV_OVERRIDE_EMAIL` (To de teste) + `DEV_OVERRIDE_CC_EMAIL`
+(Cc de teste); `COBRANCA_SEND_DELAY_SECONDS` (throttle anti-bloqueio Locaweb, default 10s, `0`
+desliga). Em **DEV_MODE** todos os envios vão para as caixas de teste (To→`DEV_OVERRIDE_EMAIL`,
 Cc→`DEV_OVERRIDE_CC_EMAIL`); em produção, To/Cc reais do Firebird. **Em produção desde 2026-06-22
 (`DEV_MODE=false`): envia para os clientes reais (To/Cc do Firebird).** As variáveis
 `DEV_OVERRIDE_*` ficam **comentadas** no `.env` (desativadas) — para um teste pontual, defina
@@ -1611,9 +1615,14 @@ executa `skills\cobranca-vencidos\scripts\run.py` (`run_cobranca.ps1` `$SCRIPT`)
   `supabase_log.py`, `template.py`.
 - **Pré-requisitos da máquina (diferente do reader):** driver Firebird **`fdb`** (fallback
   `firebirdsql`) instalado; `.env` com **`FB_HOST/FB_PORT/FB_DATABASE/FB_USER/FB_PASSWORD/
-  FB_CHARSET`** (Firebird) + SMTP (reusa `IMAP_*` quando `SMTP_*` ausente; host
-  `email-ssl.com.br`) + `COBRANCA_SEND_DELAY_SECONDS` (throttle, **10s** em produção — ver
-  `cobranca-smtp-bottleneck`) + `DEV_MODE`/`DEV_OVERRIDE_EMAIL`/`DEV_OVERRIDE_CC_EMAIL`.
+  FB_CHARSET`** (Firebird) + **SMTP transacional** (`SMTP_HOST=smtplw.com.br` · `SMTP_PORT=587` ·
+  `SMTP_USER=otimotex1` · `SMTP_PASSWORD=<token>` — sem o bloco, cai no fallback IMAP
+  `email-ssl.com.br`, que tem o gargalo `451`) + `COBRANCA_SEND_DELAY_SECONDS` (throttle, **10s**
+  em produção — ver `cobranca-smtp-bottleneck`) + `DEV_MODE`/`DEV_OVERRIDE_EMAIL`/`DEV_OVERRIDE_CC_EMAIL`.
+  > **Virada do SMTP transacional (2026-06-25):** o bloco `SMTP_*` foi adicionado ao `.env` de
+  > **dev**; o `.env` de **produção** (`C:\Sheild\API\Pagamentos\.env`, máquina separada) precisa
+  > receber as mesmas 4 linhas `SMTP_*` **manualmente** — é só `.env`, nenhum `.py` muda. Sem elas,
+  > a tarefa agendada segue no caminho IMAP antigo.
 
 Validar (esperado: `imports OK`):
 
