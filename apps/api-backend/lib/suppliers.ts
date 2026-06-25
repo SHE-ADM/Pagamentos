@@ -23,6 +23,12 @@ const ACCOUNTS_TABLE = 'financial_account_control';
 const DEFAULT_LIMIT = 20;
 const MAX_LIMIT = 100;
 
+// Leitura de um fornecedor com a classificação contábil DEFAULT já com rótulos
+// (embeds dos cadastros) — alimenta o pré-preenchimento do modal de contas.
+const SELECT_WITH_CLASSIFICATION =
+  '*,cost_center:financial_cost_center(cost_center_code,cost_center_description),' +
+  'chart_account:financial_chart_of_account(account_code,account_description)';
+
 // Colunas pesquisáveis no filtro de texto (índices GIN trigram — migration 029).
 const SEARCH_COLUMNS = ['legal_name', 'trade_name', 'cnpj', 'cpf', 'email', 'email2', 'email3', 'email4'];
 
@@ -88,7 +94,7 @@ const supplierRepository = {
   findBySk(sk: number) {
     return getSupabaseAdmin()
       .from(SUPPLIER_TABLE)
-      .select('*')
+      .select(SELECT_WITH_CLASSIFICATION)
       .eq('sk_supplier', sk)
       .is('deleted_at', null)
       .maybeSingle();
@@ -160,7 +166,9 @@ export const supplierService = {
     const { data, error } = await supplierRepository.findBySk(sk);
     if (error) throw new SupplierServiceError(error.message, 500);
     if (!data) throw new SupplierServiceError('Fornecedor não encontrado', 404);
-    return data as Supplier;
+    // Double cast: o SELECT com embeds (cost_center/chart_account) faz o supabase-js
+    // inferir um tipo de parser de relação, não diretamente Supplier.
+    return data as unknown as Supplier;
   },
 
   /**
@@ -230,3 +238,25 @@ export const supplierService = {
     return { sk_supplier: sk };
   },
 };
+
+/**
+ * Grava a classificação contábil DEFAULT do fornecedor (write-back do modal de
+ * contas — ver `contaService`). Caminho dedicado: `cost_center_id`/`chart_account_id`
+ * NÃO fazem parte de `supplierUpdateSchema` (PATCH público de fornecedor), então a
+ * atualização passa por aqui, fora do schema editável. Best-effort no chamador.
+ * @param sk Surrogate key do fornecedor.
+ * @param costCenterId FK do centro de custo (> 0 — validado pelo chamador).
+ * @param chartAccountId FK do plano de contas (> 0 — validado pelo chamador).
+ */
+export async function setSupplierClassification(
+  sk: number,
+  costCenterId: number,
+  chartAccountId: number,
+): Promise<void> {
+  const { error } = await getSupabaseAdmin()
+    .from(SUPPLIER_TABLE)
+    .update({ cost_center_id: costCenterId, chart_account_id: chartAccountId })
+    .eq('sk_supplier', sk)
+    .is('deleted_at', null);
+  if (error) throw new SupplierServiceError(error.message, 500);
+}

@@ -40,6 +40,10 @@ class FakeCtrl:
         # _finalize_supplier resolve o fornecedor antes da dedup; stub devolve id fixo.
         return 1
 
+    def supplier_defaults(self, sk_supplier):
+        # Classificação default do fornecedor (migration 052) — fake sem classificação.
+        return (0, 0)
+
     def unique_invoice_number(self, n):
         return n
 

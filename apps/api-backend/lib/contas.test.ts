@@ -9,7 +9,7 @@ const builders: Record<string, ReturnType<typeof vi.fn>>[] = [];
 
 function makeBuilder(result: QueryResult) {
   const b: Record<string, ReturnType<typeof vi.fn>> & { then?: unknown } = {};
-  for (const m of ['select', 'neq', 'or', 'order', 'range', 'eq', 'maybeSingle', 'single', 'insert', 'update', 'limit']) {
+  for (const m of ['select', 'neq', 'or', 'order', 'range', 'eq', 'is', 'maybeSingle', 'single', 'insert', 'update', 'limit']) {
     b[m] = vi.fn(() => b);
   }
   b.then = (onFulfilled: (v: QueryResult) => unknown, onRejected?: (e: unknown) => unknown) =>
@@ -82,6 +82,37 @@ describe('contaService.create', () => {
   it('409 em violação UNIQUE (23505)', async () => {
     resultQueue.push({ data: null, error: { code: '23505', message: 'duplicate', details: 'barcode' } });
     await expect(contaService.create({ sk_supplier: 1, amount: 100 })).rejects.toMatchObject({ status: 409 });
+  });
+
+  it('write-back: grava a classificação no fornecedor quando cost_center_id e chart_account_id > 0', async () => {
+    resultQueue.push(
+      { data: { id: 7, sk_supplier: 3, cost_center_id: 5, chart_account_id: 10 }, error: null }, // insert conta
+      { data: null, error: null }, // update supplier (write-back)
+    );
+    await contaService.create({ sk_supplier: 3, amount: 100, cost_center_id: 5, chart_account_id: 10 });
+    // 2 from(): insert da conta + update do fornecedor.
+    expect(fromMock).toHaveBeenCalledTimes(2);
+    const supplierBuilder = builders[1];
+    expect(supplierBuilder.update).toHaveBeenCalledWith({ cost_center_id: 5, chart_account_id: 10 });
+    expect(supplierBuilder.eq).toHaveBeenCalledWith('sk_supplier', 3);
+  });
+
+  it('write-back: NÃO grava no fornecedor quando algum id é 0 (sentinela)', async () => {
+    resultQueue.push({ data: { id: 8, sk_supplier: 3, cost_center_id: 5, chart_account_id: 0 }, error: null });
+    await contaService.create({ sk_supplier: 3, amount: 100, cost_center_id: 5 });
+    expect(fromMock).toHaveBeenCalledTimes(1); // só o insert da conta
+  });
+
+  it('write-back é best-effort: falha ao gravar no fornecedor não derruba a criação', async () => {
+    const spy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    resultQueue.push(
+      { data: { id: 9, sk_supplier: 3, cost_center_id: 5, chart_account_id: 10 }, error: null }, // insert conta
+      { data: null, error: { message: 'boom' } }, // update supplier falha
+    );
+    const conta = await contaService.create({ sk_supplier: 3, amount: 100, cost_center_id: 5, chart_account_id: 10 });
+    expect(conta).toMatchObject({ id: 9 }); // a conta retorna mesmo com falha no write-back
+    expect(spy).toHaveBeenCalled();
+    spy.mockRestore();
   });
 });
 

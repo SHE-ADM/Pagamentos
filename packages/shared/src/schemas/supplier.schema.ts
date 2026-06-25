@@ -1,10 +1,13 @@
 import { z } from 'zod';
+import { costCenterEmbeddedSchema, chartAccountEmbeddedSchema } from './financial-account-control.schema';
 
 // Schema da tabela `supplier` — cadastro de fornecedores. PK = sk_supplier
 // (surrogate key snowflake, migration 042); supplier_id é chave de negócio.
 // IMPORTANTE: a tabela NÃO possui created_at/updated_at (confirmado nos migrants);
 // `deleted_at` foi adicionado na migration 045 (soft delete).
 // CNPJ/CPF são SEMPRE dígitos sem máscara (CHAR(14)/CHAR(11)).
+// Classificação contábil DEFAULT do fornecedor (migration 052): cost_center_id /
+// chart_account_id (SMALLINT NOT NULL DEFAULT 0, sentinela 0 = "não informado").
 
 // Remove máscara de CNPJ/CPF, mantendo só dígitos.
 const stripMask = (v: string): string => v.replace(/\D/g, '');
@@ -33,6 +36,12 @@ export const supplierSchema = z.object({
   email3: z.string().nullable(),
   email4: z.string().nullable(),
   deleted_at: z.string().nullable(),
+  // Classificação contábil DEFAULT (migration 052) — usada para pré-preencher o
+  // lançamento de contas; embeds opcionais vêm do JOIN (GET /suppliers/:sk).
+  cost_center_id: z.number().int().default(0),
+  chart_account_id: z.number().int().default(0),
+  cost_center: costCenterEmbeddedSchema.optional(),
+  chart_account: chartAccountEmbeddedSchema.optional(),
 });
 
 // Campos editáveis (POST/PATCH). sk_supplier/supplier_id são gerados pelo banco

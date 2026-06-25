@@ -4,7 +4,7 @@
 // (@sheild/shared). Fornecedor via react-select (SupplierSelect). Tipo de documento
 // e tipo de pagamento são selects de APENAS CONSULTA (valores pré-definidos dos enums,
 // obrigatórios). O envio (POST/PATCH na Next API) é responsabilidade do pai.
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useForm } from 'react-hook-form';
 import {
   financialAccountControlCreateSchema,
@@ -18,6 +18,7 @@ import Alert from '../atoms/Alert';
 import SupplierSelect from '../molecules/SupplierSelect';
 import CostCenterSelect from '../molecules/CostCenterSelect';
 import ChartAccountSelect from '../molecules/ChartAccountSelect';
+import { getSupplier } from '../../services/suppliers';
 
 // Opções dos selects de enum ordenadas alfabeticamente (pt-BR) — os valores são os
 // mesmos dos CHECK do banco; só a ordem de exibição muda.
@@ -74,14 +75,22 @@ const blankToNull = (v: string): string | null => (v.trim() ? v.trim() : null);
 // id 0 = "não informado" (sentinela do banco) → tratado como vazio na UI.
 const orNull = (id: number | null | undefined): number | null => (id ? id : null);
 
-// Rótulo do centro de custo já vinculado (modo edição) — usa o embed do JOIN;
-// undefined quando não há classificação (id 0/ausente).
-const costCenterDefaultLabel = (c?: FinancialAccountControl): string | undefined => {
+// Fonte estrutural de rótulo da classificação — atende tanto a conta (modo edição)
+// quanto o fornecedor (pré-preenchimento), ambos com cost_center_id/chart_account_id
+// + embeds dos cadastros.
+type ClassificationSource = Pick<
+  FinancialAccountControl,
+  'cost_center_id' | 'chart_account_id' | 'cost_center' | 'chart_account'
+>;
+
+// Rótulo do centro de custo já vinculado — usa o embed do JOIN; undefined quando não
+// há classificação (id 0/ausente).
+const costCenterDefaultLabel = (c?: ClassificationSource): string | undefined => {
   if (!c?.cost_center_id) return undefined;
   return c.cost_center?.cost_center_description ?? c.cost_center?.cost_center_code ?? `#${c.cost_center_id}`;
 };
 
-const chartAccountDefaultLabel = (c?: FinancialAccountControl): string | undefined => {
+const chartAccountDefaultLabel = (c?: ClassificationSource): string | undefined => {
   if (!c?.chart_account_id) return undefined;
   return c.chart_account?.account_description ?? c.chart_account?.account_code ?? `#${c.chart_account_id}`;
 };
@@ -100,6 +109,13 @@ export default function ContaForm({ mode, defaultValues, onSubmit, onCancel, sub
   // id 0 (sentinela "não informado") aparece vazio no select.
   const [costCenterId, setCostCenterId] = useState<number | null>(orNull(defaultValues?.cost_center_id));
   const [chartAccountId, setChartAccountId] = useState<number | null>(orNull(defaultValues?.chart_account_id));
+  // Classificação DEFAULT do fornecedor selecionado (só modo create) — fonte dos
+  // rótulos do pré-preenchimento. Em edição, os rótulos vêm de `defaultValues`.
+  const [prefill, setPrefill] = useState<ClassificationSource | null>(null);
+  // Os selects de centro/plano inicializam `selected` uma vez (não sincronizam `value`).
+  // Para o pré-preenchimento refletir visualmente, este nonce — incrementado a cada
+  // aplicação — entra na `key` dos selects, forçando o remonte com o novo valor/rótulo.
+  const [prefillNonce, setPrefillNonce] = useState(0);
 
   // Cascata: trocar (ou limpar) o centro de custo zera o plano de contas, que pode não
   // pertencer ao novo centro. O ChartAccountSelect remonta via `key={costCenterId}`.
@@ -107,6 +123,33 @@ export default function ContaForm({ mode, defaultValues, onSubmit, onCancel, sub
     setCostCenterId(id);
     setChartAccountId(null);
   };
+
+  // Pré-preenchimento (só na CRIAÇÃO): ao escolher um fornecedor, semeia Centro de
+  // custo / Plano de contas com a classificação default do supplier (migration 052).
+  // O usuário pode trocar; trocar o fornecedor re-semeia. Em edição não roda (usa a
+  // classificação da própria conta). Fetch-on-change (padrão `void load()` do projeto).
+  useEffect(() => {
+    if (mode !== 'create' || skSupplier == null) return;
+    let cancelled = false;
+    const load = async () => {
+      try {
+        const sup = await getSupplier(skSupplier);
+        if (cancelled) return;
+        const cc = sup.cost_center_id || 0;
+        const ca = sup.chart_account_id || 0;
+        setPrefill(cc || ca ? sup : null);
+        setCostCenterId(cc || null);
+        setChartAccountId(ca || null);
+        setPrefillNonce((n) => n + 1); // força o remonte dos selects (novo valor/rótulo)
+      } catch {
+        // Falha ao buscar defaults não bloqueia o lançamento — segue sem pré-preencher.
+      }
+    };
+    void load();
+    return () => {
+      cancelled = true;
+    };
+  }, [mode, skSupplier]);
 
   const submit = handleSubmit(async (raw) => {
     setSupplierError(null);
@@ -154,6 +197,10 @@ export default function ContaForm({ mode, defaultValues, onSubmit, onCancel, sub
     await onSubmit(parsed.data);
   });
 
+  // Fonte dos rótulos dos selects de classificação: na criação, o default do
+  // fornecedor (pré-preenchimento); na edição, a própria conta.
+  const labelSource: ClassificationSource | undefined = mode === 'create' ? (prefill ?? undefined) : defaultValues;
+
   return (
     <form onSubmit={submit} className="space-y-4" noValidate>
       {submitError && <Alert variant="error">{submitError}</Alert>}
@@ -170,22 +217,25 @@ export default function ContaForm({ mode, defaultValues, onSubmit, onCancel, sub
       <AuthInput label="Descrição" error={errors.description?.message} {...register('description')} />
 
       <CostCenterSelect
+        // Remonta quando o pré-preenchimento aplica (nonce) para refletir o novo value
+        // + rótulo. Mudança MANUAL não bumpa o nonce → o select mantém a seleção.
+        key={`cc-${prefillNonce}`}
         id="conta-cost-center"
         label="Centro de custo"
         value={costCenterId}
-        defaultLabel={costCenterDefaultLabel(defaultValues)}
+        defaultLabel={costCenterDefaultLabel(labelSource)}
         onChange={handleCostCenterChange}
       />
 
       <ChartAccountSelect
-        // Remonta ao trocar o centro de custo: reinicia o select (vazio) e recarrega as
-        // opções do novo centro, sem efeito de sincronização de estado.
-        key={`chart-${costCenterId ?? 'none'}`}
+        // Remonta ao trocar o centro de custo (reinicia + recarrega as opções do novo
+        // centro) OU quando o pré-preenchimento aplica (nonce) — sem sincronizar estado.
+        key={`chart-${costCenterId ?? 'none'}-${prefillNonce}`}
         id="conta-chart-account"
         label="Plano de contas"
         value={chartAccountId}
         costCenterId={costCenterId}
-        defaultLabel={chartAccountDefaultLabel(defaultValues)}
+        defaultLabel={chartAccountDefaultLabel(labelSource)}
         onChange={setChartAccountId}
       />
 
