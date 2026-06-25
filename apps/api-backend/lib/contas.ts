@@ -17,6 +17,7 @@ import {
 } from '@sheild/shared';
 import type { ZodError } from 'zod';
 import { getSupabaseAdmin } from './supabase-admin';
+import { setSupplierClassification } from './suppliers';
 
 const TABLE = 'financial_account_control';
 const SUPPLIER_TABLE = 'supplier';
@@ -116,6 +117,21 @@ const contaRepository = {
   },
 };
 
+// Write-back da classificação para o fornecedor (item 2 do plano): ao salvar a
+// conta pelo modal com classificação COMPLETA (centro de custo E plano de contas
+// > 0), o supplier passa a carregar essa classificação como default. Best-effort —
+// a conta é o artefato primário, então falha aqui NÃO derruba a resposta.
+// A extração Python não passa por este service, então não dispara write-back.
+async function writeBackSupplierClassification(conta: FinancialAccountControl): Promise<void> {
+  const { sk_supplier: sk, cost_center_id: cc, chart_account_id: ca } = conta;
+  if (!sk || !cc || !ca) return; // sentinela 0 em qualquer um → não grava no supplier
+  try {
+    await setSupplierClassification(sk, cc, ca);
+  } catch (e) {
+    console.error(`Falha ao gravar classificação default no fornecedor ${sk}:`, e);
+  }
+}
+
 export const contaService = {
   /**
    * Lista contas (exceto canceladas) com paginação e busca textual (fornecedor +
@@ -164,7 +180,9 @@ export const contaService = {
       if (error.code === '23505') throw new ContaServiceError(duplicateMessage(error.details ?? error.message), 409);
       throw new ContaServiceError(error.message, 422);
     }
-    return data as unknown as FinancialAccountControl;
+    const conta = data as unknown as FinancialAccountControl;
+    await writeBackSupplierClassification(conta);
+    return conta;
   },
 
   /**
@@ -182,6 +200,8 @@ export const contaService = {
       throw new ContaServiceError(error.message, 422);
     }
     if (!data) throw new ContaServiceError('Conta não encontrada', 404);
-    return data as unknown as FinancialAccountControl;
+    const conta = data as unknown as FinancialAccountControl;
+    await writeBackSupplierClassification(conta);
+    return conta;
   },
 };

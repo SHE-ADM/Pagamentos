@@ -27,12 +27,15 @@ Object.defineProperty(globalThis, 'matchMedia', {
 
 // jsdom não implementa ResizeObserver — usado por `useContainerBreakpoint`
 // (DataGrid mede a largura real do container). Stub controlável: a largura é lida
-// de globalThis.__roWidth no observe (padrão 1280 = breakpoint 'lg').
+// de globalThis.__roWidth no observe (padrão 1280 = breakpoint 'lg') e a altura
+// de globalThis.__roHeight (padrão undefined → DataGrid cai em clientHeight 0, ou
+// seja, virtualização desligada nos testes que não a definem).
 class ResizeObserverStub {
   constructor(private readonly cb: ResizeObserverCallback) {}
   observe(): void {
     const width = (globalThis as { __roWidth?: number }).__roWidth ?? 1280;
-    const entry = { contentRect: { width } } as ResizeObserverEntry;
+    const height = (globalThis as { __roHeight?: number }).__roHeight;
+    const entry = { contentRect: { width, height } } as ResizeObserverEntry;
     this.cb([entry], this);
   }
   unobserve(): void {

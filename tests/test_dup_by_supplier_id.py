@@ -126,6 +126,50 @@ class FinalizeSupplierTest(unittest.TestCase):
         self.assertNotIn("sk_supplier", payload)
         self.assertNotIn("supplier_name", payload)
 
+    def test_injeta_classificacao_default_do_fornecedor(self):
+        """Migration 052: a nova conta herda cost_center_id/chart_account_id do
+        fornecedor resolvido quando > 0."""
+        ctrl = _ctrl()
+
+        def fake(req, timeout=None):
+            url = req.full_url
+            if "/rpc/resolve_supplier_for_account" in url:
+                return _Resp(154)  # RPC → sk_supplier
+            if "/rest/v1/supplier?" in url:
+                return _Resp([{"cost_center_id": 5, "chart_account_id": 10}])
+            return _Resp([])
+
+        payload = {"supplier_name": "X", "supplier_cnpj": None, "supplier_cpf": None, "amount": 10.0}
+        with mock.patch.object(R.urllib.request, "urlopen", fake):
+            ok = R._finalize_supplier(ctrl, payload)
+
+        self.assertTrue(ok)
+        self.assertEqual(payload["sk_supplier"], 154)
+        self.assertEqual(payload["cost_center_id"], 5)
+        self.assertEqual(payload["chart_account_id"], 10)
+
+    def test_classificacao_zero_nao_injeta(self):
+        """Sentinela 0 (não informado) não entra no payload — o NOT NULL DEFAULT 0
+        do banco assume; nunca enviamos None (violaria o NOT NULL)."""
+        ctrl = _ctrl()
+
+        def fake(req, timeout=None):
+            url = req.full_url
+            if "/rpc/resolve_supplier_for_account" in url:
+                return _Resp(200)
+            if "/rest/v1/supplier?" in url:
+                return _Resp([{"cost_center_id": 0, "chart_account_id": 0}])
+            return _Resp([])
+
+        payload = {"supplier_name": "Y", "supplier_cnpj": None, "supplier_cpf": None}
+        with mock.patch.object(R.urllib.request, "urlopen", fake):
+            ok = R._finalize_supplier(ctrl, payload)
+
+        self.assertTrue(ok)
+        self.assertEqual(payload["sk_supplier"], 200)
+        self.assertNotIn("cost_center_id", payload)
+        self.assertNotIn("chart_account_id", payload)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -195,6 +195,30 @@ service_role) + rotas `GET /api/cost-centers` e `GET /api/chart-accounts`. Clien
 `is_postable=true`, ordenados por `account_description`; os centros, por `cost_center_description`
 (descartando o placeholder id 0). Os selects exibem **só a descrição** (fallback código → `#id`).
 
+**Classificação default do fornecedor — sync bidirecional (migration 052):** `supplier` tem
+`cost_center_id`/`chart_account_id` (SMALLINT NOT NULL DEFAULT 0, sentinela 0 = "não informado"),
+e a classificação flui nos **dois sentidos**:
+- **Default na criação (supplier → conta).** Ao incluir conta, a nova `financial_account_control`
+  herda a classificação do fornecedor quando `> 0`. (a) **Modal create** (`ContaForm`): um efeito
+  **só no modo `create`** chama `getSupplier(sk)` (`services/suppliers.ts` → `GET /api/suppliers/:sk`,
+  que traz `cost_center_id`/`chart_account_id` + embeds) e semeia os selects de Centro de custo /
+  Plano de contas (com rótulos); trocar o fornecedor **re-semeia** e o usuário pode alterar. Como
+  `CostCenterSelect`/`ChartAccountSelect` inicializam `selected` uma vez (não sincronizam `value`),
+  o pré-preenchimento entra na `key` deles via um **`prefillNonce`** que força o remonte. Edição
+  **não** pré-preenche (usa a classificação da própria conta). (b) **Extração de e-mail**:
+  `SupabaseControl.supplier_defaults(sk)` (`read_emails.py`) lê os defaults e `_finalize_supplier`
+  os injeta no payload quando `> 0` (cobre PDF e corpo; `0`/ausente → o `DEFAULT 0` do banco assume,
+  nunca enviamos `None`).
+- **Write-back na gravação pelo modal (conta → supplier).** `contaService.create`/`update`
+  (`lib/contas.ts`), **após** o write, gravam a classificação de volta no fornecedor via
+  `setSupplierClassification(sk, cc, ca)` (`lib/suppliers.ts`, caminho dedicado fora do
+  `supplierUpdateSchema`) **apenas quando `cost_center_id > 0` E `chart_account_id > 0`** — vale na
+  **criação E na edição** pelo modal. **Best-effort**: falha no write-back loga (`console.error`) e
+  **não** derruba a resposta da conta. A **extração Python não passa por esse service** → não faz
+  write-back (só lê). Schema: `supplierSchema` (leitura) expõe `cost_center_id`/`chart_account_id`
+  + embeds opcionais `cost_center`/`chart_account`; `findBySk` faz o JOIN. Os campos **não** entram
+  em `supplierUpdateSchema`/`editableFields` (o PATCH público de fornecedor não os edita).
+
 **Usuários / autenticação (`apps/api-backend/lib/users.ts` + `app/api/users|auth/**`):** sobre
 o **Supabase Auth** — sem tabela própria, sem JWT customizado, sem bcrypt (regras de
 `auth-specs.md`). `POST /api/users` cria usuário (**admin-only**, via `auth.admin.createUser`
@@ -1207,7 +1231,10 @@ faturas SIEG em `ignorado`; o handler A1 (baixar o boleto real) segue como melho
   `*,supplier(trade_name,legal_name,cnpj,cpf),cost_center:financial_cost_center(cost_center_code,cost_center_description),chart_account:financial_chart_of_account(account_code,account_description)`.
   O grid (e o card de detalhe e o CSV) exibem fornecedor (`trade_name ?? legal_name`), **Centro de
   custo** e **Plano de contas** (`código — descrição`; id 0 → "—"); a coluna **CNPJ/CPF foi removida
-  do grid** (segue no detalhe). Lookups da Next API em `services/lookups.ts`.
+  do grid** (segue no detalhe). Lookups da Next API em `services/lookups.ts`. No **card de detalhe**
+  de `/consulta`, o campo **Fornecedor** exibe `sk_supplier - nome` (helper `fmtSupplier`; fallback
+  só o id quando o JOIN não traz nome) — o cabeçalho do painel, a coluna do grid e o CSV seguem só
+  com o nome.
   As colunas "Fornecedor" e "CNPJ/CPF" **não são ordenáveis** server-side (order por recurso embutido
   no PostgREST é frágil). A **busca por fornecedor** resolve antes os `sk_supplier` que casam o termo
   na tabela `supplier` (nome/CNPJ/CPF + 4 e-mails, via `findSupplierIdsByTerm`) e filtra
@@ -1243,6 +1270,14 @@ faturas SIEG em `ignorado`; o handler A1 (baixar o boleto real) segue como melho
     (`dataGrid.rows.ts`) achata as linhas em itens `row/second/detail` (1 item = 1 `<tr>`). **Fallback
     sem layout (jsdom/testes):** altura do viewport `0` → renderiza tudo (não virtualiza), mantendo os
     testes verdes. `/emails` **não** liga virtualização.
+    - **Auto-recuperação do scrollRect (não regredir):** o `react-virtual` cacheia a altura do viewport
+      (`scrollRect`) via `ResizeObserver`; trocas de aba/inatividade (ou um "ResizeObserver loop") fazem
+      o navegador **descartar notificações de resize** → o `scrollRect` fica defasado (pequeno), a janela
+      virtual encolhe e o grid renderiza só ~4 linhas com o corpo em branco. Duas defesas: (1)
+      `useAnimationFrameWithResizeObserver: true` no virtualizer (reduz notificações perdidas por loop);
+      (2) um efeito que, ao reganhar `visibilitychange`/`focus`/`pageshow`/`resize`, re-mede o viewport
+      real e — **só se divergir** do cache — reinjeta em `rowVirtualizer.scrollRect` + `measure()`
+      (guardado contra altura 0). Cobre o caso "aba em background → volta com o grid em branco".
   - **Camadas responsivas** (própria, não do TanStack): (1) breakpoint pela largura **real do
     container** (`useContainerBreakpoint`/`ResizeObserver`) oculta `hideOn` e desce `secondLine`
     para a sub-linha; (2) truncagem (`truncate`) com `title`; (3) rolagem horizontal no viewport.
@@ -1301,7 +1336,17 @@ faturas SIEG em `ignorado`; o handler A1 (baixar o boleto real) segue como melho
 ## Banco de dados (Supabase)
 
 Migrations em `supabase/migrations/`, aplicadas **manualmente no SQL Editor** em ordem
-numérica (`001` → `049`). Não há migration automática. (A `049` adiciona policy de **SELECT
+numérica (`001` → `052`). Não há migration automática. (As `050`/`051` convertem PKs para
+**`GENERATED ALWAYS AS IDENTITY`** — id gerado SEMPRE pelo banco, inclusão direta de id BLOQUEADA
+(exige `OVERRIDING SYSTEM VALUE`): a `050` em `financial_chart_of_account.chart_account_id`; a `051`
+em `financial_account.financial_account_id`, `financial_chart_of_account_group.chart_account_group_id`,
+`financial_chart_of_account_subgroup.chart_account_subgroup_id` e `financial_cost_center.cost_center_id`
+(todas eram `smallint NOT NULL DEFAULT 0`; cada uma teve `DROP DEFAULT` → `ADD GENERATED ALWAYS AS
+IDENTITY` → `setval` acima do `max` atual). A `052` adiciona `supplier.cost_center_id`/`chart_account_id`
+(SMALLINT NOT NULL DEFAULT 0 + FKs + índices) e faz o **merge/backfill** a partir de
+`financial_account_control` (par não-zero por fornecedor; diagnóstico: 0 conflitos) — base do **sync de
+classificação default do fornecedor**, ver "Classificação default do fornecedor — sync bidirecional".)
+(A `049` adiciona policy de **SELECT
 `TO authenticated`** em `financial_cost_center` e `financial_chart_of_account` — sem ela, o RLS
 estava habilitado **sem nenhuma policy** (default deny) e o embed `cost_center`/`chart_account`
 lido pelo frontend com papel `authenticated` voltava **null**, fazendo o grid/detalhe de `/consulta`
@@ -1331,7 +1376,7 @@ internet` ao CHECK de `document_type` e faz backfill — ver "Normalização de 
 | `financial_account_control` | Tabela principal de contas a pagar — uma linha por documento; alimentada pelo pipeline de e-mail **e** por CRUD manual (baixas, consolidações, dashboards). Substitui a antiga `financial_emails` (dropada na migration 020). O fornecedor é referenciado **só pela FK `sk_supplier`** (surrogate key snowflake, NOT NULL — **migration 042**, antes era `supplier_id`) — nome/CNPJ vêm do JOIN com `supplier` (colunas denormalizadas dropadas na **migration 041**). Tem `sender_email` (migration 023; backfill em 025) usado na resolução p/ alinhar `supplier.email`, e `subject` (migration 025) — exibidos/buscados em `/consulta`. **Classificação contábil** (migrations 047/048): `cost_center_id`/`chart_account_id` SMALLINT, NOT NULL DEFAULT 0 (FKs para os cadastros; id 0 = "não informado") — preenchidos no CRUD manual (cascata centro→plano) |
 | `financial_cost_center` / `financial_chart_of_account` | **Cadastros de classificação contábil** (pré-existentes, **preservados em limpezas**) usados como lookup no modal de contas. `financial_chart_of_account` tem `cost_center_id` (relaciona o plano ao centro — base da CASCATA) e `is_postable` (só os postáveis são lançáveis). Lidos via `lib/lookups.ts` (service_role) **e** pelo frontend via embed REST (papel `authenticated`); RLS habilitado com policy de SELECT `TO authenticated` (migration 049 — sem ela o embed voltava null e a UI mostrava `#id`) |
 | `email_processing_errors` | Log de falhas com `raw_payload` JSON |
-| `supplier` | Fornecedores. PK = `sk_supplier` (surrogate key snowflake auto-incremental — **migration 042**); `supplier_id` é **chave de negócio** (NOT NULL UNIQUE, só nesta tabela; = `sk_supplier` nos fornecedores criados pela extração, via trigger de espelho `trg_supplier_mirror_id`, podendo divergir em cargas externas). Auto-criados pelo trigger de resolução, mas **cadastro PRESERVADO** (curadoria manual de `email`/`email2`/`email3`/`email4`) — **nunca truncar** em limpezas (ver "Limpeza / reset de dados"). Reconhecimento por **e-mail** em `email`/`email2`/`email3`/`email4` (migrations 023/027/028) — ver "Auto-resolução de fornecedor". **Soft delete** via `deleted_at` (migration 045) — a baixa pelo CRUD da Next API marca `deleted_at` (nunca hard delete) e é bloqueada quando há contas vinculadas; ver "CRUD de fornecedores (Next API)" |
+| `supplier` | Fornecedores. PK = `sk_supplier` (surrogate key snowflake auto-incremental — **migration 042**); `supplier_id` é **chave de negócio** (NOT NULL UNIQUE, só nesta tabela; = `sk_supplier` nos fornecedores criados pela extração, via trigger de espelho `trg_supplier_mirror_id`, podendo divergir em cargas externas). Auto-criados pelo trigger de resolução, mas **cadastro PRESERVADO** (curadoria manual de `email`/`email2`/`email3`/`email4`) — **nunca truncar** em limpezas (ver "Limpeza / reset de dados"). Reconhecimento por **e-mail** em `email`/`email2`/`email3`/`email4` (migrations 023/027/028) — ver "Auto-resolução de fornecedor". **Soft delete** via `deleted_at` (migration 045) — a baixa pelo CRUD da Next API marca `deleted_at` (nunca hard delete) e é bloqueada quando há contas vinculadas; ver "CRUD de fornecedores (Next API)". **Classificação default** `cost_center_id`/`chart_account_id` (SMALLINT NOT NULL DEFAULT 0 + FKs — migration 052): semeia o lançamento de novas contas e é atualizada pelo write-back do modal; ver "Classificação default do fornecedor — sync bidirecional" |
 | `company` | Empresa pagadora (**cadastro**, tem campo `email`). Auto-resolvida pelo trigger `resolve_company_id` a partir de `payer_cnpj`/`payer_name`. **Preservada em limpezas** (ver abaixo) |
 | `status` | **Dimensão** de situação (`status_id`, `status_name`, `status_short_name`, `has_opened`/`has_closed`/`has_invoiced`). 10 linhas = domínio de `financial_account_control.status`. A trigger resolve `financial_account_control.status_id` por `status_name` (migration 035). **Cadastro/configuração — preservar em limpezas** |
 | `cobranca_envios_log` | Cobranças de vencidos **enviadas com sucesso** (migration 037). `document_id` (= TÍTULO no Firebird) **UNIQUE** = chave de deduplicação: `already_sent()` consulta aqui antes de enviar. Exibida em `/cobranca/envios`. Alvo de limpeza (dados de teste) |
@@ -1394,6 +1439,13 @@ embeds opcionais de leitura `cost_center` (`cost_center_code`/`cost_center_descr
 `cost_center:financial_cost_center(...)` / `chart_account:financial_chart_of_account(...)`. Schemas
 `costCenterSchema`/`chartAccountSchema` em `@sheild/shared`. No input/create/update os embeds são
 omitidos; os ids entram como opcionais (a UI envia `0` quando não informado).
+
+**Classificação default no schema do supplier (migration 052):** `supplierSchema` (leitura) também
+expõe `cost_center_id`/`chart_account_id` (`z.number().int().default(0)`) + embeds opcionais
+`cost_center`/`chart_account` (reutiliza `costCenterEmbeddedSchema`/`chartAccountEmbeddedSchema` de
+`financial-account-control.schema`). **Não** entram em `editableFields`/`supplierUpdateSchema` — o
+write-back grava por caminho dedicado (`setSupplierClassification`); ver "Classificação default do
+fornecedor — sync bidirecional".
 
 **Schema base vs. criação manual:** `amount` é `nullable` no schema base (o pipeline pode
 gravar sem valor → vira erro `sem_valor`, não cria conta). A criação manual via API usa

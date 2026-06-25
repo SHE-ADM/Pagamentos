@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type CSSProperties, type ReactNode } from 'react';
+import { useCallback, useEffect, useMemo, useState, type CSSProperties, type ReactNode } from 'react';
 import { useVirtualizer } from '@tanstack/react-virtual';
 import { Inbox, ArrowUp, ArrowDown, ArrowUpDown, GripVertical, type LucideIcon } from 'lucide-react';
 import {
@@ -579,10 +579,56 @@ export default function DataGrid<T>({
       return rowEstimate;
     },
     overscan: 10,
+    // Roda o callback do ResizeObserver dentro de um rAF — reduz as notificações
+    // de resize descartadas pelo navegador em "ResizeObserver loop" (o callback
+    // dispara re-render, que muda o layout), uma das origens do scrollRect defasado.
+    useAnimationFrameWithResizeObserver: true,
   });
 
   const effectiveVirtualize =
     enableRowVirtualization && maxBodyHeight != null && viewportH > 0 && renderItems.length > 0;
+
+  // Auto-recuperação da virtualização. O @tanstack/react-virtual cacheia a altura
+  // do viewport (`scrollRect`) via ResizeObserver. Quando a aba fica em segundo plano
+  // (inatividade) o navegador pode descartar as notificações de resize — ao voltar,
+  // o `scrollRect` segue defasado (pequeno) e a janela virtual encolhe, "sumindo"
+  // com as linhas e deixando o corpo em branco. Ao reganhar foco/visibilidade (ou
+  // num resize de janela), re-medimos o viewport real e, SÓ se divergir do cache,
+  // reinjetamos no virtualizer e forçamos a remedição — restaurando a janela correta.
+  const healVirtualizer = useCallback(() => {
+    const el = viewportRef.current;
+    if (!el) return;
+    const rect = el.getBoundingClientRect();
+    const height = Math.round(rect.height);
+    if (height <= 0) return; // sem layout real — não sobrescrever um valor bom
+    const cached = rowVirtualizer.scrollRect?.height ?? 0;
+    if (Math.abs(cached - height) <= 1) return; // já em sincronia — nada a fazer
+    rowVirtualizer.scrollRect = { width: Math.round(rect.width), height };
+    rowVirtualizer.measure();
+  }, [rowVirtualizer, viewportRef]);
+
+  useEffect(() => {
+    if (!effectiveVirtualize) return;
+    let raf = 0;
+    const schedule = (): void => {
+      cancelAnimationFrame(raf);
+      raf = requestAnimationFrame(healVirtualizer);
+    };
+    const onVisible = (): void => {
+      if (document.visibilityState === 'visible') schedule();
+    };
+    document.addEventListener('visibilitychange', onVisible);
+    window.addEventListener('focus', schedule);
+    window.addEventListener('pageshow', schedule);
+    window.addEventListener('resize', schedule);
+    return () => {
+      cancelAnimationFrame(raf);
+      document.removeEventListener('visibilitychange', onVisible);
+      window.removeEventListener('focus', schedule);
+      window.removeEventListener('pageshow', schedule);
+      window.removeEventListener('resize', schedule);
+    };
+  }, [effectiveVirtualize, healVirtualizer]);
 
   // Scroll infinito: ao alcançar o fim da lista virtual, pede a próxima página.
   const virtualItems = rowVirtualizer.getVirtualItems();

@@ -45,6 +45,10 @@ class FakeControl:
         # _finalize_supplier resolve o fornecedor antes da dedup; stub devolve um id fixo.
         return 1
 
+    def supplier_defaults(self, sk_supplier):
+        # Classificação default do fornecedor (migration 052) — fake sem classificação.
+        return (0, 0)
+
 
 # Corpo real (resumido) da notificacao de NF-e da Editora Globo S.A.
 # Inclui a chave de acesso de 44 digitos — o que tornava o payload nao-nulo e

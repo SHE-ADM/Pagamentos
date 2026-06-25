@@ -24,6 +24,8 @@ const sample: Supplier = {
   email3: null,
   email4: null,
   deleted_at: null,
+  cost_center_id: 0,
+  chart_account_id: 0,
 };
 
 beforeEach(() => {

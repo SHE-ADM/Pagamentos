@@ -55,6 +55,12 @@ const fmtChartAccount = (r: FinancialAccountControl): string =>
     ? [r.chart_account?.account_code, r.chart_account?.account_description].filter(Boolean).join(' — ') || `#${r.chart_account_id}`
     : '—';
 
+// Fornecedor no card de detalhe: id (sk_supplier) concatenado ao nome com " - ".
+const fmtSupplier = (r: FinancialAccountControl): string => {
+  const name = r.supplier?.trade_name ?? r.supplier?.legal_name;
+  return name ? `${r.sk_supplier} - ${name}` : String(r.sk_supplier);
+};
+
 const PAGE_SIZE = 50;
 
 // Fixação inicial do grid de /consulta: as 3 colunas-chave de contexto à esquerda.
@@ -728,7 +734,7 @@ export default function Consulta() {
                               {(
                                 [
                                   ['ID', String(r.id)],
-                                  ['Fornecedor', r.supplier?.trade_name ?? r.supplier?.legal_name],
+                                  ['Fornecedor', fmtSupplier(r)],
                                   ['Assunto', r.subject],
                                   ['Remetente', r.sender_email],
                                   ['CNPJ', fmtCnpj(r.supplier?.cnpj ?? null)],

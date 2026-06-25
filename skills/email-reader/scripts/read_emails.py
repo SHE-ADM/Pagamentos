@@ -443,6 +443,29 @@ class SupabaseControl:
             log.warning(f"Falha ao resolver fornecedor (RPC): {e}")
             return None
 
+    def supplier_defaults(self, sk_supplier: int) -> tuple[int, int]:
+        """Le a classificacao contabil DEFAULT do fornecedor (migration 052) para
+        pre-preencher a conta na extracao. Retorna (cost_center_id, chart_account_id);
+        (0, 0) em ausencia/erro (sentinela 'nao informado')."""
+        if not self._available or not sk_supplier:
+            return (0, 0)
+        try:
+            req = urllib.request.Request(
+                f"{self.base}/rest/v1/supplier"
+                f"?sk_supplier=eq.{int(sk_supplier)}"
+                f"&select=cost_center_id,chart_account_id&limit=1",
+                headers=self.headers,
+            )
+            with urllib.request.urlopen(req, timeout=10) as r:
+                rows = json.loads(r.read())
+            if not rows:
+                return (0, 0)
+            row = rows[0]
+            return (int(row.get("cost_center_id") or 0), int(row.get("chart_account_id") or 0))
+        except Exception as e:
+            log.warning(f"Falha ao ler classificacao do fornecedor {sk_supplier}: {e}")
+            return (0, 0)
+
     def update_financial(self, record_id, fields: dict) -> bool:
         """PATCH de uma conta existente — ex.: atualizar vencimento/boleto de uma
         guia reemitida para os dados de pagamento mais recentes. Ignora campos None."""
@@ -873,6 +896,15 @@ def _finalize_supplier(ctrl: "SupabaseControl", payload: dict) -> bool:
     if not sk_supplier:
         return False
     payload["sk_supplier"] = sk_supplier
+    # Default de classificacao contabil do fornecedor (migration 052): a nova conta
+    # herda cost_center_id/chart_account_id do supplier quando > 0. Ausentes => a
+    # coluna NOT NULL DEFAULT 0 do banco assume 0 (nao enviamos None, que violaria o
+    # NOT NULL). So leitura — o write-back (modal) e responsabilidade da Next API.
+    cost_center_id, chart_account_id = ctrl.supplier_defaults(sk_supplier)
+    if cost_center_id:
+        payload["cost_center_id"] = cost_center_id
+    if chart_account_id:
+        payload["chart_account_id"] = chart_account_id
     return True
 
 

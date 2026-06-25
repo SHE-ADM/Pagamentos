@@ -27,6 +27,7 @@ def _make_ctrl(resolved_sk=249):
     ctrl = mock.MagicMock()
     ctrl._available = True
     ctrl.resolve_supplier.return_value = resolved_sk
+    ctrl.supplier_defaults.return_value = (0, 0)
     ctrl.find_financial_duplicate.return_value = None
     ctrl.unique_invoice_number.side_effect = lambda n: n
     ctrl.register_financial.return_value = True

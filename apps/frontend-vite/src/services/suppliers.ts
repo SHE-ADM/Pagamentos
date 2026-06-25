@@ -65,6 +65,13 @@ export async function listSuppliers({ page = 1, limit = 20, search, sort }: Supp
   };
 }
 
+// Obtém um fornecedor por sk (com a classificação contábil default + embeds) —
+// usado pelo modal de contas para pré-preencher Centro de custo / Plano de contas.
+export async function getSupplier(sk: number): Promise<Supplier> {
+  const body = await call<Supplier>(`/suppliers/${sk}`);
+  return body.data as Supplier;
+}
+
 export async function createSupplier(input: SupplierCreateInput): Promise<Supplier> {
   const body = await call<Supplier>('/suppliers', { method: 'POST', body: JSON.stringify(input) });
   return body.data as Supplier;
