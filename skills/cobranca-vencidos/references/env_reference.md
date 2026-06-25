@@ -45,7 +45,7 @@ Ja presentes no projeto. Confirmar que existem:
 
 ## SMTP
 
-O **remetente** vem do campo `email` da tabela `company` (`company_id = 1`):
+O **remetente** (campo `From`) vem do campo `email` da tabela `company` (`company_id = 1`):
 
 ```sql
 SELECT email, legal_name, trade_name
@@ -53,26 +53,32 @@ FROM   company
 WHERE  company_id = 1;
 ```
 
-No projeto OTIMOTEX esse mailbox (`financeiro@otimotex.com.br`) é **o mesmo usado
-para recebimento (IMAP)**. Por isso, **sem configurar nada novo**, o envio reaproveita
-as credenciais IMAP já presentes no `.env`:
-
-- **host** → `SMTP_HOST` ou, na ausência, `IMAP_HOST` (`email-ssl.com.br`)
-  — `smtp.locaweb.com.br` **não** atende esta conta (timeout).
-- **senha** → `SMTP_PASSWORD` ou, na ausência, `IMAP_PASS` (a senha NUNCA fica no banco).
-- **porta** → `SMTP_PORT` (default `587`, STARTTLS).
-
-### Variáveis SMTP no `.env` (todas OPCIONAIS — só para override)
+No projeto OTIMOTEX o remetente é `financeiro@otimotex.com.br` (o mesmo mailbox do
+recebimento IMAP). **Desde 2026-06-25 o envio usa o SMTP transacional da Locaweb**
+(`smtplw.com.br`, produto de alto volume com credencial/token PRÓPRIA do painel —
+**não** a senha do mailbox). O código prioriza as `SMTP_*` sobre as `IMAP_*`, então
+basta preencher o bloco abaixo no `.env` da raiz:
 
 ```env
-# Só se o mailbox de envio DIFERIR do de recebimento (IMAP). Caso contrário,
-# deixe em branco: o envio reaproveita IMAP_HOST / IMAP_PASS automaticamente.
-# SMTP_HOST=email-ssl.com.br
-# SMTP_PORT=587
-# SMTP_PASSWORD=senha_do_mailbox
-# SMTP_FROM_NAME=OTIMOTEX        # default: trade_name/legal_name da company
-# SMTP_USER=                     # default: company.email
+# === Locaweb SMTP transacional (cobranca-vencidos) — ATIVO ===
+SMTP_HOST=smtplw.com.br
+SMTP_PORT=587            # 587 STARTTLS (usado pelo código) | 465 SSL/TLS
+SMTP_USER=otimotex1      # usuário do painel SMTP Locaweb (NÃO o e-mail)
+SMTP_PASSWORD=<senha/token do painel SMTP>
+# SMTP_FROM_NAME=OTIMOTEX   # opcional — default: trade_name/legal_name da company
 ```
+
+> O domínio de remetente (`otimotex.com.br`) precisa estar autorizado no painel
+> (Configurações → Domínio de Remetente / Endereços de remetente).
+
+### Fallback (sem `SMTP_*`) — credenciais do mailbox IMAP
+
+Se o bloco `SMTP_*` for removido, o envio cai no caminho legado, reaproveitando as
+credenciais IMAP já presentes no `.env`:
+
+- **host** → `IMAP_HOST` (`email-ssl.com.br`) — `smtp.locaweb.com.br` **não** atende esta conta (timeout).
+- **senha** → `IMAP_PASS` (a senha do mailbox NUNCA fica no banco).
+- **porta** → `587` (STARTTLS).
 
 ---
 
@@ -122,16 +128,9 @@ em Gmail/Outlook (e, desde 2024, são exigência para remetentes em volume). Run
 
 ---
 
-## Migração futura para o SMTP transacional da Locaweb (não adquirido ainda)
+## Histórico — migração para o SMTP transacional da Locaweb (CONCLUÍDA em 2026-06-25)
 
-Se/quando contratar o **SMTP Locaweb** (`smtp.locaweb.com.br`, produto de alto volume, com
-credencial/token próprios — **não** a senha do mailbox): a virada é **só `.env`** (o código já dá
-prioridade às `SMTP_*` sobre as `IMAP_*`). Preencher:
-
-```env
-# SMTP transacional Locaweb (quando contratado)
-# SMTP_HOST=smtp.locaweb.com.br
-# SMTP_PORT=587            # 587 TLS (STARTTLS) ou 465 SSL
-# SMTP_USER=<usuário/token do painel SMTP Locaweb>
-# SMTP_PASSWORD=<senha/token do SMTP Locaweb>
-```
+O SMTP transacional (`smtplw.com.br`) foi **contratado e ativado** em 2026-06-25. A virada
+foi **só `.env`** (o código já priorizava as `SMTP_*` sobre as `IMAP_*`) — ver a seção SMTP
+acima para as variáveis ativas. Antes disso, o envio reaproveitava as credenciais do mailbox
+IMAP (`email-ssl.com.br` + `IMAP_PASS`), que segue como fallback se as `SMTP_*` forem removidas.
