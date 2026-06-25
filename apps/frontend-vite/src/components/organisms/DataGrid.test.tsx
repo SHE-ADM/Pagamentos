@@ -43,8 +43,15 @@ const setContainerWidth = (px: number): void => {
   (globalThis as { __roWidth?: number }).__roWidth = px;
 };
 
+// Liga a virtualização nos testes: o DataGrid só virtualiza com altura de viewport
+// medida (> 0). O stub de ResizeObserver lê __roHeight.
+const setContainerHeight = (px: number): void => {
+  (globalThis as { __roHeight?: number }).__roHeight = px;
+};
+
 afterEach(() => {
   delete (globalThis as { __roWidth?: number }).__roWidth;
+  delete (globalThis as { __roHeight?: number }).__roHeight;
   localStorage.clear();
   vi.restoreAllMocks();
 });
@@ -120,6 +127,51 @@ describe('DataGrid', () => {
     expect(screen.queryByRole('columnheader', { name: /Tipo/ })).not.toBeInTheDocument();
     // ...e reaparece como rótulo da linha secundária (uma por registro).
     expect(screen.getAllByText('Tipo:')).toHaveLength(ROWS.length);
+  });
+
+  it('virtualização: re-mede ao voltar o foco/visibilidade sem quebrar o render', () => {
+    // Simula o ambiente da /consulta (virtualização ligada + viewport medido).
+    setContainerHeight(800);
+    const raf = vi.fn((cb: FrameRequestCallback) => {
+      cb(0);
+      return 1;
+    });
+    vi.stubGlobal('requestAnimationFrame', raf);
+    vi.stubGlobal('cancelAnimationFrame', vi.fn());
+    // Viewport com layout real (jsdom devolve 0) — necessário para o heal agir.
+    vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockReturnValue({
+      width: 1280,
+      height: 800,
+      top: 0,
+      left: 0,
+      right: 1280,
+      bottom: 800,
+      x: 0,
+      y: 0,
+      toJSON: () => ({}),
+    });
+
+    render(
+      <DataGrid
+        {...baseProps}
+        gridId="virt-grid"
+        enableColumnManagement
+        enableRowVirtualization
+        maxBodyHeight="78vh"
+      />,
+    );
+    // Grid montado (o render virtualizado em si é coberto pela camada e2e/Playwright,
+    // pois o jsdom não tem layout real).
+    expect(screen.getByRole('table')).toBeInTheDocument();
+
+    // Voltar à aba / reganhar foco / resize agenda a re-medição (auto-recuperação do
+    // scrollRect defasado) sem quebrar o grid — é a fiação que corrige o "sumiço" das
+    // linhas após inatividade.
+    document.dispatchEvent(new Event('visibilitychange'));
+    window.dispatchEvent(new Event('focus'));
+    window.dispatchEvent(new Event('resize'));
+    expect(raf).toHaveBeenCalled();
+    expect(screen.getByRole('table')).toBeInTheDocument();
   });
 
   describe('modo gerenciável (enableColumnManagement)', () => {
