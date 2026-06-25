@@ -107,10 +107,9 @@ export default function Layout({ children }: Readonly<{ children: ReactNode }>) 
           <p className="px-3 pt-4 pb-1.5 text-xs font-bold tracking-widest text-slate-400 uppercase">
             Análise
           </p>
-          <span className="nav-link is-disabled">
+          <NavLink to="/dashboard" onClick={closeNav} className={({ isActive }) => navLink({ active: isActive })}>
             <BarChart2 size={16} /> Dashboard
-            <span className="ml-auto text-xs bg-slate-800 text-slate-300 rounded-sm px-1">breve</span>
-          </span>
+          </NavLink>
         </nav>
 
         <div className="px-4 py-3 border-t border-sidebar-border space-y-2">

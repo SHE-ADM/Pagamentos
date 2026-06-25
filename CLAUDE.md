@@ -174,8 +174,12 @@ inline via `POST /api/suppliers`); **tipo de documento e tipo de pagamento** sã
 `PAYMENT_METHOD_OPTIONS` em `ContaForm`). **Classificação contábil** via dois lookups react-select —
 **Centro de custo** (`molecules/CostCenterSelect.tsx`) e **Plano de contas**
 (`molecules/ChartAccountSelect.tsx`), em CASCATA: ver "Lookups de classificação contábil (cascata)".
-Ordem dos campos do form: **Fornecedor → Centro de custo → Plano de contas → Tipo de documento →
-Tipo de pagamento → Valor → Vencimento → …**. **Sem botão de exclusão** em nenhuma das telas.
+Ordem dos campos do form: **Fornecedor → Descrição → Centro de custo → Plano de contas →
+(Tipo de documento + Tipo de pagamento) → (Nº documento + Emissão) → (Valor + Vencimento) →
+Código de barras** (os 3 pares na mesma linha; código de barras isolado por último). Na
+**inclusão** (modo `create`), **Emissão e Vencimento já vêm com a data de hoje** (`todayISO()`,
+data local — `toFormValues` só preenche quando não há `defaultValues`; edição mantém os valores
+da conta). **Sem botão de exclusão** em nenhuma das telas.
 Cliente Next API em `services/contas.ts` (proxy `/data-api`). Spec/template em
 `docs/prompts/api-contas-crud-spec.md`.
 
@@ -573,11 +577,12 @@ apps/frontend-vite/src/components/
 | **Recebimentos** | E-mails (`/emails`) · Log de erros (`/erros`) |
 | **Envios** | E-mails (`/cobranca/envios`) · Log de erros (`/cobranca/erros`) — logs da cobrança automática de vencidos |
 | **Contas** | Gestão de contas (`/consulta`) · Cadastro de contas (`/contas`) · Cadastro de fornecedores (`/fornecedores`) |
-| **Análise** | Dashboard (`breve`) |
+| **Análise** | Dashboard (`/dashboard`) |
 
 > "Gestão de contas" aponta para `/consulta` (só o rótulo difere da rota). Ao promover um
 > item `breve` a ativo, troque o `<span … is-disabled>` por `<NavLink>` e remova o badge
-> (feito para "Cadastro de fornecedores" e "Cadastro de contas").
+> (feito para "Cadastro de fornecedores", "Cadastro de contas" e **"Dashboard"**). **Não há mais
+> nenhum item `breve`** na sidebar — todos os itens são links ativos.
 
 Hooks em `src/hooks/`: `useContainerBreakpoint.ts` (faixa `sm`/`md`/`lg` pela largura
 **real do container** via `ResizeObserver` — não da janela; usado pelo `DataGrid` p/ ocultar
@@ -1147,6 +1152,9 @@ faturas SIEG em `ignorado`; o handler A1 (baixar o boleto real) segue como melho
 | `/emails` | `Emails.tsx` | `email_control` + `financial_account_control` por `message_id` |
 | `/consulta` | `Consulta.tsx` | `financial_account_control` (scroll infinito + virtualização, filtros, CSV client-side) |
 | `/erros` | `Erros.tsx` | `email_processing_errors` |
+| `/contas` | `ContasNovaPage.tsx` | `financial_account_control` (lançamento manual via `ContaForm`) |
+| `/fornecedores` | `SuppliersPage.tsx` | `supplier` (CRUD via Next API) |
+| `/dashboard` | `Dashboard.tsx` | `financial_account_control` (KPIs/gráficos por mês ou geral; `getDashboardData`) |
 | `/cobranca/envios` | `cobranca/CobrancaEnvios.tsx` | `cobranca_envios_log` (ver "Pipeline de cobrança de vencidos") |
 | `/cobranca/erros` | `cobranca/CobrancaErros.tsx` | `cobranca_erros_log` |
 
@@ -1205,12 +1213,17 @@ faturas SIEG em `ignorado`; o handler A1 (baixar o boleto real) segue como melho
   na tabela `supplier` (nome/CNPJ/CPF + 4 e-mails, via `findSupplierIdsByTerm`) e filtra
   `sk_supplier=in.(...)` — o `applyFinancialFilters` casa ainda `invoice_number`/`subject`/
   `sender_email`, que são colunas próprias da conta.
-- **`/consulta` — `cancelado` oculto por padrão (consistência grid ↔ KPIs):** `applyFinancialFilters`
-  aplica `status=neq.cancelado` quando **não** há filtro de situação. `getFinancialStats` usa o
-  **mesmo** filtro, então o rodapé "N registros", o KPI "Total de registros", o "Valor total" e
-  "Vencidas" batem com o grid — contas canceladas só aparecem se o usuário escolher `cancelado`
-  no filtro de situação (que sobrescreve o `neq`). Ao criar nova query/KPI sobre
-  `financial_account_control`, replicar esse padrão para não divergir.
+- **`/consulta` — `cancelado` aparece no GRID, mas NÃO nos KPIs (mudança 2026-06-25):** a regra
+  antiga ocultava cancelado em tudo; agora o **grid mostra canceladas** por padrão e os **KPIs as
+  excluem** (para o "Valor total"/"Total de registros" não somar cancelado e gerar confusão). Como
+  isso é implementado: `applyFinancialFilters` recebe `includeCancelled` (default **false** = exclui)
+  — o **grid** (`getFinancialAccountControl`) passa `true`; o card **"Valor total"**
+  (`getFinancialAccountTotalValue`) usa o default (exclui). O `getFinancialStats` mantém
+  `status=neq.cancelado` (KPIs gerais sem cancelado). Filtro explícito de situação (`eq.<status>`)
+  sobrescreve tudo nos dois caminhos. **Consequência aceita:** o rodapé do grid ("N de M") conta
+  canceladas e o KPI "Total de registros" não — divergência **intencional** (cancelado é visível,
+  mas fora dos totais). Linha cancelada é pintada de vermelho (`bg-status-error-solid/15`, via
+  `DataGrid rowClassName`), tom distinto do badge "vencido".
 - **Grid compartilhado sobre TanStack Table v8** (`organisms/DataGrid.tsx`): `/consulta` (tema
   `default`) e `/emails` (tema `silver`) usam o mesmo grid, com as colunas de `useGridColumns.ts`
   (`getConsultaColumns` / `getEmailColumns`). O TanStack é **headless**: fornece row model (core),
@@ -1288,7 +1301,11 @@ faturas SIEG em `ignorado`; o handler A1 (baixar o boleto real) segue como melho
 ## Banco de dados (Supabase)
 
 Migrations em `supabase/migrations/`, aplicadas **manualmente no SQL Editor** em ordem
-numérica (`001` → `048`). Não há migration automática. (As `047`/`048` adicionam a **classificação
+numérica (`001` → `049`). Não há migration automática. (A `049` adiciona policy de **SELECT
+`TO authenticated`** em `financial_cost_center` e `financial_chart_of_account` — sem ela, o RLS
+estava habilitado **sem nenhuma policy** (default deny) e o embed `cost_center`/`chart_account`
+lido pelo frontend com papel `authenticated` voltava **null**, fazendo o grid/detalhe de `/consulta`
+mostrar o **`#id`** em vez da descrição. A Next API não sofria por usar service_role.) (As `047`/`048` adicionam a **classificação
 contábil** em `financial_account_control`: a `047` cria `cost_center_id` SMALLINT (FK →
 `financial_cost_center`) e `chart_account_id` SMALLINT (FK → `financial_chart_of_account`) +
 índices; a `048` torna ambas **NOT NULL DEFAULT 0** — id 0 = sentinela "não informado" (a linha id 0
@@ -1312,7 +1329,7 @@ internet` ao CHECK de `document_type` e faz backfill — ver "Normalização de 
 |---|---|
 | `email_control` | Dedup/controle. `status` ∈ (`extraído`, `recebido`, `pendente`, `falha`, `ignorado`, `duplicidade`) — **migrations 022/031**. `extraído`=PDF extraído (CSV gerado); `recebido`=sem PDF, conta via corpo; `pendente`=PDF salvo sem CSV (substitui `baixado`); `falha`=casou keyword mas sem PDF e sem conta no corpo; `ignorado`=não-financeiro (sem keyword) **ou NF-e pura sem conta a pagar** (`subject_is_pure_nfe`); `duplicidade`=pagável do corpo duplica conta já registrada por outro e-mail (**migration 031**; card/filtro próprios em `/emails`). O status é calculado em `process_message` pelo resultado real (conta/CSV/corpo/duplicata), não por `pdf_extracted` |
 | `financial_account_control` | Tabela principal de contas a pagar — uma linha por documento; alimentada pelo pipeline de e-mail **e** por CRUD manual (baixas, consolidações, dashboards). Substitui a antiga `financial_emails` (dropada na migration 020). O fornecedor é referenciado **só pela FK `sk_supplier`** (surrogate key snowflake, NOT NULL — **migration 042**, antes era `supplier_id`) — nome/CNPJ vêm do JOIN com `supplier` (colunas denormalizadas dropadas na **migration 041**). Tem `sender_email` (migration 023; backfill em 025) usado na resolução p/ alinhar `supplier.email`, e `subject` (migration 025) — exibidos/buscados em `/consulta`. **Classificação contábil** (migrations 047/048): `cost_center_id`/`chart_account_id` SMALLINT, NOT NULL DEFAULT 0 (FKs para os cadastros; id 0 = "não informado") — preenchidos no CRUD manual (cascata centro→plano) |
-| `financial_cost_center` / `financial_chart_of_account` | **Cadastros de classificação contábil** (pré-existentes, **preservados em limpezas**) usados como lookup no modal de contas. `financial_chart_of_account` tem `cost_center_id` (relaciona o plano ao centro — base da CASCATA) e `is_postable` (só os postáveis são lançáveis). Lidos via `lib/lookups.ts` (service_role); RLS habilitado |
+| `financial_cost_center` / `financial_chart_of_account` | **Cadastros de classificação contábil** (pré-existentes, **preservados em limpezas**) usados como lookup no modal de contas. `financial_chart_of_account` tem `cost_center_id` (relaciona o plano ao centro — base da CASCATA) e `is_postable` (só os postáveis são lançáveis). Lidos via `lib/lookups.ts` (service_role) **e** pelo frontend via embed REST (papel `authenticated`); RLS habilitado com policy de SELECT `TO authenticated` (migration 049 — sem ela o embed voltava null e a UI mostrava `#id`) |
 | `email_processing_errors` | Log de falhas com `raw_payload` JSON |
 | `supplier` | Fornecedores. PK = `sk_supplier` (surrogate key snowflake auto-incremental — **migration 042**); `supplier_id` é **chave de negócio** (NOT NULL UNIQUE, só nesta tabela; = `sk_supplier` nos fornecedores criados pela extração, via trigger de espelho `trg_supplier_mirror_id`, podendo divergir em cargas externas). Auto-criados pelo trigger de resolução, mas **cadastro PRESERVADO** (curadoria manual de `email`/`email2`/`email3`/`email4`) — **nunca truncar** em limpezas (ver "Limpeza / reset de dados"). Reconhecimento por **e-mail** em `email`/`email2`/`email3`/`email4` (migrations 023/027/028) — ver "Auto-resolução de fornecedor". **Soft delete** via `deleted_at` (migration 045) — a baixa pelo CRUD da Next API marca `deleted_at` (nunca hard delete) e é bloqueada quando há contas vinculadas; ver "CRUD de fornecedores (Next API)" |
 | `company` | Empresa pagadora (**cadastro**, tem campo `email`). Auto-resolvida pelo trigger `resolve_company_id` a partir de `payer_cnpj`/`payer_name`. **Preservada em limpezas** (ver abaixo) |

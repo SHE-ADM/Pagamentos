@@ -62,6 +62,12 @@ interface DataGridProps<T> {
   rowKey: (row: T) => string;
   selectedId?: string | null;
   onRowClick: (row: T) => void;
+  /**
+   * Classe extra por linha (ex.: pintar a linha por status). Aplicada à `<tr>` E a
+   * cada `<td>` — assim o tom vence o fundo opaco das células fixadas (pinned), que
+   * de outro modo cobririam a cor nas colunas sticky.
+   */
+  rowClassName?: (row: T) => string | undefined;
   sortCol: string | null;
   sortDir: 'asc' | 'desc' | null;
   onSort: (col: string) => void;
@@ -281,6 +287,7 @@ export default function DataGrid<T>({
   rowKey,
   selectedId,
   onRowClick,
+  rowClassName,
   sortCol,
   sortDir,
   onSort,
@@ -588,13 +595,17 @@ export default function DataGrid<T>({
   // ── Render de cada item (tr) — reutilizado pelo caminho virtual e pelo plano ──
   type MeasureRef = ((node: Element | null) => void) | undefined;
 
-  const renderBodyRowTr = (rr: RowRender<T>, itemKey: string, dataIndex: number | undefined, measureRef: MeasureRef): ReactNode => (
+  const renderBodyRowTr = (rr: RowRender<T>, itemKey: string, dataIndex: number | undefined, measureRef: MeasureRef): ReactNode => {
+    // Tom por linha (ex.: cancelado). Aplicado à <tr> e a cada <td> para vencer o
+    // fundo opaco das células fixadas (twMerge: última classe de bg prevalece).
+    const tint = rowClassName?.(rr.original);
+    return (
     <tr
       key={itemKey}
       data-index={dataIndex}
       ref={measureRef}
       onClick={() => onRowClick(rr.original)}
-      className={bodyRow({ variant, selected: rr.isSelected })}
+      className={cn(bodyRow({ variant, selected: rr.isSelected }), tint)}
     >
       {rr.mainCells.map((cell) => {
         const column = cell.column;
@@ -605,6 +616,7 @@ export default function DataGrid<T>({
           managed && m.truncate && 'max-w-56',
           m.className,
           pinClass(column, 'body', accent),
+          tint,
         );
         if (column.id === SELECT_ID) {
           return (
@@ -633,7 +645,8 @@ export default function DataGrid<T>({
         );
       })}
     </tr>
-  );
+    );
+  };
 
   const renderSecondLineTr = (rr: RowRender<T>, itemKey: string, dataIndex: number | undefined, measureRef: MeasureRef): ReactNode => (
     <tr key={itemKey} data-index={dataIndex} ref={measureRef} aria-label="Campos adicionais do registro">

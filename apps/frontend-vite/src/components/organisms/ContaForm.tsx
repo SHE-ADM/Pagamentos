@@ -44,13 +44,25 @@ interface ContaFormProps {
   submitting?: boolean;
 }
 
+// Data corrente no formato YYYY-MM-DD (local) — default de emissão/vencimento ao
+// INCLUIR uma conta. Usa a data local (não UTC) para não "voltar um dia" à noite.
+const todayISO = (): string => {
+  const d = new Date();
+  const mm = String(d.getMonth() + 1).padStart(2, '0');
+  const dd = String(d.getDate()).padStart(2, '0');
+  return `${d.getFullYear()}-${mm}-${dd}`;
+};
+
 function toFormValues(c?: FinancialAccountControl): ContaFormValues {
+  // Inclusão (sem `c`): emissão e vencimento já vêm com a data de hoje. Edição:
+  // mantém os valores da conta (sem fabricar data quando o campo está vazio).
+  const dateDefault = c ? '' : todayISO();
   return {
     amount: c?.amount != null ? String(c.amount) : '',
     document_type: c?.document_type ?? '',
     payment_method: c?.payment_method ?? '',
-    due_date: c?.due_date ?? '',
-    issue_date: c?.issue_date ?? '',
+    due_date: c?.due_date ?? dateDefault,
+    issue_date: c?.issue_date ?? dateDefault,
     invoice_number: c?.invoice_number ?? '',
     description: c?.description ?? '',
     barcode: c?.barcode ?? '',

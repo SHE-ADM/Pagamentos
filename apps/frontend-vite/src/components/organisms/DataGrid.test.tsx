@@ -83,6 +83,21 @@ describe('DataGrid', () => {
     expect(screen.queryByText('Detalhe de Beta')).not.toBeInTheDocument();
   });
 
+  it('aplica rowClassName na linha (tr e células) conforme a linha', () => {
+    render(
+      <DataGrid
+        {...baseProps}
+        rowClassName={(r) => (r.id === 1 ? 'bg-status-error-solid/15' : undefined)}
+      />,
+    );
+    // A <tr> da linha 1 recebe o tom; a célula também (vence o fundo de fixadas).
+    const tr = screen.getByText('Alpha').closest('tr');
+    expect(tr).toHaveClass('bg-status-error-solid/15');
+    expect(screen.getByText('Alpha').closest('td')).toHaveClass('bg-status-error-solid/15');
+    // A linha 2 não recebe o tom.
+    expect(screen.getByText('Beta').closest('tr')).not.toHaveClass('bg-status-error-solid/15');
+  });
+
   it('mostra a mensagem de vazio quando não há linhas', () => {
     render(<DataGrid {...baseProps} rows={[]} emptyMessage="Nada aqui" />);
     expect(screen.getByText('Nada aqui')).toBeInTheDocument();
