@@ -31,10 +31,12 @@ describe('Layout (sidebar)', () => {
     expect(screen.getByText('conteúdo')).toBeInTheDocument();
   });
 
-  it('exibe iniciais do e-mail e badge "breve" nos itens em breve', () => {
+  it('exibe as iniciais do e-mail e não há mais itens "breve" (Dashboard ativo)', () => {
     renderLayout();
     expect(screen.getByText('SU')).toBeInTheDocument(); // iniciais de "suporte@..."
-    expect(screen.getAllByText('breve').length).toBeGreaterThan(0);
+    // Dashboard foi promovido a link ativo — nenhum item fica mais "breve".
+    expect(screen.queryByText('breve')).not.toBeInTheDocument();
+    expect(screen.getByText('Dashboard')).toBeInTheDocument();
   });
 
   it('aciona signOut ao clicar em sair', async () => {

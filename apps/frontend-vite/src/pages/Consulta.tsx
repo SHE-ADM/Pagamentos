@@ -663,6 +663,9 @@ export default function Consulta() {
             rowKey={(r) => String(r.id)}
             selectedId={sel ? String(sel.id) : null}
             onRowClick={(r) => setSel(sel?.id === r.id ? null : r)}
+            // Conta cancelada: linha inteira em vermelho mais saturado (status-error-solid/15)
+            // — tom distinto do vermelho pálido do badge "vencido" (status-error-bg).
+            rowClassName={(r) => (r.status === 'cancelado' ? 'bg-status-error-solid/15' : undefined)}
             sortCol={sort.col}
             sortDir={sort.dir}
             onSort={handleSort}

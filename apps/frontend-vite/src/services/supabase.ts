@@ -263,6 +263,9 @@ function applyFinancialFilters(
   params: URLSearchParams,
   { supplier, docType, status, paymentMethod, dateFrom, dateTo }: FinancialAccountControlFilters,
   supplierIds: number[] = [],
+  // Só o GRID inclui canceladas; os KPIs (Valor total) mantêm a exclusão para não
+  // somar cancelado (evita confusão). Default = excluir cancelado.
+  includeCancelled = false,
 ): void {
   // or= nas colunas próprias da conta (nº documento, assunto, remetente) mais os
   // sk_supplier resolvidos pelo termo (nome/CNPJ/CPF/e-mail do cadastro supplier).
@@ -276,8 +279,10 @@ function applyFinancialFilters(
     params.set('or', `(${clauses.join(',')})`);
   }
   if (docType) params.set('document_type', `eq.${docType}`);
-  // Sem filtro de situação → exclui cancelado por padrão; filtro explícito sobrescreve.
-  params.set('status', status ? `eq.${status}` : 'neq.cancelado');
+  // Situação: filtro explícito sobrescreve tudo. Sem filtro, o grid mostra TODAS
+  // (inclui cancelado — regra antiga removida); os KPIs mantêm `neq.cancelado`.
+  if (status) params.set('status', `eq.${status}`);
+  else if (!includeCancelled) params.set('status', 'neq.cancelado');
   if (paymentMethod) params.set('payment_method', `eq.${paymentMethod}`);
   if (dateFrom) params.append('due_date', `gte.${dateFrom}`);
   if (dateTo) params.append('due_date', `lte.${dateTo}`);
@@ -307,7 +312,8 @@ export async function getFinancialAccountControl({
   url.searchParams.set('limit', String(pageSize));
   url.searchParams.set('offset', String(offset));
   const supplierIds = supplier ? await findSupplierIdsByTerm(supplier) : [];
-  applyFinancialFilters(url.searchParams, { supplier, docType, status, paymentMethod, dateFrom, dateTo }, supplierIds);
+  // Grid: inclui canceladas (includeCancelled=true). Os KPIs continuam excluindo.
+  applyFinancialFilters(url.searchParams, { supplier, docType, status, paymentMethod, dateFrom, dateTo }, supplierIds, true);
   const reqHeaders = await authHeaders({ Prefer: 'count=exact' });
   const res = await fetch(url.toString(), { headers: reqHeaders });
   if (!res.ok) throw new Error(`Supabase ${res.status}: ${await res.text()}`);
@@ -515,4 +521,162 @@ export async function getFinancialStats(): Promise<FinancialStats> {
     vencidas: vencidasRows.length,
     vencidasValue: sum(vencidasRows),
   };
+}
+
+// ============================================================================
+//  ADICIONAR AO FINAL DE: apps/frontend-vite/src/services/supabase.ts
+//  (usa os helpers privados `query`/`authHeaders`/`BASE_URL` já existentes
+//   no arquivo — por isso este bloco precisa viver DENTRO de supabase.ts.)
+// ============================================================================
+
+// ── dashboard ────────────────────────────────────────────────────────────────
+// Agrega tudo que o Dashboard financeiro precisa em 2 leituras: as contas do mês
+// selecionado (KPIs, situação por status, ranking de fornecedores, prioritárias)
+// e as contas do ano (movimentações mês a mês). Tudo calculado no cliente, no
+// mesmo estilo de getFinancialStats. `month` é 0-indexed (0 = Janeiro).
+
+export interface DashboardKpis {
+  totalCount: number; totalValue: number;
+  pagoCount: number; pagoValue: number;
+  aVencerCount: number; aVencerValue: number;
+  vencendoCount: number; vencendoValue: number; // a vencer em 7 dias
+  vencidasCount: number; vencidasValue: number;
+}
+export interface StatusSlice { status: string; count: number; value: number }
+export interface SupplierRank { name: string; value: number; count: number }
+export interface MonthlyFlow { month: number; aPagar: number; pago: number }
+export type PriorityKind = 'agua' | 'luz' | 'internet' | 'telefone' | 'aluguel' | 'tributo' | 'outro';
+export interface PriorityAccount {
+  id: number; kind: PriorityKind; supplier: string;
+  due: string | null; amount: number | null; status: string; critical: boolean;
+}
+export type DashboardScope = 'month' | 'all';
+export interface DashboardData {
+  month: number; year: number; scope: DashboardScope;
+  kpis: DashboardKpis;
+  statusBreakdown: StatusSlice[];
+  supplierRanking: SupplierRank[];
+  monthlyFlow: MonthlyFlow[];
+  priorityAccounts: PriorityAccount[];
+}
+
+// Classificação de contas prioritárias/essenciais por palavra-chave no nome do
+// fornecedor + descrição + tipo de documento. Ajuste as regexes conforme os
+// fornecedores reais da operação.
+const PRIORITY_RULES: { kind: PriorityKind; re: RegExp }[] = [
+  { kind: 'agua', re: /\b(sabesp|[áa]guas?|saneamento|copasa|caesb|sanepar|aegea|cedae)\b/i },
+  { kind: 'luz', re: /\b(cpfl|energia|el[ée]tric|enel|cemig|light|celesc|coelba|equatorial|neoenergia|elektro|edp)\b/i },
+  { kind: 'internet', re: /\b(vivo|claro|tim\b|oi\b|net\b|fibra|internet|telecom|algar|brisanet|telef[oô]nica)\b/i },
+  { kind: 'telefone', re: /\b(telefon[ei]a?|celular|m[óo]vel)\b/i },
+  { kind: 'aluguel', re: /\b(aluguel|alug[uú][ée]is|imobili[áa]ri|loca[çc][ãa]o|condom[íi]nio)\b/i },
+  { kind: 'tributo', re: /\b(darf|das\b|gps\b|inss|fgts|iss\b|icms|tribut|imposto|receita federal|prefeitura|sefaz)\b/i },
+];
+
+function classifyPriority(text: string): PriorityKind | null {
+  for (const r of PRIORITY_RULES) if (r.re.test(text)) return r.kind;
+  return null;
+}
+
+type MonthRow = Pick<FinancialAccountControl, 'id' | 'amount' | 'status' | 'due_date' | 'document_type' | 'description'> & {
+  supplier?: { trade_name: string | null; legal_name: string | null } | null;
+};
+type YearRow = Pick<FinancialAccountControl, 'amount' | 'status' | 'due_date'>;
+
+const num = (v: number | null | undefined): number => Number(v) || 0;
+const supplierName = (r: MonthRow): string => r.supplier?.trade_name ?? r.supplier?.legal_name ?? 'Sem fornecedor';
+
+// `scope` = 'month' (mês selecionado, padrão) ou 'all' (todas as contas, sem filtro
+// de data nos painéis). O gráfico de movimentações sempre reflete o `year`.
+export async function getDashboardData(month: number, year: number, scope: DashboardScope = 'month'): Promise<DashboardData> {
+  const first = new Date(Date.UTC(year, month, 1)).toISOString().slice(0, 10);
+  const last = new Date(Date.UTC(year, month + 1, 0)).toISOString().slice(0, 10);
+  const todayStr = new Date().toISOString().slice(0, 10);
+  const in7 = new Date(Date.now() + 7 * 86400000).toISOString().slice(0, 10);
+
+  // Contas do escopo (exclui cancelado) com embed do fornecedor.
+  // 'month' → filtra pelo intervalo do mês; 'all' → todas as contas.
+  const monthRows = await query<MonthRow[]>('financial_account_control', {
+    select: 'id,amount,status,due_date,document_type,description,supplier(trade_name,legal_name)',
+    status: 'neq.cancelado',
+    ...(scope === 'month' ? { and: `(due_date.gte.${first},due_date.lte.${last})` } : {}),
+    limit: scope === 'month' ? 5000 : 20000,
+  });
+
+  // Contas do ano inteiro (só os campos do gráfico) para as movimentações mês a mês.
+  const yearRows = await query<YearRow[]>('financial_account_control', {
+    select: 'amount,status,due_date',
+    status: 'neq.cancelado',
+    and: `(due_date.gte.${year}-01-01,due_date.lte.${year}-12-31)`,
+    limit: 20000,
+  });
+
+  // KPIs
+  const sum = (rows: MonthRow[]): number => rows.reduce((s, r) => s + num(r.amount), 0);
+  const pagoRows = monthRows.filter((r) => r.status === 'pago');
+  const aVencerRows = monthRows.filter((r) => r.status === 'a vencer');
+  const vencendoRows = aVencerRows.filter((r) => r.due_date && r.due_date >= todayStr && r.due_date <= in7);
+  const vencidasRows = monthRows.filter((r) => r.status === 'vencido');
+  const kpis: DashboardKpis = {
+    totalCount: monthRows.length, totalValue: sum(monthRows),
+    pagoCount: pagoRows.length, pagoValue: sum(pagoRows),
+    aVencerCount: aVencerRows.length, aVencerValue: sum(aVencerRows),
+    vencendoCount: vencendoRows.length, vencendoValue: sum(vencendoRows),
+    vencidasCount: vencidasRows.length, vencidasValue: sum(vencidasRows),
+  };
+
+  // Situação por status
+  const statusMap = new Map<string, { count: number; value: number }>();
+  for (const r of monthRows) {
+    const k = r.status ?? 'pendente';
+    const cur = statusMap.get(k) ?? { count: 0, value: 0 };
+    cur.count += 1; cur.value += num(r.amount);
+    statusMap.set(k, cur);
+  }
+  const statusBreakdown: StatusSlice[] = [...statusMap.entries()]
+    .map(([status, v]) => ({ status, ...v }))
+    .sort((a, b) => b.count - a.count);
+
+  // Ranking de fornecedores (top 6 por valor)
+  const supMap = new Map<string, { value: number; count: number }>();
+  for (const r of monthRows) {
+    const k = supplierName(r);
+    const cur = supMap.get(k) ?? { value: 0, count: 0 };
+    cur.value += num(r.amount); cur.count += 1;
+    supMap.set(k, cur);
+  }
+  const supplierRanking: SupplierRank[] = [...supMap.entries()]
+    .map(([name, v]) => ({ name, ...v }))
+    .sort((a, b) => b.value - a.value)
+    .slice(0, 6);
+
+  // Movimentações mês a mês (12 baldes)
+  const buckets: MonthlyFlow[] = Array.from({ length: 12 }, (_, m) => ({ month: m, aPagar: 0, pago: 0 }));
+  for (const r of yearRows) {
+    if (!r.due_date) continue;
+    const m = Number(r.due_date.slice(5, 7)) - 1;
+    if (m < 0 || m > 11) continue;
+    buckets[m].aPagar += num(r.amount);
+    if (r.status === 'pago') buckets[m].pago += num(r.amount);
+  }
+
+  // Contas críticas / prioritárias: utilidades essenciais OU vencidas.
+  const priorityAccounts: PriorityAccount[] = monthRows
+    .map((r): PriorityAccount | null => {
+      const kind = classifyPriority(`${supplierName(r)} ${r.description ?? ''} ${r.document_type ?? ''}`);
+      const isVencido = r.status === 'vencido';
+      if (!kind && !isVencido) return null;
+      return {
+        id: r.id, kind: kind ?? 'outro', supplier: supplierName(r),
+        due: r.due_date, amount: r.amount, status: r.status ?? 'pendente',
+        critical: isVencido,
+      };
+    })
+    .filter((x): x is PriorityAccount => x !== null)
+    .sort((a, b) => {
+      if (a.critical !== b.critical) return a.critical ? -1 : 1; // vencidas primeiro
+      return (a.due ?? '').localeCompare(b.due ?? '');
+    })
+    .slice(0, 7);
+
+  return { month, year, scope, kpis, statusBreakdown, supplierRanking, monthlyFlow: buckets, priorityAccounts };
 }

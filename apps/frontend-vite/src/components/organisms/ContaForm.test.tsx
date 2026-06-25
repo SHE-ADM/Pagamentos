@@ -39,6 +39,14 @@ describe('ContaForm', () => {
     expect(screen.getByRole('button', { name: 'Lançar conta' })).toBeInTheDocument();
   });
 
+  it('pré-preenche emissão e vencimento com a data de hoje na inclusão', () => {
+    setup();
+    const d = new Date();
+    const today = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+    expect(screen.getByLabelText('Emissão')).toHaveValue(today);
+    expect(screen.getByLabelText('Vencimento')).toHaveValue(today);
+  });
+
   it('exige fornecedor + tipo de documento + tipo de pagamento ao submeter vazio', async () => {
     const { onSubmit } = setup();
     await userEvent.click(screen.getByRole('button', { name: 'Lançar conta' }));

@@ -1,0 +1,53 @@
+// src/pages/Dashboard.test.tsx
+import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { render, screen } from '@testing-library/react';
+import Dashboard from './Dashboard';
+import * as supabase from '../services/supabase';
+import type { DashboardData } from '../services/supabase';
+
+const MOCK: DashboardData = {
+  month: new Date().getMonth(),
+  year: new Date().getFullYear(),
+  scope: 'month',
+  kpis: {
+    totalCount: 128, totalValue: 47121.73,
+    pagoCount: 42, pagoValue: 10903.7,
+    aVencerCount: 67, aVencerValue: 24187.02,
+    vencendoCount: 11, vencendoValue: 21778.02,
+    vencidasCount: 8, vencidasValue: 12031.01,
+  },
+  statusBreakdown: [
+    { status: 'a vencer', count: 67, value: 24187.02 },
+    { status: 'pago', count: 42, value: 10903.7 },
+    { status: 'vencido', count: 8, value: 12031.01 },
+  ],
+  supplierRanking: [
+    { name: 'Avance Info/Adm/Farmácia', value: 19493.41, count: 12 },
+    { name: 'CPFL Energia', value: 6420.3, count: 3 },
+  ],
+  monthlyFlow: Array.from({ length: 12 }, (_, m) => ({ month: m, aPagar: 1000 * (m + 1), pago: 500 * (m + 1) })),
+  priorityAccounts: [
+    { id: 1, kind: 'luz', supplier: 'CPFL Energia', due: '2025-02-08', amount: 1174.8, status: 'a vencer', critical: false },
+    { id: 2, kind: 'agua', supplier: 'Sabesp', due: '2025-02-03', amount: 566, status: 'vencido', critical: true },
+  ],
+};
+
+describe('Dashboard', () => {
+  beforeEach(() => {
+    vi.spyOn(supabase, 'getDashboardData').mockResolvedValue(MOCK);
+  });
+
+  it('abre no mês atual e renderiza os KPIs', async () => {
+    render(<Dashboard />);
+    expect(await screen.findByText('Total a pagar no mês')).toBeInTheDocument();
+    expect(screen.getByText('Vencidas')).toBeInTheDocument();
+    // getDashboardData chamado com o mês corrente e escopo 'month'
+    expect(supabase.getDashboardData).toHaveBeenCalledWith(new Date().getMonth(), new Date().getFullYear(), 'month');
+  });
+
+  it('renderiza ranking e contas prioritárias', async () => {
+    render(<Dashboard />);
+    expect(await screen.findByText('Avance Info/Adm/Farmácia')).toBeInTheDocument();
+    expect(screen.getByText('Sabesp')).toBeInTheDocument();
+  });
+});
