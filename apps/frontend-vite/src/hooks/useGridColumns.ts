@@ -1,6 +1,6 @@
 import { createElement, type ReactNode, type MouseEvent } from 'react';
-import { CheckCircle2, Pencil } from 'lucide-react';
-import type { FinancialAccountControl, EmailControl, Supplier } from '@sheild/shared';
+import { CheckCircle2, Pencil, Trash2 } from 'lucide-react';
+import type { FinancialAccountControl, EmailControl, Supplier, CostCenter } from '@sheild/shared';
 import StatusBadge from '../components/StatusBadge';
 import CheckToggle from '../components/atoms/CheckToggle';
 import StatusSelectCell, { type StatusOption } from '../components/atoms/StatusSelectCell';
@@ -380,6 +380,61 @@ function actionButton(
 }
 
 const supplierLabel = (s: Supplier): string => s.trade_name ?? s.legal_name ?? `#${s.sk_supplier}`;
+
+/** Callbacks de ação (editar/excluir) da linha de centro de custo. */
+type CostCenterRowAction = (costCenter: CostCenter) => void;
+
+const costCenterLabel = (c: CostCenter): string =>
+  c.cost_center_code ?? c.cost_center_description ?? `#${c.cost_center_id}`;
+
+/**
+ * Colunas do grid de /tabelas/centros-de-custo. É uma **factory** porque a coluna
+ * "Ações" renderiza os botões de editar e excluir, que dependem dos callbacks da página.
+ */
+export function getCostCenterColumns(
+  onEdit: CostCenterRowAction,
+  onDelete: CostCenterRowAction,
+): ColumnDef<CostCenter>[] {
+  return [
+    {
+      key: 'cost_center_code',
+      header: 'Código',
+      size: 160,
+      truncate: true,
+      render: (c) => c.cost_center_code ?? '—',
+    },
+    {
+      key: 'cost_center_description',
+      header: 'Descrição',
+      size: 360,
+      wrap: true,
+      render: (c) => c.cost_center_description ?? '—',
+    },
+    {
+      key: '__actions__',
+      header: 'Ações',
+      size: 96,
+      align: 'center',
+      render: (c) =>
+        createElement(
+          'div',
+          { className: 'inline-flex items-center gap-1' },
+          actionButton(
+            Pencil,
+            `Editar ${costCenterLabel(c)}`,
+            'inline-flex h-7 w-7 items-center justify-center rounded-md text-slate-500 hover:bg-slate-100 hover:text-brand transition-colors',
+            () => onEdit(c),
+          ),
+          actionButton(
+            Trash2,
+            `Excluir ${costCenterLabel(c)}`,
+            'inline-flex h-7 w-7 items-center justify-center rounded-md text-slate-500 hover:bg-status-error-bg hover:text-status-error-fg transition-colors',
+            () => onDelete(c),
+          ),
+        ),
+    },
+  ];
+}
 
 /**
  * Colunas do grid de /fornecedores. É uma **factory** porque a coluna "Ações"

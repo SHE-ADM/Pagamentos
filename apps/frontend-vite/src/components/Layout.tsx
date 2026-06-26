@@ -2,7 +2,7 @@
 import { useState, type ReactNode } from 'react';
 import { NavLink } from 'react-router-dom';
 import { cva } from 'class-variance-authority';
-import { Mail, Wallet, BarChart2, FilePlus, Building2, Receipt, AlertTriangle, LogOut, Menu, X } from 'lucide-react';
+import { Mail, Wallet, BarChart2, FilePlus, Building2, Receipt, AlertTriangle, Layers, LogOut, Menu, X } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
 import { cn } from '../lib/cn';
 
@@ -103,7 +103,15 @@ export default function Layout({ children }: Readonly<{ children: ReactNode }>) 
             <Building2 size={16} /> Cadastro de fornecedores
           </NavLink>
 
-          {/* Grupo 4 — Análise */}
+          {/* Grupo 4 — Tabelas */}
+          <p className="px-3 pt-4 pb-1.5 text-xs font-bold tracking-widest text-slate-400 uppercase">
+            Tabelas
+          </p>
+          <NavLink to="/tabelas/centros-de-custo" onClick={closeNav} className={({ isActive }) => navLink({ active: isActive })}>
+            <Layers size={16} /> Centro de custos
+          </NavLink>
+
+          {/* Grupo 5 — Análise */}
           <p className="px-3 pt-4 pb-1.5 text-xs font-bold tracking-widest text-slate-400 uppercase">
             Análise
           </p>
