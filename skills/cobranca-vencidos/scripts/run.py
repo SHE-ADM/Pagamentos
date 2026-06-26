@@ -16,6 +16,8 @@ import os
 import sys
 import time
 import traceback
+from collections import Counter
+from collections.abc import Mapping
 from pathlib import Path
 
 # ---------------------------------------------------------------------------
@@ -70,6 +72,25 @@ logging.basicConfig(
     ],
 )
 logger = logging.getLogger("cobranca-vencidos")
+
+# Tipos de erro de DADO do cliente (cadastro no Firebird) — NÃO reprovam a tarefa
+# agendada: são registrados em cobranca_erros_log e notificados ao representante, mas
+# o run cumpriu seu papel (não há o que enviar para quem não tem e-mail). Só erros
+# OPERACIONAIS (SMTP recusado/bloqueado, Supabase, inesperado) fazem o processo sair
+# com código != 0 — o que o wrapper .ps1 marca como "CRASH / ERRO" e o Agendador como 0x1.
+DATA_ERROR_TYPES = frozenset({"email_ausente", "email_invalido"})
+
+
+def compute_exit_code(error_types: Mapping[str, int]) -> int:
+    """Decide o exit code do run a partir da contagem de erros por tipo.
+
+    Retorna 0 quando os únicos erros são de DADO (cliente sem e-mail / e-mail inválido)
+    — condição de cadastro, não falha do sistema — e 1 quando houve ao menos um erro
+    OPERACIONAL (qualquer tipo fora de DATA_ERROR_TYPES). Mantém a tarefa "verde" no
+    Agendador quando ela rodou até o fim e só esbarrou em clientes sem e-mail.
+    """
+    operational = sum(n for t, n in error_types.items() if t not in DATA_ERROR_TYPES)
+    return 1 if operational > 0 else 0
 
 
 def _email_error_type(primary_email) -> str:
@@ -187,7 +208,71 @@ def _notify_failures(session, failures: list[dict], send_delay: float) -> None:
     logger.info("Notificações de falha enviadas a %d/%d representante(s).", enviados, total)
 
 
-def main(dry_run: bool = False) -> None:
+def _record_result(
+    result, titulo, *, counts: dict[str, int], error_types: Counter[str],
+    failures: list[dict], error_doc_ids: set[str],
+) -> None:
+    """Contabiliza um resultado: counts, error_types, limpeza de erro resolvido e a
+    coleta de falhas definitivas (para notificar o CC). Sem efeito de throttle/SMTP."""
+    counts[result.status] += 1
+    if result.status == "error":
+        error_types[result.error_type or "erro_inesperado"] += 1
+    # Título resolvido (enviado agora ou já enviado) que antes tinha erro: limpa o log.
+    if result.status in ("sent", "skipped") and titulo.document_id in error_doc_ids:
+        _cleanup_resolved_errors(titulo.document_id)
+    if result.status == "error" and result.error_type in DEFINITIVE_ERROR_TYPES:
+        failures.append({
+            "cc_email": titulo.cc_email, "customer_name": titulo.customer_name,
+            "document_id": titulo.document_id, "due_date": titulo.due_date,
+            "bill_amount": titulo.bill_amount, "motivo": result.motivo,
+        })
+
+
+def _run_batch(
+    titulos, *, dry_run: bool, dev_mode: bool, dev_override: str,
+    company_row, send_delay: float, error_doc_ids: set[str],
+) -> tuple[dict[str, int], Counter[str]]:
+    """Processa o lote de títulos com UMA conexão SMTP (lazy) e notifica os
+    representantes das falhas definitivas ao fim. Retorna (counts, error_types).
+
+    counts: {sent, skipped, error}. error_types: contagem por error_type (base do
+    exit code). A sessão SMTP é sempre fechada no finally.
+    """
+    counts = {"sent": 0, "skipped": 0, "error": 0}
+    error_types: Counter[str] = Counter()
+    # Falhas DEFINITIVAS (exigem ação humana) acumuladas para notificar o representante (CC)
+    # ao fim do run — resumo por CC. Transitórias (smtp_falha) re-tentam e não entram aqui.
+    failures: list[dict] = []
+    # Uma única conexão SMTP para todo o lote (lazy: só conecta no 1º envio real).
+    # Em dry-run não há envio, então não abre sessão.
+    session = None if dry_run else SmtpSession(
+        company_row, dev_mode=dev_mode, dev_override=dev_override)
+    try:
+        for titulo in titulos:
+            result = _process_titulo_safe(
+                titulo, dry_run=dry_run, dev_mode=dev_mode,
+                dev_override=dev_override, company_row=company_row, session=session,
+            )
+            _record_result(
+                result, titulo, counts=counts, error_types=error_types,
+                failures=failures, error_doc_ids=error_doc_ids,
+            )
+            if send_delay > 0 and not dry_run and result.status in ("sent", "error"):
+                time.sleep(send_delay)
+
+        # Notifica os representantes das falhas definitivas (resumo por CC).
+        if failures and not dry_run and session is not None:
+            _notify_failures(session, failures, send_delay)
+        elif failures and dry_run:
+            logger.info("[DRY-RUN] %d falha(s) definitiva(s) gerariam notificação ao CC.", len(failures))
+    finally:
+        if session is not None:
+            session.close()
+
+    return counts, error_types
+
+
+def main(dry_run: bool = False) -> int:
     logger.info("=" * 60)
     logger.info("Iniciando skill cobranca-vencidos | dry_run=%s", dry_run)
     logger.info("=" * 60)
@@ -198,7 +283,7 @@ def main(dry_run: bool = False) -> None:
     if dev_mode:
         if not dev_override:
             logger.error("DEV_MODE=true mas DEV_OVERRIDE_EMAIL nao definido. Abortando.")
-            sys.exit(1)
+            return 1
         logger.warning("DEV_MODE ativo -- todos os enviosirao para: %s", dev_override)
 
     company_row = fetch_company_smtp()
@@ -216,11 +301,11 @@ def main(dry_run: bool = False) -> None:
             error_message="Não foi possível consultar os títulos vencidos no sistema financeiro.",
             error_detail=f"{exc}\n\n{traceback.format_exc()}",
         )
-        sys.exit(1)
+        return 1  # falha operacional (não conseguiu nem ler os títulos) → tarefa vermelha
 
     if not titulos:
         logger.info("Nenhum titulo vencido encontrado. Encerrando.")
-        return
+        return 0
 
     # Throttle anti-bloqueio (boa prática Locaweb): pausa de alguns segundos ENTRE envios
     # reais para não saturar a fila de saída (451 "queue file write error" sob rajada).
@@ -242,47 +327,23 @@ def main(dry_run: bool = False) -> None:
         except Exception:  # noqa: BLE001 — sem isso, só não limpa; o run segue
             logger.warning("Não foi possível listar títulos com erro; limpeza de resolvidos desativada neste run.")
 
-    counts = {"sent": 0, "skipped": 0, "error": 0}
-    # Falhas DEFINITIVAS (exigem ação humana) acumuladas para notificar o representante (CC)
-    # ao fim do run — resumo por CC. Transitórias (smtp_falha) re-tentam e não entram aqui.
-    failures: list[dict] = []
-    # Uma única conexão SMTP para todo o lote (lazy: só conecta no 1º envio real).
-    # Em dry-run não há envio, então não abre sessão.
-    session = None if dry_run else SmtpSession(
-        company_row, dev_mode=dev_mode, dev_override=dev_override)
-    try:
-        for titulo in titulos:
-            result = _process_titulo_safe(
-                titulo, dry_run=dry_run, dev_mode=dev_mode,
-                dev_override=dev_override, company_row=company_row, session=session,
-            )
-            counts[result.status] += 1
-            # Título resolvido (enviado agora ou já enviado) que antes tinha erro: limpa o log.
-            if result.status in ("sent", "skipped") and titulo.document_id in error_doc_ids:
-                _cleanup_resolved_errors(titulo.document_id)
-            if result.status == "error" and result.error_type in DEFINITIVE_ERROR_TYPES:
-                failures.append({
-                    "cc_email": titulo.cc_email, "customer_name": titulo.customer_name,
-                    "document_id": titulo.document_id, "due_date": titulo.due_date,
-                    "bill_amount": titulo.bill_amount, "motivo": result.motivo,
-                })
-            if send_delay > 0 and not dry_run and result.status in ("sent", "error"):
-                time.sleep(send_delay)
+    counts, error_types = _run_batch(
+        titulos, dry_run=dry_run, dev_mode=dev_mode, dev_override=dev_override,
+        company_row=company_row, send_delay=send_delay, error_doc_ids=error_doc_ids,
+    )
 
-        # Notifica os representantes das falhas definitivas (resumo por CC).
-        if failures and not dry_run and session is not None:
-            _notify_failures(session, failures, send_delay)
-        elif failures and dry_run:
-            logger.info("[DRY-RUN] %d falha(s) definitiva(s) gerariam notificação ao CC.", len(failures))
-    finally:
-        if session is not None:
-            session.close()
+    # Erros de DADO (cliente sem e-mail / inválido) são separados dos OPERACIONAIS no
+    # resumo: só os operacionais reprovam a tarefa (ver compute_exit_code).
+    data_errors = sum(error_types[t] for t in DATA_ERROR_TYPES)
+    operational_errors = counts["error"] - data_errors
 
     logger.info("-" * 60)
-    logger.info("Resumo: total=%d | enviados=%d | pulados=%d | erros=%d",
-        len(titulos), counts["sent"], counts["skipped"], counts["error"])
+    logger.info(
+        "Resumo: total=%d | enviados=%d | pulados=%d | erros=%d (sem e-mail/inválido=%d · operacionais=%d)",
+        len(titulos), counts["sent"], counts["skipped"], counts["error"], data_errors, operational_errors,
+    )
     logger.info("=" * 60)
-    if counts["error"] > 0: sys.exit(1)
+    return compute_exit_code(error_types)
 
 
 if __name__ == "__main__":
@@ -290,4 +351,4 @@ if __name__ == "__main__":
     parser.add_argument("--dry-run", action="store_true",
         help="Simula sem enviar emails nem gravar no Supabase")
     args = parser.parse_args()
-    main(dry_run=args.dry_run)
+    sys.exit(main(dry_run=args.dry_run))

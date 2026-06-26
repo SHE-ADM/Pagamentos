@@ -47,52 +47,60 @@ export function AuthProvider({ children }: Readonly<{ children: ReactNode }>) {
     let active = true;
 
     const init = async () => {
-      const { data: sessionData } = await supabase.auth.getSession();
-      const persisted = sessionData.session;
+      try {
+        const { data: sessionData } = await supabase.auth.getSession();
+        const persisted = sessionData.session;
 
-      // Sem sessão persistida → segue para o login.
-      if (!persisted) {
+        // Sem sessão persistida → segue para o login.
+        if (!persisted) {
+          if (active) {
+            setSession(null);
+            setUser(null);
+          }
+          return;
+        }
+
+        // Inatividade herdada já expirou (ex.: "Lembrar-me" marcado, mas reaberto
+        // após o teto de 10 min) → desloga sem restaurar, evitando flash de
+        // conteúdo protegido e a validação getUser() desnecessária.
+        if (isIdleExpired(IDLE_TIMEOUT_MS)) {
+          await supabase.auth.signOut();
+          if (active) {
+            setSession(null);
+            setUser(null);
+          }
+          return;
+        }
+
+        // Valida a sessão persistida contra o servidor.
+        const { data: userData, error } = await supabase.auth.getUser();
+        if (!active) return;
+
+        if (userData.user) {
+          // Sessão confirmada pelo servidor.
+          setSession(persisted);
+          setUser(userData.user);
+        } else if (error && isInvalidSessionStatus(error.status)) {
+          // Sessão inválida/órfã → limpa e força o login.
+          await supabase.auth.signOut();
+          setSession(null);
+          setUser(null);
+        } else {
+          // Falha de rede/indeterminada: mantém a sessão otimisticamente.
+          setSession(persisted);
+          setUser(persisted.user);
+        }
+      } catch {
+        // Falha inesperada (storage bloqueado, throw do SDK) → vai para o login
+        // em vez de travar para sempre em "Carregando…".
         if (active) {
           setSession(null);
           setUser(null);
-          setLoading(false);
         }
-        return;
+      } finally {
+        // Garante que o app saia do estado de "Carregando…" em qualquer caminho.
+        if (active) setLoading(false);
       }
-
-      // Inatividade herdada já expirou (ex.: "Lembrar-me" marcado, mas reaberto
-      // após o teto de 10 min) → desloga sem restaurar, evitando flash de
-      // conteúdo protegido e a validação getUser() desnecessária.
-      if (isIdleExpired(IDLE_TIMEOUT_MS)) {
-        await supabase.auth.signOut();
-        if (active) {
-          setSession(null);
-          setUser(null);
-          setLoading(false);
-        }
-        return;
-      }
-
-      // Valida a sessão persistida contra o servidor.
-      const { data: userData, error } = await supabase.auth.getUser();
-      if (!active) return;
-
-      if (userData.user) {
-        // Sessão confirmada pelo servidor.
-        setSession(persisted);
-        setUser(userData.user);
-      } else if (error && isInvalidSessionStatus(error.status)) {
-        // Sessão inválida/órfã → limpa e força o login.
-        await supabase.auth.signOut();
-        setSession(null);
-        setUser(null);
-      } else {
-        // Falha de rede/indeterminada: mantém a sessão otimisticamente.
-        setSession(persisted);
-        setUser(persisted.user);
-      }
-
-      setLoading(false);
     };
 
     void init();

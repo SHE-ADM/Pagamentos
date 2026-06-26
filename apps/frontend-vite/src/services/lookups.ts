@@ -4,8 +4,15 @@
 // fornecedores: as tabelas têm RLS, a leitura via service_role vive no backend.
 // O token da sessão do Supabase vai no Authorization; o middleware o valida.
 
-import type { CostCenter, ChartAccount } from '@sheild/shared';
+import type { CostCenter, ChartAccount, Bank, ChartAccountGroup, ChartAccountSubgroup } from '@sheild/shared';
 import { supabase } from '../lib/supabaseClient';
+
+// Linha da dimensão `status` (lookup de situação do CRUD de contas). Espelha o tipo
+// do backend (lib/lookups.ts StatusOption) — não há schema compartilhado p/ status.
+export interface StatusOption {
+  status_id: number;
+  status_name: string | null;
+}
 
 const DATA_API_BASE = (import.meta.env.VITE_DATA_API_URL as string | undefined) ?? '/data-api';
 
@@ -42,4 +49,26 @@ export async function listChartAccounts(costCenterId: number | null, search?: st
   const qs = new URLSearchParams({ cost_center_id: String(costCenterId) });
   if (search) qs.set('search', search);
   return call<ChartAccount[]>(`/chart-accounts?${qs.toString()}`);
+}
+
+// ── Lookups dos cadastros do grupo Tabelas (modo lookup = rota sem `page`) ────────
+// Listas completas (cadastros pequenos) p/ os <select> dos formulários do CRUD.
+
+export function listBanks(search?: string): Promise<Bank[]> {
+  const qs = search ? `?search=${encodeURIComponent(search)}` : '';
+  return call<Bank[]>(`/banks${qs}`);
+}
+
+export function listChartAccountGroups(search?: string): Promise<ChartAccountGroup[]> {
+  const qs = search ? `?search=${encodeURIComponent(search)}` : '';
+  return call<ChartAccountGroup[]>(`/chart-account-groups${qs}`);
+}
+
+export function listChartAccountSubgroups(search?: string): Promise<ChartAccountSubgroup[]> {
+  const qs = search ? `?search=${encodeURIComponent(search)}` : '';
+  return call<ChartAccountSubgroup[]>(`/chart-account-subgroups${qs}`);
+}
+
+export function listStatuses(): Promise<StatusOption[]> {
+  return call<StatusOption[]>('/statuses');
 }

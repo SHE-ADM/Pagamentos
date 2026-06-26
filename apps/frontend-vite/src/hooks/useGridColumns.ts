@@ -1,6 +1,16 @@
 import { createElement, type ReactNode, type MouseEvent } from 'react';
-import { CheckCircle2, Pencil, Trash2 } from 'lucide-react';
-import type { FinancialAccountControl, EmailControl, Supplier, CostCenter } from '@sheild/shared';
+import { CheckCircle2, Pencil } from 'lucide-react';
+import type {
+  FinancialAccountControl,
+  EmailControl,
+  Supplier,
+  CostCenter,
+  Bank,
+  FinancialAccount,
+  ChartAccount,
+  ChartAccountGroup,
+  ChartAccountSubgroup,
+} from '@sheild/shared';
 import StatusBadge from '../components/StatusBadge';
 import CheckToggle from '../components/atoms/CheckToggle';
 import StatusSelectCell, { type StatusOption } from '../components/atoms/StatusSelectCell';
@@ -387,14 +397,20 @@ type CostCenterRowAction = (costCenter: CostCenter) => void;
 const costCenterLabel = (c: CostCenter): string =>
   c.cost_center_code ?? c.cost_center_description ?? `#${c.cost_center_id}`;
 
+// Classe do botão de ação dos grids de cadastro (fonte única).
+const EDIT_BTN_CLS =
+  'inline-flex h-7 w-7 items-center justify-center rounded-md text-slate-500 hover:bg-slate-100 hover:text-brand transition-colors';
+
+// Célula "Ações" padrão dos CRUDs de cadastro: apenas editar (a exclusão foi removida da UI).
+function editCell<T>(row: T, label: string, onEdit: (r: T) => void): ReactNode {
+  return actionButton(Pencil, `Editar ${label}`, EDIT_BTN_CLS, () => onEdit(row));
+}
+
 /**
  * Colunas do grid de /tabelas/centros-de-custo. É uma **factory** porque a coluna
- * "Ações" renderiza os botões de editar e excluir, que dependem dos callbacks da página.
+ * "Ações" renderiza o botão de editar, que depende do callback da página.
  */
-export function getCostCenterColumns(
-  onEdit: CostCenterRowAction,
-  onDelete: CostCenterRowAction,
-): ColumnDef<CostCenter>[] {
+export function getCostCenterColumns(onEdit: CostCenterRowAction): ColumnDef<CostCenter>[] {
   return [
     {
       key: 'cost_center_code',
@@ -413,25 +429,9 @@ export function getCostCenterColumns(
     {
       key: '__actions__',
       header: 'Ações',
-      size: 96,
+      size: 72,
       align: 'center',
-      render: (c) =>
-        createElement(
-          'div',
-          { className: 'inline-flex items-center gap-1' },
-          actionButton(
-            Pencil,
-            `Editar ${costCenterLabel(c)}`,
-            'inline-flex h-7 w-7 items-center justify-center rounded-md text-slate-500 hover:bg-slate-100 hover:text-brand transition-colors',
-            () => onEdit(c),
-          ),
-          actionButton(
-            Trash2,
-            `Excluir ${costCenterLabel(c)}`,
-            'inline-flex h-7 w-7 items-center justify-center rounded-md text-slate-500 hover:bg-status-error-bg hover:text-status-error-fg transition-colors',
-            () => onDelete(c),
-          ),
-        ),
+      render: (c) => editCell(c, costCenterLabel(c), onEdit),
     },
   ];
 }
@@ -494,6 +494,140 @@ export function getSupplierColumns(onEdit: SupplierRowAction): ColumnDef<Supplie
           'inline-flex h-7 w-7 items-center justify-center rounded-md text-slate-500 hover:bg-slate-100 hover:text-brand transition-colors',
           () => onEdit(s),
         ),
+    },
+  ];
+}
+
+// ── Cadastros do grupo Tabelas (bancos, contas, plano/grupos/subgrupos) ──────────
+// Cada factory recebe o callback de editar da página (célula "Ações" só-edição).
+
+const ACTIONS_COL_SIZE = 72;
+
+/** Junta código + descrição de um embed ("código — descrição"), com fallbacks. */
+const joinCodeDesc = (code?: string | null, desc?: string | null): string =>
+  [code, desc].filter(Boolean).join(' — ') || '—';
+
+type RowAction<T> = (row: T) => void;
+
+export function getBankColumns(onEdit: RowAction<Bank>): ColumnDef<Bank>[] {
+  const label = (b: Bank): string => b.bank_code ?? b.bank_name ?? `#${b.bank_id}`;
+  return [
+    { key: 'bank_code', header: 'Código', size: 120, render: (b) => b.bank_code ?? '—' },
+    { key: 'bank_name', header: 'Nome', size: 360, wrap: true, render: (b) => b.bank_name ?? '—' },
+    {
+      key: '__actions__',
+      header: 'Ações',
+      size: ACTIONS_COL_SIZE,
+      align: 'center',
+      render: (b) => editCell(b, label(b), onEdit),
+    },
+  ];
+}
+
+/**
+ * Colunas de /tabelas/contas (financial_account). `statusLabel` resolve o nome da
+ * situação (status_id → status_name) a partir do lookup carregado pela página.
+ */
+export function getFinancialAccountColumns(
+  statusLabel: (statusId: number) => string,
+  onEdit: RowAction<FinancialAccount>,
+): ColumnDef<FinancialAccount>[] {
+  const label = (a: FinancialAccount): string => a.account_description ?? `#${a.financial_account_id}`;
+  return [
+    { key: 'account_description', header: 'Descrição', size: 240, wrap: true, render: (a) => a.account_description ?? '—' },
+    {
+      key: 'bank',
+      header: 'Banco',
+      size: 220,
+      wrap: true,
+      render: (a) => joinCodeDesc(a.bank?.bank_code, a.bank?.bank_name),
+    },
+    { key: 'currency_code', header: 'Moeda', size: 90, render: (a) => a.currency_code ?? '—' },
+    { key: 'balance_amount', header: 'Saldo', size: 120, align: 'right', render: (a) => fmtMoney(a.balance_amount) },
+    { key: 'payment_type_id', header: 'Tipo pgto', size: 100, align: 'right', render: (a) => String(a.payment_type_id) },
+    { key: 'status_id', header: 'Situação', size: 130, render: (a) => statusLabel(a.status_id) },
+    {
+      key: '__actions__',
+      header: 'Ações',
+      size: ACTIONS_COL_SIZE,
+      align: 'center',
+      render: (a) => editCell(a, label(a), onEdit),
+    },
+  ];
+}
+
+export function getChartAccountColumns(onEdit: RowAction<ChartAccount>): ColumnDef<ChartAccount>[] {
+  const label = (c: ChartAccount): string => c.account_code ?? c.account_description ?? `#${c.chart_account_id}`;
+  return [
+    { key: 'account_code', header: 'Código', size: 130, render: (c) => c.account_code ?? '—' },
+    { key: 'account_description', header: 'Descrição', size: 260, wrap: true, render: (c) => c.account_description ?? '—' },
+    {
+      key: 'subgroup',
+      header: 'Subgrupo',
+      size: 200,
+      wrap: true,
+      hideOn: ['sm', 'md'],
+      render: (c) => joinCodeDesc(c.subgroup?.subgroup_code, c.subgroup?.subgroup_description),
+    },
+    {
+      key: 'cost_center',
+      header: 'Centro de custo',
+      size: 180,
+      wrap: true,
+      hideOn: ['sm', 'md'],
+      render: (c) => (c.cost_center_id ? joinCodeDesc(c.cost_center?.cost_center_code, c.cost_center?.cost_center_description) : '—'),
+    },
+    { key: 'account_level', header: 'Nível', size: 70, align: 'right', hideOn: ['sm'], render: (c) => String(c.account_level) },
+    { key: 'is_postable', header: 'Lançável', size: 90, align: 'center', render: (c) => (c.is_postable ? '✓' : '—') },
+    {
+      key: '__actions__',
+      header: 'Ações',
+      size: ACTIONS_COL_SIZE,
+      align: 'center',
+      render: (c) => editCell(c, label(c), onEdit),
+    },
+  ];
+}
+
+export function getChartAccountGroupColumns(
+  onEdit: RowAction<ChartAccountGroup>,
+): ColumnDef<ChartAccountGroup>[] {
+  const label = (g: ChartAccountGroup): string => g.group_code ?? g.group_description ?? `#${g.chart_account_group_id}`;
+  return [
+    { key: 'group_code', header: 'Código', size: 120, render: (g) => g.group_code ?? '—' },
+    { key: 'group_description', header: 'Descrição', size: 320, wrap: true, render: (g) => g.group_description ?? '—' },
+    { key: 'group_type', header: 'Tipo', size: 80, align: 'center', render: (g) => g.group_type ?? '—' },
+    {
+      key: '__actions__',
+      header: 'Ações',
+      size: ACTIONS_COL_SIZE,
+      align: 'center',
+      render: (g) => editCell(g, label(g), onEdit),
+    },
+  ];
+}
+
+export function getChartAccountSubgroupColumns(
+  onEdit: RowAction<ChartAccountSubgroup>,
+): ColumnDef<ChartAccountSubgroup>[] {
+  const label = (s: ChartAccountSubgroup): string =>
+    s.subgroup_code ?? s.subgroup_description ?? `#${s.chart_account_subgroup_id}`;
+  return [
+    { key: 'subgroup_code', header: 'Código', size: 130, render: (s) => s.subgroup_code ?? '—' },
+    { key: 'subgroup_description', header: 'Descrição', size: 280, wrap: true, render: (s) => s.subgroup_description ?? '—' },
+    {
+      key: 'group',
+      header: 'Grupo',
+      size: 220,
+      wrap: true,
+      render: (s) => joinCodeDesc(s.group?.group_code, s.group?.group_description),
+    },
+    {
+      key: '__actions__',
+      header: 'Ações',
+      size: ACTIONS_COL_SIZE,
+      align: 'center',
+      render: (s) => editCell(s, label(s), onEdit),
     },
   ];
 }

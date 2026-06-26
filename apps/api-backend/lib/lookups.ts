@@ -9,8 +9,15 @@ import { getSupabaseAdmin } from './supabase-admin';
 
 const COST_CENTER_TABLE = 'financial_cost_center';
 const CHART_ACCOUNT_TABLE = 'financial_chart_of_account';
+const STATUS_TABLE = 'status';
 const DEFAULT_LIMIT = 500; // cadastros pequenos (dezenas/centenas) — cabe num fetch.
 const MAX_LIMIT = 1000;
+
+// Linha da dimensão `status` (lookup do CRUD de contas — financial_account.status_id).
+export interface StatusOption {
+  status_id: number;
+  status_name: string | null;
+}
 
 export class LookupServiceError extends Error {
   status: number;
@@ -86,5 +93,21 @@ export const chartAccountService = {
     const { data, error } = await query.order('account_description', { ascending: true }).limit(clampLimit(params.limit));
     if (error) throw new LookupServiceError(error.message, 500);
     return (data ?? []) as ChartAccount[];
+  },
+};
+
+export const statusService = {
+  /**
+   * Lista a dimensão `status` (lookup de situação do CRUD de contas — alimenta o
+   * <select> de `financial_account.status_id`). Ordenada por id.
+   * @throws {LookupServiceError} 500 em falha do banco.
+   */
+  async list(): Promise<StatusOption[]> {
+    const { data, error } = await getSupabaseAdmin()
+      .from(STATUS_TABLE)
+      .select('status_id,status_name')
+      .order('status_id', { ascending: true });
+    if (error) throw new LookupServiceError(error.message, 500);
+    return (data ?? []) as StatusOption[];
   },
 };

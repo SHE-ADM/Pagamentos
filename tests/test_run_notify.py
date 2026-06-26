@@ -86,9 +86,10 @@ class RunNotifyTest(unittest.TestCase):
             os.environ["COBRANCA_SEND_DELAY_SECONDS"] = self._orig_delay
 
     def test_resumo_por_cc_so_definitivas_com_cc(self):
-        # Há erros -> main() sai com SystemExit(1); as notificações ocorrem antes.
-        with self.assertRaises(SystemExit):
-            run.main(dry_run=False)
+        # doc2 = smtp_falha (operacional) -> main() retorna exit code 1; as notificações
+        # ocorrem no fim do lote.
+        rc = run.main(dry_run=False)
+        self.assertEqual(rc, 1)
 
         session = _CapturingSession.instances[0]
         # Exatamente 1 notificação: para rep1 (doc1 + doc3). doc2 (transitória) e doc4 (sem CC) fora.
@@ -101,8 +102,9 @@ class RunNotifyTest(unittest.TestCase):
         self.assertNotIn("Cliente doc4", msg["html"])
 
     def test_dry_run_nao_notifica(self):
-        with self.assertRaises(SystemExit):
-            run.main(dry_run=True)
+        # Em dry-run os erros são todos de DADO (email_ausente) -> exit code 0.
+        rc = run.main(dry_run=True)
+        self.assertEqual(rc, 0)
         # Em dry-run não abre sessão nem envia notificação.
         self.assertEqual(_CapturingSession.instances, [])
 
