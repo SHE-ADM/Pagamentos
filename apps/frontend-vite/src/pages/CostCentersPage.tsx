@@ -1,13 +1,14 @@
 // src/pages/CostCentersPage.tsx
-// Página "Centro de custos" (grupo Tabelas) — lista paginada + busca, criar,
-// editar e excluir sobre o CRUD da Next API (services/costCenters.ts). A escrita
-// não passa pelo REST direto do Supabase porque `financial_cost_center` tem RLS
-// só-leitura para authenticated; a Next API grava com service_role. O sentinela
-// id 0 ("não informado") é preservado e nunca aparece nesta lista.
+// Página "Centro de custos" (grupo Tabelas) — lista paginada + busca, criar e
+// editar sobre o CRUD da Next API (services/costCenters.ts). A escrita não passa
+// pelo REST direto do Supabase porque `financial_cost_center` tem RLS só-leitura
+// para authenticated; a Next API grava com service_role. O sentinela id 0
+// ("não informado") é preservado e nunca aparece nesta lista. A exclusão foi
+// removida da UI (só criar/editar).
 import { useState, useEffect, useCallback, useRef } from 'react';
-import { RefreshCw, Plus, Layers, AlertTriangle } from 'lucide-react';
+import { RefreshCw, Plus, Layers } from 'lucide-react';
 import type { CostCenter, CostCenterCreateInput } from '@sheild/shared';
-import { listCostCentersPage, createCostCenter, updateCostCenter, deleteCostCenter } from '../services/costCenters';
+import { listCostCentersPage, createCostCenter, updateCostCenter } from '../services/costCenters';
 import { getCostCenterColumns } from '../hooks/useGridColumns';
 import { getErrorMessage } from '../lib/getErrorMessage';
 import DataGrid from '../components/organisms/DataGrid';
@@ -37,13 +38,7 @@ export default function CostCentersPage() {
   const [formError, setFormError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
 
-  // Confirmação de exclusão
-  const [toDelete, setToDelete] = useState<CostCenter | null>(null);
-  const [deleteError, setDeleteError] = useState<string | null>(null);
-  const [deleting, setDeleting] = useState(false);
-
   const formDialogRef = useRef<HTMLDialogElement>(null);
-  const deleteDialogRef = useRef<HTMLDialogElement>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -87,17 +82,6 @@ export default function CostCentersPage() {
     }
   }, [form]);
 
-  useEffect(() => {
-    const el = deleteDialogRef.current;
-    if (!el) return;
-    try {
-      if (toDelete) el.showModal();
-      else el.close();
-    } catch {
-      /* showModal indisponível (jsdom) */
-    }
-  }, [toDelete]);
-
   // Auto-dispensa o banner de sucesso (evita `notice` stale aparecer para uma ação nova).
   useEffect(() => {
     if (!notice) return;
@@ -114,12 +98,6 @@ export default function CostCentersPage() {
     setForm({ mode: 'edit', costCenter });
   };
   const closeForm = () => setForm(null);
-
-  const openDelete = (costCenter: CostCenter) => {
-    setDeleteError(null);
-    setToDelete(costCenter);
-  };
-  const closeDelete = () => setToDelete(null);
 
   const handleSubmit = async (data: CostCenterCreateInput) => {
     if (!form) return;
@@ -142,23 +120,7 @@ export default function CostCentersPage() {
     }
   };
 
-  const handleDelete = async () => {
-    if (!toDelete) return;
-    setDeleting(true);
-    setDeleteError(null);
-    try {
-      await deleteCostCenter(toDelete.cost_center_id);
-      setNotice('Centro de custo excluído com sucesso.');
-      setToDelete(null);
-      await load();
-    } catch (e) {
-      setDeleteError(getErrorMessage(e));
-    } finally {
-      setDeleting(false);
-    }
-  };
-
-  const columns = getCostCenterColumns(openEdit, openDelete);
+  const columns = getCostCenterColumns(openEdit);
   const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
 
   return (
@@ -260,48 +222,6 @@ export default function CostCentersPage() {
               submitError={formError}
               submitting={submitting}
             />
-          </div>
-        </dialog>
-      )}
-
-      {/* Confirmação de exclusão */}
-      {toDelete && (
-        <dialog
-          ref={deleteDialogRef}
-          aria-label="Confirmar exclusão"
-          onCancel={closeDelete}
-          className="fixed inset-0 m-auto h-fit max-h-[90vh] w-full max-w-md overflow-y-auto rounded-xl border-0 bg-white p-0 shadow-lg backdrop:bg-black/50"
-        >
-          <div className="p-6">
-            <div className="mb-4 flex items-center gap-2">
-              <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-status-error-bg text-status-error-fg">
-                <AlertTriangle size={16} />
-              </div>
-              <h2 className="text-base font-semibold text-gray-900">Excluir centro de custo</h2>
-            </div>
-
-            {deleteError && (
-              <Alert variant="error" className="mb-4">
-                {deleteError}
-              </Alert>
-            )}
-
-            <p className="text-sm text-gray-600">
-              Tem certeza que deseja excluir{' '}
-              <strong>
-                {toDelete.cost_center_code} — {toDelete.cost_center_description}
-              </strong>
-              ? Esta ação não pode ser desfeita.
-            </p>
-
-            <div className="mt-6 flex justify-end gap-2">
-              <button type="button" onClick={closeDelete} className="btn" disabled={deleting}>
-                Cancelar
-              </button>
-              <button type="button" onClick={handleDelete} className="btn btn-danger" disabled={deleting}>
-                {deleting ? 'Excluindo…' : 'Excluir'}
-              </button>
-            </div>
           </div>
         </dialog>
       )}

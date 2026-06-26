@@ -188,11 +188,13 @@ class ExtractFromEmailBodyTest(unittest.TestCase):
 
     def test_rotulo_sem_separador_nao_captura_continuacao_de_frase(self):
         # "Responsável pela compra" não pode virar fornecedor "pela compra"
-        # (minúsculo → guarda de maiúscula barra). Cai no fallback do remetente.
+        # (minúsculo → guarda de maiúscula barra). Sem nome confiável e sem sinal/mapa,
+        # o nome fica VAZIO — o e-mail (sender_email) resolve o fornecedor via RPC; o
+        # e-mail não vira nome aqui (regra robusta — ver extract_from_email_body).
         body = "Responsável pela compra do mês\nValor R$ 50,00"
         p = read_emails.extract_from_email_body(
             body, "2026-06-17T00:00:00+00:00", "<msg-frase>", "compras@otimotex.com.br")
-        self.assertEqual(p["supplier_name"], "compras@otimotex.com.br")
+        self.assertIsNone(p["supplier_name"])
 
     def test_extrai_barcode_do_corpo(self):
         payload = read_emails.extract_from_email_body(
@@ -235,14 +237,16 @@ class ExtractFromEmailBodyTest(unittest.TestCase):
         self.assertEqual(payload["document_type"], "honorários")
         self.assertEqual(payload["payment_method"], "pix")
 
-    def test_sem_rotulo_e_sem_documento_usa_sender_email(self):
-        """Fallback preservado: sem rotulo, sem CNPJ/CPF e sem sinais, usa o remetente."""
+    def test_sem_rotulo_e_sem_documento_deixa_nome_vazio(self):
+        """Sem rótulo, sem CNPJ/CPF e sem sinais/mapa: o nome fica VAZIO — o e-mail do
+        remetente NÃO vira nome (resolve-se pela RPC por e-mail; só vira nome no auto-insert
+        se o e-mail não for encontrado). Regra robusta — evita fornecedor duplicado."""
         body = "Pode pagar o pix de R$ 50,00 hoje?"
         payload = read_emails.extract_from_email_body(
             body, "2026-06-11T10:00:00+00:00", "<msg-fb>", "rose@otimotex.com.br",
         )
         self.assertIsNotNone(payload)
-        self.assertEqual(payload["supplier_name"], "rose@otimotex.com.br")
+        self.assertIsNone(payload["supplier_name"])
 
     def test_container_vira_tipo_container(self):
         """E-mail de frete/movimentação de container → document_type 'container'."""

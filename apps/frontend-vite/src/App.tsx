@@ -1,10 +1,11 @@
 // src/App.tsx
-import { lazy, Suspense } from 'react';
+import { lazy, Suspense, useEffect } from 'react';
 import { Routes, Route, Navigate } from 'react-router-dom';
 import { AuthProvider } from './contexts/AuthContext';
 import ProtectedRoute from './components/ProtectedRoute';
 import Layout from './components/Layout';
 import LoginPage from './pages/auth/LoginPage';
+import { clearChunkReloadCount } from './lib/chunkReload';
 
 // Rotas carregadas sob demanda (code-splitting) — só o login entra no bundle
 // inicial; as telas de dados e os fluxos de auth secundários viram chunks à parte.
@@ -15,6 +16,11 @@ const Consulta = lazy(() => import('./pages/Consulta'));
 const Erros = lazy(() => import('./pages/Erros'));
 const SuppliersPage = lazy(() => import('./pages/SuppliersPage'));
 const CostCentersPage = lazy(() => import('./pages/CostCentersPage'));
+const BanksPage = lazy(() => import('./pages/BanksPage'));
+const FinancialAccountsPage = lazy(() => import('./pages/FinancialAccountsPage'));
+const ChartAccountsPage = lazy(() => import('./pages/ChartAccountsPage'));
+const ChartAccountGroupsPage = lazy(() => import('./pages/ChartAccountGroupsPage'));
+const ChartAccountSubgroupsPage = lazy(() => import('./pages/ChartAccountSubgroupsPage'));
 const ContasNovaPage = lazy(() => import('./pages/ContasNovaPage'));
 const Dashboard = lazy(() => import('./pages/Dashboard'));
 const CobrancaEnvios = lazy(() => import('./pages/cobranca/CobrancaEnvios'));
@@ -29,6 +35,12 @@ function RouteFallback() {
 }
 
 export default function App() {
+  // O bundle principal montou sem erro → reseta o contador anti-loop de reload de
+  // chunk (libera novas tentativas para uma falha futura). Ver lib/chunkReload.
+  useEffect(() => {
+    clearChunkReloadCount();
+  }, []);
+
   return (
     <AuthProvider>
       <Suspense fallback={<RouteFallback />}>
@@ -49,6 +61,11 @@ export default function App() {
                       <Route path="/contas" element={<ContasNovaPage />} />
                       <Route path="/fornecedores" element={<SuppliersPage />} />
                       <Route path="/tabelas/centros-de-custo" element={<CostCentersPage />} />
+                      <Route path="/tabelas/bancos" element={<BanksPage />} />
+                      <Route path="/tabelas/contas" element={<FinancialAccountsPage />} />
+                      <Route path="/tabelas/plano-de-contas" element={<ChartAccountsPage />} />
+                      <Route path="/tabelas/grupos-plano-de-contas" element={<ChartAccountGroupsPage />} />
+                      <Route path="/tabelas/subgrupos-plano-de-contas" element={<ChartAccountSubgroupsPage />} />
                       <Route path="/dashboard" element={<Dashboard />} />
                       <Route path="/erros" element={<Erros />} />
                       <Route path="/cobranca/envios" element={<CobrancaEnvios />} />

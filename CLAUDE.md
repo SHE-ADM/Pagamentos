@@ -196,14 +196,45 @@ ao menos um campo). **Código único** validado na aplicação (case-insensitive
 **409**. **`DELETE` é HARD DELETE** (a tabela não tem `deleted_at`), **bloqueado com 409** quando o centro
 está referenciado por `financial_account_control`, `financial_chart_of_account` ou `supplier` (as 3 FKs);
 o sentinela id 0 também é bloqueado. Status: `201` criação · `409` (código duplicado / em uso) · `404` ·
-`422` Zod · `400` id inválido. Frontend: `services/costCenters.ts` (proxy `/data-api`),
-`organisms/CostCenterForm.tsx` (código + descrição), grid via `getCostCenterColumns` (ações **editar** e
-**excluir** por linha; clicar na linha é no-op) e confirmação de exclusão em `<dialog>` nativo. Botão de
-exclusão usa o utilitário CSS `btn-danger` (tokens `status-error-solid`/`solidBorder`).
+`422` Zod · `400` id inválido. (A rota/lib `DELETE` existe no backend, mas **não é exposta pela UI**.)
+Frontend: `services/costCenters.ts` (proxy `/data-api`), `organisms/CostCenterForm.tsx` (código +
+descrição), grid via `getCostCenterColumns` (ação **editar** por linha — a **exclusão foi removida da
+UI**; clicar na linha é no-op). O utilitário CSS `btn-danger` foi removido junto (sem mais uso).
+
+**CRUDs dos demais cadastros contábeis (grupo Tabelas) — Bancos, Contas, Plano de contas, Grupos,
+Sub grupos:** mesmo padrão do CRUD de centros de custo (Repository → Service `service_role` → Route
+dual-mode; código único na aplicação; **sem migrations**). **A EXCLUSÃO foi REMOVIDA da UI** — todas
+as telas do grupo Tabelas têm só **criar/editar** (sem botão de lixeira, sem modal de confirmação,
+sem `deleteX` no service frontend). As rotas/lib `DELETE` do backend foram **preservadas** (não
+expostas pela UI). Um componente genérico **`organisms/CrudTablePage.tsx`** (`<T, TInput>`: lista
+paginada + busca debounce + modais criar/editar) é a base das 5 páginas finas; o form de cada um vai
+por **render prop**. A célula "Ações" do grid renderiza só o lápis (`editCell` em `useGridColumns`).
+Lookups nos forms via **`atoms/LabeledSelect.tsx`** (`<select>` rotulado, associação `htmlFor`/`id`).
+Cliente HTTP compartilhado em **`services/dataApi.ts`** (`dataApiCall`/`dataApiListPaged`).
+
+| Cadastro | Sidebar / rota | Backend (`lib` + `app/api`) | Particularidades |
+|---|---|---|---|
+| `financial_bank` | **Bancos** `/tabelas/bancos` | `banks.ts` + `banks/**` | PK `bank_id` **NÃO identity** → `create` grava `max+1`. `bank_code` CHAR(3). Delete bloqueado se referenciado por `financial_account` |
+| `financial_account` | **Contas** `/tabelas/contas` | `financial-accounts.ts` + `financial-accounts/**` | Contas bancárias/caixa (distinto de `/contas`=lançamentos). **Sem sentinela, sem FK reversa** → delete livre. `status_id`→**FK `status`** (migration 053; lookup `GET /api/statuses`; default 30="ativo"); `payment_type_id` **input numérico** (sem tabela de domínio); banco via lookup; saldo `NUMERIC` |
+| `financial_chart_of_account` | **Plano de contas** `/tabelas/plano-de-contas` | `chart-accounts.ts` + estende `chart-accounts/**` | **GET dual-mode preserva a CASCATA** (sem `page` = lookup por centro, só postáveis — `lib/lookups`; com `page` = CRUD — `lib/chart-accounts`). FKs opcionais centro/subgrupo (0="não informado"); `account_level`/`is_postable`. Delete bloqueado por `financial_account_control`/`supplier` |
+| `financial_chart_of_account_group` | **Grupos** `/tabelas/grupos-plano-de-contas` | `chart-account-groups.ts` + `chart-account-groups/**` | `group_type` CHAR(1) opcional. Delete bloqueado se referenciado por subgrupo |
+| `financial_chart_of_account_subgroup` | **Sub grupos** `/tabelas/subgrupos-plano-de-contas` | `chart-account-subgroups.ts` + `chart-account-subgroups/**` | FK `chart_account_group_id` **obrigatória** (NOT NULL; 23503→422). Delete bloqueado se referenciado por plano de contas |
+
+**Hierarquia:** grupo → subgrupo (`chart_account_group_id`) → plano de contas (`chart_account_subgroup_id`
++ `cost_center_id`); banco → conta (`bank_id`). **Rotas dual-mode** (Bancos/Grupos/Sub grupos): com `page`
+= CRUD paginado; sem `page` = lookup (lista completa p/ os `<select>`). **`GET /api/statuses`** (read-only,
+`statusService` em `lib/lookups.ts`) alimenta o lookup de situação do form de Contas. Lookups no frontend:
+`services/lookups.ts` (`listBanks`/`listChartAccountGroups`/`listChartAccountSubgroups`/`listStatuses` +
+`listCostCenters`/`listChartAccounts`). Schemas Zod em `@sheild/shared` (`bank`/`financial-account`/
+`chart-account`/`chart-account-group`/`chart-account-subgroup`). **Selects obrigatórios vazios** chegam
+como `NaN` (`valueAsNumber`) e são **normalizados para 0** nos forms antes do `safeParse` (0 dispara o
+`.min(1)` com a mensagem amigável). **Pendência conhecida:** `payment_type_id` é input numérico cru
+(não há tabela de domínio no banco) — melhoria futura.
 
 **Lookups de classificação contábil (cascata Centro de custo → Plano de contas):** cadastros
 pré-existentes `financial_cost_center` (agora também gerenciado pelo **CRUD de centros de custo** acima)
-e `financial_chart_of_account` (só-leitura; este com FK
+e `financial_chart_of_account` (agora também gerenciado pelo **CRUD de Plano de contas** acima; o lookup
+da cascata segue intocado — `GET /api/chart-accounts` sem `page`; este com FK
 `cost_center_id`). Backend: `apps/api-backend/lib/lookups.ts` (`costCenterService`/`chartAccountService`,
 service_role) + rotas `GET /api/cost-centers` e `GET /api/chart-accounts`. Cliente: `services/lookups.ts`
 (`listCostCenters`/`listChartAccounts`). **Regra de cascata:** o plano de contas só lista os planos
@@ -584,7 +615,8 @@ apps/frontend-vite/src/components/
 │   ├── AuthInput.tsx          # (gradient) campo label + input + erro inline (aria-describedby)
 │   ├── GradientPillButton.tsx # (gradient) botão pill com bg-gradient-auth
 │   ├── CheckToggle.tsx        # checkbox de curadoria (NF/Boleto) — escreve no banco
-│   └── SelectCheckbox.tsx     # checkbox de SELEÇÃO de linha (rowSelection) + indeterminate
+│   ├── SelectCheckbox.tsx     # checkbox de SELEÇÃO de linha (rowSelection) + indeterminate
+│   └── LabeledSelect.tsx      # (tabelas) <select> rotulado (htmlFor/id + erro) — lookups dos forms de cadastro
 ├── molecules/
 │   ├── SocialLinksBar.tsx     # (v2) círculos Otimotex/Lebianco/WhatsApp
 │   ├── AuthHeroHeader.tsx     # (gradient) header decorativo com círculos sobrepostos
@@ -601,6 +633,12 @@ apps/frontend-vite/src/components/
 │   ├── ContaForm.tsx          # (contas) form criar/editar conta — supplier/centro/plano + cascata
 │   ├── SupplierForm.tsx       # (fornecedores) form criar/editar fornecedor
 │   ├── CostCenterForm.tsx     # (tabelas) form criar/editar centro de custo — código + descrição
+│   ├── BankForm.tsx           # (tabelas) form de banco — código(3) + nome
+│   ├── FinancialAccountForm.tsx # (tabelas) form de conta — descrição/banco/situação(lookups) + saldo
+│   ├── ChartAccountForm.tsx   # (tabelas) form de plano de contas — centro/subgrupo(lookups) + nível + postável
+│   ├── ChartAccountGroupForm.tsx     # (tabelas) form de grupo — código + descrição + tipo(1)
+│   ├── ChartAccountSubgroupForm.tsx  # (tabelas) form de subgrupo — código + descrição + grupo(lookup obrigatório)
+│   ├── CrudTablePage.tsx      # (tabelas) página CRUD genérica <T,TInput> (lista+busca+modais) — base das 5 páginas
 │   ├── DataGrid.tsx           # grid sobre TanStack Table v8 (+ DataGrid.test.tsx) — ver seção própria
 │   ├── dataGrid.variants.ts   # cva por slot (header/row/cell/skeleton/empty/pin/resize/grip/densidade/wrap) default|silver
 │   └── dataGrid.rows.ts       # buildRenderItems (achata linhas→itens row/second/detail p/ virtualização)
@@ -621,7 +659,7 @@ apps/frontend-vite/src/components/
 | **Recebimentos** | E-mails (`/emails`) · Log de erros (`/erros`) |
 | **Envios** | E-mails (`/cobranca/envios`) · Log de erros (`/cobranca/erros`) — logs da cobrança automática de vencidos |
 | **Contas** | Gestão de contas (`/consulta`) · Cadastro de contas (`/contas`) · Cadastro de fornecedores (`/fornecedores`) |
-| **Tabelas** | Centro de custos (`/tabelas/centros-de-custo`) — CRUD do cadastro `financial_cost_center` |
+| **Tabelas** | Centro de custos (`/tabelas/centros-de-custo`) · Bancos (`/tabelas/bancos`) · Contas (`/tabelas/contas`) · Plano de contas (`/tabelas/plano-de-contas`) · Grupos de plano de contas (`/tabelas/grupos-plano-de-contas`) · Sub grupos de plano de contas (`/tabelas/subgrupos-plano-de-contas`) — CRUDs dos cadastros contábeis |
 | **Análise** | Dashboard (`/dashboard`) |
 
 > "Gestão de contas" aponta para `/consulta` (só o rótulo difere da rota). Ao promover um
@@ -975,13 +1013,24 @@ pagamento é forçado a `pix` tanto no corpo (`extract_from_email_body`) quanto 
 O pipeline resolve o fornecedor **antes do INSERT** via RPC `resolve_supplier_for_account`
 (`migration 040`; `_finalize_supplier` → `SupabaseControl.resolve_supplier`), que chama
 `resolve_supplier_id(cnpj, cpf, name, email)` + `_add_supplier_email`. Ordem de busca
-(**corrigida na `migration 046`**): **CNPJ → CPF → nome normalizado → e-mail exato → auto-insert**
-em `supplier`. **O e-mail só é usado para busca na AUSÊNCIA TOTAL de nome de fornecedor** — antes
-(027/028) o e-mail vinha antes do nome, o que fazia pagamentos internos encaminhados por
-remetentes internos (ex.: `ester@otimotex.com.br`) colapsarem todos num único fornecedor,
-ignorando o NOME do corpo/anexo. **Domínios internos não viram fornecedor** (`migration 046`):
-`_is_internal_email` (`%@otimotex.com.br`/`%@lebianco.com.br`) bloqueia esses e-mails tanto no
-`_add_supplier_email` quanto no auto-insert do `resolve_supplier_id`. A precedência **anexo → corpo**
+(**migration 054**): **CNPJ → CPF → nome normalizado → e-mail exato (não interno) → auto-insert**
+em `supplier`. **O e-mail é um FALLBACK após o nome falhar** (não exige ausência de nome): se o nome
+extraído não casa nenhum cadastro, a busca por `email`/`email2`/`email3`/`email4` ainda roda — o
+nome mantém precedência (só quando ele falha o e-mail entra). Histórico: 027/028 punham o e-mail
+ANTES do nome (colapsava fornecedores por remetente interno); a **046** corrigiu pondo o e-mail
+depois, mas restringiu demais (**só "na ausência total de nome"**) — então, quando o corpo sem nome
+confiável usava o próprio e-mail como "nome" (`v_has_name=true`), a busca por e-mail era PULADA e o
+pipeline criava fornecedor DUPLICADO (ex.: `financeiro@smartwebservices.com.br`, já no email2 do
+fornecedor 1213, virou um fornecedor novo). A **054** restaura a intenção documentada ("a RPC casa
+por e-mail, passo email/2/3/4") sem reabrir o problema da 046, porque o **bloqueio de e-mail interno
+é mantido** (`_is_internal_email`). **REGRA ROBUSTA do lado Python (não regredir):** em
+`extract_from_email_body`, sem nome confiável (sinais/mapa por remetente falham) o nome fica **VAZIO**
+— o e-mail NUNCA vira nome ANTES da busca; é passado à RPC como chave própria e **só vira nome no
+auto-insert (último recurso) quando NÃO é encontrado** em nenhum fornecedor. Isso impede recriar o
+"shadow supplier" nomeado pelo e-mail (que venceria o Passo 3). **Domínios internos não viram
+fornecedor** (`migration 046`): `_is_internal_email` (`%@otimotex.com.br`/`%@lebianco.com.br`)
+bloqueia esses e-mails tanto no `_add_supplier_email` quanto no Passo 4 e no auto-insert do
+`resolve_supplier_id`. A precedência **anexo → corpo**
 do nome é garantida antes, no pipeline Python (o corpo só alimenta o resolver quando o anexo não
 gera conta). Função `normalize_search()` é SECURITY DEFINER. `financial_account_control`
 referencia o fornecedor **apenas pela FK `sk_supplier`** (surrogate key snowflake, NOT NULL —
@@ -1200,6 +1249,11 @@ faturas SIEG em `ignorado`; o handler A1 (baixar o boleto real) segue como melho
 | `/contas` | `ContasNovaPage.tsx` | `financial_account_control` (lançamento manual via `ContaForm`) |
 | `/fornecedores` | `SuppliersPage.tsx` | `supplier` (CRUD via Next API) |
 | `/tabelas/centros-de-custo` | `CostCentersPage.tsx` | `financial_cost_center` (CRUD via Next API) |
+| `/tabelas/bancos` | `BanksPage.tsx` | `financial_bank` (CRUD via Next API) |
+| `/tabelas/contas` | `FinancialAccountsPage.tsx` | `financial_account` (CRUD via Next API) |
+| `/tabelas/plano-de-contas` | `ChartAccountsPage.tsx` | `financial_chart_of_account` (CRUD via Next API) |
+| `/tabelas/grupos-plano-de-contas` | `ChartAccountGroupsPage.tsx` | `financial_chart_of_account_group` (CRUD via Next API) |
+| `/tabelas/subgrupos-plano-de-contas` | `ChartAccountSubgroupsPage.tsx` | `financial_chart_of_account_subgroup` (CRUD via Next API) |
 | `/dashboard` | `Dashboard.tsx` | `financial_account_control` (KPIs/gráficos por mês ou geral; `getDashboardData`) |
 | `/cobranca/envios` | `cobranca/CobrancaEnvios.tsx` | `cobranca_envios_log` (ver "Pipeline de cobrança de vencidos") |
 | `/cobranca/erros` | `cobranca/CobrancaErros.tsx` | `cobranca_erros_log` |
@@ -1358,7 +1412,13 @@ faturas SIEG em `ignorado`; o handler A1 (baixar o boleto real) segue como melho
 ## Banco de dados (Supabase)
 
 Migrations em `supabase/migrations/`, aplicadas **manualmente no SQL Editor** em ordem
-numérica (`001` → `052`). Não há migration automática. (As `050`/`051` convertem PKs para
+numérica (`001` → `054`). Não há migration automática. (A `054` redefine
+`resolve_supplier_id`: a busca por e-mail vira **fallback após o nome** (não-interno), corrigindo a
+criação de fornecedor duplicado quando o e-mail já consta num cadastro — ver "Auto-resolução de
+fornecedor". A `053` adiciona a FK
+`financial_account.status_id` → `status.status_id` — formaliza no banco a relação do lookup
+de situação do CRUD de Contas; a dimensão `status` tem os ids 1–10 do ciclo de contas a pagar
++ o 30 = "ativo" das contas bancárias, então não há linha órfã.) (As `050`/`051` convertem PKs para
 **`GENERATED ALWAYS AS IDENTITY`** — id gerado SEMPRE pelo banco, inclusão direta de id BLOQUEADA
 (exige `OVERRIDING SYSTEM VALUE`): a `050` em `financial_chart_of_account.chart_account_id`; a `051`
 em `financial_account.financial_account_id`, `financial_chart_of_account_group.chart_account_group_id`,
@@ -1396,7 +1456,7 @@ internet` ao CHECK de `document_type` e faz backfill — ver "Normalização de 
 |---|---|
 | `email_control` | Dedup/controle. `status` ∈ (`extraído`, `recebido`, `pendente`, `falha`, `ignorado`, `duplicidade`) — **migrations 022/031**. `extraído`=PDF extraído (CSV gerado); `recebido`=sem PDF, conta via corpo; `pendente`=PDF salvo sem CSV (substitui `baixado`); `falha`=casou keyword mas sem PDF e sem conta no corpo; `ignorado`=não-financeiro (sem keyword) **ou NF-e pura sem conta a pagar** (`subject_is_pure_nfe`); `duplicidade`=pagável do corpo duplica conta já registrada por outro e-mail (**migration 031**; card/filtro próprios em `/emails`). O status é calculado em `process_message` pelo resultado real (conta/CSV/corpo/duplicata), não por `pdf_extracted` |
 | `financial_account_control` | Tabela principal de contas a pagar — uma linha por documento; alimentada pelo pipeline de e-mail **e** por CRUD manual (baixas, consolidações, dashboards). Substitui a antiga `financial_emails` (dropada na migration 020). O fornecedor é referenciado **só pela FK `sk_supplier`** (surrogate key snowflake, NOT NULL — **migration 042**, antes era `supplier_id`) — nome/CNPJ vêm do JOIN com `supplier` (colunas denormalizadas dropadas na **migration 041**). Tem `sender_email` (migration 023; backfill em 025) usado na resolução p/ alinhar `supplier.email`, e `subject` (migration 025) — exibidos/buscados em `/consulta`. **Classificação contábil** (migrations 047/048): `cost_center_id`/`chart_account_id` SMALLINT, NOT NULL DEFAULT 0 (FKs para os cadastros; id 0 = "não informado") — preenchidos no CRUD manual (cascata centro→plano) |
-| `financial_cost_center` / `financial_chart_of_account` | **Cadastros de classificação contábil** (pré-existentes, **preservados em limpezas**) usados como lookup no modal de contas. `financial_cost_center` é **gerenciado pelo CRUD de centros de custo** (`/tabelas/centros-de-custo` — PK `cost_center_id` SMALLINT IDENTITY ALWAYS; id 0 = sentinela "não informado", fora do CRUD; ver "CRUD de centros de custo"). `financial_chart_of_account` (só-leitura no app) tem `cost_center_id` (relaciona o plano ao centro — base da CASCATA) e `is_postable` (só os postáveis são lançáveis). Lidos via `lib/lookups.ts` (service_role) **e** pelo frontend via embed REST (papel `authenticated`); RLS habilitado com policy de SELECT `TO authenticated` (migration 049 — sem ela o embed voltava null e a UI mostrava `#id`) |
+| `financial_cost_center` / `financial_chart_of_account` | **Cadastros de classificação contábil** (pré-existentes, **preservados em limpezas**) usados como lookup no modal de contas. `financial_cost_center` é **gerenciado pelo CRUD de centros de custo** (`/tabelas/centros-de-custo` — PK `cost_center_id` SMALLINT IDENTITY ALWAYS; id 0 = sentinela "não informado", fora do CRUD; ver "CRUD de centros de custo"). `financial_chart_of_account` (também gerenciado pelo **CRUD de Plano de contas** — `/tabelas/plano-de-contas`) tem `cost_center_id` (relaciona o plano ao centro — base da CASCATA), `chart_account_subgroup_id` (FK → subgrupo) e `is_postable` (só os postáveis são lançáveis). Os cadastros `financial_bank`, `financial_account`, `financial_chart_of_account_group` e `financial_chart_of_account_subgroup` também ganharam CRUD próprio (grupo Tabelas — ver "CRUDs dos demais cadastros contábeis"). Lidos via `lib/lookups.ts` (service_role) **e** pelo frontend via embed REST (papel `authenticated`); RLS habilitado com policy de SELECT `TO authenticated` (migration 049 — sem ela o embed voltava null e a UI mostrava `#id`) |
 | `email_processing_errors` | Log de falhas com `raw_payload` JSON |
 | `supplier` | Fornecedores. PK = `sk_supplier` (surrogate key snowflake auto-incremental — **migration 042**); `supplier_id` é **chave de negócio** (NOT NULL UNIQUE, só nesta tabela; = `sk_supplier` nos fornecedores criados pela extração, via trigger de espelho `trg_supplier_mirror_id`, podendo divergir em cargas externas). Auto-criados pelo trigger de resolução, mas **cadastro PRESERVADO** (curadoria manual de `email`/`email2`/`email3`/`email4`) — **nunca truncar** em limpezas (ver "Limpeza / reset de dados"). Reconhecimento por **e-mail** em `email`/`email2`/`email3`/`email4` (migrations 023/027/028) — ver "Auto-resolução de fornecedor". **Soft delete** via `deleted_at` (migration 045) — a baixa pelo CRUD da Next API marca `deleted_at` (nunca hard delete) e é bloqueada quando há contas vinculadas; ver "CRUD de fornecedores (Next API)". **Classificação default** `cost_center_id`/`chart_account_id` (SMALLINT NOT NULL DEFAULT 0 + FKs — migration 052): semeia o lançamento de novas contas e é atualizada pelo write-back do modal; ver "Classificação default do fornecedor — sync bidirecional" |
 | `company` | Empresa pagadora (**cadastro**, tem campo `email`). Auto-resolvida pelo trigger `resolve_company_id` a partir de `payer_cnpj`/`payer_name`. **Preservada em limpezas** (ver abaixo) |
@@ -1569,6 +1629,20 @@ queda, 450/451/452) → o próximo run **retenta**; `smtp_bloqueio` = **negaçã
 5xx, destinatário recusado) → exige **ação humana** (limite de envios / conta bloqueada na
 Locaweb). `_classify_smtp_error` decide pelo código/exceção. Mensagens em `error_message` são
 **leigas** (coluna "Motivo" da UI); o técnico vai em `error_detail`.
+
+**Exit code do batch (`run.py` — tarefa verde/vermelha no Agendador, não regredir):** `main()`
+**retorna** o exit code (não chama `sys.exit` no meio; `__main__` faz `sys.exit(main())`).
+`compute_exit_code(error_types)` decide: erros de **DADO** do cliente (`DATA_ERROR_TYPES` =
+email_ausente/email_invalido — cliente sem e-mail no Firebird) **NÃO** reprovam a tarefa (são
+logados em `cobranca_erros_log` e notificados ao CC, mas o run cumpriu seu papel); só erros
+**OPERACIONAIS** (smtp_falha/smtp_bloqueio/supabase_falha/erro_inesperado/firebird_falha) fazem
+sair `!= 0` → o `run_cobranca.ps1` marca "CRASH / ERRO" + Event Log e o Agendador mostra `0x1`.
+Antes, **qualquer** erro (`counts["error"] > 0`) saía 1, então um run 100% OK com clientes sem
+e-mail aparecia como falha (`0x1`). O resumo separa: `erros=N (sem e-mail/inválido=X · operacionais=Y)`.
+O loop do lote vive em `_run_batch` (uma `SmtpSession` por lote, sempre fechada no `finally`);
+`_record_result` contabiliza counts/error_types/limpeza/falhas-definitivas. Testes:
+`tests/test_run_exit_code.py` (+ `test_run_notify`/`test_run_cleanup` atualizados — `main()`
+agora **retorna** o código, não levanta `SystemExit`).
 
 **Notificação ao representante (CC) — só batch:** ao fim do `run.py`, as falhas **definitivas**
 (`DEFINITIVE_ERROR_TYPES`: email_ausente/email_invalido/smtp_bloqueio — exigem ação humana) são

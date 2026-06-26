@@ -126,11 +126,6 @@
            shadow-xs hover:shadow-md hover:shadow-brand/25 active:scale-95;
 }
 
-@utility btn-danger {
-  @apply bg-status-error-solid text-white border-status-error-solidBorder
-           shadow-xs hover:shadow-md hover:shadow-status-error-solid/25 active:scale-95;
-}
-
 @utility input {
   @apply w-full px-3 py-1.5 text-sm border border-slate-200 rounded-lg bg-white
            transition-all focus:outline-hidden focus:ring-2 focus:ring-brand/20 focus:border-brand;

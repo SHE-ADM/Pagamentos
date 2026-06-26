@@ -1313,13 +1313,19 @@ def extract_from_email_body(body_text: str, received_at: str, message_id: str,
         return None
 
     # Fornecedor sem rotulo nem identificador: tenta sinais (destinatario do pix
-    # "p/ <Nome>" / assinatura "Prof. <Nome>"), depois o mapa por remetente
-    # (ex.: correios.com.br -> "Correios") e, por fim, o e-mail do remetente.
-    # Havendo CNPJ/CPF, deixa o nome vazio (a trigger resolve pelo doc).
+    # "p/ <Nome>" / assinatura "Prof. <Nome>") e o mapa por remetente
+    # (ex.: correios.com.br -> "Correios"). Havendo CNPJ/CPF, deixa o nome vazio.
+    #
+    # REGRA (robusta — nao regredir): sem NENHUM nome confiavel, o nome fica VAZIO de
+    # proposito. O e-mail do remetente (sender_email) NAO vira nome aqui — ele e passado
+    # a RPC resolve_supplier_id como chave propria (busca por email/email2/email3/email4).
+    # Se o e-mail JA constar em um fornecedor, casa com ele; SO quando o e-mail NAO for
+    # encontrado e que o auto-insert da RPC usa o e-mail como nome (ULTIMO RECURSO). Assim
+    # o e-mail nunca vira nome ANTES da busca, evitando criar fornecedor DUPLICADO quando o
+    # e-mail ja pertence a um cadastrado (ex.: financeiro@... no email2 de um fornecedor).
+    # E-mail de dominio interno nunca identifica nem cria fornecedor (migration 046).
     if not supplier_name and not supplier_cnpj and not supplier_cpf:
-        supplier_name = (_supplier_from_signals(body_text)
-                         or _supplier_from_sender(sender_email)
-                         or sender_email or "desconhecido")
+        supplier_name = _supplier_from_signals(body_text) or _supplier_from_sender(sender_email)
 
     has_pix = bool(_BODY_PIX_RE.search(body_text))
 

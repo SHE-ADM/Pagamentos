@@ -7,7 +7,6 @@ vi.mock('../services/costCenters', () => ({
   listCostCentersPage: vi.fn(),
   createCostCenter: vi.fn(),
   updateCostCenter: vi.fn(),
-  deleteCostCenter: vi.fn(),
 }));
 
 import CostCentersPage from './CostCentersPage';

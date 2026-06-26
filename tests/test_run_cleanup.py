@@ -92,9 +92,10 @@ class RunCleanupTest(unittest.TestCase):
         self.deleted.append(document_id)
 
     def test_limpa_so_resolvidos_que_tinham_erro(self):
-        # doc3 falha -> main() sai com SystemExit(1); a limpeza ocorre antes do exit.
-        with self.assertRaises(SystemExit):
-            run.main(dry_run=False)
+        # doc3 = smtp_falha (operacional) -> main() retorna exit code 1; a limpeza
+        # ocorre normalmente durante o lote.
+        rc = run.main(dry_run=False)
+        self.assertEqual(rc, 1)
         # Limpa doc1 (sent, tinha erro) e doc2 (skipped, tinha erro).
         # NÃO limpa doc3 (error) nem doc4 (sent, mas nunca teve erro).
         self.assertCountEqual(self.deleted, ["doc1", "doc2"])

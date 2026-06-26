@@ -13,62 +13,97 @@ vi.mock('@/lib/lookups', () => {
   }
   return { chartAccountService: { list: vi.fn() }, LookupServiceError };
 });
+vi.mock('@/lib/chart-accounts', () => {
+  class ChartAccountServiceError extends Error {
+    status: number;
+    constructor(message: string, status: number) {
+      super(message);
+      this.name = 'ChartAccountServiceError';
+      this.status = status;
+    }
+  }
+  return { chartAccountService: { list: vi.fn(), create: vi.fn() }, ChartAccountServiceError };
+});
 
-import { GET } from './route';
+import { GET, POST } from './route';
 import { requireAuth } from '@/lib/auth';
-import { chartAccountService, LookupServiceError } from '@/lib/lookups';
+import { chartAccountService as lookup, LookupServiceError } from '@/lib/lookups';
+import { chartAccountService as crud, ChartAccountServiceError } from '@/lib/chart-accounts';
 
 const requireAuthMock = vi.mocked(requireAuth);
-const listMock = vi.mocked(chartAccountService.list);
+const lookupListMock = vi.mocked(lookup.list);
+const crudListMock = vi.mocked(crud.list);
+const crudCreateMock = vi.mocked(crud.create);
 
 function getRequest(query = ''): NextRequest {
   return { nextUrl: { searchParams: new URLSearchParams(query) } } as unknown as NextRequest;
 }
+function postRequest(jsonImpl: () => Promise<unknown>): NextRequest {
+  return { json: jsonImpl } as unknown as NextRequest;
+}
 
 beforeEach(() => {
   requireAuthMock.mockReset();
-  listMock.mockReset();
+  lookupListMock.mockReset();
+  crudListMock.mockReset();
+  crudCreateMock.mockReset();
 });
 
-describe('GET /api/chart-accounts', () => {
+describe('GET /api/chart-accounts (lookup/cascata — sem page)', () => {
   it('401 quando não autenticado', async () => {
     requireAuthMock.mockResolvedValue(Response.json({ success: false, error: 'x' }, { status: 401 }));
     const res = await GET(getRequest());
     expect(res.status).toBe(401);
-    expect(listMock).not.toHaveBeenCalled();
+    expect(lookupListMock).not.toHaveBeenCalled();
   });
 
-  it('200 com a lista', async () => {
+  it('encaminha cost_center_id ao lookup (cascata) e não toca o CRUD', async () => {
     requireAuthMock.mockResolvedValue(null);
-    listMock.mockResolvedValue([{ chart_account_id: 1, account_code: '1.1.01', account_description: 'Clientes' }]);
-    const res = await GET(getRequest('limit=50&cost_center_id=3'));
-    expect(res.status).toBe(200);
-    const body = await res.json();
-    expect(body).toEqual({
-      success: true,
-      data: [{ chart_account_id: 1, account_code: '1.1.01', account_description: 'Clientes' }],
-    });
-    expect(listMock).toHaveBeenCalledWith({ search: undefined, limit: 50, costCenterId: 3 });
-  });
-
-  it('encaminha cost_center_id ao service (cascata)', async () => {
-    requireAuthMock.mockResolvedValue(null);
-    listMock.mockResolvedValue([]);
+    lookupListMock.mockResolvedValue([] as never);
     await GET(getRequest('cost_center_id=7'));
-    expect(listMock).toHaveBeenCalledWith(expect.objectContaining({ costCenterId: 7 }));
+    expect(lookupListMock).toHaveBeenCalledWith(expect.objectContaining({ costCenterId: 7 }));
+    expect(crudListMock).not.toHaveBeenCalled();
   });
 
-  it('sem cost_center_id válido encaminha costCenterId=undefined (service devolve [])', async () => {
+  it('cost_center_id inválido → costCenterId=undefined', async () => {
     requireAuthMock.mockResolvedValue(null);
-    listMock.mockResolvedValue([]);
+    lookupListMock.mockResolvedValue([] as never);
     await GET(getRequest('cost_center_id=0'));
-    expect(listMock).toHaveBeenCalledWith(expect.objectContaining({ costCenterId: undefined }));
+    expect(lookupListMock).toHaveBeenCalledWith(expect.objectContaining({ costCenterId: undefined }));
   });
 
-  it('500 quando o service falha', async () => {
+  it('500 quando o lookup falha', async () => {
     requireAuthMock.mockResolvedValue(null);
-    listMock.mockRejectedValue(new LookupServiceError('boom', 500));
+    lookupListMock.mockRejectedValue(new LookupServiceError('boom', 500));
     const res = await GET(getRequest());
     expect(res.status).toBe(500);
+  });
+});
+
+describe('GET /api/chart-accounts (CRUD paginado — com page)', () => {
+  it('200 com data + meta e não toca o lookup', async () => {
+    requireAuthMock.mockResolvedValue(null);
+    crudListMock.mockResolvedValue({ data: [{ chart_account_id: 1 }] as never, total: 1, page: 1, limit: 20 });
+    const res = await GET(getRequest('page=1&limit=20'));
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body).toEqual({ success: true, data: [{ chart_account_id: 1 }], meta: { total: 1, page: 1, limit: 20 } });
+    expect(lookupListMock).not.toHaveBeenCalled();
+  });
+});
+
+describe('POST /api/chart-accounts', () => {
+  beforeEach(() => requireAuthMock.mockResolvedValue(null));
+
+  it('201 no sucesso', async () => {
+    crudCreateMock.mockResolvedValue({ chart_account_id: 9 } as never);
+    const res = await POST(postRequest(async () => ({ account_code: '1.1', account_description: 'X' })));
+    expect(res.status).toBe(201);
+  });
+
+  it('409 quando o código já existe', async () => {
+    crudCreateMock.mockRejectedValue(new ChartAccountServiceError('Código já cadastrado', 409));
+    const res = await POST(postRequest(async () => ({ account_code: '1.1', account_description: 'X' })));
+    expect(res.status).toBe(409);
   });
 });

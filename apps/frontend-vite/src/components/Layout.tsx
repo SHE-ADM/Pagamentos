@@ -2,7 +2,23 @@
 import { useState, type ReactNode } from 'react';
 import { NavLink } from 'react-router-dom';
 import { cva } from 'class-variance-authority';
-import { Mail, Wallet, BarChart2, FilePlus, Building2, Receipt, AlertTriangle, Layers, LogOut, Menu, X } from 'lucide-react';
+import {
+  Mail,
+  Wallet,
+  BarChart2,
+  FilePlus,
+  Building2,
+  Receipt,
+  AlertTriangle,
+  Layers,
+  Landmark,
+  BookText,
+  FolderTree,
+  ListTree,
+  LogOut,
+  Menu,
+  X,
+} from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
 import { cn } from '../lib/cn';
 
@@ -109,6 +125,21 @@ export default function Layout({ children }: Readonly<{ children: ReactNode }>) 
           </p>
           <NavLink to="/tabelas/centros-de-custo" onClick={closeNav} className={({ isActive }) => navLink({ active: isActive })}>
             <Layers size={16} /> Centro de custos
+          </NavLink>
+          <NavLink to="/tabelas/bancos" onClick={closeNav} className={({ isActive }) => navLink({ active: isActive })}>
+            <Landmark size={16} /> Bancos
+          </NavLink>
+          <NavLink to="/tabelas/contas" onClick={closeNav} className={({ isActive }) => navLink({ active: isActive })}>
+            <Wallet size={16} /> Contas
+          </NavLink>
+          <NavLink to="/tabelas/plano-de-contas" onClick={closeNav} className={({ isActive }) => navLink({ active: isActive })}>
+            <BookText size={16} /> Plano de contas
+          </NavLink>
+          <NavLink to="/tabelas/grupos-plano-de-contas" onClick={closeNav} className={({ isActive }) => navLink({ active: isActive })}>
+            <FolderTree size={16} /> Grupos de plano de contas
+          </NavLink>
+          <NavLink to="/tabelas/subgrupos-plano-de-contas" onClick={closeNav} className={({ isActive }) => navLink({ active: isActive })}>
+            <ListTree size={16} /> Sub grupos de plano de contas
           </NavLink>
 
           {/* Grupo 5 — Análise */}

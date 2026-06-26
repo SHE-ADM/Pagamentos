@@ -7,7 +7,6 @@ vi.mock('../services/costCenters', () => ({
   listCostCentersPage: vi.fn(),
   createCostCenter: vi.fn(),
   updateCostCenter: vi.fn(),
-  deleteCostCenter: vi.fn(),
 }));
 
 import CostCentersPage from './CostCentersPage';
@@ -39,12 +38,5 @@ describe('CostCentersPage', () => {
     await userEvent.click(screen.getByRole('button', { name: /novo centro de custo/i }));
     // jsdom não implementa <dialog>.showModal — o conteúdo fica hidden na a11y tree.
     expect(await screen.findByRole('button', { name: 'Cadastrar', hidden: true })).toBeInTheDocument();
-  });
-
-  it('abre a confirmação de exclusão pelo botão da linha', async () => {
-    render(<CostCentersPage />);
-    await screen.findByText('Tecnologia da Informação');
-    await userEvent.click(screen.getByRole('button', { name: /excluir ti/i }));
-    expect(await screen.findByRole('button', { name: 'Excluir', hidden: true })).toBeInTheDocument();
   });
 });
