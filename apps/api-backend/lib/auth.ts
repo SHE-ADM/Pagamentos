@@ -63,3 +63,27 @@ export async function requireAuth(req: Request): Promise<Response | null> {
     return fail('Falha ao validar a sessão', 500);
   }
 }
+
+// Papel de admin lido de `app_metadata` — campo controlado pelo SERVIDOR (só gravável
+// via Admin API / service_role; o usuário NÃO consegue alterá-lo, ao contrário de
+// `user_metadata`). É a fonte confiável da claim de papel.
+function isAdmin(user: User): boolean {
+  const meta = user.app_metadata as { role?: string; roles?: string[] } | undefined;
+  return meta?.role === 'admin' || (Array.isArray(meta?.roles) && meta.roles.includes('admin'));
+}
+
+// Porteiro ADMIN-ONLY: 401 sem sessão válida, 403 quando autenticado mas não-admin,
+// null quando pode prosseguir. Usado na criação de usuário (sem auto-registro).
+export async function requireAdmin(req: Request): Promise<Response | null> {
+  const token = getBearerToken(req);
+  if (!token) return fail('Autenticação necessária', 401);
+
+  try {
+    const user = await verifyBearerToken(token);
+    if (!user) return fail('Sessão inválida ou expirada', 401);
+    if (!isAdmin(user)) return fail('Acesso restrito a administradores', 403);
+    return null;
+  } catch {
+    return fail('Falha ao validar a sessão', 500);
+  }
+}

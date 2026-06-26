@@ -1,7 +1,7 @@
 import type { NextRequest } from 'next/server';
-import { ok, fail } from '@/lib/response';
+import { ok, fail, failFromError } from '@/lib/response';
 import { requireAuth } from '@/lib/auth';
-import { bankService, BankServiceError } from '@/lib/banks';
+import { bankService } from '@/lib/banks';
 
 // /api/banks/:id — GET (por id) + PATCH (update) + DELETE (hard delete protegido).
 // Protegido pelo middleware; o requireAuth no handler é defesa em profundidade.
@@ -17,8 +17,7 @@ function parseId(raw: string): number | null {
 }
 
 function mapError(e: unknown): Response {
-  if (e instanceof BankServiceError) return fail(e.message, e.status);
-  return fail(e instanceof Error ? e.message : 'Erro inesperado', 500);
+  return failFromError(e, 'banks');
 }
 
 export async function GET(req: NextRequest, ctx: Context) {

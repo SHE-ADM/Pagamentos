@@ -1,6 +1,9 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { NextRequest } from 'next/server';
 
+// Guard ADMIN-ONLY mockado: por padrão libera (null); um teste força o 403.
+vi.mock('@/lib/auth', () => ({ requireAdmin: vi.fn(async () => null) }));
+
 // Mock do service — UserServiceError precisa ser classe real (a rota usa instanceof),
 // compartilhada entre o mock e o SUT por vir do mesmo módulo mockado.
 vi.mock('@/lib/users', () => {
@@ -17,8 +20,11 @@ vi.mock('@/lib/users', () => {
 
 import { POST } from './route';
 import { userService, UserServiceError } from '@/lib/users';
+import { requireAdmin } from '@/lib/auth';
+import { fail } from '@/lib/response';
 
 const registerMock = vi.mocked(userService.register);
+const requireAdminMock = vi.mocked(requireAdmin);
 
 function makeRequest(jsonImpl: () => Promise<unknown>): NextRequest {
   return { json: jsonImpl } as unknown as NextRequest;
@@ -27,6 +33,15 @@ function makeRequest(jsonImpl: () => Promise<unknown>): NextRequest {
 describe('POST /api/users', () => {
   beforeEach(() => {
     registerMock.mockReset();
+    requireAdminMock.mockReset();
+    requireAdminMock.mockResolvedValue(null); // por padrão: admin autenticado
+  });
+
+  it('403 quando a sessão NÃO é admin — não cria usuário', async () => {
+    requireAdminMock.mockResolvedValue(fail('Acesso restrito a administradores', 403));
+    const res = await POST(makeRequest(async () => ({ name: 'João', email: 'joao@exemplo.com', password: 'senha1234' })));
+    expect(res.status).toBe(403);
+    expect(registerMock).not.toHaveBeenCalled();
   });
 
   it('201 com { id, name, email } no sucesso', async () => {

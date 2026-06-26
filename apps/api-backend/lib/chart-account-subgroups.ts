@@ -20,7 +20,9 @@ const REFERENCING_TABLES = ['financial_chart_of_account'] as const;
 const REF_COLUMN = 'chart_account_subgroup_id';
 const SENTINEL_ID = 0;
 const DEFAULT_LIMIT = 20;
-const MAX_LIMIT = 100;
+// Teto de itens por requisição. 1000 (igual a lib/lookups.ts) para o modo lookup
+// devolver o cadastro completo ao <select> de subgrupos; a paginação do CRUD usa DEFAULT_LIMIT.
+const MAX_LIMIT = 1000;
 
 // Leitura com o grupo embutido (rótulo na grade).
 const SELECT_WITH_GROUP =

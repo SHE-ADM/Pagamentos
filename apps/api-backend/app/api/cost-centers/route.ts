@@ -1,8 +1,8 @@
 import type { NextRequest } from 'next/server';
-import { ok, fail } from '@/lib/response';
+import { ok, failFromError } from '@/lib/response';
 import { requireAuth } from '@/lib/auth';
-import { costCenterService as costCenterLookup, LookupServiceError } from '@/lib/lookups';
-import { costCenterService as costCenterCrud, CostCenterServiceError } from '@/lib/cost-centers';
+import { costCenterService as costCenterLookup } from '@/lib/lookups';
+import { costCenterService as costCenterCrud } from '@/lib/cost-centers';
 
 // /api/cost-centers — dois consumos do mesmo recurso:
 //  - SEM `page`: lookup do formulário de contas (lista completa p/ o react-select,
@@ -26,8 +26,7 @@ async function listPaginated(sp: URLSearchParams): Promise<Response> {
     });
     return ok(result.data, { total: result.total, page: result.page, limit: result.limit });
   } catch (e) {
-    if (e instanceof CostCenterServiceError) return fail(e.message, e.status);
-    return fail(e instanceof Error ? e.message : 'Erro inesperado', 500);
+    return failFromError(e, 'cost-centers');
   }
 }
 
@@ -41,8 +40,7 @@ async function listForLookup(sp: URLSearchParams): Promise<Response> {
     });
     return ok(data);
   } catch (e) {
-    if (e instanceof LookupServiceError) return fail(e.message, e.status);
-    return fail(e instanceof Error ? e.message : 'Erro inesperado', 500);
+    return failFromError(e, 'cost-centers');
   }
 }
 
@@ -70,7 +68,6 @@ export async function POST(req: NextRequest) {
     const data = await costCenterCrud.create(body ?? {});
     return ok(data, undefined, 201);
   } catch (e) {
-    if (e instanceof CostCenterServiceError) return fail(e.message, e.status);
-    return fail(e instanceof Error ? e.message : 'Erro inesperado', 500);
+    return failFromError(e, 'cost-centers');
   }
 }

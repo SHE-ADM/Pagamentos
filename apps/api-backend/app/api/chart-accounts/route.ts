@@ -1,8 +1,8 @@
 import type { NextRequest } from 'next/server';
-import { ok, fail } from '@/lib/response';
+import { ok, failFromError } from '@/lib/response';
 import { requireAuth } from '@/lib/auth';
-import { chartAccountService as chartAccountLookup, LookupServiceError } from '@/lib/lookups';
-import { chartAccountService as chartAccountCrud, ChartAccountServiceError } from '@/lib/chart-accounts';
+import { chartAccountService as chartAccountLookup } from '@/lib/lookups';
+import { chartAccountService as chartAccountCrud } from '@/lib/chart-accounts';
 
 // /api/chart-accounts — dois consumos do mesmo recurso:
 //  - SEM `page`: lookup da CASCATA de classificação contábil (filtra por
@@ -24,8 +24,7 @@ async function listPaginated(sp: URLSearchParams): Promise<Response> {
     });
     return ok(r.data, { total: r.total, page: r.page, limit: r.limit });
   } catch (e) {
-    if (e instanceof ChartAccountServiceError) return fail(e.message, e.status);
-    return fail(e instanceof Error ? e.message : 'Erro inesperado', 500);
+    return failFromError(e, 'chart-accounts');
   }
 }
 
@@ -43,8 +42,7 @@ async function listForLookup(sp: URLSearchParams): Promise<Response> {
     });
     return ok(data);
   } catch (e) {
-    if (e instanceof LookupServiceError) return fail(e.message, e.status);
-    return fail(e instanceof Error ? e.message : 'Erro inesperado', 500);
+    return failFromError(e, 'chart-accounts');
   }
 }
 
@@ -68,7 +66,6 @@ export async function POST(req: NextRequest) {
   try {
     return ok(await chartAccountCrud.create(body ?? {}), undefined, 201);
   } catch (e) {
-    if (e instanceof ChartAccountServiceError) return fail(e.message, e.status);
-    return fail(e instanceof Error ? e.message : 'Erro inesperado', 500);
+    return failFromError(e, 'chart-accounts');
   }
 }

@@ -16,10 +16,16 @@ vi.mock('@/lib/python-bridge', () => {
   return { triggerReader: vi.fn(), PythonBridgeError };
 });
 
+// Mock do guard de auth — por padrão libera (null); um teste força o 401.
+vi.mock('@/lib/auth', () => ({ requireAuth: vi.fn(async () => null) }));
+
 import { POST } from './route';
 import { triggerReader, PythonBridgeError } from '@/lib/python-bridge';
+import { requireAuth } from '@/lib/auth';
+import { fail } from '@/lib/response';
 
 const triggerReaderMock = vi.mocked(triggerReader);
+const requireAuthMock = vi.mocked(requireAuth);
 
 // Constrói um NextRequest mínimo: a rota só chama `await req.json()`.
 function makeRequest(jsonImpl: () => Promise<unknown>): NextRequest {
@@ -40,6 +46,15 @@ const sampleSummary = {
 describe('POST /api/emails/read', () => {
   beforeEach(() => {
     triggerReaderMock.mockReset();
+    requireAuthMock.mockReset();
+    requireAuthMock.mockResolvedValue(null); // por padrão: autenticado
+  });
+
+  it('retorna 401 quando não autenticado (requireAuth nega) — não dispara a leitura', async () => {
+    requireAuthMock.mockResolvedValue(fail('Autenticação necessária', 401));
+    const res = await POST(makeRequest(async () => ({ days: 7 })));
+    expect(res.status).toBe(401);
+    expect(triggerReaderMock).not.toHaveBeenCalled();
   });
 
   it('retorna 422 quando o corpo é inválido (days fora de 0–365)', async () => {

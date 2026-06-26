@@ -40,6 +40,11 @@
   --color-status-neutral-fg: #475569;
   --color-status-neutral-border: #e2e8f0;
 
+  /* Cores de status sem par bg/border (usadas só como preenchimento gráfico do donut
+     e swatch da legenda no Dashboard). ≥3:1 sobre branco (1.4.11 — objeto gráfico). */
+  --color-status-prorrogado-fg: #7c3aed;
+  --color-status-baixado-fg: #0e7490;
+
   --color-ink-primary: #0f172a;
   --color-ink-secondary: #64748b;
   --color-ink-muted: #94a3b8;

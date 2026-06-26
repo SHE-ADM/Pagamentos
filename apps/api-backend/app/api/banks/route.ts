@@ -1,7 +1,7 @@
 import type { NextRequest } from 'next/server';
-import { ok, fail } from '@/lib/response';
+import { ok, failFromError } from '@/lib/response';
 import { requireAuth } from '@/lib/auth';
-import { bankService, BankServiceError } from '@/lib/banks';
+import { bankService } from '@/lib/banks';
 
 // /api/banks — GET de duplo modo (com `page` = CRUD paginado + busca; sem `page` =
 // lookup, lista completa para o <select> de bancos no form de Contas) + POST (criação).
@@ -11,8 +11,7 @@ export const dynamic = 'force-dynamic';
 const LOOKUP_LIMIT = 1000;
 
 function mapError(e: unknown): Response {
-  if (e instanceof BankServiceError) return fail(e.message, e.status);
-  return fail(e instanceof Error ? e.message : 'Erro inesperado', 500);
+  return failFromError(e, 'banks');
 }
 
 async function listPaginated(sp: URLSearchParams): Promise<Response> {

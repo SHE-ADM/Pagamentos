@@ -8,9 +8,8 @@
 flask~=3.1
 python-dotenv~=1.2
 
-# Extração de PDF (texto nativo + manipulação)
+# Extração de PDF (texto nativo)
 pdfplumber~=0.11.9
-pypdf~=6.13
 Pillow~=12.2
 
 # Extração via Claude API + montagem de CSV

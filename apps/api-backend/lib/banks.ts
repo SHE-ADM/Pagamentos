@@ -20,7 +20,10 @@ const REFERENCING_TABLES = ['financial_account'] as const;
 const REF_COLUMN = 'bank_id';
 const SENTINEL_ID = 0;
 const DEFAULT_LIMIT = 20;
-const MAX_LIMIT = 100;
+// Teto de itens por requisição. 1000 (igual a lib/lookups.ts) para o modo lookup
+// devolver o cadastro completo ao <select> de bancos; a paginação do CRUD continua
+// usando DEFAULT_LIMIT (a UI nunca pede mais que isso).
+const MAX_LIMIT = 1000;
 
 const SELECT_COLS = 'bank_id,bank_code,bank_name';
 

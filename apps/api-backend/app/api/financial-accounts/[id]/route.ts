@@ -1,7 +1,7 @@
 import type { NextRequest } from 'next/server';
-import { ok, fail } from '@/lib/response';
+import { ok, fail, failFromError } from '@/lib/response';
 import { requireAuth } from '@/lib/auth';
-import { financialAccountService, FinancialAccountServiceError } from '@/lib/financial-accounts';
+import { financialAccountService } from '@/lib/financial-accounts';
 
 // /api/financial-accounts/:id — GET + PATCH + DELETE. financial_account não tem
 // sentinela nem FK reversa → exclusão livre (404 se inexistente).
@@ -16,8 +16,7 @@ function parseId(raw: string): number | null {
 }
 
 function mapError(e: unknown): Response {
-  if (e instanceof FinancialAccountServiceError) return fail(e.message, e.status);
-  return fail(e instanceof Error ? e.message : 'Erro inesperado', 500);
+  return failFromError(e, 'financial-accounts');
 }
 
 export async function GET(req: NextRequest, ctx: Context) {

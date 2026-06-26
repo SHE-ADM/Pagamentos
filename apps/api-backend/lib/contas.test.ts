@@ -70,6 +70,15 @@ describe('contaService.create', () => {
     expect(await contaService.create({ sk_supplier: 1, amount: 100 })).toEqual({ id: 7, sk_supplier: 1, amount: 100 });
   });
 
+  it('ignora `status` no corpo do create — conta não nasce em estado fechado', async () => {
+    resultQueue.push({ data: { id: 8, sk_supplier: 1, amount: 100 }, error: null });
+    await contaService.create({ sk_supplier: 1, amount: 100, status: 'pago' });
+    // O schema de criação omite `status`: o campo é descartado antes do insert,
+    // então a conta nasce no default do banco ('pendente'), não como 'pago'.
+    const insertArg = builders[0].insert.mock.calls[0][0] as Record<string, unknown>;
+    expect(insertArg).not.toHaveProperty('status');
+  });
+
   it('422 sem fornecedor (sk_supplier) — não toca o banco', async () => {
     await expect(contaService.create({ amount: 100 })).rejects.toMatchObject({ status: 422 });
     expect(fromMock).not.toHaveBeenCalled();

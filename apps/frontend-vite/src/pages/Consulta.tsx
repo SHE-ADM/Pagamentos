@@ -36,24 +36,8 @@ import AttachmentViewer from '../components/AttachmentViewer';
 import DataGrid from '../components/organisms/DataGrid';
 import ContaForm from '../components/organisms/ContaForm';
 import { getConsultaColumns, STATUS_OPTIONS, type ToggleFlag, type StatusChangeCallback } from '../hooks/useGridColumns';
-
-const fmtDate = (d: string | null): string => (d ? new Date(d + 'T00:00:00').toLocaleDateString('pt-BR') : '—');
-const fmtMoney = (v: number | null): string =>
-  v == null ? '—' : Number(v).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
-const fmtCnpj = (c: string | null): string =>
-  c?.length === 14 ? `${c.slice(0, 2)}.${c.slice(2, 5)}.${c.slice(5, 8)}/${c.slice(8, 12)}-${c.slice(12)}` : c || '—';
-
-// Classificação contábil (embeds cost_center / chart_account). id 0 = "não
-// informado" (sentinela) → '—'. O plano de contas id 0 tem código literal '0'.
-const fmtCostCenter = (r: FinancialAccountControl): string =>
-  r.cost_center_id
-    ? [r.cost_center?.cost_center_code, r.cost_center?.cost_center_description].filter(Boolean).join(' — ') || `#${r.cost_center_id}`
-    : '—';
-
-const fmtChartAccount = (r: FinancialAccountControl): string =>
-  r.chart_account_id
-    ? [r.chart_account?.account_code, r.chart_account?.account_description].filter(Boolean).join(' — ') || `#${r.chart_account_id}`
-    : '—';
+import { fmtDate, fmtMoney, fmtCnpj, fmtCostCenter, fmtChartAccount } from '../lib/format';
+import { csvCell } from '../lib/csv';
 
 // Fornecedor no card de detalhe: id (sk_supplier) concatenado ao nome com " - ".
 const fmtSupplier = (r: FinancialAccountControl): string => {
@@ -115,11 +99,9 @@ const CSV_COLS: CsvCol[] = [
 
 function exportCsv(rows: FinancialAccountControl[]) {
   const header = CSV_COLS.map((c) => c.header).join(';');
-  // Sanitiza cada célula: escapa aspas (`"`→`""`) e troca quebras de linha por espaço —
-  // um `\n`/`\r` interno (ex.: description, email_body_excerpt) quebraria a linha do CSV.
-  const body = rows.map((r) =>
-    CSV_COLS.map((c) => `"${(c.get(r) ?? '').toString().replace(/"/g, '""').replace(/[\r\n]+/g, ' ')}"`).join(';'),
-  );
+  // csvCell escapa aspas, remove quebras de linha internas e NEUTRALIZA injeção de
+  // fórmula (= + - @) — conteúdo de e-mail hostil não vira fórmula no Excel/Sheets.
+  const body = rows.map((r) => CSV_COLS.map((c) => csvCell(c.get(r))).join(';'));
   const blob = new Blob(['﻿' + [header, ...body].join('\n')], { type: 'text/csv;charset=utf-8' });
   const a = document.createElement('a');
   a.href = URL.createObjectURL(blob);

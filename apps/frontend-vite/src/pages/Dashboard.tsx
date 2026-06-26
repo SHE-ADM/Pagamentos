@@ -10,13 +10,10 @@ import { getDashboardData, type DashboardData, type DashboardScope, type Priorit
 import { getErrorMessage } from '../lib/getErrorMessage';
 import Alert from '../components/atoms/Alert';
 import StatusBadge from '../components/StatusBadge';
+import { fmtMoney, fmtDate } from '../lib/format';
 
 const MONTHS = ['Jan', 'Fev', 'Mar', 'Abr', 'Mai', 'Jun', 'Jul', 'Ago', 'Set', 'Out', 'Nov', 'Dez'];
 const MONTHS_FULL = ['Janeiro', 'Fevereiro', 'Março', 'Abril', 'Maio', 'Junho', 'Julho', 'Agosto', 'Setembro', 'Outubro', 'Novembro', 'Dezembro'];
-
-const fmtMoney = (v: number | null): string =>
-  v == null ? '—' : Number(v).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
-const fmtDate = (d: string | null): string => (d ? new Date(d + 'T00:00:00').toLocaleDateString('pt-BR') : '—');
 
 // Cor (CSS var do @theme) por status — usada no donut e na legenda.
 const STATUS_VAR: Record<string, string> = {
@@ -24,8 +21,8 @@ const STATUS_VAR: Record<string, string> = {
   'a vencer': 'var(--color-status-info-fg)',
   vencido: 'var(--color-status-error-solid)',
   pendente: 'var(--color-status-neutral-fg)',
-  prorrogado: '#7c3aed',
-  baixado: '#0e7490',
+  prorrogado: 'var(--color-status-prorrogado-fg)',
+  baixado: 'var(--color-status-baixado-fg)',
   'cartório': 'var(--color-status-warning-fg)',
   protestado: 'var(--color-status-error-fg)',
 };

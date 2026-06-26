@@ -6,8 +6,8 @@ Deduplicação: tabela email_control no Supabase (message_id UNIQUE).
 Nunca reprocessa um e-mail já registrado, independente de onde o script rodar.
 """
 
-import os, sys, re, time, socket, imaplib, email, argparse, logging, csv, json, tempfile, faulthandler, unicodedata
-import urllib.request, urllib.error, http.cookiejar
+import os, sys, re, time, socket, imaplib, email, argparse, logging, csv, json, tempfile, faulthandler, unicodedata, ipaddress
+import urllib.request, urllib.error, urllib.parse, http.cookiejar
 from html import unescape as html_unescape
 from email.header import decode_header
 from email.utils import parseaddr, parsedate_to_datetime
@@ -776,13 +776,6 @@ FINANCIAL_FIELDS = [
     "processing_notes", "extracted_at",
 ]
 
-# Colunas denormalizadas do fornecedor extraidas do e-mail/PDF: servem APENAS de
-# ENTRADA para resolve_supplier (RPC). _finalize_supplier as remove do payload e
-# grava sk_supplier no lugar — financial_account_control referencia o fornecedor
-# so pela FK sk_supplier (fonte de verdade: tabela supplier; supplier_id e chave de
-# negocio e fica so em supplier). Ver migrations 040/041/042.
-SUPPLIER_INPUT_FIELDS = ("supplier_name", "supplier_cnpj", "supplier_cpf")
-
 # Campos de valor do boleto: em branco -> 0 (regra de negocio).
 FINANCIAL_VALUE_FIELDS = [
     "discount", "other_deductions", "fine_interest",
@@ -1394,6 +1387,17 @@ def extract_from_email_body(body_text: str, received_at: str, message_id: str,
 # ---------------------------------------------------------------------------
 # Download de anexos PDF
 # ---------------------------------------------------------------------------
+def _is_within_inbox(dest_path: Path) -> bool:
+    """True se dest_path resolvido fica DENTRO de PDF_INBOX — invariante explícito contra
+    path traversal (safe_filename já remove `..`/separadores; isto é defesa em profundidade)."""
+    try:
+        inbox = PDF_INBOX.resolve()
+        resolved = dest_path.resolve()
+        return resolved == inbox or inbox in resolved.parents
+    except OSError:
+        return False
+
+
 def save_attachments(msg, sender_email: str, subject: str,
                      received_at: str) -> list:
     saved = []
@@ -1421,6 +1425,9 @@ def save_attachments(msg, sender_email: str, subject: str,
 
         payload = part.get_payload(decode=True)
         if payload:
+            if not _is_within_inbox(dest_path):
+                log.warning(f"    Anexo ignorado (caminho fora de PDF_INBOX): {dest_name}")
+                continue
             dest_path.write_bytes(payload)
             saved.append(dest_path)
             log.info(f"    PDF salvo: {dest_path.name}")
@@ -1547,6 +1554,69 @@ def extract_pdf_links(text: str, html: str) -> list[str]:
     return candidates[:10]
 
 
+# ── Guarda anti-SSRF do download por link ───────────────────────────────────
+# Conteúdo de remetente DESCONHECIDO controla a URL; sem guarda, o servidor pode ser
+# forçado a requisitar alvos internos (metadata cloud 169.254.169.254, localhost, LAN,
+# portas internas). Bloqueamos scheme != http(s), porta fora de {80,443} e host que
+# resolve para IP interno — no URL inicial E a cada redirect (_SafeRedirectHandler).
+_ALLOWED_SCHEMES = ("http", "https")
+_ALLOWED_PORTS = {80, 443}
+
+
+def _host_is_safe(host: str) -> bool:
+    """False se o host resolve para QUALQUER IP interno (privado/loopback/link-local/
+    reservado/multicast/unspecified) — barra SSRF para metadata cloud e rede interna."""
+    if not host:
+        return False
+    try:
+        infos = socket.getaddrinfo(host, None)
+    except (socket.gaierror, UnicodeError, OSError):
+        return False
+    for info in infos:
+        try:
+            ip = ipaddress.ip_address(info[4][0])
+        except ValueError:
+            return False
+        if (ip.is_private or ip.is_loopback or ip.is_link_local
+                or ip.is_reserved or ip.is_multicast or ip.is_unspecified):
+            return False
+    return True
+
+
+def _is_safe_download_url(url: str) -> bool:
+    """Valida a URL contra SSRF: scheme http(s), porta padrão e host que NÃO resolve para
+    IP interno. Aplicada ao URL inicial e revalidada a cada redirect."""
+    try:
+        parts = urllib.parse.urlsplit(url)
+        if parts.scheme not in _ALLOWED_SCHEMES:
+            return False
+        host = parts.hostname
+        port = parts.port  # pode levantar ValueError em porta malformada
+    except ValueError:
+        return False
+    if not host:
+        return False
+    if port is not None and port not in _ALLOWED_PORTS:
+        return False
+    return _host_is_safe(host)
+
+
+class _SafeRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """Revalida o destino de CADA redirect contra SSRF (impede bypass do guard via 302
+    para alvo interno). O limite de saltos do urllib (max_redirections) segue ativo."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):  # noqa: D102
+        if not _is_safe_download_url(newurl):
+            raise urllib.error.HTTPError(
+                newurl, code, "redirect para destino não permitido (SSRF)", headers, fp)
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
+def _build_safe_opener(*handlers: "urllib.request.BaseHandler") -> "urllib.request.OpenerDirector":
+    """Opener com o _SafeRedirectHandler (revalida redirects) + handlers extras (ex.: cookies)."""
+    return urllib.request.build_opener(_SafeRedirectHandler(), *handlers)
+
+
 def _fetch_url(url: str, timeout: int = 30,
                opener: "urllib.request.OpenerDirector | None" = None
                ) -> "tuple[bytes, str, str] | None":
@@ -1554,10 +1624,14 @@ def _fetch_url(url: str, timeout: int = 30,
 
     Quando `opener` é informado (build_opener com HTTPCookieProcessor), a chamada
     reutiliza a mesma sessão/cookies — necessário para portais que exigem cookie
-    de sessão entre a página e o download (ex.: BRASPRESS JSESSIONID)."""
+    de sessão entre a página e o download (ex.: BRASPRESS JSESSIONID). O opener deve
+    incluir o _SafeRedirectHandler; o caminho sem opener usa um opener seguro próprio."""
+    if not _is_safe_download_url(url):
+        log.info(f"    Link bloqueado (destino não permitido / SSRF): {url[:70]}")
+        return None
     try:
         req = urllib.request.Request(url, headers={"User-Agent": _LINK_UA})
-        _open = opener.open if opener is not None else urllib.request.urlopen
+        _open = opener.open if opener is not None else _build_safe_opener().open
         with _open(req, timeout=timeout) as resp:
             return (
                 resp.read(_MAX_PDF_LINK_BYTES),
@@ -1573,7 +1647,7 @@ def _fetch_url(url: str, timeout: int = 30,
 
 
 def _save_pdf_data(data: bytes, sender_email: str, subject: str,
-                   received_at: str) -> Path:
+                   received_at: str) -> "Path | None":
     date_tag    = received_at[:10].replace("-", "")
     sender_tag  = safe_filename((sender_email or "").split("@")[0], 20)
     subject_tag = safe_filename(subject, 30)
@@ -1583,6 +1657,9 @@ def _save_pdf_data(data: bytes, sender_email: str, subject: str,
     while dest_path.exists():
         dest_path = PDF_INBOX / f"{dest_name[:-4]}_{counter}.pdf"
         counter += 1
+    if not _is_within_inbox(dest_path):
+        log.warning(f"    PDF de link ignorado (caminho fora de PDF_INBOX): {dest_name}")
+        return None
     dest_path.write_bytes(data)
     log.info(f"    PDF via link salvo: {dest_path.name} ({len(data) // 1024} KB)")
     return dest_path
@@ -1602,9 +1679,11 @@ def download_pdf_from_url(url: str, sender_email: str, subject: str,
       5. Qualquer outro conteúdo é ignorado.
     """
     # Sessão com cookies — necessária para portais que exigem JSESSIONID entre a
-    # página inicial e o download (ex.: BRASPRESS).
+    # página inicial e o download (ex.: BRASPRESS). O cookiejar do http.cookiejar só
+    # envia cookies a domínios correspondentes (sem vazamento cross-domain). O
+    # _SafeRedirectHandler revalida cada redirect contra SSRF.
     cj = http.cookiejar.CookieJar()
-    opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(cj))
+    opener = _build_safe_opener(urllib.request.HTTPCookieProcessor(cj))
 
     result = _fetch_url(url, opener=opener)
     if not result:
@@ -2385,76 +2464,84 @@ def run_reader(days: int = 0, all_: bool = False,
             pass
 
     _emit("lendo", 0)
-    for idx, uid in enumerate(uids, 1):
-        _emit("lendo", idx - 1)  # done = e-mails já concluídos antes deste
+    # try/finally garante mail.logout() mesmo se uma exceção escapar do loop —
+    # sem isso, uma falha não-ApiUnavailableError deixaria a conexão IMAP aberta.
+    try:
+        for idx, uid in enumerate(uids, 1):
+            _emit("lendo", idx - 1)  # done = e-mails já concluídos antes deste
+            try:
+                # Header enxuto para filtrar/registrar rapidamente (inclui remetente e
+                # data, necessários para registrar também os e-mails 'ignorado').
+                # INTERNALDATE incluido no fetch para registrar 'ignorado' com a data de
+                # CHEGADA na caixa (mesma fonte do process_message) — alinha /emails ao
+                # webmail. _rfc822_from_fetch tolera respostas IMAP intercaladas.
+                _, hdr = mail.uid("fetch", uid,
+                                  "(INTERNALDATE BODY.PEEK[HEADER.FIELDS (SUBJECT MESSAGE-ID FROM DATE)])")
+                hdr_meta, hdr_raw = _rfc822_from_fetch(hdr)
+                hdr_msg = email.message_from_bytes(hdr_raw)
+                subject = decode_str(hdr_msg.get("Subject", ""))
+                msg_id  = hdr_msg.get("Message-ID", "").strip()
+            except Exception as e:
+                log.warning(f"  [SKIP] UID {uid} — erro ao ler header: {e}")
+                skipped_kw += 1
+                continue
+
+            # Deduplicação PRIMEIRO: set em memória (O(1)); fallback para consulta
+            # individual se o lote não foi carregado (Supabase indisponível). Vem antes
+            # do filtro de keyword para não re-registrar e-mails já conhecidos.
+            is_dup = (msg_id in known_ids) if known_ids else (msg_id and ctrl.is_processed(msg_id))
+            if is_dup:
+                log.info(f"  [DUP] {subject[:65]}")
+                skipped_dup += 1
+                continue
+
+            # Remetente e data (canonico = INTERNALDATE) — usados pelos filtros abaixo
+            # e pelo registro 'ignorado', mantendo /emails na MESMA ordem do webmail.
+            sender_name, sender_email = parseaddr(hdr_msg.get("From", ""))
+            received_at = _received_at_from(hdr_meta, hdr_msg.get("Date", ""))
+
+            # Remetente de SISTEMA (postmaster@ etc.) → 'ignorado' sem baixar/extrair,
+            # MESMO com keyword no assunto (NDR/bounce/aviso nao e conta a pagar).
+            if is_ignored_sender(sender_email):
+                if not dry_run:
+                    _register_ignored(ctrl, msg_id, subject, sender_name, sender_email,
+                                      received_at, f"Remetente de sistema ignorado ({sender_email})")
+                log.info(f"  [IGN remetente] {subject[:55]}")
+                skipped_kw += 1
+                continue
+
+            # Fora do filtro de assunto → registra como 'ignorado' (sem baixar/extrair),
+            # para que /emails reflita a caixa inteira (o app substitui abrir o webmail).
+            if not match_keyword(subject, keywords):
+                if not dry_run:
+                    _register_ignored(ctrl, msg_id, subject, sender_name, sender_email,
+                                      received_at, "Fora do filtro de assunto (não-financeiro)")
+                log.info(f"  [IGN] {subject[:65]}")
+                skipped_kw += 1
+                continue
+
+            log.info(f"  [NEW] {subject[:65]}")
+            try:
+                process_message(mail, uid, keywords, dry_run, mark_seen, ctrl)
+            except ApiUnavailableError as e:
+                log.error("=" * 58)
+                log.error("  PIPELINE INTERROMPIDO — API Anthropic indisponível.")
+                log.error(f"  Motivo: {str(e)[:160]}")
+                log.error("  Nenhum dado adicional gravado. Recarregue os créditos "
+                          "e rode novamente.")
+                log.error("=" * 58)
+                api_aborted = True
+                break
+            processed += 1
+            new_subjects.append(subject[:120])
+
+        _emit("concluído", total)
+    finally:
+        # Fechar a conexão nunca deve mascarar o erro original do run.
         try:
-            # Header enxuto para filtrar/registrar rapidamente (inclui remetente e
-            # data, necessários para registrar também os e-mails 'ignorado').
-            # INTERNALDATE incluido no fetch para registrar 'ignorado' com a data de
-            # CHEGADA na caixa (mesma fonte do process_message) — alinha /emails ao
-            # webmail. _rfc822_from_fetch tolera respostas IMAP intercaladas.
-            _, hdr = mail.uid("fetch", uid,
-                              "(INTERNALDATE BODY.PEEK[HEADER.FIELDS (SUBJECT MESSAGE-ID FROM DATE)])")
-            hdr_meta, hdr_raw = _rfc822_from_fetch(hdr)
-            hdr_msg = email.message_from_bytes(hdr_raw)
-            subject = decode_str(hdr_msg.get("Subject", ""))
-            msg_id  = hdr_msg.get("Message-ID", "").strip()
-        except Exception as e:
-            log.warning(f"  [SKIP] UID {uid} — erro ao ler header: {e}")
-            skipped_kw += 1
-            continue
-
-        # Deduplicação PRIMEIRO: set em memória (O(1)); fallback para consulta
-        # individual se o lote não foi carregado (Supabase indisponível). Vem antes
-        # do filtro de keyword para não re-registrar e-mails já conhecidos.
-        is_dup = (msg_id in known_ids) if known_ids else (msg_id and ctrl.is_processed(msg_id))
-        if is_dup:
-            log.info(f"  [DUP] {subject[:65]}")
-            skipped_dup += 1
-            continue
-
-        # Remetente e data (canonico = INTERNALDATE) — usados pelos filtros abaixo
-        # e pelo registro 'ignorado', mantendo /emails na MESMA ordem do webmail.
-        sender_name, sender_email = parseaddr(hdr_msg.get("From", ""))
-        received_at = _received_at_from(hdr_meta, hdr_msg.get("Date", ""))
-
-        # Remetente de SISTEMA (postmaster@ etc.) → 'ignorado' sem baixar/extrair,
-        # MESMO com keyword no assunto (NDR/bounce/aviso nao e conta a pagar).
-        if is_ignored_sender(sender_email):
-            if not dry_run:
-                _register_ignored(ctrl, msg_id, subject, sender_name, sender_email,
-                                  received_at, f"Remetente de sistema ignorado ({sender_email})")
-            log.info(f"  [IGN remetente] {subject[:55]}")
-            skipped_kw += 1
-            continue
-
-        # Fora do filtro de assunto → registra como 'ignorado' (sem baixar/extrair),
-        # para que /emails reflita a caixa inteira (o app substitui abrir o webmail).
-        if not match_keyword(subject, keywords):
-            if not dry_run:
-                _register_ignored(ctrl, msg_id, subject, sender_name, sender_email,
-                                  received_at, "Fora do filtro de assunto (não-financeiro)")
-            log.info(f"  [IGN] {subject[:65]}")
-            skipped_kw += 1
-            continue
-
-        log.info(f"  [NEW] {subject[:65]}")
-        try:
-            process_message(mail, uid, keywords, dry_run, mark_seen, ctrl)
-        except ApiUnavailableError as e:
-            log.error("=" * 58)
-            log.error("  PIPELINE INTERROMPIDO — API Anthropic indisponível.")
-            log.error(f"  Motivo: {str(e)[:160]}")
-            log.error("  Nenhum dado adicional gravado. Recarregue os créditos "
-                      "e rode novamente.")
-            log.error("=" * 58)
-            api_aborted = True
-            break
-        processed += 1
-        new_subjects.append(subject[:120])
-
-    _emit("concluído", total)
-    mail.logout()
+            mail.logout()
+        except Exception:  # noqa: BLE001 — logout best-effort
+            pass
 
     log.info("=" * 58)
     log.info(f"  Novos processados : {processed}")

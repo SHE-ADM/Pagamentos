@@ -235,10 +235,17 @@ export const financialAccountControlInputSchema = financialAccountControlSchema.
 // não cria conta — ver read_emails). Já a criação manual via API EXIGE fornecedor
 // (sk_supplier) e valor positivo; os demais campos são OPCIONAIS (o banco aplica
 // DEFAULT/NULL nas colunas omitidas), para um formulário de lançamento rápido.
-export const financialAccountControlCreateSchema = financialAccountControlInputSchema.partial().extend({
-  sk_supplier: z.number().int(),
-  amount: money.positive('O valor deve ser maior que zero'),
-});
+// `status` é OMITIDO: a conta sempre nasce no default do banco ('pendente') e a
+// trigger fn_set_status_from_due_date assume 'a vencer'/'vencido' — o cliente não
+// pode criar uma conta já em estado fechado (pago/cancelado/baixado). A baixa/edição
+// de situação é feita depois via PATCH (financialAccountControlUpdateSchema).
+export const financialAccountControlCreateSchema = financialAccountControlInputSchema
+  .omit({ status: true })
+  .partial()
+  .extend({
+    sk_supplier: z.number().int(),
+    amount: money.positive('O valor deve ser maior que zero'),
+  });
 
 // ── Atualização parcial (PATCH /api/contas/:id) ──────────────────────────────
 // Todos os campos opcionais; permite alterar a situação (ex.: status='cancelado').

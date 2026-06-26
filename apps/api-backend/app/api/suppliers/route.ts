@@ -1,7 +1,7 @@
 import type { NextRequest } from 'next/server';
-import { ok, fail } from '@/lib/response';
+import { ok, failFromError } from '@/lib/response';
 import { requireAuth } from '@/lib/auth';
-import { supplierService, SupplierServiceError } from '@/lib/suppliers';
+import { supplierService } from '@/lib/suppliers';
 
 // /api/suppliers — GET (lista paginada/filtrada) + POST (criação).
 // Protegido pelo middleware; o requireAuth no handler é defesa em profundidade.
@@ -26,8 +26,7 @@ export async function GET(req: NextRequest) {
     });
     return ok(result.data, { total: result.total, page: result.page, limit: result.limit });
   } catch (e) {
-    if (e instanceof SupplierServiceError) return fail(e.message, e.status);
-    return fail(e instanceof Error ? e.message : 'Erro inesperado', 500);
+    return failFromError(e, 'suppliers');
   }
 }
 
@@ -46,7 +45,6 @@ export async function POST(req: NextRequest) {
     const data = await supplierService.create(body ?? {});
     return ok(data, undefined, 201);
   } catch (e) {
-    if (e instanceof SupplierServiceError) return fail(e.message, e.status);
-    return fail(e instanceof Error ? e.message : 'Erro inesperado', 500);
+    return failFromError(e, 'suppliers');
   }
 }

@@ -1,7 +1,7 @@
 import type { NextRequest } from 'next/server';
-import { ok, fail } from '@/lib/response';
+import { ok, fail, failFromError } from '@/lib/response';
 import { requireAuth } from '@/lib/auth';
-import { chartAccountService, ChartAccountServiceError } from '@/lib/chart-accounts';
+import { chartAccountService } from '@/lib/chart-accounts';
 
 // /api/chart-accounts/:id — GET + PATCH + DELETE (hard delete protegido). CRUD do
 // plano de contas (lib/chart-accounts) — a cascata legada fica no GET sem `page`.
@@ -16,8 +16,7 @@ function parseId(raw: string): number | null {
 }
 
 function mapError(e: unknown): Response {
-  if (e instanceof ChartAccountServiceError) return fail(e.message, e.status);
-  return fail(e instanceof Error ? e.message : 'Erro inesperado', 500);
+  return failFromError(e, 'chart-accounts');
 }
 
 export async function GET(req: NextRequest, ctx: Context) {

@@ -114,7 +114,9 @@ def _process_row(ec, mail, ctrl, dry_run: bool) -> str:
         return "imap_ausente"
 
     _, md = mail.uid("fetch", uids[-1], "(RFC822)")
-    msg = email.message_from_bytes(md[0][1])
+    # _rfc822_from_fetch tolera respostas IMAP intercaladas (evita o crash 'int'
+    # do md[0][1] direto) — mesma regra do pipeline servido.
+    msg = email.message_from_bytes(R._rfc822_from_fetch(md)[1])
     links = R.extract_pdf_links(*_get_body(msg))
     if not links:
         return "sem_link"
@@ -150,14 +152,19 @@ def main():
     mail.select(os.getenv("IMAP_MAILBOX", "INBOX"))
 
     tally = {"sem_link": 0, "resolvido": 0, "link_sem_pdf": 0, "imap_ausente": 0, "extracao_zero": 0}
-    for ec in rows:
+    try:
+        for ec in rows:
+            try:
+                tally[_process_row(ec, mail, ctrl, args.dry_run)] += 1
+            except R.ApiUnavailableError:
+                log.exception("    API Anthropic indisponível — interrompendo")
+                break
+    finally:
         try:
-            tally[_process_row(ec, mail, ctrl, args.dry_run)] += 1
-        except R.ApiUnavailableError:
-            log.exception("    API Anthropic indisponível — interrompendo")
-            break
+            mail.logout()
+        except Exception:  # noqa: BLE001 — logout best-effort
+            pass
 
-    mail.logout()
     log.info("=" * 60)
     pre = "(dry-run) " if args.dry_run else ""
     log.info(f"  {pre}Resolvidos (link→PDF)   : {tally['resolvido']}")

@@ -1,7 +1,7 @@
 import type { NextRequest } from 'next/server';
-import { ok, fail } from '@/lib/response';
+import { ok, failFromError } from '@/lib/response';
 import { requireAuth } from '@/lib/auth';
-import { contaService, ContaServiceError } from '@/lib/contas';
+import { contaService } from '@/lib/contas';
 
 // /api/contas — GET (lista paginada/filtrada) + POST (criação).
 // Protegido pelo middleware; requireAuth no handler é defesa em profundidade.
@@ -24,8 +24,7 @@ export async function GET(req: NextRequest) {
     });
     return ok(result.data, { total: result.total, page: result.page, limit: result.limit });
   } catch (e) {
-    if (e instanceof ContaServiceError) return fail(e.message, e.status);
-    return fail(e instanceof Error ? e.message : 'Erro inesperado', 500);
+    return failFromError(e, 'contas');
   }
 }
 
@@ -44,7 +43,6 @@ export async function POST(req: NextRequest) {
     const data = await contaService.create(body ?? {});
     return ok(data, undefined, 201);
   } catch (e) {
-    if (e instanceof ContaServiceError) return fail(e.message, e.status);
-    return fail(e instanceof Error ? e.message : 'Erro inesperado', 500);
+    return failFromError(e, 'contas');
   }
 }

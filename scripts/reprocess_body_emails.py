@@ -56,7 +56,9 @@ def fetch_body_from_imap(mail, mid: str) -> "str | None":
     if not uids:
         return None
     _, md = mail.uid("fetch", uids[-1], "(RFC822)")
-    return R.get_body_text(email.message_from_bytes(md[0][1]))
+    # _rfc822_from_fetch tolera respostas IMAP intercaladas (evita o crash 'int'
+    # do md[0][1] direto) — mesma regra do pipeline servido.
+    return R.get_body_text(email.message_from_bytes(R._rfc822_from_fetch(md)[1]))
 
 
 def _make_rec(ec: dict, body_text: str) -> dict:
@@ -134,20 +136,25 @@ def main():
     mail.select(os.getenv("IMAP_MAILBOX", "INBOX"))
 
     tally = {"resolvido": 0, "duplicado": 0, "sem_conta": 0, "imap_ausente": 0}
-    for ec in rows:
-        body_text = fetch_body_from_imap(mail, ec["message_id"])
-        if body_text is None:
-            log.info(f"[{ec['id']}] IMAP não encontrado — {ec['subject'][:50]}")
-            tally["imap_ausente"] += 1
-            continue
+    try:
+        for ec in rows:
+            body_text = fetch_body_from_imap(mail, ec["message_id"])
+            if body_text is None:
+                log.info(f"[{ec['id']}] IMAP não encontrado — {ec['subject'][:50]}")
+                tally["imap_ausente"] += 1
+                continue
+            try:
+                key = inspect_one(ctrl, ec, body_text) if args.dry_run else process_one(ctrl, ec, body_text)
+            except R.ApiUnavailableError:
+                log.exception("    API Anthropic indisponível — interrompendo")
+                break
+            tally[key] += 1
+    finally:
         try:
-            key = inspect_one(ctrl, ec, body_text) if args.dry_run else process_one(ctrl, ec, body_text)
-        except R.ApiUnavailableError:
-            log.exception("    API Anthropic indisponível — interrompendo")
-            break
-        tally[key] += 1
+            mail.logout()
+        except Exception:  # noqa: BLE001 — logout best-effort
+            pass
 
-    mail.logout()
     log.info("=" * 60)
     pre = "(dry-run) " if args.dry_run else ""
     log.info(f"  {pre}Resolvidos (corpo→conta) : {tally['resolvido']}")
