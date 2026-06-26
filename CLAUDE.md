@@ -183,8 +183,27 @@ da conta). **Sem botão de exclusão** em nenhuma das telas.
 Cliente Next API em `services/contas.ts` (proxy `/data-api`). Spec/template em
 `docs/prompts/api-contas-crud-spec.md`.
 
+**CRUD de centros de custo (`apps/api-backend/lib/cost-centers.ts` + `app/api/cost-centers/**`):** CRUD
+do cadastro `financial_cost_center` (grupo **Tabelas** da sidebar, página **`/tabelas/centros-de-custo`**
+→ `pages/CostCentersPage.tsx`). PK `cost_center_id` é **SMALLINT IDENTITY ALWAYS** (gerada pelo banco,
+nunca no corpo); o **id 0 é o sentinela "não informado"** — preservado, nunca listado/editado/excluído.
+`GET /api/cost-centers` é **dois consumos do mesmo recurso, discriminados por `page`**: **sem `page`** =
+lookup legado da classificação contábil (lista completa p/ o react-select, `lib/lookups.ts`, INTOCADO);
+**com `page`** = listagem paginada + busca por código/descrição do CRUD (`lib/cost-centers.ts`, exclui o
+sentinela). `POST /api/cost-centers` cria · `GET/PATCH/DELETE /api/cost-centers/:id`. Validação Zod em
+`@sheild/shared` (`costCenterCreateSchema` exige **código + descrição**; `costCenterUpdateSchema` parcial,
+ao menos um campo). **Código único** validado na aplicação (case-insensitive — não há UNIQUE no banco) →
+**409**. **`DELETE` é HARD DELETE** (a tabela não tem `deleted_at`), **bloqueado com 409** quando o centro
+está referenciado por `financial_account_control`, `financial_chart_of_account` ou `supplier` (as 3 FKs);
+o sentinela id 0 também é bloqueado. Status: `201` criação · `409` (código duplicado / em uso) · `404` ·
+`422` Zod · `400` id inválido. Frontend: `services/costCenters.ts` (proxy `/data-api`),
+`organisms/CostCenterForm.tsx` (código + descrição), grid via `getCostCenterColumns` (ações **editar** e
+**excluir** por linha; clicar na linha é no-op) e confirmação de exclusão em `<dialog>` nativo. Botão de
+exclusão usa o utilitário CSS `btn-danger` (tokens `status-error-solid`/`solidBorder`).
+
 **Lookups de classificação contábil (cascata Centro de custo → Plano de contas):** cadastros
-pré-existentes só-leitura `financial_cost_center` e `financial_chart_of_account` (este com FK
+pré-existentes `financial_cost_center` (agora também gerenciado pelo **CRUD de centros de custo** acima)
+e `financial_chart_of_account` (só-leitura; este com FK
 `cost_center_id`). Backend: `apps/api-backend/lib/lookups.ts` (`costCenterService`/`chartAccountService`,
 service_role) + rotas `GET /api/cost-centers` e `GET /api/chart-accounts`. Cliente: `services/lookups.ts`
 (`listCostCenters`/`listChartAccounts`). **Regra de cascata:** o plano de contas só lista os planos
@@ -581,6 +600,7 @@ apps/frontend-vite/src/components/
 │   ├── ResetPasswordForm.tsx  # (gradient) updateUser + signOut + redirect
 │   ├── ContaForm.tsx          # (contas) form criar/editar conta — supplier/centro/plano + cascata
 │   ├── SupplierForm.tsx       # (fornecedores) form criar/editar fornecedor
+│   ├── CostCenterForm.tsx     # (tabelas) form criar/editar centro de custo — código + descrição
 │   ├── DataGrid.tsx           # grid sobre TanStack Table v8 (+ DataGrid.test.tsx) — ver seção própria
 │   ├── dataGrid.variants.ts   # cva por slot (header/row/cell/skeleton/empty/pin/resize/grip/densidade/wrap) default|silver
 │   └── dataGrid.rows.ts       # buildRenderItems (achata linhas→itens row/second/detail p/ virtualização)
@@ -593,7 +613,7 @@ apps/frontend-vite/src/components/
 └── ExpandableText.tsx         # expansível "ver mais/ver menos" (+ ExpandableText.test.tsx)
 ```
 
-**Menu da sidebar (`Layout.tsx`) — 4 grupos** (cabeçalho `uppercase`; itens `breve` são
+**Menu da sidebar (`Layout.tsx`) — 5 grupos** (cabeçalho `uppercase`; itens `breve` são
 `<span className="nav-link is-disabled">` com badge "breve", sem rota):
 
 | Grupo | Itens (rota / estado) |
@@ -601,6 +621,7 @@ apps/frontend-vite/src/components/
 | **Recebimentos** | E-mails (`/emails`) · Log de erros (`/erros`) |
 | **Envios** | E-mails (`/cobranca/envios`) · Log de erros (`/cobranca/erros`) — logs da cobrança automática de vencidos |
 | **Contas** | Gestão de contas (`/consulta`) · Cadastro de contas (`/contas`) · Cadastro de fornecedores (`/fornecedores`) |
+| **Tabelas** | Centro de custos (`/tabelas/centros-de-custo`) — CRUD do cadastro `financial_cost_center` |
 | **Análise** | Dashboard (`/dashboard`) |
 
 > "Gestão de contas" aponta para `/consulta` (só o rótulo difere da rota). Ao promover um
@@ -1178,6 +1199,7 @@ faturas SIEG em `ignorado`; o handler A1 (baixar o boleto real) segue como melho
 | `/erros` | `Erros.tsx` | `email_processing_errors` |
 | `/contas` | `ContasNovaPage.tsx` | `financial_account_control` (lançamento manual via `ContaForm`) |
 | `/fornecedores` | `SuppliersPage.tsx` | `supplier` (CRUD via Next API) |
+| `/tabelas/centros-de-custo` | `CostCentersPage.tsx` | `financial_cost_center` (CRUD via Next API) |
 | `/dashboard` | `Dashboard.tsx` | `financial_account_control` (KPIs/gráficos por mês ou geral; `getDashboardData`) |
 | `/cobranca/envios` | `cobranca/CobrancaEnvios.tsx` | `cobranca_envios_log` (ver "Pipeline de cobrança de vencidos") |
 | `/cobranca/erros` | `cobranca/CobrancaErros.tsx` | `cobranca_erros_log` |
@@ -1374,7 +1396,7 @@ internet` ao CHECK de `document_type` e faz backfill — ver "Normalização de 
 |---|---|
 | `email_control` | Dedup/controle. `status` ∈ (`extraído`, `recebido`, `pendente`, `falha`, `ignorado`, `duplicidade`) — **migrations 022/031**. `extraído`=PDF extraído (CSV gerado); `recebido`=sem PDF, conta via corpo; `pendente`=PDF salvo sem CSV (substitui `baixado`); `falha`=casou keyword mas sem PDF e sem conta no corpo; `ignorado`=não-financeiro (sem keyword) **ou NF-e pura sem conta a pagar** (`subject_is_pure_nfe`); `duplicidade`=pagável do corpo duplica conta já registrada por outro e-mail (**migration 031**; card/filtro próprios em `/emails`). O status é calculado em `process_message` pelo resultado real (conta/CSV/corpo/duplicata), não por `pdf_extracted` |
 | `financial_account_control` | Tabela principal de contas a pagar — uma linha por documento; alimentada pelo pipeline de e-mail **e** por CRUD manual (baixas, consolidações, dashboards). Substitui a antiga `financial_emails` (dropada na migration 020). O fornecedor é referenciado **só pela FK `sk_supplier`** (surrogate key snowflake, NOT NULL — **migration 042**, antes era `supplier_id`) — nome/CNPJ vêm do JOIN com `supplier` (colunas denormalizadas dropadas na **migration 041**). Tem `sender_email` (migration 023; backfill em 025) usado na resolução p/ alinhar `supplier.email`, e `subject` (migration 025) — exibidos/buscados em `/consulta`. **Classificação contábil** (migrations 047/048): `cost_center_id`/`chart_account_id` SMALLINT, NOT NULL DEFAULT 0 (FKs para os cadastros; id 0 = "não informado") — preenchidos no CRUD manual (cascata centro→plano) |
-| `financial_cost_center` / `financial_chart_of_account` | **Cadastros de classificação contábil** (pré-existentes, **preservados em limpezas**) usados como lookup no modal de contas. `financial_chart_of_account` tem `cost_center_id` (relaciona o plano ao centro — base da CASCATA) e `is_postable` (só os postáveis são lançáveis). Lidos via `lib/lookups.ts` (service_role) **e** pelo frontend via embed REST (papel `authenticated`); RLS habilitado com policy de SELECT `TO authenticated` (migration 049 — sem ela o embed voltava null e a UI mostrava `#id`) |
+| `financial_cost_center` / `financial_chart_of_account` | **Cadastros de classificação contábil** (pré-existentes, **preservados em limpezas**) usados como lookup no modal de contas. `financial_cost_center` é **gerenciado pelo CRUD de centros de custo** (`/tabelas/centros-de-custo` — PK `cost_center_id` SMALLINT IDENTITY ALWAYS; id 0 = sentinela "não informado", fora do CRUD; ver "CRUD de centros de custo"). `financial_chart_of_account` (só-leitura no app) tem `cost_center_id` (relaciona o plano ao centro — base da CASCATA) e `is_postable` (só os postáveis são lançáveis). Lidos via `lib/lookups.ts` (service_role) **e** pelo frontend via embed REST (papel `authenticated`); RLS habilitado com policy de SELECT `TO authenticated` (migration 049 — sem ela o embed voltava null e a UI mostrava `#id`) |
 | `email_processing_errors` | Log de falhas com `raw_payload` JSON |
 | `supplier` | Fornecedores. PK = `sk_supplier` (surrogate key snowflake auto-incremental — **migration 042**); `supplier_id` é **chave de negócio** (NOT NULL UNIQUE, só nesta tabela; = `sk_supplier` nos fornecedores criados pela extração, via trigger de espelho `trg_supplier_mirror_id`, podendo divergir em cargas externas). Auto-criados pelo trigger de resolução, mas **cadastro PRESERVADO** (curadoria manual de `email`/`email2`/`email3`/`email4`) — **nunca truncar** em limpezas (ver "Limpeza / reset de dados"). Reconhecimento por **e-mail** em `email`/`email2`/`email3`/`email4` (migrations 023/027/028) — ver "Auto-resolução de fornecedor". **Soft delete** via `deleted_at` (migration 045) — a baixa pelo CRUD da Next API marca `deleted_at` (nunca hard delete) e é bloqueada quando há contas vinculadas; ver "CRUD de fornecedores (Next API)". **Classificação default** `cost_center_id`/`chart_account_id` (SMALLINT NOT NULL DEFAULT 0 + FKs — migration 052): semeia o lançamento de novas contas e é atualizada pelo write-back do modal; ver "Classificação default do fornecedor — sync bidirecional" |
 | `company` | Empresa pagadora (**cadastro**, tem campo `email`). Auto-resolvida pelo trigger `resolve_company_id` a partir de `payer_cnpj`/`payer_name`. **Preservada em limpezas** (ver abaixo) |

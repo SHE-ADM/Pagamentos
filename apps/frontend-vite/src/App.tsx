@@ -14,6 +14,7 @@ const Emails = lazy(() => import('./pages/Emails'));
 const Consulta = lazy(() => import('./pages/Consulta'));
 const Erros = lazy(() => import('./pages/Erros'));
 const SuppliersPage = lazy(() => import('./pages/SuppliersPage'));
+const CostCentersPage = lazy(() => import('./pages/CostCentersPage'));
 const ContasNovaPage = lazy(() => import('./pages/ContasNovaPage'));
 const Dashboard = lazy(() => import('./pages/Dashboard'));
 const CobrancaEnvios = lazy(() => import('./pages/cobranca/CobrancaEnvios'));
@@ -47,6 +48,7 @@ export default function App() {
                       <Route path="/consulta" element={<Consulta />} />
                       <Route path="/contas" element={<ContasNovaPage />} />
                       <Route path="/fornecedores" element={<SuppliersPage />} />
+                      <Route path="/tabelas/centros-de-custo" element={<CostCentersPage />} />
                       <Route path="/dashboard" element={<Dashboard />} />
                       <Route path="/erros" element={<Erros />} />
                       <Route path="/cobranca/envios" element={<CobrancaEnvios />} />
