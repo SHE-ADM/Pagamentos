@@ -1,7 +1,7 @@
 import type { NextRequest } from 'next/server';
-import { ok, fail } from '@/lib/response';
+import { ok, fail, failFromError } from '@/lib/response';
 import { requireAuth } from '@/lib/auth';
-import { contaService, ContaServiceError } from '@/lib/contas';
+import { contaService } from '@/lib/contas';
 
 // /api/contas/:id — GET (por id) + PATCH (atualização parcial).
 // SEM DELETE: a "remoção" é PATCH { status: 'cancelado' } (sem hard-delete).
@@ -17,8 +17,7 @@ function parseId(raw: string): number | null {
 }
 
 function mapError(e: unknown): Response {
-  if (e instanceof ContaServiceError) return fail(e.message, e.status);
-  return fail(e instanceof Error ? e.message : 'Erro inesperado', 500);
+  return failFromError(e, 'contas');
 }
 
 export async function GET(req: NextRequest, ctx: Context) {

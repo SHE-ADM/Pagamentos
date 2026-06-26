@@ -1,6 +1,7 @@
 import type { NextRequest } from 'next/server';
 import { z } from 'zod';
 import { ok, fail } from '@/lib/response';
+import { requireAuth } from '@/lib/auth';
 import { triggerReader, PythonBridgeError } from '@/lib/python-bridge';
 
 // Ação de disparo (não recurso CRUD): POST com corpo de parâmetros.
@@ -12,6 +13,10 @@ const readRequestSchema = z.object({
 export const dynamic = 'force-dynamic';
 
 export async function POST(req: NextRequest) {
+  // Defesa em profundidade: além do middleware, exige sessão no próprio handler.
+  const denied = await requireAuth(req);
+  if (denied) return denied;
+
   let rawBody: unknown;
   try {
     rawBody = await req.json();

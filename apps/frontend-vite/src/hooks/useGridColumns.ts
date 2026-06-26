@@ -15,6 +15,8 @@ import StatusBadge from '../components/StatusBadge';
 import CheckToggle from '../components/atoms/CheckToggle';
 import StatusSelectCell, { type StatusOption } from '../components/atoms/StatusSelectCell';
 import type { FinancialAccountFlag } from '../services/supabase';
+// Formatters de exibição: fonte única em src/lib/format.ts (compartilhada com Consulta.tsx/Emails.tsx).
+import { fmtDate, fmtDateTime, fmtMoney, fmtCnpj, fmtCpf, fmtCostCenter, fmtChartAccount } from '../lib/format';
 
 // Opções do dropdown inline de status — ordem de ciclo de vida, definida aqui como
 // constante de módulo para evitar qualquer dependência de fetch ou timing de estado.
@@ -41,46 +43,6 @@ export type ToggleFlag = (
 
 /** Callback acionado ao alterar o status de uma conta no dropdown inline. */
 export type StatusChangeCallback = (rowId: number, newStatus: string) => Promise<void>;
-
-// Formatters — cópia das implementações de Consulta.tsx. A consolidação num
-// módulo único (src/lib) é follow-up de quando Consulta.tsx for migrado ao hook.
-const fmtDate = (d: string | null): string =>
-  d ? new Date(d + 'T00:00:00').toLocaleDateString('pt-BR') : '—';
-
-const fmtMoney = (v: number | null): string =>
-  v == null ? '—' : Number(v).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
-
-const fmtCnpj = (c: string | null): string =>
-  c?.length === 14
-    ? `${c.slice(0, 2)}.${c.slice(2, 5)}.${c.slice(5, 8)}/${c.slice(8, 12)}-${c.slice(12)}`
-    : c || '—';
-
-const fmtCpf = (c: string | null): string =>
-  c?.length === 11 ? `${c.slice(0, 3)}.${c.slice(3, 6)}.${c.slice(6, 9)}-${c.slice(9)}` : c || '—';
-
-// Classificação contábil (embeds cost_center / chart_account — código + descrição).
-// id 0 = "não informado" (sentinela) → exibe '—' (o plano id 0 tem código literal '0').
-const fmtCostCenter = (r: FinancialAccountControl): string =>
-  r.cost_center_id
-    ? [r.cost_center?.cost_center_code, r.cost_center?.cost_center_description].filter(Boolean).join(' — ') || `#${r.cost_center_id}`
-    : '—';
-
-const fmtChartAccount = (r: FinancialAccountControl): string =>
-  r.chart_account_id
-    ? [r.chart_account?.account_code, r.chart_account?.account_description].filter(Boolean).join(' — ') || `#${r.chart_account_id}`
-    : '—';
-
-// Data + hora (coluna "Recebido" do grid de /emails — cópia do `fmt` de Emails.tsx).
-const fmtDateTime = (iso: string | null): string =>
-  iso
-    ? new Date(iso).toLocaleString('pt-BR', {
-        day: '2-digit',
-        month: '2-digit',
-        year: 'numeric',
-        hour: '2-digit',
-        minute: '2-digit',
-      })
-    : '—';
 
 /** Metadata de uma coluna do grid — fonte única para cabeçalho, render e responsividade. */
 export interface ColumnDef<T> {

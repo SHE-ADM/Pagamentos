@@ -78,11 +78,28 @@ def _resolve_recipients(
     return to_email, cc_email
 
 
+def _strip_crlf(value: str) -> str:
+    """Remove CR/LF de um valor de header — barra header injection (CRLF em Subject/To)."""
+    return value.replace("\r", " ").replace("\n", " ")
+
+
+def _safe_address(value: str | None) -> str | None:
+    """Endereço sem CR/LF; DESCARTA (None) se contiver quebra de linha (injeção de header/
+    destinatário). Usado no Cc, que vem do Firebird sem validação — um Cc inválido vira
+    None (e-mail segue para o To, sem cópia), nunca injeta cabeçalho/destinatário extra."""
+    if not value:
+        return None
+    if "\r" in value or "\n" in value:
+        logger.warning("Endereço de cópia (Cc) com quebra de linha descartado (possível header injection).")
+        return None
+    return value
+
+
 def _build_message(
     smtp: dict, *, subject: str, html_body: str, actual_to: str, actual_cc: str | None
 ) -> MIMEMultipart:
     msg = MIMEMultipart("related")
-    msg["Subject"] = subject
+    msg["Subject"] = _strip_crlf(subject)
     msg["From"] = f"{smtp['from_name']} <{smtp['from_addr']}>"
     msg["To"] = actual_to
     if actual_cc:
@@ -164,6 +181,10 @@ class SmtpSession:
         actual_to, actual_cc = _resolve_recipients(
             to_email, cc_email, dev_mode=self.dev_mode, dev_override=self.dev_override
         )
+        # Sanitiza contra header injection (CRLF) antes de header E envelope (sendmail):
+        # To sem quebra; Cc com quebra é descartado (segue sem cópia).
+        actual_to = _strip_crlf(actual_to)
+        actual_cc = _safe_address(actual_cc)
         raw = _build_message(
             self._smtp, subject=subject, html_body=html_body,
             actual_to=actual_to, actual_cc=actual_cc,

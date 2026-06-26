@@ -14,20 +14,7 @@ import Alert from '../components/atoms/Alert';
 import AttachmentViewer from '../components/AttachmentViewer';
 import ExpandableText from '../components/ExpandableText';
 import DataGrid from '../components/organisms/DataGrid';
-
-const fmt = (iso: string | null): string =>
-  iso
-    ? new Date(iso).toLocaleString('pt-BR', {
-        day: '2-digit',
-        month: '2-digit',
-        year: 'numeric',
-        hour: '2-digit',
-        minute: '2-digit',
-      })
-    : '—';
-const fmtDate = (d: string | null): string => (d ? new Date(d + 'T00:00:00').toLocaleDateString('pt-BR') : '—');
-const fmtMoney = (v: number | null): string =>
-  v == null ? '—' : Number(v).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
+import { fmtDateTime as fmt, fmtDate, fmtMoney } from '../lib/format';
 
 // Tempo decorrido em mm:ss para o banner de progresso.
 const fmtElapsed = (s: number): string => {

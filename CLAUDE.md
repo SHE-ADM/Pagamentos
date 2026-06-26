@@ -160,9 +160,11 @@ principal `financial_account_control` (PK = **`id`**, não `sk_*`; fornecedor pe
 JOIN `supplier`, exclui `cancelado` por padrão) · `GET/PATCH /api/contas/:id` · `POST /api/contas`.
 **Sem DELETE** (regra de preservação): "remoção" = `PATCH { status: 'cancelado' }`. Validação Zod
 em `@sheild/shared` — `financialAccountControlCreateSchema` (criação manual exige `sk_supplier` +
-`amount`>0; demais campos opcionais, o banco aplica DEFAULT/NULL) e
-`financialAccountControlUpdateSchema` (partial). `status_id`/`company_id`/`created_at`/`updated_at`
-são derivados (trigger) — não entram no corpo. Status: `201` · `409` (23505) · `404` · `422` ·
+`amount`>0; demais campos opcionais, o banco aplica DEFAULT/NULL; **`status` é OMITIDO do create** —
+a conta nasce no default `pendente` e a trigger assume `a vencer`/`vencido`, então o cliente NÃO
+cria conta já em estado fechado) e `financialAccountControlUpdateSchema` (partial — a baixa/
+cancelamento é feita depois via PATCH). `status`/`status_id`/`company_id`/`created_at`/`updated_at`
+são derivados (trigger) ou controlados — não entram no corpo de criação. Status: `201` · `409` (23505) · `404` · `422` ·
 `400` id inválido. Frontend: **página `/contas`** (lançamento rápido — `pages/ContasNovaPage.tsx`
 com o card centralizado `mx-auto` + `organisms/ContaForm.tsx`) e **edição da conta em `/consulta`
 pelo botão "Editar conta" do painel de detalhe** (abre o modal `ContaForm` → `PATCH /api/contas/:id`).
@@ -222,7 +224,9 @@ Cliente HTTP compartilhado em **`services/dataApi.ts`** (`dataApiCall`/`dataApiL
 
 **Hierarquia:** grupo → subgrupo (`chart_account_group_id`) → plano de contas (`chart_account_subgroup_id`
 + `cost_center_id`); banco → conta (`bank_id`). **Rotas dual-mode** (Bancos/Grupos/Sub grupos): com `page`
-= CRUD paginado; sem `page` = lookup (lista completa p/ os `<select>`). **`GET /api/statuses`** (read-only,
+= CRUD paginado; sem `page` = lookup (lista completa p/ os `<select>`). **`MAX_LIMIT = 1000`** nesses
+três services (igual a `lib/lookups.ts`) para o lookup não truncar o `<select>`; a paginação do CRUD
+usa `DEFAULT_LIMIT`. **`GET /api/statuses`** (read-only,
 `statusService` em `lib/lookups.ts`) alimenta o lookup de situação do form de Contas. Lookups no frontend:
 `services/lookups.ts` (`listBanks`/`listChartAccountGroups`/`listChartAccountSubgroups`/`listStatuses` +
 `listCostCenters`/`listChartAccounts`). Schemas Zod em `@sheild/shared` (`bank`/`financial-account`/
@@ -272,7 +276,10 @@ e a classificação flui nos **dois sentidos**:
 **Usuários / autenticação (`apps/api-backend/lib/users.ts` + `app/api/users|auth/**`):** sobre
 o **Supabase Auth** — sem tabela própria, sem JWT customizado, sem bcrypt (regras de
 `auth-specs.md`). `POST /api/users` cria usuário (**admin-only**, via `auth.admin.createUser`
-com `email_confirm: true`; **SEM AUTO-REGISTRO** — fica atrás do guard do middleware) → `201`
+com `email_confirm: true`; **SEM AUTO-REGISTRO** — exige `requireAdmin` (`lib/auth.ts`:
+papel lido de `app_metadata.role === 'admin'`, campo controlado pelo servidor/Admin API;
+**não basta estar logado** → `403` se não-admin; correção da auditoria de segurança §1 A-1)
+além do middleware) → `201`
 `{ id, name, email }`; `POST /api/auth/login` é **público** (exceção no matcher:
 `/api/((?!health|auth/login).*)`) e devolve `{ access_token, expires_in }` via
 `signInWithPassword`; `GET /api/users/me` usa `getAuthenticatedUser` (`lib/auth.ts`) → perfil.
@@ -285,9 +292,16 @@ ficam públicos) exigindo
 `Authorization: Bearer <token>`. O token é validado contra o Supabase Auth (`auth.getUser`)
 com a **chave anon** (`SUPABASE_ANON_KEY`, nunca a service_role); sem token/ inválido →
 `401`, falha de validação → `500` (envelope `fail`). A lógica fica em `lib/auth.ts`
-(`requireAuth`/`getBearerToken`, testável). Isso **não** intercepta o caminho atual do
-frontend (leitura de e-mails fala com o Flask direto); cobre a API de dados Next p/ a fase
-do portal.
+(`requireAuth`/`requireAdmin`/`getBearerToken`, testável). `/api/emails/read` também chama
+`requireAuth` no handler (defesa em profundidade, não só o middleware). Isso **não**
+intercepta o caminho atual do frontend (leitura de e-mails fala com o Flask direto); cobre a
+API de dados Next p/ a fase do portal.
+
+**Erros 5xx não vazam detalhe interno (segurança §3 M-2):** os route handlers de CRUD usam
+`failFromError(e, '<tag>')` (`lib/response.ts`) — erro com `status` 4xx ecoa a mensagem
+curada; 5xx (ou sem status) vira `'Erro interno ao processar a solicitação'` e o detalhe
+(mensagem crua de Postgres/PostgREST) vai só para o **log do servidor** (`console.error`).
+Não reintroduzir `fail(e.message, 500)` nos handlers.
 
 ### 4 — Conventional Commits (todo o projeto)
 
@@ -504,6 +518,15 @@ Supabase (PostgreSQL)  ── financial_account_control (dados extraídos)
 
 ## Comandos
 
+> **Specs/templates de prompts (`docs/prompts/`)** — fonte dos prompts copy-paste para o
+> Claude Code (padrão prompt-first). CRUDs/auth: `api-supplier-crud-spec.md`,
+> `api-contas-crud-spec.md`, `api-users-auth-spec.md`. Qualidade/produção:
+> `code-review-producao-spec.md` (review completo em 2 fases — diagnóstico read-only →
+> prompts XML de correção por área; gate lint+typecheck+test+prune+vulture) e
+> `auditoria-seguranca-spec.md` (auditoria de segurança: AuthN/Z, RLS por coluna, IDOR/mass
+> assignment, SSRF no download de boleto, XSS, segredos/deps). Os dois últimos escrevem só em
+> `docs/review/` — rodar o de review antes do de segurança (compartilham `read_first`).
+
 Dependências dos apps: `npm install` na **raiz** (workspaces — lockfile único).
 
 ```powershell
@@ -590,7 +613,7 @@ npm install                              # na raiz do monorepo — instala todos
 ```
 
 `server/requirements.txt` é a fonte de verdade das dependências Python (flask, python-dotenv,
-pdfplumber, pypdf, Pillow, anthropic, pandas), com versões fixadas em `~=` para dev/prod não
+pdfplumber, Pillow, anthropic, pandas), com versões fixadas em `~=` para dev/prod não
 divergirem — não rodar `pip install` solto sem atualizar o arquivo.
 
 ## Frontend — componentes e design system
@@ -646,6 +669,7 @@ apps/frontend-vite/src/components/
 ├── AttachmentViewer.tsx       # visualizador de PDF (signed URL do Storage) em <dialog> nativo (showModal: role/foco/trap/Esc nativos) + iframe
 ├── Layout.tsx (+ Layout.test.tsx)   # sidebar; navLink = cva local (estado active); menu em 5 grupos (ver abaixo)
 ├── ProtectedRoute.tsx
+├── ErrorBoundary.tsx          # boundary raiz (main.tsx): chunk lazy obsoleto → auto-reload; runtime → fallback "Recarregar" (+ teste/a11y)
 ├── StatusBadge.tsx (+ StatusBadge.test.tsx)   # componente; variantes em statusBadge.variants.ts
 ├── statusBadge.variants.ts    # cva(badgeVariants) + resolveBadge + badgeLabel + mapas de tipo/status
 └── ExpandableText.tsx         # expansível "ver mais/ver menos" (+ ExpandableText.test.tsx)
@@ -698,13 +722,19 @@ mecanismo de ocultação por breakpoint.
 `useIdleLogout.ts` e `useAuth` cobrem sessão (ver Autenticação).
 
 Tipos compartilhados vêm de `@sheild/shared` (ex.: `FinancialEmail`, `EmailControl`).
-Helpers em `src/lib/`: `getErrorMessage.ts` (erro em strict mode), `cn.ts` (merge de
+Helpers em `src/lib/`: `getErrorMessage.ts` (erro em strict mode), `format.ts` (formatadores
+de exibição — `fmtDate`/`fmtDateTime`/`fmtMoney`/`fmtCnpj`/`fmtCpf`/`fmtCostCenter`/`fmtChartAccount`;
+**fonte única** consumida por `Consulta`/`Emails`/`Dashboard`/`useGridColumns` — não recriar cópias
+locais), `csv.ts` (`csvCell` — célula CSV segura: escapa aspas, remove CRLF e **neutraliza
+injeção de fórmula** `= + - @` no export de `/consulta`; segurança §5 M1), `cn.ts` (merge de
 classes Tailwind — `clsx` + `tailwind-merge`, base do padrão CVA), `supabaseClient.ts`
 (SDK oficial, só para auth), `authStorage.ts` (storage híbrido da sessão +
 `setRememberPreference`/`getRememberPreference` — preferência "Lembrar-me"; ver
-seção Autenticação) e `getStatusExplanation.ts` (texto pt-BR no `Alert` do card de `/emails`
+seção Autenticação), `getStatusExplanation.ts` (texto pt-BR no `Alert` do card de `/emails`
 explicando por que um e-mail ficou em `falha` (error), `pendente` (warning) ou `ignorado`
-(info); reusa `getFailureReason.ts` para o caso `falha`).
+(info); reusa `getFailureReason.ts` para o caso `falha`) e `chunkReload.ts` (recuperação de
+chunk lazy obsoleto: `isChunkLoadError`/`reloadOnceForChunk`/`installPreloadErrorReload` —
+ver "Build e code-splitting").
 
 Infra de teste a11y em `tests/`: `setup.ts` (matcher `toHaveNoViolations`), `axe.ts`
 (runner AA + `color-contrast` desligado), `contrast.a11y.test.ts` (guarda de contraste
@@ -766,6 +796,7 @@ cumprem WCAG AA (verificado em `tests/contrast.a11y.test.ts`).
 | `status-info-*` | `#1d4ed8` / `#eff6ff` | informativo, a vencer, prorrogado, baixado |
 | `status-source-*` | `#0f766e` / `#f0fdfa` | origem da extração (teal) |
 | `status-neutral-*` | `#475569` / `#f8fafc` | neutro, cancelado, documento, **pendente + ignorado + duplicidade** (cinza slate-600) |
+| `status-prorrogado-fg` / `status-baixado-fg` | `#7c3aed` / `#0e7490` | **só preenchimento gráfico** do donut + swatch da legenda no Dashboard (sem par bg/border; ≥3:1 sobre branco — 1.4.11). Travados em `tests/contrast.a11y.test.ts` |
 
 Aplicação **sempre via `cva`**: `StatusBadge` (`statusBadge.variants.ts`), `Alert` (banner
 de página) e `InlineMessage`. As quatro paletas — `brand` (verde dashboard), `auth`
@@ -895,6 +926,11 @@ Proteções aprendidas "na dor" — manter:
   conexão) com espera crescente. Erro de protocolo/login (`imaplib.IMAP4.error` puro) **não**
   repete (retry ali é inútil). Esgotadas as tentativas, levanta `RuntimeError` → o caller HTTP
   devolve `502`. `run_reader` monta o `criteria` **antes** de chamar `_connect_and_search`.
+- **IMAP fechado em `try/finally`** (`run_reader`): o loop de leitura é envolto em `try` com
+  `mail.logout()` no `finally` (best-effort) — uma exceção inesperada que escape do loop **não**
+  deixa a conexão IMAP aberta. Os scripts manuais `reprocess_link_emails`/`reprocess_body_emails`
+  seguem o mesmo padrão (logout em `finally`) e usam `_rfc822_from_fetch` (não `md[0][1]` direto).
+  Teste: `tests/test_run_reader_logout.py`. **Nunca** voltar o `logout()` para fora do `finally`.
 - **Claude API com timeout** (`extract_pdf.py`, `CLAUDE_API_TIMEOUT_SECONDS`, env
   `CLAUDE_API_TIMEOUT` default 90s): mesma classe de falha do IMAP. Sem `timeout` explícito o
   SDK Anthropic usa ~10 min/request; num run síncrono que processa muitos PDFs, **um request
@@ -1114,8 +1150,18 @@ passa por `upload_attachment` dentro de `extract_and_store_accounts`, anexo ou l
   aviso "Tem certeza que deseja acessar este link?" (modal de webmail mostrado **após** o
   clique, logo ausente do corpo bruto). Como rede secundária, `_body_has_suspicious_warning`
   descarta todos os links se esse texto de aviso aparecer citado no corpo.
+- **Guarda anti-SSRF do download (segurança §4 C-1/C-2 — não regredir):** todo `GET` de
+  link passa por `_is_safe_download_url` (`_fetch_url`) — bloqueia scheme ≠ http(s), porta
+  fora de `{80,443}` e host que resolve para IP **interno** (privado/loopback/link-local/
+  reservado/multicast — cobre metadata cloud `169.254.169.254`, `localhost`, LAN). O
+  `_SafeRedirectHandler` **revalida cada redirect** (impede bypass via 302 para alvo interno);
+  os PDFs salvos são contidos em `PDF_INBOX` (`_is_within_inbox`). Conteúdo de remetente
+  desconhecido controla a URL — **nunca** remover essas guardas. Os caminhos legítimos
+  (BRASPRESS, página HTML intermediária) batem em hosts públicos e passam. O cookiejar do
+  `http.cookiejar` só envia cookie a domínio correspondente (sem vazamento cross-domain).
 
-Testes: `tests/test_link_extraction.py` (reconhecimento, unescape, filtro de suspeito, URL BRASPRESS).
+Testes: `tests/test_link_extraction.py` (reconhecimento, unescape, filtro de suspeito, URL
+BRASPRESS) e `tests/test_ssrf_guard.py` (bloqueio de IP interno/scheme/porta + redirect + contenção em PDF_INBOX).
 
 **Reprocessar histórico**: `scripts/reprocess_link_emails.py` (com `--dry-run`) varre os
 e-mails `status='falha'`, rebusca o corpo no IMAP, baixa o boleto pelo link e grava em
@@ -1387,11 +1433,27 @@ faturas SIEG em `ignorado`; o handler A1 (baixar o boleto real) segue como melho
 
 ### Build e code-splitting (`frontend-vite`)
 
-- **Rotas lazy** (`App.tsx`): só `LoginPage` entra no bundle inicial; as três telas de
-  dados (`Emails`/`Consulta`/`Erros`) e os fluxos de auth secundários (`Forgot`/`Reset`)
-  são `React.lazy` + `Suspense` (fallback "Carregando…"; um `Suspense` interno mantém o
-  `Layout`/sidebar visível enquanto a página carrega). **Toda rota/página nova segue esse
-  padrão** `lazy(() => import(...))`.
+- **Rotas lazy** (`App.tsx`): só `LoginPage` entra no bundle inicial; as demais páginas
+  (`Emails`/`Consulta`/`Erros`, os CRUDs do grupo Tabelas, `Dashboard`, cobrança, fluxos de
+  auth secundários `Forgot`/`Reset`) são `React.lazy` + `Suspense` (fallback "Carregando…";
+  um `Suspense` interno mantém o `Layout`/sidebar visível enquanto a página carrega). **Toda
+  rota/página nova segue esse padrão** `lazy(() => import(...))`.
+- **Recuperação de chunk lazy obsoleto + Error Boundary (não regredir — corrige "tela
+  branca"):** um deploy novo no Vercel invalida os hashes dos assets referenciados pelo
+  `index.html` já aberto na aba; ao navegar para uma rota lazy ainda não baixada (cenário
+  típico: logout por inatividade → login → entrar), o `import()` 404/serve HTML → o React
+  lança no render. Como `Suspense` **não captura erro** (só loading), sem rede de segurança
+  a árvore inteira sumia (tela branca; só um refresh resolvia). Camadas (`main.tsx`):
+  - **`components/ErrorBoundary.tsx`** (boundary raiz, envolve o `App`): erro de **chunk** →
+    **auto-reload** uma vez ("Atualizando…", trava anti-loop de 2/sessão em `sessionStorage`);
+    erro de **runtime** → fallback com botão **"Recarregar"** (sem mais tela branca).
+  - **`lib/chunkReload.ts`**: `isChunkLoadError` (heurística por mensagem), `reloadOnceForChunk`
+    (anti-loop), `installPreloadErrorReload` (handler `vite:preloadError` — recarrega antes do
+    React tentar renderizar o erro) e `clearChunkReloadCount` (zera o contador no mount do `App`,
+    sinal de bundle OK). Testes: `chunkReload.test.ts`, `ErrorBoundary.test.tsx` (+ a11y).
+  - **`AuthContext.init()` endurecido**: `try/catch/finally` garante que `loading` **sempre**
+    resolva (sem ficar preso em "Carregando…" se o SDK/storage lançar) — vai ao login em vez
+    de travar.
 - **`manualChunks`** (`vite.config.ts`): `react-vendor` (react/-dom/router) e `supabase`
   (SDK) em chunks próprios — melhora cache e download paralelo e elimina o aviso `>500 kB`
   do Vite. O código de cada rota lazy vira um chunk à parte automaticamente. **No Vite 8
@@ -1412,7 +1474,20 @@ faturas SIEG em `ignorado`; o handler A1 (baixar o boleto real) segue como melho
 ## Banco de dados (Supabase)
 
 Migrations em `supabase/migrations/`, aplicadas **manualmente no SQL Editor** em ordem
-numérica (`001` → `054`). Não há migration automática. (A `054` redefine
+numérica (`001` → `057`). Não há migration automática. (A `057` é de **segurança**
+(idempotente, defesa em profundidade): `REVOKE INSERT/UPDATE/DELETE` do papel `authenticated`
+em `supplier`/`status` — o RLS já bloqueava (ambas só têm política de SELECT), isto remove o
+grant default residual para simetria com a `056`; escrita segue só `service_role`. A `056` é de **segurança**
+(idempotente): habilita RLS + leitura `authenticated` + **REVOKE de escrita** do papel
+`authenticated` nos cadastros pré-existentes (`company`/`financial_account`/`financial_bank`/
+grupos/subgrupos) e em `audit_log` se existir — fecha o ponto cego de RLS apontado na
+auditoria de segurança. **Exige verificação no SQL Editor antes de aplicar** — ver
+`supabase/migrations/README.md` e `docs/review/seguranca/RELATORIO-SEGURANCA.md` §2. A `055` é **só documentação**
+(`COMMENT ON`, idempotente/re-executável): registra no banco o ON DELETE efetivo das FKs de
+classificação (`NO ACTION` ≡ `RESTRICT`) e que `status` é a 4ª coluna gravável por `authenticated`
+em `financial_account_control` (036). Caveats operacionais — aplicação uma-vez/ordem, migrations
+não re-executáveis (042/050/051/053/039) e pré-requisito de bootstrap (cadastros pré-existentes +
+`normalize_search`) — em `supabase/migrations/README.md`. A `054` redefine
 `resolve_supplier_id`: a busca por e-mail vira **fallback após o nome** (não-interno), corrigindo a
 criação de fornecedor duplicado quando o e-mail já consta num cadastro — ver "Auto-resolução de
 fornecedor". A `053` adiciona a FK
@@ -1530,10 +1605,12 @@ write-back grava por caminho dedicado (`setSupplierClassification`); ver "Classi
 fornecedor — sync bidirecional".
 
 **Schema base vs. criação manual:** `amount` é `nullable` no schema base (o pipeline pode
-gravar sem valor → vira erro `sem_valor`, não cria conta). A criação manual via API usa
-`financialAccountControlCreateSchema` (`= ...InputSchema.extend({ amount: money.positive() })`),
-que **exige valor > 0** — para o futuro `POST /api/contas`. Não relaxar o `.positive()` nesse
-schema: lançar conta a pagar de R$ 0 não é válido.
+gravar sem valor → vira erro `sem_valor`, não cria conta). A criação manual via `POST /api/contas`
+usa `financialAccountControlCreateSchema`
+(`= ...InputSchema.omit({ status: true }).partial().extend({ sk_supplier, amount: money.positive() })`),
+que **exige valor > 0** e **omite `status`** (a conta nasce `pendente`; o cliente não pode criá-la já
+em estado fechado — `pago`/`cancelado`/`baixado`). Não relaxar o `.positive()` nesse schema (lançar
+conta de R$ 0 não é válido) nem reintroduzir `status` no create.
 
 RLS habilitado em todas as tabelas. Policies de leitura são `TO authenticated`
 (migrations 015/018/019); escrita em `financial_account_control` é `TO service_role`
@@ -1606,9 +1683,9 @@ Firebird (VW_PSQ_FIN_REC_BAN + _004)  →  run.py  →  SMTP transacional Locawe
 | `send_core.py` | **Núcleo compartilhado** por `run.py` (batch) e `resend.py` (reenvio manual): `validate_email`, `classify_smtp_error` e `send_and_log` (render→envia→loga; sucesso→`cobranca_envios_log`, falha→`cobranca_erros_log`; **nunca propaga exceção SMTP**). Centraliza a lógica num só lugar — não duplicar entre os fluxos |
 | `resend.py` | **Reenvio manual** de falhas a partir de `/cobranca/erros` (`resend_erros(ids, on_progress)`). Ver subseção "Reenvio manual" abaixo |
 | `db_firebird.py` | Conexão Firebird (driver **`fdb`**, fixado em `server/requirements.txt`) + `_QUERY` (UNION das views `VW_PSQ_FIN_REC_BAN` e `_004`). Linha **sem e-mail SEGUE** o fluxo (vira `email_ausente`); só descarta linha sem `document_id` |
-| `email_sender.py` | Monta e envia. **To primeiro; se o principal falhar, o Cc NÃO é enviado** (2 `sendmail` na mesma conexão). **`SmtpSession`**: conexão **reaproveitada no lote** (lazy no 1º envio; reconecta+reenvia 1× se cair). `send_cobranca` (avulso) é wrapper de compat. **Atenção:** `smtplib.SMTPException` herda de `OSError` — o catch de queda usa `(SMTPServerDisconnected, ConnectionError, TimeoutError)`, **nunca** `OSError`, para não reenviar recusa definitiva (451/5xx/auth) |
+| `email_sender.py` | Monta e envia. **To primeiro; se o principal falhar, o Cc NÃO é enviado** (2 `sendmail` na mesma conexão). **`SmtpSession`**: conexão **reaproveitada no lote** (lazy no 1º envio; reconecta+reenvia 1× se cair). `send_cobranca` (avulso) é wrapper de compat. **Atenção:** `smtplib.SMTPException` herda de `OSError` — o catch de queda usa `(SMTPServerDisconnected, ConnectionError, TimeoutError)`, **nunca** `OSError`, para não reenviar recusa definitiva (451/5xx/auth). **Segurança §4 A-2/A-3 (não regredir):** Subject é normalizado (`_strip_crlf`) e o Cc com quebra de linha é DESCARTADO (`_safe_address`) antes do header E do envelope `sendmail` — barra header injection (CRLF) a partir de dados do Firebird |
 | `supabase_log.py` | `already_sent` (dedup), `log_envio_sucesso`, `log_envio_erro`, `fetch_company_smtp`, `fetch_erro_rows` (linhas de erro para o reenvio), `delete_erro_rows`/`delete_erro_rows_by_document_id`/`fetch_error_document_ids` (limpeza de resolvidos) |
-| `template.py` | HTML do e-mail de cobrança (`render_html`) |
+| `template.py` | HTML do e-mail de cobrança (`render_html`). **Segurança §4 A-1 (não regredir):** `customer_name`/`document_id` (do Firebird) passam por `html.escape` antes de entrar no HTML — barra HTML/script injection no e-mail do cliente. Testes em `tests/test_email_security.py` |
 | `failure_notify.py` | **Notificação ao representante (CC)** das falhas **definitivas** (`DEFINITIVE_ERROR_TYPES` = email_ausente/email_invalido/smtp_bloqueio): `group_by_cc` (resumo por CC, ignora falha sem CC) + `render_failure_digest` (HTML com cliente/título/vencimento/valor/motivo) + `build_subject`. Só no batch (`run.py`) |
 
 **SMTP (não óbvio — não regredir):** remetente (`From`) = `company.email` (`company_id=1` =
@@ -1685,6 +1762,15 @@ inválido → novo registro de erro) · `error` (falha SMTP → novo registro).
 DEV_MODE/override → a UI **desabilita o botão** quando `ready=false`, com o motivo no `title`) ·
 `POST /api/cobranca/resend/start` (dispara em **thread**, responde na hora) ·
 `GET /api/cobranca/resend/progress` (poll do progresso).
+
+**Guarda CSRF dos endpoints de DISPARO (segurança §4 M-1 — não regredir):** os POST que
+disparam leitura (`/api/emails/read`, `/api/emails/read/start`) e reenvio
+(`/api/cobranca/resend/start`) passam por `_reject_trigger_request` (`server/app.py`): exigem
+`Content-Type: application/json` (→ `415` caso contrário, quebrando o CSRF "simples" do
+navegador) e, se `FLASK_TRIGGER_TOKEN` estiver no `.env`, o header `X-Trigger-Token` (→ `401`).
+O frontend e a ponte Next já enviam `application/json`. A barreira primária continua sendo o
+bind em `127.0.0.1`; isto é defesa em profundidade para quando o Flask for exposto numa VM.
+Teste: `tests/test_flask_csrf_guard.py`.
 
 **Frontend:** rotas lazy `/cobranca/envios` e `/cobranca/erros` (`App.tsx`), páginas
 `pages/cobranca/CobrancaEnvios.tsx` + `CobrancaErros.tsx` sobre o **`DataGrid` do projeto**

@@ -1,7 +1,7 @@
 import type { NextRequest } from 'next/server';
-import { ok, fail } from '@/lib/response';
+import { ok, fail, failFromError } from '@/lib/response';
 import { requireAuth } from '@/lib/auth';
-import { supplierService, SupplierServiceError } from '@/lib/suppliers';
+import { supplierService } from '@/lib/suppliers';
 
 // /api/suppliers/:sk — GET (por sk) + PATCH (update) + DELETE (soft delete).
 // Protegido pelo middleware; o requireAuth no handler é defesa em profundidade.
@@ -17,8 +17,7 @@ function parseSk(raw: string): number | null {
 }
 
 function mapError(e: unknown): Response {
-  if (e instanceof SupplierServiceError) return fail(e.message, e.status);
-  return fail(e instanceof Error ? e.message : 'Erro inesperado', 500);
+  return failFromError(e, 'suppliers');
 }
 
 export async function GET(req: NextRequest, ctx: Context) {

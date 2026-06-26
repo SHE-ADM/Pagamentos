@@ -1,7 +1,7 @@
 import type { NextRequest } from 'next/server';
-import { ok, fail } from '@/lib/response';
+import { ok, failFromError } from '@/lib/response';
 import { requireAuth } from '@/lib/auth';
-import { chartAccountGroupService, ChartAccountGroupServiceError } from '@/lib/chart-account-groups';
+import { chartAccountGroupService } from '@/lib/chart-account-groups';
 
 // /api/chart-account-groups — GET de duplo modo (com `page` = CRUD paginado; sem
 // `page` = lookup p/ o <select> de grupo no form de Sub grupos) + POST.
@@ -10,8 +10,7 @@ export const dynamic = 'force-dynamic';
 const LOOKUP_LIMIT = 1000;
 
 function mapError(e: unknown): Response {
-  if (e instanceof ChartAccountGroupServiceError) return fail(e.message, e.status);
-  return fail(e instanceof Error ? e.message : 'Erro inesperado', 500);
+  return failFromError(e, 'chart-account-groups');
 }
 
 async function listPaginated(sp: URLSearchParams): Promise<Response> {

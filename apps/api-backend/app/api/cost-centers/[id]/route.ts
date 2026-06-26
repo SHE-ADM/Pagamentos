@@ -1,7 +1,7 @@
 import type { NextRequest } from 'next/server';
-import { ok, fail } from '@/lib/response';
+import { ok, fail, failFromError } from '@/lib/response';
 import { requireAuth } from '@/lib/auth';
-import { costCenterService, CostCenterServiceError } from '@/lib/cost-centers';
+import { costCenterService } from '@/lib/cost-centers';
 
 // /api/cost-centers/:id — GET (por id) + PATCH (update) + DELETE (hard delete).
 // Protegido pelo middleware; o requireAuth no handler é defesa em profundidade.
@@ -18,8 +18,7 @@ function parseId(raw: string): number | null {
 }
 
 function mapError(e: unknown): Response {
-  if (e instanceof CostCenterServiceError) return fail(e.message, e.status);
-  return fail(e instanceof Error ? e.message : 'Erro inesperado', 500);
+  return failFromError(e, 'cost-centers');
 }
 
 export async function GET(req: NextRequest, ctx: Context) {

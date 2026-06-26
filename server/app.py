@@ -21,6 +21,7 @@ Execução:
     # → http://127.0.0.1:8000  (o Vite faz proxy de /api para esta porta)
 """
 
+import os
 import sys
 import time
 import threading
@@ -48,7 +49,32 @@ import resend  # noqa: E402  (depende do sys.path acima)
 # Limites de validação de entrada
 MAX_DAYS = 365
 
+# Token opcional de disparo (defesa adicional para quando o Flask for exposto além de
+# localhost). Quando definido no .env, os endpoints de DISPARO (POST) exigem o header
+# X-Trigger-Token correspondente. Vazio (default) = só a checagem de Content-Type vale.
+_TRIGGER_TOKEN = os.environ.get("FLASK_TRIGGER_TOKEN", "").strip()
+
 app = Flask(__name__)
+
+
+def _reject_trigger_request():
+    """Guarda CSRF dos endpoints de DISPARO (POST que leem e-mail / enviam cobrança).
+    Esses endpoints não têm sessão na frente — a barreira é o bind em 127.0.0.1. Esta
+    guarda adiciona defesa em profundidade:
+      - Exige Content-Type application/json: um site cross-site no navegador do operador
+        só consegue forjar requests "simples" (text/plain / form) — bloqueadas aqui (415),
+        quebrando o CSRF GET-based/form-based sem JS de origem confiável.
+      - Se FLASK_TRIGGER_TOKEN estiver no .env, exige o header X-Trigger-Token (401).
+    Retorna uma Response de erro (tupla Flask) ou None quando pode prosseguir.
+    """
+    ctype = (request.headers.get("Content-Type") or "").split(";")[0].strip().lower()
+    if ctype != "application/json":
+        return jsonify({"ok": False, "error": "Content-Type application/json obrigatório."}), 415
+    if _TRIGGER_TOKEN:
+        token = (request.headers.get("X-Trigger-Token") or "").strip()
+        if token != _TRIGGER_TOKEN:
+            return jsonify({"ok": False, "error": "Token de disparo inválido."}), 401
+    return None
 
 # ---------------------------------------------------------------------------
 # Estado de progresso do job assíncrono (compartilhado entre a thread de
@@ -171,6 +197,9 @@ def _resend_job(ids: list) -> None:
 @app.post("/api/cobranca/resend/start")
 def cobranca_resend_start():
     """Dispara o reenvio das linhas de erro selecionadas (assíncrono)."""
+    guard = _reject_trigger_request()
+    if guard is not None:
+        return guard
     ready, reason = resend.resend_ready()
     if not ready:
         return jsonify({"ok": False, "error": reason or "Reenvio indisponível."}), 503
@@ -216,6 +245,9 @@ def read_emails_endpoint():
     Dispara a leitura IMAP de forma SÍNCRONA (bloqueia até terminar).
     Mantido para a ponte da Next API. O frontend usa /start + /progress.
     """
+    guard = _reject_trigger_request()
+    if guard is not None:
+        return guard
     body = request.get_json(silent=True) or {}
     try:
         params = _parse_read_params(body)
@@ -239,6 +271,9 @@ def read_emails_start():
     proxy derrubar a conexão e o frontend "achar que travou"). O andamento é
     consultado por GET /api/emails/progress.
     """
+    guard = _reject_trigger_request()
+    if guard is not None:
+        return guard
     body = request.get_json(silent=True) or {}
     try:
         params = _parse_read_params(body)

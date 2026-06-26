@@ -166,25 +166,19 @@ export interface EmailStats {
 }
 
 export async function getEmailStats(): Promise<EmailStats> {
-  const byStatus = (s: string) =>
-    query<{ id: number }[]>('email_control', { select: 'id', status: `eq.${s}`, limit: 2000 });
-  const [all, extraido, recebido, pendente, falha, ignorado, duplicidade] = await Promise.all([
-    query<{ id: number }[]>('email_control', { select: 'id', limit: 2000 }),
-    byStatus('extraído'),
-    byStatus('recebido'),
-    byStatus('pendente'),
-    byStatus('falha'),
-    byStatus('ignorado'),
-    byStatus('duplicidade'),
-  ]);
+  // Uma única requisição: traz a coluna `status` de todo o email_control e conta no
+  // cliente (mesmo padrão de getProcessingErrorStats). Antes eram 8 requisições por
+  // refresh (1 total + 6 por status), repetidas a cada poll de leitura.
+  const rows = await query<{ status: string }[]>('email_control', { select: 'status', limit: 50000 });
+  const count = (s: string): number => rows.filter((r) => r.status === s).length;
   return {
-    total: all.length,
-    extraido: extraido.length,
-    recebido: recebido.length,
-    pendente: pendente.length,
-    falha: falha.length,
-    ignorado: ignorado.length,
-    duplicidade: duplicidade.length,
+    total: rows.length,
+    extraido: count('extraído'),
+    recebido: count('recebido'),
+    pendente: count('pendente'),
+    falha: count('falha'),
+    ignorado: count('ignorado'),
+    duplicidade: count('duplicidade'),
   };
 }
 
@@ -595,20 +589,22 @@ export async function getDashboardData(month: number, year: number, scope: Dashb
 
   // Contas do escopo (exclui cancelado) com embed do fornecedor.
   // 'month' → filtra pelo intervalo do mês; 'all' → todas as contas.
-  const monthRows = await query<MonthRow[]>('financial_account_control', {
-    select: 'id,amount,status,due_date,document_type,description,supplier(trade_name,legal_name)',
-    status: 'neq.cancelado',
-    ...(scope === 'month' ? { and: `(due_date.gte.${first},due_date.lte.${last})` } : {}),
-    limit: scope === 'month' ? 5000 : 20000,
-  });
-
-  // Contas do ano inteiro (só os campos do gráfico) para as movimentações mês a mês.
-  const yearRows = await query<YearRow[]>('financial_account_control', {
-    select: 'amount,status,due_date',
-    status: 'neq.cancelado',
-    and: `(due_date.gte.${year}-01-01,due_date.lte.${year}-12-31)`,
-    limit: 20000,
-  });
+  // As duas leituras são independentes → Promise.all (antes eram sequenciais).
+  const [monthRows, yearRows] = await Promise.all([
+    query<MonthRow[]>('financial_account_control', {
+      select: 'id,amount,status,due_date,document_type,description,supplier(trade_name,legal_name)',
+      status: 'neq.cancelado',
+      ...(scope === 'month' ? { and: `(due_date.gte.${first},due_date.lte.${last})` } : {}),
+      limit: scope === 'month' ? 5000 : 20000,
+    }),
+    // Contas do ano inteiro (só os campos do gráfico) para as movimentações mês a mês.
+    query<YearRow[]>('financial_account_control', {
+      select: 'amount,status,due_date',
+      status: 'neq.cancelado',
+      and: `(due_date.gte.${year}-01-01,due_date.lte.${year}-12-31)`,
+      limit: 20000,
+    }),
+  ]);
 
   // KPIs
   const sum = (rows: MonthRow[]): number => rows.reduce((s, r) => s + num(r.amount), 0);

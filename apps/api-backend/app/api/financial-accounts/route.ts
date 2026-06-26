@@ -1,7 +1,7 @@
 import type { NextRequest } from 'next/server';
-import { ok, fail } from '@/lib/response';
+import { ok, failFromError } from '@/lib/response';
 import { requireAuth } from '@/lib/auth';
-import { financialAccountService, FinancialAccountServiceError } from '@/lib/financial-accounts';
+import { financialAccountService } from '@/lib/financial-accounts';
 
 // /api/financial-accounts — GET (lista paginada/busca) + POST (criação). CRUD do
 // cadastro `financial_account` (contas bancárias/caixa). Sem modo lookup: nenhuma
@@ -10,8 +10,7 @@ import { financialAccountService, FinancialAccountServiceError } from '@/lib/fin
 export const dynamic = 'force-dynamic';
 
 function mapError(e: unknown): Response {
-  if (e instanceof FinancialAccountServiceError) return fail(e.message, e.status);
-  return fail(e instanceof Error ? e.message : 'Erro inesperado', 500);
+  return failFromError(e, 'financial-accounts');
 }
 
 export async function GET(req: NextRequest) {

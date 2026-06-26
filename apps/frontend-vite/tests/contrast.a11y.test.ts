@@ -74,3 +74,14 @@ describe('Contraste WCAG AA — paleta status (badges/banners)', () => {
     expect(ratio(fg.startsWith('#') ? fg : c(fg), bg.startsWith('#') ? bg : c(bg))).toBeGreaterThanOrEqual(min);
   });
 });
+
+describe('Contraste WCAG AA — cores gráficas do donut (Dashboard)', () => {
+  // Preenchimento de segmento + swatch da legenda sobre card branco: objeto gráfico
+  // (1.4.11) exige ≥3:1. Garante que prorrogado/baixado (sem par bg) cumpram o mínimo.
+  it.each([
+    ['prorrogado / branco', 'status-prorrogado-fg', WHITE, 3],
+    ['baixado / branco', 'status-baixado-fg', WHITE, 3],
+  ])('%s', (_label, fg, bg, min) => {
+    expect(ratio(fg.startsWith('#') ? fg : c(fg), bg.startsWith('#') ? bg : c(bg))).toBeGreaterThanOrEqual(min);
+  });
+});

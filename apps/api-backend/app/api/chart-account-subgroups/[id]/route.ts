@@ -1,7 +1,7 @@
 import type { NextRequest } from 'next/server';
-import { ok, fail } from '@/lib/response';
+import { ok, fail, failFromError } from '@/lib/response';
 import { requireAuth } from '@/lib/auth';
-import { chartAccountSubgroupService, ChartAccountSubgroupServiceError } from '@/lib/chart-account-subgroups';
+import { chartAccountSubgroupService } from '@/lib/chart-account-subgroups';
 
 // /api/chart-account-subgroups/:id — GET + PATCH + DELETE (hard delete protegido).
 export const dynamic = 'force-dynamic';
@@ -15,8 +15,7 @@ function parseId(raw: string): number | null {
 }
 
 function mapError(e: unknown): Response {
-  if (e instanceof ChartAccountSubgroupServiceError) return fail(e.message, e.status);
-  return fail(e instanceof Error ? e.message : 'Erro inesperado', 500);
+  return failFromError(e, 'chart-account-subgroups');
 }
 
 export async function GET(req: NextRequest, ctx: Context) {
