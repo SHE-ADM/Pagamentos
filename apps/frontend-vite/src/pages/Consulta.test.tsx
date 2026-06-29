@@ -129,7 +129,7 @@ describe('Consulta', () => {
     const user = userEvent.setup();
     render(<Consulta />);
 
-    const supplier = screen.getByPlaceholderText('Fornecedor, CNPJ, Nº doc, assunto, remetente ou e-mail…');
+    const supplier = screen.getByPlaceholderText('Fornecedor, CNPJ, Nº doc, valor, assunto, remetente ou e-mail…');
     await user.type(supplier, 'ACME');
     expect(supplier).toHaveValue('ACME');
 
@@ -141,7 +141,7 @@ describe('Consulta', () => {
     const user = userEvent.setup();
     render(<Consulta />);
 
-    const supplier = screen.getByPlaceholderText('Fornecedor, CNPJ, Nº doc, assunto, remetente ou e-mail…');
+    const supplier = screen.getByPlaceholderText('Fornecedor, CNPJ, Nº doc, valor, assunto, remetente ou e-mail…');
     // sem texto, o ícone de limpar não é renderizado
     expect(screen.queryByRole('button', { name: 'Limpar busca' })).not.toBeInTheDocument();
 

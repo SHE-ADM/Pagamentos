@@ -81,7 +81,7 @@ class RunExtractionOnceInProcessTest(unittest.TestCase):
         return mock.patch.dict(sys.modules, {"extract_pdf": fake})
 
     def test_sucesso_move_csv_para_output(self):
-        def fake(pdf_path, out_dir):
+        def fake(pdf_path, out_dir, *, pdf_passwords=None):
             p = Path(out_dir) / "20260101_000000_extracted.csv"
             p.write_text("col\nval\n", encoding="utf-8")
             return p
@@ -96,14 +96,14 @@ class RunExtractionOnceInProcessTest(unittest.TestCase):
 
     def test_sem_registros_e_definitivo(self):
         # extract_to_csv devolve None (PDF sem registros extraiveis) -> nao repete
-        with self._patch_extract(lambda pdf, out: None):
+        with self._patch_extract(lambda pdf, out, *, pdf_passwords=None: None):
             csv, reason, transient = read_emails._run_extraction_once(Path("x.pdf"))
         self.assertIsNone(csv)
         self.assertFalse(transient)
         self.assertIn("registros", reason)
 
     def test_excecao_e_transitorio(self):
-        def boom(pdf, out):
+        def boom(pdf, out, *, pdf_passwords=None):
             raise RuntimeError("lib nativa caiu")
         with self._patch_extract(boom):
             csv, reason, transient = read_emails._run_extraction_once(Path("x.pdf"))

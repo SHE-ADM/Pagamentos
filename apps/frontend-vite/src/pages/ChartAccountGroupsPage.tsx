@@ -17,6 +17,7 @@ export default function ChartAccountGroupsPage() {
       title="Grupos de plano de contas"
       subtitle="Tabelas"
       icon={FolderTree}
+      gridId="tabela-grupos-plano-de-contas"
       rowKey={(g) => String(g.chart_account_group_id)}
       columns={getChartAccountGroupColumns}
       list={listChartAccountGroupsPage}

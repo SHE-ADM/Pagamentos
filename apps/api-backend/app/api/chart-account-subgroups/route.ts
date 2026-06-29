@@ -1,6 +1,7 @@
 import type { NextRequest } from 'next/server';
 import { ok, failFromError } from '@/lib/response';
 import { requireAuth } from '@/lib/auth';
+import { parseSortParams } from '@/lib/sort';
 import { chartAccountSubgroupService } from '@/lib/chart-account-subgroups';
 
 // /api/chart-account-subgroups — GET de duplo modo (com `page` = CRUD paginado; sem
@@ -21,6 +22,7 @@ async function listPaginated(sp: URLSearchParams): Promise<Response> {
       page: Number.isFinite(page) ? page : 1,
       limit: Number.isFinite(limit) ? limit : 20,
       search: sp.get('search') ?? undefined,
+      ...parseSortParams(sp),
     });
     return ok(r.data, { total: r.total, page: r.page, limit: r.limit });
   } catch (e) {

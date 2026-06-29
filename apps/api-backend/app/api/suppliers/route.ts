@@ -1,6 +1,7 @@
 import type { NextRequest } from 'next/server';
 import { ok, failFromError } from '@/lib/response';
 import { requireAuth } from '@/lib/auth';
+import { parseSortParams } from '@/lib/sort';
 import { supplierService } from '@/lib/suppliers';
 
 // /api/suppliers — GET (lista paginada/filtrada) + POST (criação).
@@ -15,14 +16,14 @@ export async function GET(req: NextRequest) {
   const page = Number(sp.get('page') ?? '1');
   const limit = Number(sp.get('limit') ?? '20');
   const search = sp.get('search') ?? undefined;
-  const sort = sp.get('sort') === 'name' ? 'name' : undefined;
 
   try {
     const result = await supplierService.list({
       page: Number.isFinite(page) ? page : 1,
       limit: Number.isFinite(limit) ? limit : 20,
       search,
-      sort,
+      // `sort` aceita o alias `name` (lookup) ou uma coluna do grid + `order`.
+      ...parseSortParams(sp),
     });
     return ok(result.data, { total: result.total, page: result.page, limit: result.limit });
   } catch (e) {

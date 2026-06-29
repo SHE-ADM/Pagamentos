@@ -1,6 +1,7 @@
 import type { NextRequest } from 'next/server';
 import { ok, failFromError } from '@/lib/response';
 import { requireAuth } from '@/lib/auth';
+import { parseSortParams } from '@/lib/sort';
 import { financialAccountService } from '@/lib/financial-accounts';
 
 // /api/financial-accounts — GET (lista paginada/busca) + POST (criação). CRUD do
@@ -25,6 +26,7 @@ export async function GET(req: NextRequest) {
       page: Number.isFinite(page) ? page : 1,
       limit: Number.isFinite(limit) ? limit : 20,
       search: sp.get('search') ?? undefined,
+      ...parseSortParams(sp),
     });
     return ok(r.data, { total: r.total, page: r.page, limit: r.limit });
   } catch (e) {

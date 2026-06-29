@@ -14,6 +14,7 @@ interface ChartAccountFormValues {
   account_level: number;
   is_postable: boolean;
   cost_center_id: number;
+  chart_account_group_id: number;
   chart_account_subgroup_id: number;
 }
 
@@ -21,6 +22,7 @@ interface ChartAccountFormProps {
   mode: 'create' | 'edit';
   defaultValues?: Partial<ChartAccount>;
   costCenterOptions: SelectOption[];
+  groupOptions: SelectOption[];
   subgroupOptions: SelectOption[];
   onSubmit: (data: ChartAccountCreateInput) => Promise<void>;
   onCancel: () => void;
@@ -38,6 +40,7 @@ function toFormValues(c?: Partial<ChartAccount>): ChartAccountFormValues {
     account_level: c?.account_level ?? 2,
     is_postable: c?.is_postable ?? true,
     cost_center_id: c?.cost_center_id ?? 0,
+    chart_account_group_id: c?.chart_account_group_id ?? 0,
     chart_account_subgroup_id: c?.chart_account_subgroup_id ?? 0,
   };
 }
@@ -48,6 +51,7 @@ const FIELD_KEYS = [
   'account_level',
   'is_postable',
   'cost_center_id',
+  'chart_account_group_id',
   'chart_account_subgroup_id',
 ] as const;
 
@@ -55,6 +59,7 @@ export default function ChartAccountForm({
   mode,
   defaultValues,
   costCenterOptions,
+  groupOptions,
   subgroupOptions,
   onSubmit,
   onCancel,
@@ -75,6 +80,7 @@ export default function ChartAccountForm({
       ...raw,
       account_level: num(raw.account_level, 2),
       cost_center_id: num(raw.cost_center_id),
+      chart_account_group_id: num(raw.chart_account_group_id),
       chart_account_subgroup_id: num(raw.chart_account_subgroup_id),
     });
     if (!parsed.success) {
@@ -115,6 +121,12 @@ export default function ChartAccountForm({
           options={[NONE_OPTION, ...costCenterOptions]}
           error={errors.cost_center_id?.message}
           {...register('cost_center_id', { valueAsNumber: true })}
+        />
+        <LabeledSelect
+          label="Grupo"
+          options={[NONE_OPTION, ...groupOptions]}
+          error={errors.chart_account_group_id?.message}
+          {...register('chart_account_group_id', { valueAsNumber: true })}
         />
         <LabeledSelect
           label="Subgrupo"

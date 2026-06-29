@@ -43,6 +43,14 @@ describe('StatusBadge', () => {
     expect(container.querySelector('svg')).not.toBeNull();
   });
 
+  it('origem "image_vision" usa variante teal e rótulo "imagem anexada"', () => {
+    const { container } = render(<StatusBadge value="image_vision" />);
+    const badge = screen.getByText('imagem anexada');
+    expect(badge).toBeInTheDocument();
+    expect(badge.className).toContain('text-status-source-fg');
+    expect(container.querySelector('svg')).not.toBeNull();
+  });
+
   it('mapeia "vencido" para a variante vermelha', () => {
     render(<StatusBadge value="vencido" />);
     expect(screen.getByText('vencido').className).toContain('text-status-error-fg');

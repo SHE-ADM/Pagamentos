@@ -46,6 +46,9 @@ export const supplierSchema = z.object({
 
 // Campos editáveis (POST/PATCH). sk_supplier/supplier_id são gerados pelo banco
 // e pelo trigger trg_supplier_mirror_id — nunca entram no corpo.
+// Classificação contábil DEFAULT (cost_center_id/chart_account_id): editável pelo
+// CRUD de fornecedores (SMALLINT NOT NULL DEFAULT 0; 0 = "não informado"). Continua
+// gravável também pelo write-back do modal de contas (setSupplierClassification).
 const editableFields = {
   legal_name: z.string().min(1, 'Razão social não pode ser vazia').max(200).optional(),
   trade_name: z.string().min(1, 'Nome fantasia não pode ser vazio').max(200).optional(),
@@ -55,6 +58,8 @@ const editableFields = {
   email2: z.email('E-mail inválido').optional(),
   email3: z.email('E-mail inválido').optional(),
   email4: z.email('E-mail inválido').optional(),
+  cost_center_id: z.number().int().min(0).optional(),
+  chart_account_id: z.number().int().min(0).optional(),
 };
 
 // ── Criação ─────────────────────────────────────────────────────────────────

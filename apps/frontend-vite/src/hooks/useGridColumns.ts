@@ -104,15 +104,17 @@ export function getConsultaColumns(
     render: (r) => fmtDate(r.issue_date),
   },
   {
-    // Fornecedor vem do JOIN com `supplier` (migrations 040/041); não é coluna própria
-    // de financial_account_control, então não é ordenável server-side. Texto longo
-    // QUEBRA em várias linhas (wrap) em vez de truncar — coluna mais estreita.
+    // Fornecedor vem do JOIN com `supplier` (migrations 040/041). O grid exibe APENAS
+    // `trade_name` (razão fantasia) — todos os fornecedores têm `trade_name` preenchido.
+    // Ordenação SERVER-SIDE pela mesma coluna via embed do PostgREST `supplier(trade_name)`,
+    // então a ordem casa exatamente o exibido. Texto longo QUEBRA em várias linhas (wrap).
     key: 'supplier_name',
     header: 'Fornecedor',
     size: 170,
     minSize: 130,
+    sortKey: 'supplier(trade_name)',
     wrap: true,
-    render: (r) => r.supplier?.trade_name ?? r.supplier?.legal_name ?? '—',
+    render: (r) => r.supplier?.trade_name ?? '—',
   },
   {
     key: 'document_type',
@@ -137,12 +139,15 @@ export function getConsultaColumns(
     render: (r) => r.payment_method ?? '—',
   },
   {
-    // Classificação contábil — vem dos embeds (JOIN); não é ordenável server-side.
-    // Texto longo QUEBRA em várias linhas (wrap) em vez de truncar.
+    // Classificação contábil — vem dos embeds (JOIN). Ordenação SERVER-SIDE pela
+    // descrição do recurso embutido via sintaxe do PostgREST `alias(coluna)` — o alias
+    // (`cost_center`) é o mesmo do SELECT_WITH_EMBEDS; usar o nome real da tabela é
+    // rejeitado (400). Texto longo QUEBRA em várias linhas (wrap) em vez de truncar.
     key: 'cost_center',
     header: 'Centro de custo',
     size: 140,
     minSize: 120,
+    sortKey: 'cost_center(cost_center_description)',
     hideOn: ['sm', 'md'],
     secondLine: true,
     secondLineLabel: 'C. Custo',
@@ -150,10 +155,13 @@ export function getConsultaColumns(
     render: fmtCostCenter,
   },
   {
+    // Ordenação server-side pela descrição do plano (embed `chart_account`) — ver nota
+    // do Centro de custo acima.
     key: 'chart_account',
     header: 'Plano de contas',
     size: 180,
     minSize: 120,
+    sortKey: 'chart_account(account_description)',
     hideOn: ['sm', 'md'],
     secondLine: true,
     secondLineLabel: 'Plano',
@@ -353,6 +361,13 @@ function actionButton(
 
 const supplierLabel = (s: Supplier): string => s.trade_name ?? s.legal_name ?? `#${s.sk_supplier}`;
 
+// Documento do fornecedor numa única coluna: CNPJ quando houver, senão CPF, senão '—'.
+const supplierDoc = (s: Supplier): string => {
+  if (s.cnpj) return fmtCnpj(s.cnpj);
+  if (s.cpf) return fmtCpf(s.cpf);
+  return '—';
+};
+
 /** Callbacks de ação (editar/excluir) da linha de centro de custo. */
 type CostCenterRowAction = (costCenter: CostCenter) => void;
 
@@ -377,6 +392,7 @@ export function getCostCenterColumns(onEdit: CostCenterRowAction): ColumnDef<Cos
     {
       key: 'cost_center_code',
       header: 'Código',
+      sortKey: 'cost_center_code',
       size: 160,
       truncate: true,
       render: (c) => c.cost_center_code ?? '—',
@@ -384,6 +400,7 @@ export function getCostCenterColumns(onEdit: CostCenterRowAction): ColumnDef<Cos
     {
       key: 'cost_center_description',
       header: 'Descrição',
+      sortKey: 'cost_center_description',
       size: 360,
       wrap: true,
       render: (c) => c.cost_center_description ?? '—',
@@ -407,6 +424,7 @@ export function getSupplierColumns(onEdit: SupplierRowAction): ColumnDef<Supplie
     {
       key: 'legal_name',
       header: 'Razão social',
+      sortKey: 'legal_name',
       size: 240,
       truncate: true,
       render: (s) => s.legal_name ?? '—',
@@ -414,35 +432,60 @@ export function getSupplierColumns(onEdit: SupplierRowAction): ColumnDef<Supplie
     {
       key: 'trade_name',
       header: 'Nome fantasia',
+      sortKey: 'trade_name',
       size: 200,
       truncate: true,
       render: (s) => s.trade_name ?? '—',
     },
     {
+      // CNPJ ou CPF numa única coluna. Ordena por `cnpj` (identificador dominante).
       key: 'cnpj',
-      header: 'CNPJ',
+      header: 'CNPJ / CPF',
+      sortKey: 'cnpj',
       size: 170,
       hideOn: ['sm'],
       secondLine: true,
-      secondLineLabel: 'CNPJ',
-      render: (s) => fmtCnpj(s.cnpj),
-    },
-    {
-      key: 'cpf',
-      header: 'CPF',
-      size: 140,
-      hideOn: ['sm', 'md'],
-      secondLine: true,
-      secondLineLabel: 'CPF',
-      render: (s) => (s.cpf ? fmtCpf(s.cpf) : '—'),
+      secondLineLabel: 'CNPJ / CPF',
+      render: supplierDoc,
     },
     {
       key: 'email',
       header: 'E-mail',
+      sortKey: 'email',
       size: 220,
       hideOn: ['sm', 'md'],
       truncate: true,
       render: (s) => s.email ?? '—',
+    },
+    {
+      // Classificação contábil DEFAULT do fornecedor — embeds (JOIN) vindos da lista.
+      // Ordena pela FK própria (cost_center_id); id 0 = "não informado" → '—'.
+      key: 'cost_center',
+      header: 'Centro de custo',
+      sortKey: 'cost_center_id',
+      size: 180,
+      wrap: true,
+      hideOn: ['sm', 'md'],
+      secondLine: true,
+      secondLineLabel: 'C. Custo',
+      render: (s) =>
+        s.cost_center_id
+          ? joinCodeDesc(s.cost_center?.cost_center_code, s.cost_center?.cost_center_description)
+          : '—',
+    },
+    {
+      key: 'chart_account',
+      header: 'Plano de contas',
+      sortKey: 'chart_account_id',
+      size: 200,
+      wrap: true,
+      hideOn: ['sm', 'md'],
+      secondLine: true,
+      secondLineLabel: 'Plano',
+      render: (s) =>
+        s.chart_account_id
+          ? joinCodeDesc(s.chart_account?.account_code, s.chart_account?.account_description)
+          : '—',
     },
     {
       key: '__actions__',
@@ -474,8 +517,8 @@ type RowAction<T> = (row: T) => void;
 export function getBankColumns(onEdit: RowAction<Bank>): ColumnDef<Bank>[] {
   const label = (b: Bank): string => b.bank_code ?? b.bank_name ?? `#${b.bank_id}`;
   return [
-    { key: 'bank_code', header: 'Código', size: 120, render: (b) => b.bank_code ?? '—' },
-    { key: 'bank_name', header: 'Nome', size: 360, wrap: true, render: (b) => b.bank_name ?? '—' },
+    { key: 'bank_code', header: 'Código', sortKey: 'bank_code', size: 120, render: (b) => b.bank_code ?? '—' },
+    { key: 'bank_name', header: 'Nome', sortKey: 'bank_name', size: 360, wrap: true, render: (b) => b.bank_name ?? '—' },
     {
       key: '__actions__',
       header: 'Ações',
@@ -496,7 +539,7 @@ export function getFinancialAccountColumns(
 ): ColumnDef<FinancialAccount>[] {
   const label = (a: FinancialAccount): string => a.account_description ?? `#${a.financial_account_id}`;
   return [
-    { key: 'account_description', header: 'Descrição', size: 240, wrap: true, render: (a) => a.account_description ?? '—' },
+    { key: 'account_description', header: 'Descrição', sortKey: 'account_description', size: 240, wrap: true, render: (a) => a.account_description ?? '—' },
     {
       key: 'bank',
       header: 'Banco',
@@ -504,10 +547,10 @@ export function getFinancialAccountColumns(
       wrap: true,
       render: (a) => joinCodeDesc(a.bank?.bank_code, a.bank?.bank_name),
     },
-    { key: 'currency_code', header: 'Moeda', size: 90, render: (a) => a.currency_code ?? '—' },
-    { key: 'balance_amount', header: 'Saldo', size: 120, align: 'right', render: (a) => fmtMoney(a.balance_amount) },
-    { key: 'payment_type_id', header: 'Tipo pgto', size: 100, align: 'right', render: (a) => String(a.payment_type_id) },
-    { key: 'status_id', header: 'Situação', size: 130, render: (a) => statusLabel(a.status_id) },
+    { key: 'currency_code', header: 'Moeda', sortKey: 'currency_code', size: 90, render: (a) => a.currency_code ?? '—' },
+    { key: 'balance_amount', header: 'Saldo', sortKey: 'balance_amount', size: 120, align: 'right', render: (a) => fmtMoney(a.balance_amount) },
+    { key: 'payment_type_id', header: 'Tipo pgto', sortKey: 'payment_type_id', size: 100, align: 'right', render: (a) => String(a.payment_type_id) },
+    { key: 'status_id', header: 'Situação', sortKey: 'status_id', size: 130, render: (a) => statusLabel(a.status_id) },
     {
       key: '__actions__',
       header: 'Ações',
@@ -521,26 +564,38 @@ export function getFinancialAccountColumns(
 export function getChartAccountColumns(onEdit: RowAction<ChartAccount>): ColumnDef<ChartAccount>[] {
   const label = (c: ChartAccount): string => c.account_code ?? c.account_description ?? `#${c.chart_account_id}`;
   return [
-    { key: 'account_code', header: 'Código', size: 130, render: (c) => c.account_code ?? '—' },
-    { key: 'account_description', header: 'Descrição', size: 260, wrap: true, render: (c) => c.account_description ?? '—' },
-    {
-      key: 'subgroup',
-      header: 'Subgrupo',
-      size: 200,
-      wrap: true,
-      hideOn: ['sm', 'md'],
-      render: (c) => joinCodeDesc(c.subgroup?.subgroup_code, c.subgroup?.subgroup_description),
-    },
+    { key: 'account_code', header: 'Código', sortKey: 'account_code', size: 130, render: (c) => c.account_code ?? '—' },
+    { key: 'account_description', header: 'Descrição', sortKey: 'account_description', size: 260, wrap: true, render: (c) => c.account_description ?? '—' },
     {
       key: 'cost_center',
       header: 'Centro de custo',
+      // Ordenação SERVER-SIDE alfabética pela descrição do embed via sintaxe do
+      // PostgREST `alias(coluna)` — o alias é o mesmo do SELECT_WITH_EMBEDS (igual ao
+      // /consulta). A ordem casa o texto exibido.
+      sortKey: 'cost_center(cost_center_description)',
       size: 180,
       wrap: true,
       hideOn: ['sm', 'md'],
       render: (c) => (c.cost_center_id ? joinCodeDesc(c.cost_center?.cost_center_code, c.cost_center?.cost_center_description) : '—'),
     },
-    { key: 'account_level', header: 'Nível', size: 70, align: 'right', hideOn: ['sm'], render: (c) => String(c.account_level) },
-    { key: 'is_postable', header: 'Lançável', size: 90, align: 'center', render: (c) => (c.is_postable ? '✓' : '—') },
+    {
+      key: 'group',
+      header: 'Grupo',
+      sortKey: 'group(group_description)',
+      size: 180,
+      wrap: true,
+      hideOn: ['sm', 'md'],
+      render: (c) => (c.chart_account_group_id ? joinCodeDesc(c.group?.group_code, c.group?.group_description) : '—'),
+    },
+    {
+      key: 'subgroup',
+      header: 'Sub Grupo',
+      sortKey: 'subgroup(subgroup_description)',
+      size: 200,
+      wrap: true,
+      hideOn: ['sm', 'md'],
+      render: (c) => (c.chart_account_subgroup_id ? joinCodeDesc(c.subgroup?.subgroup_code, c.subgroup?.subgroup_description) : '—'),
+    },
     {
       key: '__actions__',
       header: 'Ações',
@@ -556,9 +611,9 @@ export function getChartAccountGroupColumns(
 ): ColumnDef<ChartAccountGroup>[] {
   const label = (g: ChartAccountGroup): string => g.group_code ?? g.group_description ?? `#${g.chart_account_group_id}`;
   return [
-    { key: 'group_code', header: 'Código', size: 120, render: (g) => g.group_code ?? '—' },
-    { key: 'group_description', header: 'Descrição', size: 320, wrap: true, render: (g) => g.group_description ?? '—' },
-    { key: 'group_type', header: 'Tipo', size: 80, align: 'center', render: (g) => g.group_type ?? '—' },
+    { key: 'group_code', header: 'Código', sortKey: 'group_code', size: 120, render: (g) => g.group_code ?? '—' },
+    { key: 'group_description', header: 'Descrição', sortKey: 'group_description', size: 320, wrap: true, render: (g) => g.group_description ?? '—' },
+    { key: 'group_type', header: 'Tipo', sortKey: 'group_type', size: 80, align: 'center', render: (g) => g.group_type ?? '—' },
     {
       key: '__actions__',
       header: 'Ações',
@@ -575,8 +630,8 @@ export function getChartAccountSubgroupColumns(
   const label = (s: ChartAccountSubgroup): string =>
     s.subgroup_code ?? s.subgroup_description ?? `#${s.chart_account_subgroup_id}`;
   return [
-    { key: 'subgroup_code', header: 'Código', size: 130, render: (s) => s.subgroup_code ?? '—' },
-    { key: 'subgroup_description', header: 'Descrição', size: 280, wrap: true, render: (s) => s.subgroup_description ?? '—' },
+    { key: 'subgroup_code', header: 'Código', sortKey: 'subgroup_code', size: 130, render: (s) => s.subgroup_code ?? '—' },
+    { key: 'subgroup_description', header: 'Descrição', sortKey: 'subgroup_description', size: 280, wrap: true, render: (s) => s.subgroup_description ?? '—' },
     {
       key: 'group',
       header: 'Grupo',

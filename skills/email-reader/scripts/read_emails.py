@@ -63,6 +63,12 @@ CSV_OUTPUT     = BASE_DIR / "data" / "csv_output"
 EXTRACT_SCRIPT = BASE_DIR / "skills" / "pdf-contas-pagar" / "scripts" / "extract_pdf.py"
 EMAILS_LOG     = CSV_OUTPUT / "emails_log.csv"
 
+# Content-Type por extensão do anexo (PDF ou imagem) para o upload no Storage.
+_UPLOAD_CONTENT_TYPES = {
+    ".pdf": "application/pdf", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
+    ".png": "image/png", ".gif": "image/gif", ".webp": "image/webp",
+}
+
 
 def _normalize_body_barcode(raw: str | None) -> str | None:
     """Normaliza o barcode extraido do CORPO reusando a funcao canonica do
@@ -149,6 +155,27 @@ class SupabaseControl:
         except Exception as e:
             log.warning(f"Supabase indisponível — usando deduplicação local: {e}")
             return False
+
+    def company_cnpj(self) -> "str | None":
+        """CNPJ (só dígitos) da empresa pagadora (company_id=1) — base das senhas
+        candidatas de boletos protegidos (CNPJ[:4]/[:5]/[:6]). Cacheado por instância;
+        None quando indisponível (o caller simplesmente não tenta descriptografar)."""
+        if getattr(self, "_company_cnpj_cache", "__unset__") != "__unset__":
+            return self._company_cnpj_cache
+        self._company_cnpj_cache = None
+        if self._available:
+            try:
+                req = urllib.request.Request(
+                    f"{self.base}/rest/v1/company?company_id=eq.1&select=cnpj&limit=1",
+                    headers=self.headers,
+                )
+                with urllib.request.urlopen(req, timeout=5) as r:
+                    rows = json.loads(r.read())
+                if rows and rows[0].get("cnpj"):
+                    self._company_cnpj_cache = re.sub(r"\D", "", str(rows[0]["cnpj"])) or None
+            except Exception as e:
+                log.warning(f"Falha ao ler CNPJ da empresa (company_id=1): {e}")
+        return self._company_cnpj_cache
 
     def is_processed(self, message_id: str) -> bool:
         """True se o message_id já existe na tabela."""
@@ -319,6 +346,10 @@ class SupabaseControl:
             log.warning(f"Falha ao ler PDF p/ upload {pdf_path.name}: {e}")
             return False
         key = urllib.parse.quote(pdf_path.name, safe="")
+        # Content-Type por extensão (PDF ou imagem) — para o frontend exibir o
+        # anexo corretamente pela URL assinada (antes era fixo em application/pdf).
+        content_type = _UPLOAD_CONTENT_TYPES.get(
+            Path(pdf_path).suffix.lower(), "application/octet-stream")
         try:
             req = urllib.request.Request(
                 f"{self.base}/storage/v1/object/{STORAGE_BUCKET}/{key}",
@@ -326,7 +357,7 @@ class SupabaseControl:
                 headers={
                     "apikey":        self.key,
                     "Authorization": f"Bearer {self.key}",
-                    "Content-Type":  "application/pdf",
+                    "Content-Type":  content_type,
                     "x-upsert":      "true",
                 },
                 method="POST",
@@ -942,14 +973,24 @@ _BODY_AMOUNT_RE  = re.compile(r"R\$\s*[:\-]?\s*([\d.,]+)")
 # lista parcelas somadas/subtraidas, o total e o valor a pagar (nao a 1a parcela).
 _BODY_TOTAL_RE   = re.compile(
     r"(?i)(?:valor\s+)?total\s*[:\-]?\s*R\$\s*[:\-]?\s*([\d.,]+)")
-# Valor ROTULADO sem "R$" (ex.: "Valor 50,00", "Valor: 1.250,00", "Total 304,04").
-# So usado como FALLBACK quando nao ha nenhum valor com "R$". Exige o rotulo
-# (valor/total) E o formato monetario BR com EXATAMENTE 2 casas decimais — assim
-# nao captura numeros soltos (quantidades, "NF 1087", datas). group(1)=rotulo,
-# group(2)=numero. "Total"/"Valor Total" tem precedencia sobre "Valor" simples.
+# Valor ROTULADO sem "R$" (ex.: "Valor 50,00", "Valor: 1.250,00", "Total 304,04",
+# "o valor de 172,39"). So usado como FALLBACK quando nao ha nenhum valor com "R$".
+# Exige o rotulo (valor/total) E o formato monetario BR com EXATAMENTE 2 casas
+# decimais — assim nao captura numeros soltos (quantidades, "NF 1087", datas).
+# Tolera um conectivo curto (de/da/do) entre o rotulo e o numero ("valor de 172,39")
+# sem casar substring ("valor desconto" nao casa: o numero nao segue o conectivo).
+# group(1)=rotulo, group(2)=numero. "Total"/"Valor Total" tem precedencia sobre "Valor".
 _BODY_LABELED_AMT_RE = re.compile(
-    r"(?i)\b(valor\s+total|total|valor)\b\s*[:\-]?\s*"
+    r"(?i)\b(valor\s+total|total|valor)\b(?:\s+(?:de|da|do))?\s*[:\-]?\s*"
     r"(\d{1,3}(?:\.\d{3})*,\d{2}|\d+,\d{2})(?!\d)")
+# Tabela de boletos/parcelas no corpo: cada título é uma sequência de 6 campos —
+# documento, parcela, emissão (data), vencimento (data), valor (R$) e dias — que o
+# webmail quebra em linhas separadas (\r). Detecta a OBER e similares. A linha
+# "Total R$ ..." NÃO casa (não tem documento/parcela/datas antes). Usada para criar
+# UMA conta por boleto — nunca uma conta somada com o total (regra de negócio).
+_BODY_INSTALLMENTS_RE = re.compile(
+    r"(\d{4,})\s+(\d{1,3})\s+(\d{2}/\d{2}/\d{2,4})\s+(\d{2}/\d{2}/\d{2,4})\s+"
+    r"R\$\s*([\d.]*\d,\d{1,2})\s+\d{1,4}")
 _BODY_PIX_RE     = re.compile(r"\bpix\b", re.IGNORECASE)
 _BODY_DUE_RE     = re.compile(r"(?i)venc(?:imento|to)?\D{0,15}?(\d{2}/\d{2}/\d{2,4})")
 _BODY_ISSUE_RE   = re.compile(r"(?i)emiss[aã]o\D{0,10}?(\d{2}/\d{2}/\d{2,4})")
@@ -1182,6 +1223,39 @@ def _extract_body_amount(body_text: str) -> "float | None":
     return None
 
 
+def _extract_body_installments(body_text: str) -> "list[dict]":
+    """Detecta uma TABELA de boletos/parcelas no corpo (documento, parcela, emissão,
+    vencimento, valor, dias) e devolve uma lista de parcelas individuais.
+
+    Regra de negócio (NÃO regredir): quando o corpo lista MÚLTIPLOS títulos com
+    documentos/parcelas e vencimentos diferentes, NUNCA criar uma conta somada com o
+    total — criar UMA conta por boleto. Esta função alimenta esse caminho.
+
+    Retorna [] quando não há tabela aplicável: menos de 2 linhas, OU todas as linhas
+    com o MESMO vencimento E a MESMA (documento, parcela) — aí não é um conjunto de
+    parcelas distintas e o caminho de valor único/total continua valendo.
+    """
+    rows: list[dict] = []
+    for doc, parcela, emis, venc, valor in _BODY_INSTALLMENTS_RE.findall(body_text or ""):
+        amount = _brl_to_decimal(valor)
+        if amount is None:
+            continue
+        rows.append({
+            "doc": doc,
+            "parcela": parcela,
+            "issue_date": _br_date_to_iso(emis),
+            "due_date": _br_date_to_iso(venc),
+            "amount": amount,
+        })
+    if len(rows) < 2:
+        return []
+    distinct_due = {r["due_date"] for r in rows}
+    distinct_doc = {(r["doc"], r["parcela"]) for r in rows}
+    if len(distinct_due) < 2 and len(distinct_doc) < 2:
+        return []
+    return rows
+
+
 def _br_date_to_iso(raw: str | None) -> str | None:
     """Converte data 'dd/mm/aaaa' ou 'dd/mm/aa' do corpo do e-mail para 'aaaa-mm-dd'."""
     if not raw:
@@ -1347,8 +1421,10 @@ def extract_from_email_body(body_text: str, received_at: str, message_id: str,
     elif classified == "honorários":
         document_type, payment_method = "honorários", "pix"
     elif has_pix:
-        # PIX sobrescreve o tipo quando não é honorários.
-        document_type, payment_method = "PIX", "pix"
+        # PIX sobrescreve o tipo quando não é honorários. Valor em minúsculas para
+        # casar o enum (DOCUMENT_TYPES) e o <select> do frontend — o CHECK do banco
+        # usa lower(), mas a UI é case-sensitive (form de edição falhava com "PIX").
+        document_type, payment_method = "pix", "pix"
     else:
         document_type, payment_method = classified, "outro"
 
@@ -1398,6 +1474,35 @@ def _is_within_inbox(dest_path: Path) -> bool:
         return False
 
 
+# Anexos de IMAGEM (foto/scan de recibo, comprovante, "Valor do porte" dos Correios)
+# também são lidos — via Claude Vision no extract_pdf. Mapeia extensão→media_type.
+_IMAGE_ATTACHMENT_EXTS = (".jpg", ".jpeg", ".png", ".gif", ".webp")
+_IMAGE_ATTACHMENT_CTS  = {"image/jpeg", "image/png", "image/gif", "image/webp"}
+# Tamanho mínimo (bytes) para uma imagem INLINE ser considerada um documento e não
+# um logo/assinatura/ícone embutido. Recibos/comprovantes colados no corpo passam
+# bem disso (centenas de KB); logos típicos ficam abaixo. Named constant — sem magia.
+_IMAGE_INLINE_MIN_BYTES = 50_000
+
+
+def _attachment_image_ext(content_type: str, filename_lower: str) -> str:
+    """Extensão de imagem a usar no arquivo salvo (do nome do anexo ou do MIME)."""
+    for ext in _IMAGE_ATTACHMENT_EXTS:
+        if filename_lower.endswith(ext):
+            return ext
+    return {"image/jpeg": ".jpg", "image/png": ".png",
+            "image/gif": ".gif", "image/webp": ".webp"}.get(content_type, ".img")
+
+
+def _unique_inbox_path(base_stem: str, ext: str) -> Path:
+    """Caminho único em PDF_INBOX para base_stem+ext, somando sufixo _N se já existir."""
+    dest = PDF_INBOX / f"{base_stem}{ext}"
+    counter = 1
+    while dest.exists():
+        dest = PDF_INBOX / f"{base_stem}_{counter}{ext}"
+        counter += 1
+    return dest
+
+
 def save_attachments(msg, sender_email: str, subject: str,
                      received_at: str) -> list:
     saved = []
@@ -1409,29 +1514,74 @@ def save_attachments(msg, sender_email: str, subject: str,
         cd    = str(part.get("Content-Disposition", ""))
         ct    = part.get_content_type()
         fname = decode_str(part.get_filename() or "")
+        fl    = fname.lower()
         is_pdf = (ct == "application/pdf"
-                  or fname.lower().endswith(".pdf")
-                  or ("attachment" in cd and "pdf" in fname.lower()))
-        if not is_pdf:
+                  or fl.endswith(".pdf")
+                  or ("attachment" in cd and "pdf" in fl))
+        # Imagem: SÓ quando é anexo explícito (Content-Disposition: attachment) —
+        # evita salvar logos/assinaturas embutidas (inline / Content-ID), que não
+        # são documentos financeiros. Recibo/foto do documento vem como anexo.
+        is_image = ("attachment" in cd.lower()
+                    and (ct in _IMAGE_ATTACHMENT_CTS or fl.endswith(_IMAGE_ATTACHMENT_EXTS)))
+        if not (is_pdf or is_image):
             continue
 
+        ext       = ".pdf" if is_pdf else _attachment_image_ext(ct, fl)
         orig      = safe_filename(Path(fname).stem, 20) if fname else "anexo"
-        dest_name = f"{sender_tag}_{subject_tag}_{date_tag}_{orig}.pdf"
-        dest_path = PDF_INBOX / dest_name
-        counter   = 1
-        while dest_path.exists():
-            dest_path = PDF_INBOX / f"{dest_name[:-4]}_{counter}.pdf"
-            counter += 1
+        dest_path = _unique_inbox_path(f"{sender_tag}_{subject_tag}_{date_tag}_{orig}", ext)
 
         payload = part.get_payload(decode=True)
         if payload:
             if not _is_within_inbox(dest_path):
-                log.warning(f"    Anexo ignorado (caminho fora de PDF_INBOX): {dest_name}")
+                log.warning(f"    Anexo ignorado (caminho fora de PDF_INBOX): {dest_path.name}")
                 continue
             dest_path.write_bytes(payload)
             saved.append(dest_path)
-            log.info(f"    PDF salvo: {dest_path.name}")
+            log.info(f"    Anexo salvo: {dest_path.name}")
     return saved
+
+
+def save_inline_images(msg, sender_email: str, subject: str, received_at: str) -> list:
+    """Fallback: salva a MAIOR imagem INLINE (>= _IMAGE_INLINE_MIN_BYTES) do corpo
+    para leitura via Claude Vision. Usado SÓ quando não houve anexo (PDF/imagem) nem
+    PDF por link — imagem inline (Content-ID, sem 'attachment') costuma ser o próprio
+    documento colado no corpo (recibo/comprovante). Pega só a MAIOR (o documento é a
+    imagem mais proeminente) para evitar logos/2ª imagem e limitar chamadas ao Vision;
+    loga quantas imagens inline menores foram ignoradas.
+    """
+    date_tag    = received_at[:10].replace("-", "")
+    sender_tag  = safe_filename(sender_email.split("@")[0], 20)
+    subject_tag = safe_filename(subject, 30)
+
+    candidates = []  # (tamanho, payload, filename, content_type)
+    for part in msg.walk():
+        ct = part.get_content_type()
+        if not ct.startswith("image/"):
+            continue
+        cd = str(part.get("Content-Disposition", "")).lower()
+        if "attachment" in cd:
+            continue  # anexo explícito já tratado por save_attachments
+        payload = part.get_payload(decode=True)
+        if not payload or len(payload) < _IMAGE_INLINE_MIN_BYTES:
+            continue
+        candidates.append((len(payload), payload, decode_str(part.get_filename() or ""), ct))
+
+    if not candidates:
+        return []
+    candidates.sort(key=lambda c: c[0], reverse=True)  # maior primeiro
+    size, payload, fname, ct = candidates[0]
+    skipped = len(candidates) - 1
+
+    ext       = _attachment_image_ext(ct, fname.lower())
+    orig      = safe_filename(Path(fname).stem, 20) if fname else "imagem"
+    dest_path = _unique_inbox_path(f"{sender_tag}_{subject_tag}_{date_tag}_{orig}", ext)
+    if not _is_within_inbox(dest_path):
+        log.warning(f"    Imagem inline ignorada (caminho fora de PDF_INBOX): {dest_path.name}")
+        return []
+    dest_path.write_bytes(payload)
+    extra = f" — {skipped} imagem(ns) inline menor(es) ignorada(s)" if skipped else ""
+    log.info(f"    Imagem inline salva (maior, {size} bytes): {dest_path.name}{extra}")
+    return [dest_path]
 
 
 # ---------------------------------------------------------------------------
@@ -1753,7 +1903,19 @@ EXTRACTION_MAX_ATTEMPTS = 3
 EXTRACTION_RETRY_BACKOFF = (2, 5)  # segundos de espera entre tentativas
 
 
-def _run_extraction_once(pdf_path: Path) -> tuple[str | None, str | None, bool]:
+def pdf_password_candidates(cnpj: "str | None") -> list[str]:
+    """Senhas candidatas para boletos protegidos, na ordem pedida: CNPJ[:4], [:5], [:6].
+    Regra de negócio (boletos de cobrança costumam pedir os N primeiros dígitos do CNPJ
+    do pagador). Sem CNPJ com ao menos 6 dígitos → lista vazia (não tenta abrir cifrado)."""
+    if not isinstance(cnpj, str):
+        return []
+    digits = re.sub(r"\D", "", cnpj)
+    if len(digits) < 6:
+        return []
+    return [digits[:4], digits[:5], digits[:6]]
+
+
+def _run_extraction_once(pdf_path: Path, pdf_passwords: list[str] | None = None) -> tuple[str | None, str | None, bool]:
     """Uma tentativa de extração IN-PROCESS. Retorna (csv_path, motivo_falha, transitorio).
 
     `transitorio=True` indica que vale repetir (exceção de I/O/runtime); `False` é
@@ -1768,7 +1930,7 @@ def _run_extraction_once(pdf_path: Path) -> tuple[str | None, str | None, bool]:
         import extract_pdf  # noqa: E402
 
         with tempfile.TemporaryDirectory(dir=CSV_OUTPUT) as tmp_out:
-            csv_path = extract_pdf.extract_to_csv(pdf_path, tmp_out)
+            csv_path = extract_pdf.extract_to_csv(pdf_path, tmp_out, pdf_passwords=pdf_passwords)
             if not csv_path or not Path(csv_path).exists():
                 # Sem CSV = nenhum registro válido (PDF ilegível/sem dados). Definitivo.
                 return None, "extração não gerou registros (PDF ilegível ou sem dados)", False
@@ -1780,7 +1942,7 @@ def _run_extraction_once(pdf_path: Path) -> tuple[str | None, str | None, bool]:
         return None, f"exceção na extração in-process: {e}", True
 
 
-def run_extraction(pdf_path: Path) -> tuple[str | None, str | None]:
+def run_extraction(pdf_path: Path, pdf_passwords: list[str] | None = None) -> tuple[str | None, str | None]:
     """Executa extract_pdf in-process e retorna (csv_path, motivo_falha).
 
     Em sucesso: (caminho_do_csv, None). Em falha: (None, motivo). Repete falhas
@@ -1795,7 +1957,7 @@ def run_extraction(pdf_path: Path) -> tuple[str | None, str | None]:
 
     reason = None
     for attempt in range(1, EXTRACTION_MAX_ATTEMPTS + 1):
-        csv_path, reason, transient = _run_extraction_once(pdf_path)
+        csv_path, reason, transient = _run_extraction_once(pdf_path, pdf_passwords)
         if csv_path:
             return csv_path, None
         if not transient or attempt == EXTRACTION_MAX_ATTEMPTS:
@@ -1824,13 +1986,17 @@ def extract_and_store_accounts(saved_pdfs: list, message_id: str,
     csvs_ok, accounts_saved, acc_index = [], 0, 0
     err_ctx = email_rec or {}
 
+    # Senhas candidatas (CNPJ[:4]/[:5]/[:6] do pagador) para boletos protegidos —
+    # computadas uma vez por e-mail; vazias quando o CNPJ não está disponível.
+    pdf_passwords = pdf_password_candidates(ctrl.company_cnpj())
+
     for pdf_path in saved_pdfs:
         # Publica o PDF no Storage SEMPRE (antes da extracao) — assim o anexo fica
         # disponivel para revisao manual mesmo quando a extracao falha por completo.
         # Nao-fatal: se o upload falhar, a extracao segue normalmente.
         ctrl.upload_attachment(pdf_path)
 
-        csv_path, extract_err = run_extraction(pdf_path)
+        csv_path, extract_err = run_extraction(pdf_path, pdf_passwords)
         if not csv_path:
             ctrl.register_error(
                 {**err_ctx, "source_file": pdf_path.name},
@@ -2012,6 +2178,37 @@ def try_extract_from_body(email_rec: dict, body_text: str, received_at: str,
     if not _finalize_supplier(ctrl, payload):
         email_rec["notes"] = "Falha ao resolver fornecedor do corpo do e-mail"
         return BODY_NONE
+
+    # MÚLTIPLOS boletos no corpo (tabela de parcelas com documentos/vencimentos
+    # diferentes): cria UMA conta por boleto — NUNCA uma conta somada com o total
+    # (regra de negócio). Reusa o fornecedor já resolvido (payload base) e sobrescreve
+    # nº do documento (doc/parcela), valor, vencimento e emissão por linha. Cada linha
+    # passa pela mesma dedup de conteúdo. Sem barcode (o corpo não traz a linha
+    # digitável — só o PDF; por isso o caminho de PDF descriptografado é preferível).
+    installments = _extract_body_installments(body_text)
+    if len(installments) >= 2:
+        created = dups = 0
+        for inst in installments:
+            row = dict(payload)
+            num = f"{inst['doc']}/{inst['parcela']}" if inst.get("parcela") else inst["doc"]
+            row["invoice_number"] = num
+            row["amount"]   = inst["amount"]
+            row["due_date"] = inst["due_date"] or row.get("due_date")
+            if inst.get("issue_date"):
+                row["issue_date"] = inst["issue_date"]
+            if ctrl.find_financial_duplicate(row):
+                dups += 1
+                continue
+            row["invoice_number"] = ctrl.unique_invoice_number(num)
+            if ctrl.register_financial(row):
+                created += 1
+        if created:
+            email_rec["notes"] = f"{created} conta(s) (parcelas) extraída(s) do corpo do e-mail"
+            return BODY_CREATED
+        if dups:
+            email_rec["notes"] = "Parcelas do corpo já registradas (duplicata)"
+            return BODY_DUPLICATE
+        # Nenhuma criada nem duplicada → cai para o caminho de conta única abaixo.
 
     # Dedup de conteudo: o MESMO pagavel ja registrado por outro e-mail (a
     # mensagem original e seu RES:/encaminhamento, p.ex.). NAO e falha — a conta
@@ -2213,6 +2410,17 @@ def process_message(mail, uid: bytes, keywords: list,
                     saved_pdfs.append(pdf_path)
                     link_downloaded = True
 
+        # Sem PDF (anexo nem link): tenta a MAIOR imagem INLINE do corpo (recibo/
+        # comprovante colado), lida via Claude Vision. Prioridade: anexo → link →
+        # imagem inline → corpo. Fora desse fallback, imagens inline (logos de
+        # assinatura) nunca são processadas — evita chamadas Vision desnecessárias.
+        inline_image = False
+        if not saved_pdfs:
+            inline_imgs = save_inline_images(msg, sender_email, subject, received_at)
+            if inline_imgs:
+                saved_pdfs.extend(inline_imgs)
+                inline_image = True
+
         att_names = [p.name for p in saved_pdfs]
         has_att   = len(saved_pdfs) > 0
 
@@ -2221,6 +2429,8 @@ def process_message(mail, uid: bytes, keywords: list,
         rec["attachment_saved"] = has_att
         if link_downloaded:
             rec["notes"] = "PDF baixado de link no corpo do e-mail"
+        elif inline_image:
+            rec["notes"] = "Imagem inline do corpo lida via Vision"
 
         csvs_ok, accounts_saved = extract_and_store_accounts(
             saved_pdfs, message_id, ctrl, email_rec=rec)

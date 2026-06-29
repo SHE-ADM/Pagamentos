@@ -1,7 +1,13 @@
 # Migrations — Supabase (aplicação MANUAL)
 
-As migrations `001 → 057` são aplicadas **manualmente no SQL Editor do Supabase**, em
+As migrations `001 → 061` são aplicadas **manualmente no SQL Editor do Supabase**, em
 **ordem numérica** e **uma única vez cada**. Não há runner automático.
+
+> **`059`/`060`/`061` foram aplicadas DIRETO via Supabase MCP** (não pelo SQL Editor) — o
+> arquivo numerado é só histórico. Todas idempotentes; **não reaplicar** no SQL Editor.
+> `059` = backfill único da classificação das contas a partir do supplier (fora do fluxo
+> diário). `060` = índices de performance da busca em `/consulta` (GIN trigram + btree).
+> `061` = adiciona `image_vision` ao CHECK de `extraction_source` (anexos de imagem via Vision).
 
 > **`057_revoke_write_supplier_status.sql` (segurança, idempotente)** — `REVOKE` de escrita
 > do papel `authenticated` em `supplier`/`status` (defesa em profundidade; o RLS já bloqueia).

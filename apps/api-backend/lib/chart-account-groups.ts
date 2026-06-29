@@ -13,8 +13,10 @@ import {
 } from '@sheild/shared/schemas';
 import type { ZodError } from 'zod';
 import { getSupabaseAdmin } from './supabase-admin';
+import { resolveSort, type SortOrder } from './sort';
 
 const TABLE = 'financial_chart_of_account_group';
+const SORTABLE_COLUMNS = ['group_code', 'group_description', 'group_type'] as const;
 const REFERENCING_TABLES = ['financial_chart_of_account_subgroup'] as const;
 const REF_COLUMN = 'chart_account_group_id';
 const SENTINEL_ID = 0;
@@ -36,6 +38,8 @@ export interface ChartAccountGroupListParams {
   page?: number;
   limit?: number;
   search?: string;
+  sort?: string;
+  order?: SortOrder;
 }
 
 export interface ChartAccountGroupListResult {
@@ -56,7 +60,7 @@ function sanitizeTerm(term: string): string {
 const SELECT_COLS = 'chart_account_group_id,group_code,group_description,group_type';
 
 const repository = {
-  async findAll(params: { from: number; to: number; search?: string }) {
+  async findAll(params: { from: number; to: number; search?: string; sort?: string; order?: SortOrder }) {
     let query = getSupabaseAdmin()
       .from(TABLE)
       .select(SELECT_COLS, { count: 'exact' })
@@ -67,7 +71,12 @@ const repository = {
       query = query.or(`group_code.ilike.%${term}%,group_description.ilike.%${term}%`);
     }
 
-    return query.order('group_code', { ascending: true, nullsFirst: false }).range(params.from, params.to);
+    const sorted = resolveSort(params.sort, params.order, SORTABLE_COLUMNS);
+    const ordered = sorted
+      ? query.order(sorted.column, { ascending: sorted.ascending, nullsFirst: false })
+      : query.order('group_code', { ascending: true, nullsFirst: false });
+
+    return ordered.range(params.from, params.to);
   },
 
   findById(id: number) {
@@ -107,6 +116,8 @@ export const chartAccountGroupService = {
       from,
       to: from + limit - 1,
       search: params.search?.trim() || undefined,
+      sort: params.sort,
+      order: params.order,
     });
     if (error) throw new ChartAccountGroupServiceError(error.message, 500);
     return { data: (data ?? []) as ChartAccountGroup[], total: count ?? 0, page, limit };

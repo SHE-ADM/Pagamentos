@@ -59,11 +59,19 @@ describe('GET /api/suppliers', () => {
     expect(listMock).toHaveBeenCalledWith(expect.objectContaining({ sort: 'name' }));
   });
 
-  it('ignora sort inválido (default = mais recentes)', async () => {
+  it('encaminha sort + order de coluna ao service (validação é do service)', async () => {
     requireAuthMock.mockResolvedValue(null);
     listMock.mockResolvedValue({ data: [] as never, total: 0, page: 1, limit: 20 });
-    await GET(getRequest('sort=xyz'));
-    expect(listMock).toHaveBeenCalledWith(expect.objectContaining({ sort: undefined }));
+    await GET(getRequest('page=1&limit=20&sort=trade_name&order=desc'));
+    // A rota repassa verbatim; o allowlist (resolveSort) vive no service.
+    expect(listMock).toHaveBeenCalledWith(expect.objectContaining({ sort: 'trade_name', order: 'desc' }));
+  });
+
+  it('order só aceita asc|desc (valor inválido vira undefined)', async () => {
+    requireAuthMock.mockResolvedValue(null);
+    listMock.mockResolvedValue({ data: [] as never, total: 0, page: 1, limit: 20 });
+    await GET(getRequest('sort=trade_name&order=xyz'));
+    expect(listMock).toHaveBeenCalledWith(expect.objectContaining({ sort: 'trade_name', order: undefined }));
   });
 });
 

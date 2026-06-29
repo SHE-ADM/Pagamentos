@@ -237,14 +237,46 @@ export function parsePaginationTotal(
 // sk_supplier que casam o termo na tabela `supplier` (nome, CNPJ/CPF e os 4 e-mails)
 // e alimenta o filtro `sk_supplier IN (...)`. Os índices GIN trigram (migration 029)
 // aceleram o ILIKE '%termo%' nos e-mails.
+// Valor de um `ilike` dentro de um or(...): entre ASPAS DUPLAS para sobreviver a
+// caracteres reservados do PostgREST (vírgula e parênteses são delimitadores de
+// cláusula). Sem isso, um termo como "463,21" quebra o filtro inteiro (PGRST100).
+// As aspas do próprio termo são removidas para não invalidar o literal citado.
+function ilikeContains(term: string): string {
+  return `"*${term.replace(/"/g, '')}*"`;
+}
+
+// Interpreta o termo de busca como VALOR monetário (formato BR ou simples) e devolve
+// o número canônico a casar em `amount` (NUMERIC(15,2)); null quando o termo não é um
+// valor numérico completo — aí a busca segue apenas textual. A correspondência é EXATA
+// (ex.: "463,21" → 463.21). Exemplos: "44.406,08" → "44406.08" · "391" → "391".
+export function parseBrlAmount(term: string): string | null {
+  const t = term.trim();
+  let normalized: string;
+  if (/^\d{1,3}(\.\d{3})+(,\d{1,2})?$/.test(t)) {
+    // BR com separador de milhar: remove os pontos, vírgula → ponto decimal.
+    normalized = t.replace(/\./g, '').replace(',', '.');
+  } else if (/^\d+,\d{1,2}$/.test(t)) {
+    // Vírgula como separador decimal (ex.: "463,21").
+    normalized = t.replace(',', '.');
+  } else if (/^\d+(\.\d{1,2})?$/.test(t)) {
+    // Número simples ou ponto decimal (ex.: "391" ou "463.21").
+    normalized = t;
+  } else {
+    return null;
+  }
+  const n = Number(normalized);
+  return Number.isFinite(n) ? String(n) : null;
+}
+
 async function findSupplierIdsByTerm(term: string): Promise<number[]> {
   const url = new URL(`${BASE_URL}/rest/v1/supplier`);
+  const like = ilikeContains(term);
   url.searchParams.set('select', 'sk_supplier');
   url.searchParams.set(
     'or',
-    `(trade_name.ilike.*${term}*,legal_name.ilike.*${term}*,cnpj.ilike.*${term}*,` +
-      `cpf.ilike.*${term}*,email.ilike.*${term}*,email2.ilike.*${term}*,` +
-      `email3.ilike.*${term}*,email4.ilike.*${term}*)`,
+    `(trade_name.ilike.${like},legal_name.ilike.${like},cnpj.ilike.${like},` +
+      `cpf.ilike.${like},email.ilike.${like},email2.ilike.${like},` +
+      `email3.ilike.${like},email4.ilike.${like})`,
   );
   url.searchParams.set('limit', '1000');
   const res = await fetch(url.toString(), { headers: await authHeaders() });
@@ -264,11 +296,15 @@ function applyFinancialFilters(
   // or= nas colunas próprias da conta (nº documento, assunto, remetente) mais os
   // sk_supplier resolvidos pelo termo (nome/CNPJ/CPF/e-mail do cadastro supplier).
   if (supplier) {
+    const like = ilikeContains(supplier);
     const clauses = [
-      `invoice_number.ilike.*${supplier}*`,
-      `subject.ilike.*${supplier}*`,
-      `sender_email.ilike.*${supplier}*`,
+      `invoice_number.ilike.${like}`,
+      `subject.ilike.${like}`,
+      `sender_email.ilike.${like}`,
     ];
+    // Termo que é um valor monetário (ex.: "463,21") também casa o VALOR da conta.
+    const amount = parseBrlAmount(supplier);
+    if (amount) clauses.push(`amount.eq.${amount}`);
     if (supplierIds.length) clauses.push(`sk_supplier.in.(${supplierIds.join(',')})`);
     params.set('or', `(${clauses.join(',')})`);
   }

@@ -578,9 +578,9 @@ export default function Consulta() {
             <input
               id="consulta-supplier"
               name="consulta-supplier"
-              aria-label="Buscar por fornecedor, CNPJ, número do documento, assunto, remetente ou e-mail do fornecedor"
+              aria-label="Buscar por fornecedor, CNPJ, número do documento, valor, assunto, remetente ou e-mail do fornecedor"
               className="input w-full pr-8"
-              placeholder="Fornecedor, CNPJ, Nº doc, assunto, remetente ou e-mail…"
+              placeholder="Fornecedor, CNPJ, Nº doc, valor, assunto, remetente ou e-mail…"
               value={f.supplier}
               onChange={(e) => sf('supplier', e.target.value)}
               onKeyDown={(e) => {

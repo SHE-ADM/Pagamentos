@@ -142,7 +142,12 @@ CRUD completo da Next API (Repository → Service → Route, escrita via `getSup
 `ilike`, índices trgm da migration 029) · `GET/PATCH/DELETE /api/suppliers/:sk` (por
 `sk_supplier`) · `POST /api/suppliers`. Validação Zod em `@sheild/shared`
 (`supplierCreateSchema`/`supplierUpdateSchema` — CNPJ/CPF com strip de máscara; ao menos um
-identificador, espelhando `chk_supplier_has_identifier`). `DELETE` é **soft delete**
+identificador, espelhando `chk_supplier_has_identifier`; **classificação default
+`cost_center_id`/`chart_account_id`** editável — `int().min(0)`, `0` = "não informado"). O form
+(`SupplierForm`) traz **Centro de custo** e **Plano de contas** em CASCATA (`CostCenterSelect`/
+`ChartAccountSelect`); o payload sempre envia os dois ids (`0` quando vazio, cobrindo limpar na
+edição), e `SuppliersPage.openEdit` busca o fornecedor completo (`getSupplier`, com embeds) para
+rotular os selects. `DELETE` é **soft delete**
 (`deleted_at`, migration 045) e **bloqueia com 409** quando há contas vinculadas
 (`financial_account_control.sk_supplier`) — fornecedor é PRESERVADO, nunca hard delete.
 `sk_supplier`/`supplier_id` nunca entram no corpo (gerados pelo banco + trigger
@@ -152,7 +157,14 @@ usado pelo **lookup de fornecedor** do modal de contas (`SupplierSelect`, ordem 
 **sem `sort`** o padrão é `sk_supplier` desc (página `/fornecedores`). Spec/template em
 `docs/prompts/api-supplier-crud-spec.md`. **`/fornecedores` (`SuppliersPage`):** a edição abre
 **apenas pelo botão de lápis** (coluna "Ações") — `onRowClick` do grid é no-op; clicar na linha
-não abre o modal.
+não abre o modal. **Colunas do grid** (`getSupplierColumns`): Razão social · Nome fantasia ·
+**CNPJ / CPF** (uma única coluna — CNPJ se houver, senão CPF; helper `supplierDoc`) · E-mail ·
+**Centro de custo** · **Plano de contas** (classificação default, `código — descrição`; id 0 →
+"—") · Ações. Para exibir as descrições da classificação, o `findAll` da lista
+(`GET /api/suppliers`) passou a trazer os **embeds** `cost_center`/`chart_account`
+(`SELECT_WITH_CLASSIFICATION`) — antes só o `GET /:sk` os trazia. As duas colunas de classificação
+são **ordenáveis server-side pela FK própria** (`sort=cost_center_id`/`chart_account_id`, no
+allowlist `SORTABLE_COLUMNS`); CNPJ/CPF ordena por `cnpj`.
 
 **CRUD de contas (`apps/api-backend/lib/contas.ts` + `app/api/contas/**`):** CRUD da tabela
 principal `financial_account_control` (PK = **`id`**, não `sk_*`; fornecedor pela FK obrigatória
@@ -210,20 +222,60 @@ as telas do grupo Tabelas têm só **criar/editar** (sem botão de lixeira, sem 
 sem `deleteX` no service frontend). As rotas/lib `DELETE` do backend foram **preservadas** (não
 expostas pela UI). Um componente genérico **`organisms/CrudTablePage.tsx`** (`<T, TInput>`: lista
 paginada + busca debounce + modais criar/editar) é a base das 5 páginas finas; o form de cada um vai
-por **render prop**. A célula "Ações" do grid renderiza só o lápis (`editCell` em `useGridColumns`).
+por **render prop**. A busca usa a molécula **`SearchInput`** (lupa + botão limpar/X que aparece só
+com texto e devolve o foco ao input) — compartilhada com `CostCentersPage` e `SuppliersPage`. A célula "Ações" do grid renderiza só o lápis (`editCell` em `useGridColumns`).
 Lookups nos forms via **`atoms/LabeledSelect.tsx`** (`<select>` rotulado, associação `htmlFor`/`id`).
 Cliente HTTP compartilhado em **`services/dataApi.ts`** (`dataApiCall`/`dataApiListPaged`).
+
+**Grids dos cadastros = padrão do `/consulta` (gestão de colunas):** todos os grids de cadastro —
+os **6 do grupo Tabelas** (`CrudTablePage` + a página autônoma `CostCentersPage`) **e** `/fornecedores`
+(`SuppliersPage`) — ligam o mesmo conjunto do grid de `/consulta`: `enableColumnManagement` (toolbar:
+mostrar/ocultar, **fixar**, **reordenar por arraste**, **redimensionar**, restaurar layout),
+`defaultDensity="compact"`, `maxBodyHeight` (`70vh` → **cabeçalho fixo**) e `gridId` próprio
+(preferências de layout persistidas em `localStorage` por tabela — ids `tabela-bancos`,
+`tabela-contas`, `tabela-plano-de-contas`, `tabela-grupos-plano-de-contas`,
+`tabela-subgrupos-plano-de-contas`, `tabela-centros-de-custo`, `fornecedores`). No `CrudTablePage` o
+`gridId` é prop obrigatória, passada por cada página fina. **Não** ligam `enableSelection` (sem ação
+em lote nesses cadastros) nem `enableRowVirtualization`/scroll infinito (a paginação é por botões
+Anterior/Próxima) — decisão de escopo: o grid é o **mesmo componente** e a mesma experiência de
+colunas/densidade, sem os recursos específicos do `/consulta` (volume + ações em massa).
+
+**Ordenação SERVER-SIDE nos grids de cadastro (clique no cabeçalho):** o clique cicla
+**asc→desc→nenhum** (`handleSort` idêntico ao do `/consulta`; reseta para a 1ª página) e a ordenação
+é sempre **server-side** — `sort`/`order` viajam na query (`?sort=<col>&order=asc|desc`) até a Next
+API. **Por que server-side:** os cadastros são paginados (20/página), então ordenar só a página
+carregada seria incorreto. Wiring: `CrudTablePage` (5 cadastros) + `CostCentersPage`/`SuppliersPage`
+(autônomas) mantêm o estado `{col,dir}` e o repassam à função `list`; o cliente HTTP
+(`services/dataApi.ts` `dataApiListPaged` + as cópias de `costCenters.ts`/`suppliers.ts`) anexa
+`sort`/`order` à query. No backend, cada `service.list`/`findAll` recebe `sort`/`order` e aplica
+`.order(col)` **validando a coluna contra um allowlist por recurso** (`SORTABLE_COLUMNS`) via o helper
+**`lib/sort.ts`** (`resolveSort` + `parseSortParams`); coluna fora do allowlist → ordem **default** do
+recurso (defesa contra coluna inválida/injeção). As rotas só **encaminham** `...parseSortParams(sp)`
+(verbatim) — o allowlist é responsabilidade do service. **Colunas de embed/JOIN são ordenáveis pela
+descrição via a sintaxe do PostgREST `alias(coluna)`** (o `sortKey` usa o MESMO alias do `select`),
+ordenando as linhas-pai pela coluna do recurso embutido (to-one) — assim a ordem casa o texto exibido.
+Padrão herdado do `/consulta` (`sortKey:'supplier(trade_name)'`, `'cost_center(cost_center_description)'`,
+`'chart_account(account_description)'`). Em `/tabelas/plano-de-contas` as 3 colunas de classificação
+usam o mesmo: Centro de custo→`'cost_center(cost_center_description)'`, Grupo→`'group(group_description)'`,
+Sub Grupo→`'subgroup(subgroup_description)'`. O valor do `sortKey` (literal, incluindo a forma
+`alias(coluna)`) entra no `SORTABLE_COLUMNS` do service (allowlist — defesa contra coluna arbitrária);
+quando o `select` NÃO inclui o alias, a coluna fica sem `sortKey` (ex.: `bank` em `/tabelas/contas`). Em
+`suppliers`, o `sort` aceita também o alias legado **`name`** (lookup do modal de contas → `trade_name`
+asc); colunas reais do grid usam `sort=<coluna>&order=`. Testes: `lib/sort.test.ts` (helper) e
+`app/api/suppliers/route.test.ts` (encaminhamento).
 
 | Cadastro | Sidebar / rota | Backend (`lib` + `app/api`) | Particularidades |
 |---|---|---|---|
 | `financial_bank` | **Bancos** `/tabelas/bancos` | `banks.ts` + `banks/**` | PK `bank_id` **NÃO identity** → `create` grava `max+1`. `bank_code` CHAR(3). Delete bloqueado se referenciado por `financial_account` |
 | `financial_account` | **Contas** `/tabelas/contas` | `financial-accounts.ts` + `financial-accounts/**` | Contas bancárias/caixa (distinto de `/contas`=lançamentos). **Sem sentinela, sem FK reversa** → delete livre. `status_id`→**FK `status`** (migration 053; lookup `GET /api/statuses`; default 30="ativo"); `payment_type_id` **input numérico** (sem tabela de domínio); banco via lookup; saldo `NUMERIC` |
-| `financial_chart_of_account` | **Plano de contas** `/tabelas/plano-de-contas` | `chart-accounts.ts` + estende `chart-accounts/**` | **GET dual-mode preserva a CASCATA** (sem `page` = lookup por centro, só postáveis — `lib/lookups`; com `page` = CRUD — `lib/chart-accounts`). FKs opcionais centro/subgrupo (0="não informado"); `account_level`/`is_postable`. Delete bloqueado por `financial_account_control`/`supplier` |
+| `financial_chart_of_account` | **Plano de contas** `/tabelas/plano-de-contas` | `chart-accounts.ts` + estende `chart-accounts/**` | **GET dual-mode preserva a CASCATA** (sem `page` = lookup por centro, só postáveis — `lib/lookups`; com `page` = CRUD — `lib/chart-accounts`). FKs opcionais centro/**grupo** (`chart_account_group_id` — FK direta, migration 058)/subgrupo (0="não informado"); `account_level`/`is_postable`. **Grid** (ordem): Código · Descrição · Centro de custo · Grupo · Sub Grupo (Nível e Lançável saíram do grid — seguem no form). **Todas as 5 colunas são ordenáveis** (server-side; as 3 de classificação pela descrição do embed via `alias(coluna)`). Delete bloqueado por `financial_account_control`/`supplier` |
 | `financial_chart_of_account_group` | **Grupos** `/tabelas/grupos-plano-de-contas` | `chart-account-groups.ts` + `chart-account-groups/**` | `group_type` CHAR(1) opcional. Delete bloqueado se referenciado por subgrupo |
 | `financial_chart_of_account_subgroup` | **Sub grupos** `/tabelas/subgrupos-plano-de-contas` | `chart-account-subgroups.ts` + `chart-account-subgroups/**` | FK `chart_account_group_id` **obrigatória** (NOT NULL; 23503→422). Delete bloqueado se referenciado por plano de contas |
 
 **Hierarquia:** grupo → subgrupo (`chart_account_group_id`) → plano de contas (`chart_account_subgroup_id`
-+ `cost_center_id`); banco → conta (`bank_id`). **Rotas dual-mode** (Bancos/Grupos/Sub grupos): com `page`
++ `cost_center_id`). O plano de contas tem **também uma FK DIRETA ao grupo** (`chart_account_group_id`,
+migration 058 — coexiste com a ligação indireta via subgrupo; embed `group` na grade/form, editável no
+CRUD); banco → conta (`bank_id`). **Rotas dual-mode** (Bancos/Grupos/Sub grupos): com `page`
 = CRUD paginado; sem `page` = lookup (lista completa p/ os `<select>`). **`MAX_LIMIT = 1000`** nesses
 três services (igual a `lib/lookups.ts`) para o lookup não truncar o `<select>`; a paginação do CRUD
 usa `DEFAULT_LIMIT`. **`GET /api/statuses`** (read-only,
@@ -270,8 +322,16 @@ e a classificação flui nos **dois sentidos**:
   **criação E na edição** pelo modal. **Best-effort**: falha no write-back loga (`console.error`) e
   **não** derruba a resposta da conta. A **extração Python não passa por esse service** → não faz
   write-back (só lê). Schema: `supplierSchema` (leitura) expõe `cost_center_id`/`chart_account_id`
-  + embeds opcionais `cost_center`/`chart_account`; `findBySk` faz o JOIN. Os campos **não** entram
-  em `supplierUpdateSchema`/`editableFields` (o PATCH público de fornecedor não os edita).
+  + embeds opcionais `cost_center`/`chart_account`; `findBySk` faz o JOIN.
+- **Edição direta pelo CRUD de fornecedores (`/fornecedores`).** `cost_center_id`/`chart_account_id`
+  **agora entram em `editableFields`** (POST/PATCH públicos de fornecedor) — o form de fornecedor
+  (`SupplierForm`) traz os lookups **Centro de custo** e **Plano de contas** em CASCATA (mesmos
+  `CostCenterSelect`/`ChartAccountSelect` do `ContaForm`; trocar o centro zera/recarrega o plano). O
+  payload **sempre** envia os dois ids (`0` quando não informado), cobrindo definir **e LIMPAR** no
+  modo edição (omitir não zeraria a coluna num PATCH parcial). Na edição, `SuppliersPage.openEdit`
+  busca o fornecedor completo (`getSupplier` → `GET /suppliers/:sk`, com embeds) para rotular os
+  selects; a lista (`GET /suppliers`) traz só os ids. O write-back do modal de contas
+  (`setSupplierClassification`) **permanece** como caminho paralelo (grava só quando ambos `> 0`).
 
 **Usuários / autenticação (`apps/api-backend/lib/users.ts` + `app/api/users|auth/**`):** sobre
 o **Supabase Auth** — sem tabela própria, sem JWT customizado, sem bcrypt (regras de
@@ -296,6 +356,20 @@ com a **chave anon** (`SUPABASE_ANON_KEY`, nunca a service_role); sem token/ inv
 `requireAuth` no handler (defesa em profundidade, não só o middleware). Isso **não**
 intercepta o caminho atual do frontend (leitura de e-mails fala com o Flask direto); cobre a
 API de dados Next p/ a fase do portal.
+
+**Modelo de papéis (decisão de design — ferramenta single-org):** **toda sessão autenticada
+é confiável para operar o app** — qualquer usuário logado faz **CRUD completo** (fornecedores,
+contas, cadastros das Tabelas) e **consultas/dashboards**. As rotas de CRUD usam só
+`requireAuth` (sessão válida), **não** papel. A **ÚNICA** exceção é `POST /api/users`
+(criar usuário), que exige `requireAdmin` — papel lido de `app_metadata.role === 'admin'`
+(campo controlado pelo servidor/Admin API; ver §1 A-1 da auditoria de segurança). Não há
+segregação de papéis no CRUD por enquanto — se um projeto precisar, abrir tarefa dedicada.
+**Cadastro de operadores:** crie no **Supabase Dashboard** (Authentication → Users → Add user,
+com "Auto Confirm User"); operador comum **não** precisa de papel/`app_metadata` — só o usuário
+que for criar outros via API precisa de `app_metadata.role: "admin"`. RLS (migrations 056/057)
+não afeta o app: o CRUD escreve via Next API com **`service_role`** (ignora RLS); só a curadoria
+inline (`has_invoice`/`has_bank_slip`/`status` em `financial_account_control`, `reviewed_at` em
+`email_control`) é escrita direto pelo papel `authenticated`, via grants por coluna preservados.
 
 **Erros 5xx não vazam detalhe interno (segurança §3 M-2):** os route handlers de CRUD usam
 `failFromError(e, '<tag>')` (`lib/response.ts`) — erro com `status` 4xx ecoa a mensagem
@@ -449,8 +523,26 @@ O acesso às rotas internas (`/emails`, `/consulta`, `/erros`) exige login.
 - **Sem auto-cadastro**: usuários criados apenas pelo admin no Supabase Dashboard
   (`Authentication → Users → Add user`, com "Auto Confirm User" marcado).
   `supabase.auth.signUp()` nunca é chamado pelo frontend.
-- **Três fluxos** (`apps/frontend-vite/src/pages/auth/`): `LoginPage` → `signInWithPassword`,
-  `ForgotPasswordPage` → `resetPasswordForEmail`, `ResetPasswordPage` → `updateUser`.
+- **Quatro telas** (`apps/frontend-vite/src/pages/auth/`): `LoginPage` → `signInWithPassword`,
+  `ForgotPasswordPage` → `resetPasswordForEmail`, `ResetPasswordPage` → `updateUser`,
+  `ChangePasswordPage` → `updateUser` (troca obrigatória no 1º acesso).
+- **Troca de senha OBRIGATÓRIA no 1º acesso (`/auth/change-password`):** o usuário criado
+  pelo admin entra com uma senha temporária e é forçado a definir a sua própria antes de
+  acessar qualquer rota. Mecânica por **marca POSITIVA** `password_changed` em `user_metadata`
+  (`PASSWORD_CHANGED_META_KEY` + helper `mustChangePassword` em `@sheild/shared`): a marca só
+  é gravada quando o próprio usuário troca a senha; **ausência da marca = senha ainda é a
+  temporária → força a troca**. Cobre QUALQUER caminho de criação (Dashboard **ou**
+  `POST /api/users`), pois usuário novo nunca tem a marca. `ProtectedRoute` redireciona para
+  `/auth/change-password` enquanto a marca faltar; `ChangePasswordForm` faz
+  `updateUser({ password, data: { password_changed: true } })` (sem deslogar — segue para
+  `/consulta`; o evento `USER_UPDATED` atualiza o `AuthContext`). **Usuários existentes** (antes
+  desta feature) foram marcados via **backfill** em `auth.users.raw_user_meta_data`
+  (`password_changed: true`) — só usuários NOVOS são forçados. É a diferença para o
+  `ResetPasswordForm` (fluxo "esqueci a senha": vem de link de e-mail e **desloga** ao final).
+  `user_metadata` é client-writable — adequado ao modelo de sessão confiável deste app interno
+  (a troca forçada é higiene de 1º acesso, não barreira contra o próprio usuário).
+  **Criar usuário pelo Dashboard:** Authentication → Users → Add user + "Auto Confirm User";
+  NÃO definir `password_changed` no metadata (a ausência é justamente o que força a troca).
 - Estado de sessão: `AuthContext`/`useAuth` (`apps/frontend-vite/src/contexts/AuthContext.tsx`),
   via `supabase.auth.getSession()` + `onAuthStateChange`. Ao restaurar, primeiro aplica o
   early-out de inatividade (`isIdleExpired`, ver abaixo); se não expirou, valida a sessão no
@@ -599,6 +691,18 @@ NF-e pura sem conta a pagar → reclassifica para `ignorado` (só status, sem IM
 py -3 scripts\reprocess_ignored_emails.py --dry-run
 ```
 
+Reprocessar **UM e-mail específico** pelo **pipeline completo** (Message-ID) — único que
+cobre **anexo e IMAGEM INLINE** (recibo/comprovante colado no corpo, via Vision), que os
+reprocessadores de corpo/link não cobrem. Rebusca o e-mail no IMAP, roda `process_message`,
+grava em `financial_account_control` e reconcilia `email_control` (`falha`→`extraído`/…) +
+remove o erro antigo de `email_processing_errors`. A leitura normal NÃO o alcança (dedup por
+`message_id` pula e-mails já registrados); este script ignora a dedup para o e-mail informado:
+
+```powershell
+py -3 scripts\reprocess_message.py --message-id "<...>" --dry-run   # só inspeciona o IMAP
+py -3 scripts\reprocess_message.py --message-id "<...>"             # processa e grava
+```
+
 Extração isolada:
 
 ```powershell
@@ -645,16 +749,17 @@ apps/frontend-vite/src/components/
 │   ├── AuthHeroHeader.tsx     # (gradient) header decorativo com círculos sobrepostos
 │   ├── InlineMessage.tsx      # (gradient) banner sucesso/erro — nunca alert()
 │   ├── SupplierSelect.tsx     # (contas) react-select AsyncCreatable — busca/cria fornecedor (sort=name)
-│   ├── CostCenterSelect.tsx   # (contas) react-select Async — centro de custo (lookup)
-│   ├── ChartAccountSelect.tsx # (contas) react-select Async — plano de contas (CASCATA: filtrado por centro)
+│   ├── CostCenterSelect.tsx   # (contas + fornecedores) react-select Async — centro de custo (lookup)
+│   ├── ChartAccountSelect.tsx # (contas + fornecedores) react-select Async — plano de contas (CASCATA: filtrado por centro)
 │   ├── ColumnVisibilityMenu.tsx # (grid) popover mostrar/ocultar + fixar coluna (pin esq/dir)
-│   └── GridToolbar.tsx        # (grid) barra: colunas + densidade + restaurar + ações de seleção
+│   ├── GridToolbar.tsx        # (grid) barra: colunas + densidade + restaurar + ações de seleção
+│   └── SearchInput.tsx        # (cadastros) busca com lupa + botão limpar (X) — usado pelo grupo Tabelas + /fornecedores
 ├── organisms/
 │   ├── LoginForm.tsx          # (v2) estado + validação + supabase.auth.signInWithPassword
 │   ├── ForgotPasswordForm.tsx # (gradient) resetPasswordForEmail + mensagem genérica
 │   ├── ResetPasswordForm.tsx  # (gradient) updateUser + signOut + redirect
 │   ├── ContaForm.tsx          # (contas) form criar/editar conta — supplier/centro/plano + cascata
-│   ├── SupplierForm.tsx       # (fornecedores) form criar/editar fornecedor
+│   ├── SupplierForm.tsx       # (fornecedores) form criar/editar fornecedor — inclui classificação default (centro/plano em cascata)
 │   ├── CostCenterForm.tsx     # (tabelas) form criar/editar centro de custo — código + descrição
 │   ├── BankForm.tsx           # (tabelas) form de banco — código(3) + nome
 │   ├── FinancialAccountForm.tsx # (tabelas) form de conta — descrição/banco/situação(lookups) + saldo
@@ -704,13 +809,19 @@ colunas "NF" e "BOL" (curadoria) renderizam o atom `CheckToggle` (checkbox que e
 coluna "Situação" renderiza o `StatusSelectCell` (dropdown inline que altera o status) — ambos
 precisam dos callbacks da página. (A coluna "Ações"/`onEdit` foi removida — a edição da conta parte
 do botão "Editar conta" do painel de detalhe.) Os cabeçalhos são abreviados (`NF`/`BOL`) para poupar
-largura, mas o `aria-label` do checkbox continua descritivo (`Tem NF`/`Tem Boleto`). A coluna **"Fornecedor" deriva do JOIN com `supplier`** (`r.supplier?.trade_name ?? legal_name`);
-a antiga coluna **"CNPJ/CPF" foi REMOVIDA do grid** (segue no card de detalhe + embed). As colunas
+largura, mas o `aria-label` do checkbox continua descritivo (`Tem NF`/`Tem Boleto`). A coluna **"Fornecedor" deriva do JOIN com `supplier`** e exibe **apenas `trade_name`**
+(razão fantasia — todos os fornecedores têm `trade_name` preenchido; sem fallback para
+`legal_name` no grid); a antiga coluna **"CNPJ/CPF" foi REMOVIDA do grid** (segue no card de
+detalhe + embed). As colunas
 **"Centro de custo" e "Plano de contas" derivam dos embeds** `cost_center`/`chart_account`
-(`código — descrição`; id 0 = "não informado" → "—"). Essas três colunas de JOIN/embed **não têm
-`sortKey`** (não ordenáveis server-side: order por recurso embutido no PostgREST é frágil) e seu
-`key` no `ColumnDef` é sintético (`ColumnDef.key` é `keyof T | (string & {})`; o `accessorFn` só
-alimenta sort/filter client-side, que não usamos). Ordem das colunas de `/consulta`: **… Tipo
+(`código — descrição`; id 0 = "não informado" → "—"). **Fornecedor, Centro de custo e Plano de
+contas SÃO ordenáveis server-side** pelo recurso embutido, via sintaxe do PostgREST
+`alias(coluna)` no `order` — `sortKey: 'supplier(trade_name)'`,
+`'cost_center(cost_center_description)'` e `'chart_account(account_description)'`. O **alias** é o
+mesmo do `SELECT_WITH_EMBEDS` (`supplier`/`cost_center`/`chart_account`); usar o nome real da
+tabela (`financial_cost_center(...)`) é rejeitado pelo PostgREST (400). O `key` dessas
+colunas de embed no `ColumnDef` é sintético (`ColumnDef.key` é `keyof T | (string & {})`; o
+`accessorFn` só alimenta sort/filter client-side, que não usamos — a ordenação é sempre server-side). Ordem das colunas de `/consulta`: **… Tipo
 Pagamento → Centro de custo → Plano de contas → Vencimento → Valor → NF → BOL → Situação → Extração**
 (`Extração` é a última; **não há mais coluna "Ações"**). `Extração` (badge `extraction_source`) aparece
 **só** no grid (removida do detalhe e do CSV).
@@ -1097,6 +1208,7 @@ do resolver, descartados por `_finalize_supplier` depois de obter o `sk_supplier
 |---|---|---|
 | `pdf_text` | PDF digital (pdfplumber) | `pdf anexado` |
 | `pdf_vision` | PDF escaneado (Claude Vision via base64 — não exige poppler) | `pdf anexado` |
+| `image_vision` | Anexo de IMAGEM (jpg/png/gif/webp) lido via Claude Vision — recibo/comprovante/foto (ex.: "Valor do porte" dos Correios). Migration 061 no CHECK | `imagem anexada` |
 | `email_body` | Corpo do e-mail (sem PDF válido) | `corpo email` |
 | `falha` | Falha na extração | `falha` |
 
@@ -1104,6 +1216,28 @@ do resolver, descartados por `_finalize_supplier` depois de obter o `sk_supplier
 > usado pelo `StatusBadge` e pelo painel de detalhe de `/consulta` — `pdf_text` e `pdf_vision`
 > compartilham "pdf anexado" (para o usuário ambos são um PDF anexado; a distinção é interna).
 > Valores não mapeados caem no próprio texto.
+
+**Anexos de IMAGEM (jpg/png/gif/webp) — lidos via Claude Vision (`image_vision`):** o
+pipeline trata imagem (recibo/comprovante/foto, ex.: "Valor do porte" dos Correios) como
+documento. Prioridade: **anexo PDF → anexo imagem → PDF por link → IMAGEM INLINE → corpo**.
+`save_attachments` (`read_emails.py`) salva imagens **anexo explícito** (`Content-Disposition:
+attachment`). Imagem **inline** (`Content-ID`, sem `attachment` — recibo colado no corpo pelo
+Outlook) é tratada por `save_inline_images` como **fallback SÓ quando não houve anexo nem PDF
+por link**: salva a **MAIOR** imagem inline `>= _IMAGE_INLINE_MIN_BYTES` (50 KB) — o documento é a
+imagem mais proeminente; logos/assinaturas/ícones e a 2ª imagem ficam de fora, evitando chamadas
+Vision desnecessárias (fora desse fallback, imagem inline nunca é processada). O caso real que
+motivou: reembolso de postagem dos Correios com o recibo colado inline (`process_message` →
+`save_inline_images` → Vision → conta `recibo` R$ 172,39, fornecedor ECT/Correios). No `extract_pdf.py`, `process_pdf` desvia imagens **antes** de pdfplumber/
+descriptografia/carnê (que abririam o arquivo como PDF) para `_extract_image` → `extract_with_vision`,
+que monta o bloco Vision conforme o tipo (`_vision_source_block`: `type:image`+media_type para
+imagem → `image_vision`; `type:document`+`application/pdf` para PDF → `pdf_vision`). `build_record`
+trata `image_vision` pelo mesmo caminho JSON do `pdf_vision`. O prompt de `amount` inclui o rótulo
+"Valor do porte"/"Valor total" de recibo de postagem. `upload_attachment` grava o Storage com o
+`Content-Type` por extensão (`_UPLOAD_CONTENT_TYPES`), não mais fixo em `application/pdf`. CHECK do
+banco: migration **061** (domínio `email_body`/`pdf_text`/`pdf_vision`/`image_vision`/`falha`); enum
+Zod `EXTRACTION_SOURCES` e o badge (`image_vision`→"imagem anexada") alinhados. Testes:
+`tests/test_extract_pdf.py` (roteamento de imagem), `tests/test_save_attachments.py` (salva PDF+imagem,
+ignora inline) e `StatusBadge.test.tsx`.
 
 ### Boleto por link (sem anexo) — prioridade anexo → link → corpo
 
@@ -1172,6 +1306,37 @@ e-mails `status='falha'`, rebusca o corpo no IMAP, baixa o boleto pelo link e gr
 
 Acionado em `process_message()` **só quando `accounts_saved == 0`** (o anexo não gerou
 conta válida) — assim o corpo nunca conflita com um arquivo anexado válido.
+
+**MÚLTIPLAS PARCELAS no corpo → UMA conta por boleto (NUNCA somar — não regredir):**
+quando o corpo lista uma TABELA de boletos (documento, parcela, emissão, vencimento,
+valor, dias — caso OBER, em que o webmail quebra cada campo em uma linha `\r`),
+`_extract_body_installments()` (regex `_BODY_INSTALLMENTS_RE`) detecta as linhas e o
+`try_extract_from_body` cria **uma conta por boleto** (clona o payload com o fornecedor já
+resolvido e sobrescreve nº=`{doc}/{parcela}`, valor, vencimento e emissão por linha; dedup
+por linha). A linha **"Total"** nunca vira conta (não casa o padrão doc+parcela+2datas+valor).
+Dispara só com **≥2 linhas** e vencimentos OU (doc,parcela) distintos; caso contrário cai no
+caminho de conta única, em que `_extract_body_amount` mantém a soma para pagamento único com
+componentes (ex.: "Valor R$ 297,08 + R$ 6,96 / Total R$ 304,04"). Contas do corpo **não têm
+código de barras** (a linha digitável só existe no PDF) — por isso o caminho de PDF (quando
+legível) é preferível. Teste: `tests/test_body_installments.py`.
+
+> **Boletos protegidos por senha + carnê (OBER `info.ober.com.br`) — RESOLVIDO no PDF:** o boleto
+> é um PDF **criptografado** (senha = N primeiros dígitos do CNPJ do pagador) e um **carnê de N
+> boletos** (N páginas). `extract_pdf.process_pdf` (orquestrador) trata os dois: (1) PDF cifrado
+> (`_pdf_is_encrypted`) → tenta senhas `company.cnpj[:4]→[:5]→[:6]` (`_decrypt_pdf`; candidatos
+> gerados por `read_emails.pdf_password_candidates(ctrl.company_cnpj())` e threaded por
+> `run_extraction`→`extract_to_csv(pdf_passwords=...)`), gravando uma cópia descriptografada
+> temporária; (2) **carnê** (`_boleto_pages` acha ≥2 páginas com linha digitável) → divide em
+> 1 PDF por página (`_write_single_page`) e roda `_extract_single` em cada um → **1 registro por
+> boleto** (com a linha digitável de cada). `process_pdf` agora devolve **lista** de registros;
+> `extract_to_csv` itera, e o loop de `extract_and_store_accounts` (que já cria 1 conta por linha
+> do CSV) gera as contas individuais com código de barras. **Esgotadas as senhas** → registro de
+> falha → fallback do corpo (que também cria parcelas individuais, porém sem barcode). **Por que
+> bundled:** decrypt SEM a emissão por boleto regrediria (o carnê viraria 1 conta somada e o corpo
+> não rodaria). Requer `pypdf` (em `server/requirements.txt`). Testes:
+> `tests/test_pdf_decrypt.py` (decrypt + candidatos) e a validação dos helpers contra o PDF real
+> (`_boleto_pages`/`_write_single_page`). **Importante (produção):** copiar `extract_pdf.py` **e**
+> `read_emails.py` juntos e instalar `pypdf` na máquina do scheduler — ver "Deploy manual".
 `extract_from_email_body()` faz parsing por regex. **Fornecedor** (`_BODY_NAME_RE`): rótulo no
 início da linha — `fornecedor`/`responsável`/`prestador`/`nome` (+ `favorecido`/`beneficiário`/
 `cedente`/`razão social`/`empresa`). O **separador `:`/`-` é OPCIONAL** (aceita só espaço,
@@ -1187,7 +1352,9 @@ com stopwords cortando a captura). Depois o **mapa por remetente** (`_supplier_f
 `R$` somados; (3) **fallback sem `R$`** (`_BODY_LABELED_AMT_RE`) — número rotulado por `Valor`/`Total`
 no formato BR com **exatamente 2 casas** (`Valor 50,00`, `Total 1.250,00`), usado só quando não há
 nenhum `R$` (exige rótulo + centavos p/ não pegar número solto/`NF 1087`; "Total" tem precedência
-sobre "Valor"). `payment_method='pix'` se o termo aparecer (ou sempre, p/ honorários). **Valida
+sobre "Valor"). O fallback tolera **um conectivo curto colado ao número** (`de`/`da`/`do`) entre o
+rótulo e o valor — `o valor de 172,39` casa; um substantivo no meio (`Total da nota 1.250,00`, sem
+`R$`) **não** casa (conservador, evita falso positivo; o caminho com `R$` cobre o caso comum). `payment_method='pix'` se o termo aparecer (ou sempre, p/ honorários). **Valida
 fornecedor+valor**: sem valor → não grava conta (vira `falha`). `email_body_excerpt` (migration 016)
 guarda o corpo completo. O **barcode do corpo**
 é normalizado por `_normalize_body_barcode`, que reusa `extract_pdf.normalize_barcode` (import
@@ -1351,17 +1518,28 @@ faturas SIEG em `ignorado`; o handler A1 (baixar o boleto real) segue como melho
   `financial_account_control` não guarda nome/CNPJ/CPF — só a FK `sk_supplier`.
   `getFinancialAccountControl` e `getAccountsByMessageId` usam o `SELECT_WITH_EMBEDS`:
   `*,supplier(trade_name,legal_name,cnpj,cpf),cost_center:financial_cost_center(cost_center_code,cost_center_description),chart_account:financial_chart_of_account(account_code,account_description)`.
-  O grid (e o card de detalhe e o CSV) exibem fornecedor (`trade_name ?? legal_name`), **Centro de
+  O grid exibe o fornecedor por **`trade_name`** apenas (sem fallback para `legal_name` no grid — o
+  card de detalhe e o CSV mantêm o nome completo), **Centro de
   custo** e **Plano de contas** (`código — descrição`; id 0 → "—"); a coluna **CNPJ/CPF foi removida
   do grid** (segue no detalhe). Lookups da Next API em `services/lookups.ts`. No **card de detalhe**
   de `/consulta`, o campo **Fornecedor** exibe `sk_supplier - nome` (helper `fmtSupplier`; fallback
   só o id quando o JOIN não traz nome) — o cabeçalho do painel, a coluna do grid e o CSV seguem só
   com o nome.
-  As colunas "Fornecedor" e "CNPJ/CPF" **não são ordenáveis** server-side (order por recurso embutido
-  no PostgREST é frágil). A **busca por fornecedor** resolve antes os `sk_supplier` que casam o termo
+  A coluna **"Fornecedor" É ordenável** server-side por `supplier(trade_name)` (embed do PostgREST);
+  ver a nota das colunas de embed acima. A **busca por fornecedor** resolve antes os `sk_supplier` que casam o termo
   na tabela `supplier` (nome/CNPJ/CPF + 4 e-mails, via `findSupplierIdsByTerm`) e filtra
   `sk_supplier=in.(...)` — o `applyFinancialFilters` casa ainda `invoice_number`/`subject`/
   `sender_email`, que são colunas próprias da conta.
+- **Busca também por VALOR do documento + valores de `ilike` CITADOS (`services/supabase.ts`):**
+  quando o termo da busca é um valor monetário (formato BR ou simples — `463,21`, `44.406,08`,
+  `391`, `463.21`), `parseBrlAmount` o converte e adiciona `amount.eq.<valor>` ao `or(...)`
+  (correspondência **exata**); termos não-numéricos seguem só na busca textual. Os valores dos
+  `ilike` passam por `ilikeContains` (entre **aspas duplas**: `"*termo*"`) — sem isso, um termo com
+  **vírgula** (ex.: `463,21`) quebrava o `or(...)` inteiro do PostgREST (a vírgula é delimitador de
+  cláusula → erro `PGRST100 failed to parse logic tree`). Aplicado tanto em `applyFinancialFilters`
+  (conta) quanto em `findSupplierIdsByTerm` (fornecedor). Índices de performance da busca em
+  `financial_account_control` (migration **060**): GIN trigram em `invoice_number`/`subject`/
+  `sender_email` (para `ilike '%termo%'`), btree em `amount` e em `created_at DESC`.
 - **`/consulta` — `cancelado` aparece no GRID, mas NÃO nos KPIs (mudança 2026-06-25):** a regra
   antiga ocultava cancelado em tudo; agora o **grid mostra canceladas** por padrão e os **KPIs as
   excluem** (para o "Valor total"/"Total de registros" não somar cancelado e gerar confusão). Como
@@ -1474,7 +1652,20 @@ faturas SIEG em `ignorado`; o handler A1 (baixar o boleto real) segue como melho
 ## Banco de dados (Supabase)
 
 Migrations em `supabase/migrations/`, aplicadas **manualmente no SQL Editor** em ordem
-numérica (`001` → `057`). Não há migration automática. (A `057` é de **segurança**
+numérica (`001` → `061`). Não há migration automática. (As `059`/`060`/`061` foram aplicadas
+**direto via Supabase MCP** nesta máquina — o arquivo numerado serve de histórico; **não
+reaplicar** no SQL Editor (todas idempotentes, mas evite re-run). A `061` adiciona
+**`image_vision`** ao CHECK de `financial_account_control.extraction_source` — anexos de IMAGEM
+lidos via Claude Vision; ver "extraction_source — origem dos dados". A `060` cria **índices de
+performance** da pesquisa em `/consulta` (GIN trigram em `invoice_number`/`subject`/`sender_email`
+para `ilike '%termo%'`, btree em `amount` e em `created_at DESC`). A `059` é o **backfill ÚNICO**
+da classificação contábil das contas a partir do fornecedor (contas com `cost_center_id=0` E
+`chart_account_id=0` herdam a classificação do supplier; fora do fluxo diário de extração).
+A `058` adiciona a **FK direta**
+`financial_chart_of_account.chart_account_group_id` → `financial_chart_of_account_group`
+(+ índice parcial) — a coluna já existia (DEFAULT 0 = "não informado"), mas sem FK o PostgREST
+não resolvia o embed `group` do grid/form de Plano de contas; sem valores órfãos, a constraint
+não falha. A `057` é de **segurança**
 (idempotente, defesa em profundidade): `REVOKE INSERT/UPDATE/DELETE` do papel `authenticated`
 em `supplier`/`status` — o RLS já bloqueava (ambas só têm política de SELECT), isto remove o
 grant default residual para simetria com a `056`; escrita segue só `service_role`. A `056` é de **segurança**
@@ -1600,9 +1791,11 @@ omitidos; os ids entram como opcionais (a UI envia `0` quando não informado).
 **Classificação default no schema do supplier (migration 052):** `supplierSchema` (leitura) também
 expõe `cost_center_id`/`chart_account_id` (`z.number().int().default(0)`) + embeds opcionais
 `cost_center`/`chart_account` (reutiliza `costCenterEmbeddedSchema`/`chartAccountEmbeddedSchema` de
-`financial-account-control.schema`). **Não** entram em `editableFields`/`supplierUpdateSchema` — o
-write-back grava por caminho dedicado (`setSupplierClassification`); ver "Classificação default do
-fornecedor — sync bidirecional".
+`financial-account-control.schema`). **Entram** em `editableFields` (logo em
+`supplierCreateSchema`/`supplierUpdateSchema`) como `z.number().int().min(0).optional()` — editáveis
+pelo CRUD de fornecedores (`/fornecedores`); ver "Classificação default do fornecedor — sync
+bidirecional". O write-back do modal de contas (`setSupplierClassification`) **permanece** como
+caminho paralelo de gravação.
 
 **Schema base vs. criação manual:** `amount` é `nullable` no schema base (o pipeline pode
 gravar sem valor → vira erro `sem_valor`, não cria conta). A criação manual via `POST /api/contas`
@@ -1780,7 +1973,9 @@ health do reenvio), tipos `types/cobranca.ts` (`ErrorType` + `ERROR_TYPE_LABEL` 
 em `@sheild/shared`). O grid de `/cobranca/erros` liga **seleção** + a ação
 `organisms/ResendErrosAction.tsx` (botão "Reenviar e-mails (N)" na barra de seleção;
 **confirmação inline** antes de disparar — são e-mails reais; poll de progresso a cada 1,5s;
-**desabilitado** quando o backend não está pronto). Sidebar: grupo **Envios**.
+**desabilitado** quando o backend não está pronto). Sidebar: grupo **Envios**. **Ordenação
+padrão de `/cobranca/envios`: `sent_at` desc** (data de envio, mais recentes no topo) — o ciclo
+de clique no cabeçalho volta a esse padrão no 3º clique.
 
 ## Windows Task Scheduler
 
@@ -1822,6 +2017,11 @@ manual direto. Dois cuidados **não óbvios** ao copiar o pipeline de leitura:
 | `skills\email-reader\scripts\read_emails.py` | `C:\Sheild\API\Pagamentos\skills\email-reader\scripts\read_emails.py` |
 | `skills\pdf-contas-pagar\scripts\extract_pdf.py` | `C:\Sheild\API\Pagamentos\skills\pdf-contas-pagar\scripts\extract_pdf.py` |
 
+> O **suporte a anexo de imagem** (Claude Vision → `image_vision`) vive exatamente nesses 2
+> arquivos — copiar os dois cobre a feature. O CHECK do banco (migration 061) usa a **mesma
+> Supabase** de dev e prod, então **já está aplicado** para produção (nenhum passo de banco
+> extra). Nenhuma dependência Python nova (a imagem usa o mesmo `anthropic` já instalado).
+
 Validar (com o Python que o scheduler usa) — esperado `True True`:
 
 ```powershell
@@ -1830,8 +2030,13 @@ py -3 -c "import sys; sys.path.insert(0,'skills/email-reader/scripts'); import r
 ```
 
 **Não precisa reiniciar nada**: a tarefa agendada inicia um processo novo a cada execução e
-lê os arquivos do disco. Nenhuma dependência nova (as libs de extração já estavam instaladas,
-pois o subprocesso antigo usava o mesmo Python).
+lê os arquivos do disco.
+
+> **DEPENDÊNCIA NOVA — `pypdf` (desde 2026-06-29):** a descriptografia de boletos com senha e o
+> split de carnê (1 boleto/página) usam **`pypdf`**. Ao atualizar a produção, instale-o na
+> máquina do scheduler: `py -3 -m pip install "pypdf~=6.13"` (ou
+> `pip install -r server/requirements.txt`). Sem `pypdf`, o `import extract_pdf` falha e a
+> extração para. Valide com o comando de import acima (que importa `read_emails` → `extract_pdf`).
 
 ### Deploy manual da Cobrança de vencidos (envios) em produção (caso específico — não regredir)
 

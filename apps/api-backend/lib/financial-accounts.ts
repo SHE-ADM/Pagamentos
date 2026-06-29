@@ -16,10 +16,13 @@ import {
 } from '@sheild/shared/schemas';
 import type { ZodError } from 'zod';
 import { getSupabaseAdmin } from './supabase-admin';
+import { resolveSort, type SortOrder } from './sort';
 
 const TABLE = 'financial_account';
 const DEFAULT_LIMIT = 20;
 const MAX_LIMIT = 100;
+// Colunas ordenáveis (própria tabela) — o banco é embed de JOIN, não ordenável aqui.
+const SORTABLE_COLUMNS = ['account_description', 'currency_code', 'balance_amount', 'payment_type_id', 'status_id'] as const;
 
 // Leitura com o banco embutido (rótulo na grade).
 const SELECT_WITH_BANK =
@@ -39,6 +42,8 @@ export interface FinancialAccountListParams {
   page?: number;
   limit?: number;
   search?: string;
+  sort?: string;
+  order?: SortOrder;
 }
 
 export interface FinancialAccountListResult {
@@ -69,7 +74,7 @@ function mapWriteError(error: { code?: string; message: string; details?: string
 }
 
 const repository = {
-  async findAll(params: { from: number; to: number; search?: string }) {
+  async findAll(params: { from: number; to: number; search?: string; sort?: string; order?: SortOrder }) {
     let query = getSupabaseAdmin().from(TABLE).select(SELECT_WITH_BANK, { count: 'exact' });
 
     if (params.search) {
@@ -77,7 +82,12 @@ const repository = {
       query = query.ilike('account_description', `%${term}%`);
     }
 
-    return query.order('financial_account_id', { ascending: true }).range(params.from, params.to);
+    const sorted = resolveSort(params.sort, params.order, SORTABLE_COLUMNS);
+    const ordered = sorted
+      ? query.order(sorted.column, { ascending: sorted.ascending, nullsFirst: false })
+      : query.order('financial_account_id', { ascending: true });
+
+    return ordered.range(params.from, params.to);
   },
 
   findById(id: number) {
@@ -107,6 +117,8 @@ export const financialAccountService = {
       from,
       to: from + limit - 1,
       search: params.search?.trim() || undefined,
+      sort: params.sort,
+      order: params.order,
     });
     if (error) throw new FinancialAccountServiceError(error.message, 500);
     return { data: (data ?? []) as unknown as FinancialAccount[], total: count ?? 0, page, limit };

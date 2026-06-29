@@ -17,8 +17,21 @@ import {
 } from '@sheild/shared/schemas';
 import type { ZodError } from 'zod';
 import { getSupabaseAdmin } from './supabase-admin';
+import { resolveSort, type SortOrder } from './sort';
 
 const SUPPLIER_TABLE = 'supplier';
+// Colunas ordenáveis (própria tabela) usadas pelo sort do grid de /fornecedores.
+// cost_center_id/chart_account_id ordenam a classificação pela FK própria (server-side,
+// agrupa por centro/plano) — o PostgREST não ordena por coluna de embed de forma confiável.
+const SORTABLE_COLUMNS = [
+  'legal_name',
+  'trade_name',
+  'cnpj',
+  'cpf',
+  'email',
+  'cost_center_id',
+  'chart_account_id',
+] as const;
 const ACCOUNTS_TABLE = 'financial_account_control';
 const DEFAULT_LIMIT = 20;
 const MAX_LIMIT = 100;
@@ -46,8 +59,13 @@ export interface SupplierListParams {
   page?: number;
   limit?: number;
   search?: string;
-  /** Ordenação: `name` = alfabética por nome fantasia (lookup); padrão = mais recentes. */
-  sort?: 'name';
+  /**
+   * Ordenação: o alias `name` = alfabética por nome fantasia (lookup do modal de contas);
+   * uma coluna de `SORTABLE_COLUMNS` = sort server-side do grid (com `order`); padrão = mais
+   * recentes (sk_supplier desc).
+   */
+  sort?: string;
+  order?: SortOrder;
 }
 
 export interface SupplierListResult {
@@ -70,10 +88,12 @@ function duplicateMessage(detail: string): string {
 
 // Camada de acesso ao banco. Interna ao módulo — os testes exercitam-na via service.
 const supplierRepository = {
-  async findAll(params: { from: number; to: number; search?: string; sort?: 'name' }) {
+  async findAll(params: { from: number; to: number; search?: string; sort?: string; order?: SortOrder }) {
+    // Inclui os embeds de classificação (centro de custo / plano de contas) para o
+    // grid de /fornecedores exibir as descrições — antes a lista trazia só os ids.
     let query = getSupabaseAdmin()
       .from(SUPPLIER_TABLE)
-      .select('*', { count: 'exact' })
+      .select(SELECT_WITH_CLASSIFICATION, { count: 'exact' })
       .is('deleted_at', null);
 
     if (params.search) {
@@ -81,12 +101,18 @@ const supplierRepository = {
       query = query.or(SEARCH_COLUMNS.map((c) => `${c}.ilike.%${term}%`).join(','));
     }
 
-    // `name` = alfabética por nome fantasia (usada pelo lookup do modal de contas);
-    // padrão = mais recentes primeiro (sk_supplier desc — usado pela página /fornecedores).
-    const ordered =
-      params.sort === 'name'
-        ? query.order('trade_name', { ascending: true, nullsFirst: false })
-        : query.order('sk_supplier', { ascending: false });
+    // Prioridade: (1) sort por coluna do grid (allowlist + order); (2) alias `name` =
+    // alfabética por nome fantasia (lookup do modal de contas); (3) padrão = mais
+    // recentes (sk_supplier desc — página /fornecedores).
+    const sorted = resolveSort(params.sort, params.order, SORTABLE_COLUMNS);
+    let ordered;
+    if (sorted) {
+      ordered = query.order(sorted.column, { ascending: sorted.ascending, nullsFirst: false });
+    } else if (params.sort === 'name') {
+      ordered = query.order('trade_name', { ascending: true, nullsFirst: false });
+    } else {
+      ordered = query.order('sk_supplier', { ascending: false });
+    }
 
     return ordered.range(params.from, params.to);
   },
@@ -150,10 +176,13 @@ export const supplierService = {
       to: from + limit - 1,
       search: params.search?.trim() || undefined,
       sort: params.sort,
+      order: params.order,
     });
     if (error) throw new SupplierServiceError(error.message, 500);
 
-    return { data: (data ?? []) as Supplier[], total: count ?? 0, page, limit };
+    // Double cast: o SELECT com embeds faz o supabase-js inferir um tipo de parser
+    // de relação, não diretamente Supplier[] (mesmo padrão de getBySk).
+    return { data: (data ?? []) as unknown as Supplier[], total: count ?? 0, page, limit };
   },
 
   /**
