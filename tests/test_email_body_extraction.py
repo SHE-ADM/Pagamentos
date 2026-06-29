@@ -358,6 +358,9 @@ class TryExtractFromBodyTest(unittest.TestCase):
         self.assertEqual(outcome, read_emails.BODY_CREATED)
         self.assertEqual(len(ctrl.financial_calls), 1)
         self.assertEqual(ctrl.financial_calls[0]["payment_method"], "pix")
+        # document_type deve ser minusculo ('pix'), nao 'PIX' — casa o enum/select do
+        # frontend (o CHECK do banco usa lower(), mas a UI e case-sensitive).
+        self.assertEqual(ctrl.financial_calls[0]["document_type"], "pix")
         self.assertEqual(ctrl.error_calls, [])
 
     def test_pix_sem_n_documento_gera_invoice_com_valor(self):

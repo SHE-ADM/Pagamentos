@@ -1347,8 +1347,10 @@ def extract_from_email_body(body_text: str, received_at: str, message_id: str,
     elif classified == "honorários":
         document_type, payment_method = "honorários", "pix"
     elif has_pix:
-        # PIX sobrescreve o tipo quando não é honorários.
-        document_type, payment_method = "PIX", "pix"
+        # PIX sobrescreve o tipo quando não é honorários. Valor em minúsculas para
+        # casar o enum (DOCUMENT_TYPES) e o <select> do frontend — o CHECK do banco
+        # usa lower(), mas a UI é case-sensitive (form de edição falhava com "PIX").
+        document_type, payment_method = "pix", "pix"
     else:
         document_type, payment_method = classified, "outro"
 
