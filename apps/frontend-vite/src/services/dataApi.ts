@@ -47,12 +47,20 @@ export interface PagedParams {
   page?: number;
   limit?: number;
   search?: string;
+  /** Coluna de ordenação server-side (validada por allowlist no backend). */
+  sort?: string;
+  /** Direção da ordenação; padrão `asc` quando há `sort`. */
+  order?: 'asc' | 'desc';
 }
 
 export async function dataApiListPaged<T>(resource: string, params: PagedParams = {}): Promise<PagedResult<T>> {
-  const { page = 1, limit = 20, search } = params;
+  const { page = 1, limit = 20, search, sort, order } = params;
   const qs = new URLSearchParams({ page: String(page), limit: String(limit) });
   if (search) qs.set('search', search);
+  if (sort) {
+    qs.set('sort', sort);
+    if (order) qs.set('order', order);
+  }
   const body = await dataApiCall<T[]>(`${resource}?${qs.toString()}`);
   return {
     data: body.data ?? [],

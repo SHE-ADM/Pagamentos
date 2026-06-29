@@ -34,8 +34,8 @@ export default function CobrancaEnvios() {
   const [search, setSearch] = useState('');
   const [applied, setApplied] = useState('');
   const [dates, setDates] = useState<DateFilters>(EMPTY_DATES);
-  // Ordenação padrão: vencimento (due_date) descendente.
-  const [sort, setSort] = useState<{ col: string; dir: 'asc' | 'desc' }>({ col: 'due_date', dir: 'desc' });
+  // Ordenação padrão: data de envio (sent_at) descendente — mais recentes no topo.
+  const [sort, setSort] = useState<{ col: string; dir: 'asc' | 'desc' }>({ col: 'sent_at', dir: 'desc' });
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -76,12 +76,12 @@ export default function CobrancaEnvios() {
   }, [token, page, applied, dates, sort]);
 
   // Ciclo de ordenação: ao clicar numa coluna, asc → desc → volta ao padrão
-  // (vencimento desc). Server-side via `order` do PostgREST (ver fetchEnviosLog).
+  // (data de envio desc). Server-side via `order` do PostgREST (ver fetchEnviosLog).
   const handleSort = (col: string) => {
     setSort((prev) => {
       if (prev.col !== col) return { col, dir: 'asc' };
       if (prev.dir === 'asc') return { col, dir: 'desc' };
-      return { col: 'due_date', dir: 'desc' };
+      return { col: 'sent_at', dir: 'desc' };
     });
     setPage(1);
   };

@@ -48,14 +48,19 @@ interface SupplierListParams {
   page?: number;
   limit?: number;
   search?: string;
-  /** `name` = alfabética por nome fantasia (lookup); padrão = mais recentes. */
-  sort?: 'name';
+  /** `name` = alfabética por nome fantasia (lookup); uma coluna do grid = sort server-side; padrão = mais recentes. */
+  sort?: string;
+  /** Direção da ordenação; padrão `asc` quando há `sort` (coluna). */
+  order?: 'asc' | 'desc';
 }
 
-export async function listSuppliers({ page = 1, limit = 20, search, sort }: SupplierListParams = {}): Promise<SupplierListResult> {
+export async function listSuppliers({ page = 1, limit = 20, search, sort, order }: SupplierListParams = {}): Promise<SupplierListResult> {
   const qs = new URLSearchParams({ page: String(page), limit: String(limit) });
   if (search) qs.set('search', search);
-  if (sort) qs.set('sort', sort);
+  if (sort) {
+    qs.set('sort', sort);
+    if (order) qs.set('order', order);
+  }
   const body = await call<Supplier[]>(`/suppliers?${qs.toString()}`);
   return {
     data: body.data ?? [],

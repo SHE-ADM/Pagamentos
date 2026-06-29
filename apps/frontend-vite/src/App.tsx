@@ -11,6 +11,7 @@ import { clearChunkReloadCount } from './lib/chunkReload';
 // inicial; as telas de dados e os fluxos de auth secundários viram chunks à parte.
 const ForgotPasswordPage = lazy(() => import('./pages/auth/ForgotPasswordPage'));
 const ResetPasswordPage = lazy(() => import('./pages/auth/ResetPasswordPage'));
+const ChangePasswordPage = lazy(() => import('./pages/auth/ChangePasswordPage'));
 const Emails = lazy(() => import('./pages/Emails'));
 const Consulta = lazy(() => import('./pages/Consulta'));
 const Erros = lazy(() => import('./pages/Erros'));
@@ -48,6 +49,8 @@ export default function App() {
           <Route path="/auth/login" element={<LoginPage />} />
           <Route path="/auth/forgot-password" element={<ForgotPasswordPage />} />
           <Route path="/auth/reset-password" element={<ResetPasswordPage />} />
+          {/* Troca obrigatória no 1º acesso — exige sessão; auto-guarda dentro da página. */}
+          <Route path="/auth/change-password" element={<ChangePasswordPage />} />
           <Route
             path="/*"
             element={

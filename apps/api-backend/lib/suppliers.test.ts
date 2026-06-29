@@ -128,4 +128,22 @@ describe('supplierCreateSchema / supplierUpdateSchema', () => {
   it('update vazio (todos opcionais) → ok', () => {
     expect(supplierUpdateSchema.safeParse({}).success).toBe(true);
   });
+
+  it('aceita a classificação contábil (cost_center_id / chart_account_id)', () => {
+    const r = supplierUpdateSchema.safeParse({ cost_center_id: 5, chart_account_id: 9 });
+    expect(r.success).toBe(true);
+    if (r.success) {
+      expect(r.data.cost_center_id).toBe(5);
+      expect(r.data.chart_account_id).toBe(9);
+    }
+  });
+
+  it('aceita 0 (sentinela "não informado") na classificação', () => {
+    const r = supplierCreateSchema.safeParse({ trade_name: 'ACME', cost_center_id: 0, chart_account_id: 0 });
+    expect(r.success).toBe(true);
+  });
+
+  it('rejeita classificação negativa', () => {
+    expect(supplierUpdateSchema.safeParse({ cost_center_id: -1 }).success).toBe(false);
+  });
 });

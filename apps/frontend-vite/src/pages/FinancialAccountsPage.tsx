@@ -48,6 +48,7 @@ export default function FinancialAccountsPage() {
       title="Contas"
       subtitle="Tabelas"
       icon={Wallet}
+      gridId="tabela-contas"
       rowKey={(a) => String(a.financial_account_id)}
       columns={(onEdit) => getFinancialAccountColumns(statusLabel, onEdit)}
       list={listFinancialAccountsPage}

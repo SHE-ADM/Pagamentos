@@ -34,3 +34,23 @@ export type LoginInput = z.infer<typeof loginSchema>;
 export type CreateUserInput = z.infer<typeof createUserSchema>;
 export type ForgotPasswordInput = z.infer<typeof forgotPasswordSchema>;
 export type ResetPasswordInput = z.infer<typeof resetPasswordSchema>;
+
+// Troca de senha obrigatória no 1º acesso. A marca POSITIVA `password_changed`
+// (em user_metadata) só é gravada quando o próprio usuário define sua senha. A
+// ausência da marca = senha ainda é a temporária do admin → força a troca. Esse
+// desenho cobre QUALQUER caminho de criação (Supabase Dashboard ou API): um usuário
+// novo nunca tem a marca. Usuários já existentes recebem a marca por backfill, para
+// não serem forçados. (user_metadata é client-writable — o próprio fluxo de troca
+// grava a marca; adequado ao modelo de sessão confiável deste app interno.)
+export const PASSWORD_CHANGED_META_KEY = 'password_changed';
+
+/**
+ * Decide se o usuário deve ser forçado a trocar a senha (1º acesso). Recebe o
+ * `user_metadata` do Supabase. True quando a marca `password_changed` NÃO é `true`
+ * (ausente ou false) — senha ainda é a temporária definida pelo admin.
+ */
+export function mustChangePassword(
+  userMetadata: Record<string, unknown> | null | undefined,
+): boolean {
+  return userMetadata?.[PASSWORD_CHANGED_META_KEY] !== true;
+}

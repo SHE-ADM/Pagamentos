@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { costCenterEmbeddedSchema } from './financial-account-control.schema';
 import { chartAccountSubgroupEmbeddedSchema } from './chart-account-subgroup.schema';
+import { chartAccountGroupEmbeddedSchema } from './chart-account-group.schema';
 
 // Cadastro `financial_chart_of_account` — plano de contas (base da hierarquia:
 // grupo → subgrupo → plano de contas). Tabela de CADASTRO pré-existente (preservada
@@ -21,11 +22,15 @@ export const chartAccountSchema = z.object({
   account_description: z.string().nullable(),
   cost_center_id: z.number().int().default(0),
   chart_account_subgroup_id: z.number().int().default(0),
+  // FK direta ao grupo (migration 058; DEFAULT 0 = "não informado"). Coexiste com a
+  // ligação indireta via subgrupo — aqui é o vínculo direto do plano ao grupo.
+  chart_account_group_id: z.number().int().default(0),
   account_level: z.number().int().default(2),
   is_postable: z.boolean().default(true),
   // Embeds opcionais (JOIN) — presentes quando o select inclui os aliases.
   cost_center: costCenterEmbeddedSchema.optional(),
   subgroup: chartAccountSubgroupEmbeddedSchema.optional(),
+  group: chartAccountGroupEmbeddedSchema.optional(),
 });
 
 const MAX_CODE = 60;
@@ -48,6 +53,7 @@ const editableChartAccountFields = {
   // FKs opcionais (DEFAULT 0 = "não informado").
   cost_center_id: z.number().int().min(0).optional(),
   chart_account_subgroup_id: z.number().int().min(0).optional(),
+  chart_account_group_id: z.number().int().min(0).optional(),
 };
 
 // ── Criação ─────────────────────────────────────────────────────────────────

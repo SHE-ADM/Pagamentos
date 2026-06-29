@@ -20,8 +20,11 @@ import {
 } from '@sheild/shared/schemas';
 import type { ZodError } from 'zod';
 import { getSupabaseAdmin } from './supabase-admin';
+import { resolveSort, type SortOrder } from './sort';
 
 const COST_CENTER_TABLE = 'financial_cost_center';
+// Colunas ordenáveis (própria tabela) — alimenta o sort server-side do grid.
+const SORTABLE_COLUMNS = ['cost_center_code', 'cost_center_description'] as const;
 // Tabelas que referenciam o centro via FK — consultadas antes do delete.
 const REFERENCING_TABLES = ['financial_account_control', 'financial_chart_of_account', 'supplier'] as const;
 const SENTINEL_ID = 0; // "não informado" — preservado, fora do CRUD.
@@ -42,6 +45,8 @@ export interface CostCenterListParams {
   page?: number;
   limit?: number;
   search?: string;
+  sort?: string;
+  order?: SortOrder;
 }
 
 export interface CostCenterListResult {
@@ -62,7 +67,7 @@ function sanitizeTerm(term: string): string {
 
 // Camada de acesso ao banco. Interna ao módulo — os testes exercitam-na via service.
 const costCenterRepository = {
-  async findAll(params: { from: number; to: number; search?: string }) {
+  async findAll(params: { from: number; to: number; search?: string; sort?: string; order?: SortOrder }) {
     let query = getSupabaseAdmin()
       .from(COST_CENTER_TABLE)
       .select('cost_center_id,cost_center_code,cost_center_description', { count: 'exact' })
@@ -73,9 +78,13 @@ const costCenterRepository = {
       query = query.or(`cost_center_code.ilike.%${term}%,cost_center_description.ilike.%${term}%`);
     }
 
-    return query
-      .order('cost_center_code', { ascending: true, nullsFirst: false })
-      .range(params.from, params.to);
+    // Sort server-side validado; sem sort válido → ordem default (código asc).
+    const sorted = resolveSort(params.sort, params.order, SORTABLE_COLUMNS);
+    const ordered = sorted
+      ? query.order(sorted.column, { ascending: sorted.ascending, nullsFirst: false })
+      : query.order('cost_center_code', { ascending: true, nullsFirst: false });
+
+    return ordered.range(params.from, params.to);
   },
 
   findById(id: number) {
@@ -137,6 +146,8 @@ export const costCenterService = {
       from,
       to: from + limit - 1,
       search: params.search?.trim() || undefined,
+      sort: params.sort,
+      order: params.order,
     });
     if (error) throw new CostCenterServiceError(error.message, 500);
 

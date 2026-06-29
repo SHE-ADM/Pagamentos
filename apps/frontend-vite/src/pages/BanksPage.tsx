@@ -12,6 +12,7 @@ export default function BanksPage() {
       title="Bancos"
       subtitle="Tabelas"
       icon={Landmark}
+      gridId="tabela-bancos"
       rowKey={(b) => String(b.bank_id)}
       columns={getBankColumns}
       list={listBanksPage}

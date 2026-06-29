@@ -46,6 +46,7 @@ export const EXTRACTION_SOURCES = [
   'email_body',
   'pdf_text',
   'pdf_vision',
+  'image_vision',
   'falha',
 ] as const;
 

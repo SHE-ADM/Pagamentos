@@ -361,6 +361,13 @@ function actionButton(
 
 const supplierLabel = (s: Supplier): string => s.trade_name ?? s.legal_name ?? `#${s.sk_supplier}`;
 
+// Documento do fornecedor numa única coluna: CNPJ quando houver, senão CPF, senão '—'.
+const supplierDoc = (s: Supplier): string => {
+  if (s.cnpj) return fmtCnpj(s.cnpj);
+  if (s.cpf) return fmtCpf(s.cpf);
+  return '—';
+};
+
 /** Callbacks de ação (editar/excluir) da linha de centro de custo. */
 type CostCenterRowAction = (costCenter: CostCenter) => void;
 
@@ -431,24 +438,15 @@ export function getSupplierColumns(onEdit: SupplierRowAction): ColumnDef<Supplie
       render: (s) => s.trade_name ?? '—',
     },
     {
+      // CNPJ ou CPF numa única coluna. Ordena por `cnpj` (identificador dominante).
       key: 'cnpj',
-      header: 'CNPJ',
+      header: 'CNPJ / CPF',
       sortKey: 'cnpj',
       size: 170,
       hideOn: ['sm'],
       secondLine: true,
-      secondLineLabel: 'CNPJ',
-      render: (s) => fmtCnpj(s.cnpj),
-    },
-    {
-      key: 'cpf',
-      header: 'CPF',
-      sortKey: 'cpf',
-      size: 140,
-      hideOn: ['sm', 'md'],
-      secondLine: true,
-      secondLineLabel: 'CPF',
-      render: (s) => (s.cpf ? fmtCpf(s.cpf) : '—'),
+      secondLineLabel: 'CNPJ / CPF',
+      render: supplierDoc,
     },
     {
       key: 'email',
@@ -458,6 +456,36 @@ export function getSupplierColumns(onEdit: SupplierRowAction): ColumnDef<Supplie
       hideOn: ['sm', 'md'],
       truncate: true,
       render: (s) => s.email ?? '—',
+    },
+    {
+      // Classificação contábil DEFAULT do fornecedor — embeds (JOIN) vindos da lista.
+      // Ordena pela FK própria (cost_center_id); id 0 = "não informado" → '—'.
+      key: 'cost_center',
+      header: 'Centro de custo',
+      sortKey: 'cost_center_id',
+      size: 180,
+      wrap: true,
+      hideOn: ['sm', 'md'],
+      secondLine: true,
+      secondLineLabel: 'C. Custo',
+      render: (s) =>
+        s.cost_center_id
+          ? joinCodeDesc(s.cost_center?.cost_center_code, s.cost_center?.cost_center_description)
+          : '—',
+    },
+    {
+      key: 'chart_account',
+      header: 'Plano de contas',
+      sortKey: 'chart_account_id',
+      size: 200,
+      wrap: true,
+      hideOn: ['sm', 'md'],
+      secondLine: true,
+      secondLineLabel: 'Plano',
+      render: (s) =>
+        s.chart_account_id
+          ? joinCodeDesc(s.chart_account?.account_code, s.chart_account?.account_description)
+          : '—',
     },
     {
       key: '__actions__',
@@ -539,23 +567,35 @@ export function getChartAccountColumns(onEdit: RowAction<ChartAccount>): ColumnD
     { key: 'account_code', header: 'Código', sortKey: 'account_code', size: 130, render: (c) => c.account_code ?? '—' },
     { key: 'account_description', header: 'Descrição', sortKey: 'account_description', size: 260, wrap: true, render: (c) => c.account_description ?? '—' },
     {
-      key: 'subgroup',
-      header: 'Subgrupo',
-      size: 200,
-      wrap: true,
-      hideOn: ['sm', 'md'],
-      render: (c) => joinCodeDesc(c.subgroup?.subgroup_code, c.subgroup?.subgroup_description),
-    },
-    {
       key: 'cost_center',
       header: 'Centro de custo',
+      // Ordenação SERVER-SIDE alfabética pela descrição do embed via sintaxe do
+      // PostgREST `alias(coluna)` — o alias é o mesmo do SELECT_WITH_EMBEDS (igual ao
+      // /consulta). A ordem casa o texto exibido.
+      sortKey: 'cost_center(cost_center_description)',
       size: 180,
       wrap: true,
       hideOn: ['sm', 'md'],
       render: (c) => (c.cost_center_id ? joinCodeDesc(c.cost_center?.cost_center_code, c.cost_center?.cost_center_description) : '—'),
     },
-    { key: 'account_level', header: 'Nível', sortKey: 'account_level', size: 70, align: 'right', hideOn: ['sm'], render: (c) => String(c.account_level) },
-    { key: 'is_postable', header: 'Lançável', sortKey: 'is_postable', size: 90, align: 'center', render: (c) => (c.is_postable ? '✓' : '—') },
+    {
+      key: 'group',
+      header: 'Grupo',
+      sortKey: 'group(group_description)',
+      size: 180,
+      wrap: true,
+      hideOn: ['sm', 'md'],
+      render: (c) => (c.chart_account_group_id ? joinCodeDesc(c.group?.group_code, c.group?.group_description) : '—'),
+    },
+    {
+      key: 'subgroup',
+      header: 'Sub Grupo',
+      sortKey: 'subgroup(subgroup_description)',
+      size: 200,
+      wrap: true,
+      hideOn: ['sm', 'md'],
+      render: (c) => (c.chart_account_subgroup_id ? joinCodeDesc(c.subgroup?.subgroup_code, c.subgroup?.subgroup_description) : '—'),
+    },
     {
       key: '__actions__',
       header: 'Ações',

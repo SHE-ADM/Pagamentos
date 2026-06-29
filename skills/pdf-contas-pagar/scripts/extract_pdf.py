@@ -3,11 +3,12 @@ extract_pdf.py — Extração de dados financeiros de PDFs para CSV
 Projeto: pagamentos | Skill: pdf-contas-pagar | v1.0.0
 """
 
-import os, re, sys, json, argparse, logging, unicodedata
+import os, re, sys, json, argparse, logging, unicodedata, tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 
 import pdfplumber
+import pypdf
 import pandas as pd
 from dotenv import load_dotenv
 
@@ -35,6 +36,20 @@ CSV_COLUMNS = [
     "payer_name","payer_cnpj",
     "processing_notes","extracted_at",
 ]
+
+# Anexos de IMAGEM lidos via Claude Vision (foto/scan de recibo, comprovante,
+# "Valor do porte" dos Correios etc.). Mapeia a extensao ao media_type aceito pela
+# Anthropic API (bloco type=image). PDF segue pelo bloco type=document.
+_IMAGE_MEDIA_TYPES = {
+    ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".png": "image/png",
+    ".gif": "image/gif", ".webp": "image/webp",
+}
+
+
+def _is_image_file(path) -> bool:
+    """True se o arquivo for uma imagem suportada (pela extensao)."""
+    return Path(path).suffix.lower() in _IMAGE_MEDIA_TYPES
+
 
 # Modelo Claude usado tanto na extracao por texto quanto na visao.
 CLAUDE_MODEL = "claude-sonnet-4-6"
@@ -155,7 +170,8 @@ EXTRACTION_PROMPT = (
     "- due_date: data de vencimento. Labels: 'Vencimento', 'Data de Vencimento', "
     "'Data Vencimento'. NAO confundir com 'Data do Documento' (issue_date) "
     "nem com 'Data do Processamento'. Formato YYYY-MM-DD.\n"
-    "- amount: Valor do Documento (numero decimal com ponto)\n"
+    "- amount: Valor do Documento (numero decimal com ponto). Em recibo/comprovante "
+    "de postagem (Correios), use o 'Valor do porte' / 'Valor total' do recibo.\n"
     "- discount: (-) Desconto / Abatimentos (decimal; 0 se em branco)\n"
     "- other_deductions: (-) Outras deducoes (decimal; 0 se em branco)\n"
     "- fine_interest: (+) Mora / Multa (decimal; 0 se em branco)\n"
@@ -573,30 +589,48 @@ def extract_with_pdfplumber(pdf_path):
     return fix_reversed_lines(full_text.strip()), "pdf_text"
 
 # --- Extração via Claude Vision ---
-def extract_with_vision(pdf_path):
-    """Extrai os campos lendo o PDF diretamente pelo Claude (sem pdftoppm/poppler).
+def _vision_source_block(path: Path):
+    """Monta o bloco de conteudo Vision (base64) conforme o tipo do arquivo e
+    devolve (bloco, extraction_source).
 
-    Envia o PDF como documento base64; o Claude renderiza internamente — cobre
-    PDFs escaneados/imagem e fontes OCR-B ilegíveis pelo pdfplumber, sem depender
-    de binário externo (poppler) instalado no sistema. Mesmo mecanismo já usado
-    em _try_barcode_vision.
+    - Imagem (jpg/png/...): bloco type=image + media_type da imagem → 'image_vision'.
+    - PDF: bloco type=document + application/pdf → 'pdf_vision' (Claude renderiza).
     """
-    import base64, anthropic
+    import base64
+    data = base64.standard_b64encode(path.read_bytes()).decode()
+    suffix = path.suffix.lower()
+    if suffix in _IMAGE_MEDIA_TYPES:
+        block = {"type": "image", "source": {"type": "base64",
+                 "media_type": _IMAGE_MEDIA_TYPES[suffix], "data": data}}
+        return block, "image_vision"
+    block = {"type": "document", "source": {"type": "base64",
+             "media_type": "application/pdf", "data": data}}
+    return block, "pdf_vision"
+
+
+def extract_with_vision(pdf_path):
+    """Extrai os campos lendo o documento diretamente pelo Claude (sem pdftoppm/poppler).
+
+    PDF → enviado como documento base64 (Claude renderiza internamente — cobre
+    PDFs escaneados/imagem e fontes OCR-B ilegíveis pelo pdfplumber). IMAGEM (foto/
+    scan de recibo, ex.: "Valor do porte" dos Correios) → enviada como bloco de
+    imagem. Não depende de binário externo. Retorna (texto, extraction_source).
+    """
+    import anthropic
     api_key = os.getenv("ANTHROPIC_API_KEY")
     if not api_key:
         raise EnvironmentError("ANTHROPIC_API_KEY não definida no .env")
 
-    pdf_b64 = base64.standard_b64encode(pdf_path.read_bytes()).decode()
+    block, src = _vision_source_block(Path(pdf_path))
     client = anthropic.Anthropic(api_key=api_key, timeout=CLAUDE_API_TIMEOUT_SECONDS)
     resp = client.messages.create(
         model=CLAUDE_MODEL, max_tokens=1200, temperature=0,
         messages=[{"role":"user","content":[
-            {"type":"document","source":{"type":"base64",
-             "media_type":"application/pdf","data":pdf_b64}},
+            block,
             {"type":"text","text":EXTRACTION_PROMPT}
         ]}]
     )
-    return resp.content[0].text.strip(), "pdf_vision"
+    return resp.content[0].text.strip(), src
 
 
 # --- Extração de campos via Claude (texto do PDF) ---
@@ -851,7 +885,7 @@ def build_record_regex(pdf_path, raw: str, source: str) -> dict:
 
 # --- Montar registro (dispatcher) ---
 def build_record(pdf_path, raw, source):
-    if source == "pdf_vision":
+    if source in ("pdf_vision", "image_vision"):
         try:
             data = json.loads(_strip_json_fences(raw))
         except json.JSONDecodeError:
@@ -889,8 +923,131 @@ def build_record(pdf_path, raw, source):
     apply_barcode_amount(rec)
     return rec
 
-# --- Processar um PDF ---
-def process_pdf(pdf_path, force_vision=False):
+# --- Falha genérica (registro de erro) ---
+def _failure_record(pdf_path, note: str) -> dict:
+    return {"source_file": pdf_path.name, "document_type": "ERRO",
+            "extraction_source": "falha", "status": "falha",
+            "processing_notes": note, "extracted_at": datetime.now(timezone.utc).isoformat(),
+            **{c: None for c in CSV_COLUMNS if c not in
+               ["source_file", "document_type", "extraction_source",
+                "status", "processing_notes", "extracted_at"]}}
+
+
+# --- Descriptografia de PDF protegido por senha ---
+def _pdf_is_encrypted(pdf_path) -> bool:
+    """True se o PDF exige senha para abrir. Em erro, assume não-cifrado (não bloqueia)."""
+    try:
+        return pypdf.PdfReader(str(pdf_path)).is_encrypted
+    except Exception:
+        return False
+
+
+def _decrypt_pdf(pdf_path, passwords) -> "Path | None":
+    """Tenta abrir o PDF cifrado com cada senha candidata (senha vazia primeiro, depois
+    as fornecidas — ex.: CNPJ[:4]/[:5]/[:6] do pagador). Em sucesso, grava uma cópia
+    DESCRIPTOGRAFADA num arquivo temporário e devolve seu Path. Sem senha que abra →
+    None (o PDF segue ilegível e o caller cai no fallback do corpo). Um PdfReader novo
+    por tentativa evita estado residual de uma senha incorreta anterior."""
+    for pw in ["", *(passwords or [])]:
+        try:
+            reader = pypdf.PdfReader(str(pdf_path))
+            if reader.decrypt(pw):  # > 0 = senha aceita
+                writer = pypdf.PdfWriter()
+                for page in reader.pages:
+                    writer.add_page(page)
+                fd, tmp = tempfile.mkstemp(suffix=".pdf", prefix="dec_")
+                with os.fdopen(fd, "wb") as fh:
+                    writer.write(fh)
+                log.info(f"  → PDF descriptografado (senha de {len(pw)} dígitos)" if pw
+                         else "  → PDF aberto sem senha (só restrições de dono)")
+                return Path(tmp)
+        except Exception:
+            continue
+    return None
+
+
+# --- Carnê: páginas que contêm boleto (têm linha digitável) ---
+def _boleto_pages(pdf_path) -> "list[int]":
+    """Índices 0-based das páginas com linha digitável de boleto. Em carnês (vários
+    boletos, uma página cada) emitimos um registro por boleto."""
+    pages = []
+    try:
+        with pdfplumber.open(str(pdf_path)) as pdf:
+            for i, p in enumerate(pdf.pages):
+                if extract_linha_digitavel(p.extract_text() or ""):
+                    pages.append(i)
+    except Exception:
+        pass
+    return pages
+
+
+def _write_single_page(pdf_path, index) -> Path:
+    """Grava a página `index` num PDF temporário de uma página (para extrair 1 boleto)."""
+    reader = pypdf.PdfReader(str(pdf_path))
+    writer = pypdf.PdfWriter()
+    writer.add_page(reader.pages[index])
+    fd, tmp = tempfile.mkstemp(suffix=".pdf", prefix=f"p{index + 1}_")
+    with os.fdopen(fd, "wb") as fh:
+        writer.write(fh)
+    return Path(tmp)
+
+
+# --- Processar um PDF (orquestrador) ---
+def process_pdf(pdf_path, force_vision=False, pdf_passwords=None):
+    """Processa um PDF → LISTA de registros (1+).
+
+    - PDF protegido por senha: tenta as senhas candidatas (CNPJ[:4]/[:5]/[:6] do pagador,
+      threaded pelo read_emails) e descriptografa; esgotadas as tentativas, devolve um
+      registro de falha (o read_emails cai no fallback do corpo).
+    - Carnê (vários boletos, N páginas com linha digitável): emite UM registro por
+      boleto (o downstream já cria uma conta por linha do CSV).
+    - Demais PDFs: um único registro.
+    """
+    # Anexo de IMAGEM (jpg/png/...): vai direto ao Claude Vision. Não passa por
+    # pdfplumber/descriptografia/carnê (todos abrem o arquivo como PDF e quebrariam).
+    if _is_image_file(pdf_path):
+        rec = _extract_image(pdf_path)
+        rec["source_file"] = pdf_path.name
+        return [rec]
+
+    tmps: list[Path] = []
+    work = pdf_path
+    try:
+        if _pdf_is_encrypted(pdf_path):
+            dec = _decrypt_pdf(pdf_path, pdf_passwords)
+            if dec is None:
+                log.warning(f"  ✗ {pdf_path.name}: protegido por senha — nenhuma senha candidata abriu")
+                return [_failure_record(pdf_path, "PDF protegido por senha — nenhuma senha candidata (CNPJ) abriu")]
+            tmps.append(dec)
+            work = dec
+
+        boleto_pages = _boleto_pages(work)
+        if len(boleto_pages) >= 2:
+            log.info(f"  → carnê com {len(boleto_pages)} boletos — um registro por boleto")
+            recs = []
+            for idx in boleto_pages:
+                page_pdf = _write_single_page(work, idx)
+                tmps.append(page_pdf)
+                rec = _extract_single(page_pdf, force_vision=force_vision)
+                rec["source_file"] = pdf_path.name  # preserva o nome do arquivo original
+                recs.append(rec)
+                if rec.get("extraction_source") == "erro_api":
+                    break  # circuit breaker: não gasta chamadas nos demais boletos
+            return recs
+
+        rec = _extract_single(work, force_vision=force_vision)
+        rec["source_file"] = pdf_path.name
+        return [rec]
+    finally:
+        for t in tmps:
+            try:
+                t.unlink()
+            except Exception:
+                pass
+
+
+# --- Extrair UM documento de um PDF (uma página/boleto) ---
+def _extract_single(pdf_path, force_vision=False):
     log.info(f"Processando: {pdf_path.name}")
     try:
         if force_vision or is_scanned_pdf(pdf_path):
@@ -926,15 +1083,30 @@ def process_pdf(pdf_path, force_vision=False):
             log.error(f"  ✗ API Anthropic indisponível ({pdf_path.name}): {e}")
             return _api_error_record(pdf_path, str(e))
         log.error(f"  ✗ {pdf_path.name}: {e}")
-        return {"source_file": pdf_path.name, "document_type": "ERRO",
-                "extraction_source": "falha", "status": "falha",
-                "processing_notes": str(e), "extracted_at": datetime.now(timezone.utc).isoformat(),
-                **{c: None for c in CSV_COLUMNS if c not in
-                   ["source_file","document_type","extraction_source",
-                    "status","processing_notes","extracted_at"]}}
+        return _failure_record(pdf_path, str(e))
+
+# --- Extrair UM documento de uma IMAGEM (foto/scan de recibo) ---
+def _extract_image(img_path):
+    """Processa um anexo de imagem via Claude Vision → registro único.
+
+    Mesma classificação de falha do caminho de PDF: erro de API (crédito/auth/
+    rate-limit) vira registro erro_api (circuit breaker); demais falhas viram
+    registro de falha (o read_emails cai no fallback do corpo).
+    """
+    log.info(f"Processando imagem: {img_path.name}")
+    try:
+        raw, src = extract_with_vision(img_path)
+        return build_record(img_path, raw, src)
+    except Exception as e:
+        if _is_api_unavailable(e):
+            log.error(f"  ✗ API Anthropic indisponível ({img_path.name}): {e}")
+            return _api_error_record(img_path, str(e))
+        log.error(f"  ✗ {img_path.name}: {e}")
+        return _failure_record(img_path, str(e))
+
 
 # --- Núcleo reutilizável (CLI + in-process) ---
-def extract_to_csv(input_path, output_dir, *, batch=False, force_vision=False):
+def extract_to_csv(input_path, output_dir, *, batch=False, force_vision=False, pdf_passwords=None):
     """Extrai PDF(s) e grava o CSV de registros. Retorna o Path do CSV gerado
     (registros válidos / erro_api) ou None quando nada foi extraído (só falhas).
 
@@ -948,21 +1120,31 @@ def extract_to_csv(input_path, output_dir, *, batch=False, force_vision=False):
     out = Path(output_dir)
     out.mkdir(parents=True, exist_ok=True)
 
-    pdfs = sorted(inp.glob("*.pdf")) if (batch or inp.is_dir()) else [inp]
-    if not pdfs:
-        raise FileNotFoundError(f"Nenhum PDF em {inp}")
+    if batch or inp.is_dir():
+        # Lote/diretório: PDFs + imagens suportadas (jpg/png/...).
+        files = sorted(p for p in inp.glob("*")
+                       if p.suffix.lower() == ".pdf" or _is_image_file(p))
+    else:
+        files = [inp]
+    if not files:
+        raise FileNotFoundError(f"Nenhum arquivo (PDF/imagem) em {inp}")
 
-    log.info(f"Total: {len(pdfs)} arquivo(s)")
+    log.info(f"Total: {len(files)} arquivo(s)")
     records, errors = [], []
 
-    for pdf in pdfs:
-        rec = process_pdf(pdf, force_vision=force_vision)
-        (errors if rec.get("extraction_source") == "falha" else records).append(rec)
-        # Circuit breaker: API indisponivel interrompe o lote com seguranca —
-        # evita gastar chamadas e gravar registros incompletos para os demais PDFs.
-        if rec.get("extraction_source") == "erro_api":
-            log.error("API Anthropic indisponível — lote interrompido com segurança. "
-                      "Recarregue os créditos e rode novamente.")
+    api_down = False
+    for src_file in files:
+        # process_pdf devolve uma LISTA (carnê → 1 registro por boleto; imagem/demais → 1).
+        for rec in process_pdf(src_file, force_vision=force_vision, pdf_passwords=pdf_passwords):
+            (errors if rec.get("extraction_source") == "falha" else records).append(rec)
+            # Circuit breaker: API indisponivel interrompe o lote com seguranca —
+            # evita gastar chamadas e gravar registros incompletos para os demais PDFs.
+            if rec.get("extraction_source") == "erro_api":
+                log.error("API Anthropic indisponível — lote interrompido com segurança. "
+                          "Recarregue os créditos e rode novamente.")
+                api_down = True
+                break
+        if api_down:
             break
 
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")

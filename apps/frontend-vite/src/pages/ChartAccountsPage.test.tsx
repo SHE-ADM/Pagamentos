@@ -10,6 +10,7 @@ vi.mock('../services/chartAccounts', () => ({
 }));
 vi.mock('../services/lookups', () => ({
   listCostCenters: vi.fn().mockResolvedValue([]),
+  listChartAccountGroups: vi.fn().mockResolvedValue([]),
   listChartAccountSubgroups: vi.fn().mockResolvedValue([]),
 }));
 
@@ -22,6 +23,7 @@ const sample: ChartAccount = {
   account_description: 'Clientes',
   cost_center_id: 0,
   chart_account_subgroup_id: 0,
+  chart_account_group_id: 0,
   account_level: 2,
   is_postable: true,
 };

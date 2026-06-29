@@ -14,8 +14,11 @@ import {
 } from '@sheild/shared/schemas';
 import type { ZodError } from 'zod';
 import { getSupabaseAdmin } from './supabase-admin';
+import { resolveSort, type SortOrder } from './sort';
 
 const TABLE = 'financial_chart_of_account_subgroup';
+// Colunas ordenáveis (própria tabela) — o grupo é embed de JOIN, não ordenável aqui.
+const SORTABLE_COLUMNS = ['subgroup_code', 'subgroup_description'] as const;
 const REFERENCING_TABLES = ['financial_chart_of_account'] as const;
 const REF_COLUMN = 'chart_account_subgroup_id';
 const SENTINEL_ID = 0;
@@ -42,6 +45,8 @@ export interface ChartAccountSubgroupListParams {
   page?: number;
   limit?: number;
   search?: string;
+  sort?: string;
+  order?: SortOrder;
 }
 
 export interface ChartAccountSubgroupListResult {
@@ -66,7 +71,7 @@ function mapWriteError(error: { code?: string; message: string }): ChartAccountS
 }
 
 const repository = {
-  async findAll(params: { from: number; to: number; search?: string }) {
+  async findAll(params: { from: number; to: number; search?: string; sort?: string; order?: SortOrder }) {
     let query = getSupabaseAdmin()
       .from(TABLE)
       .select(SELECT_WITH_GROUP, { count: 'exact' })
@@ -77,7 +82,12 @@ const repository = {
       query = query.or(`subgroup_code.ilike.%${term}%,subgroup_description.ilike.%${term}%`);
     }
 
-    return query.order('subgroup_code', { ascending: true, nullsFirst: false }).range(params.from, params.to);
+    const sorted = resolveSort(params.sort, params.order, SORTABLE_COLUMNS);
+    const ordered = sorted
+      ? query.order(sorted.column, { ascending: sorted.ascending, nullsFirst: false })
+      : query.order('subgroup_code', { ascending: true, nullsFirst: false });
+
+    return ordered.range(params.from, params.to);
   },
 
   findById(id: number) {
@@ -122,6 +132,8 @@ export const chartAccountSubgroupService = {
       from,
       to: from + limit - 1,
       search: params.search?.trim() || undefined,
+      sort: params.sort,
+      order: params.order,
     });
     if (error) throw new ChartAccountSubgroupServiceError(error.message, 500);
     return { data: (data ?? []) as unknown as ChartAccountSubgroup[], total: count ?? 0, page, limit };

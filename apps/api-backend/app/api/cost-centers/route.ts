@@ -1,6 +1,7 @@
 import type { NextRequest } from 'next/server';
 import { ok, failFromError } from '@/lib/response';
 import { requireAuth } from '@/lib/auth';
+import { parseSortParams } from '@/lib/sort';
 import { costCenterService as costCenterLookup } from '@/lib/lookups';
 import { costCenterService as costCenterCrud } from '@/lib/cost-centers';
 
@@ -23,6 +24,7 @@ async function listPaginated(sp: URLSearchParams): Promise<Response> {
       page: Number.isFinite(page) ? page : 1,
       limit: Number.isFinite(limit) ? limit : 20,
       search: sp.get('search') ?? undefined,
+      ...parseSortParams(sp),
     });
     return ok(result.data, { total: result.total, page: result.page, limit: result.limit });
   } catch (e) {

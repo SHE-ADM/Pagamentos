@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { parsePaginationTotal } from './supabase';
+import { parsePaginationTotal, parseBrlAmount } from './supabase';
 
 describe('parsePaginationTotal', () => {
   it('usa a contagem exata do Content-Range (count=exact)', () => {
@@ -44,5 +44,34 @@ describe('parsePaginationTotal', () => {
       total: 80,
       totalIsEstimate: true,
     });
+  });
+});
+
+describe('parseBrlAmount', () => {
+  it('interpreta valor BR com vírgula decimal', () => {
+    expect(parseBrlAmount('463,21')).toBe('463.21');
+  });
+
+  it('interpreta valor BR com separador de milhar', () => {
+    expect(parseBrlAmount('44.406,08')).toBe('44406.08');
+    expect(parseBrlAmount('1.481.187,28')).toBe('1481187.28');
+  });
+
+  it('interpreta número inteiro simples', () => {
+    expect(parseBrlAmount('391')).toBe('391');
+  });
+
+  it('interpreta ponto como separador decimal', () => {
+    expect(parseBrlAmount('463.21')).toBe('463.21');
+  });
+
+  it('ignora espaços ao redor', () => {
+    expect(parseBrlAmount('  463,21  ')).toBe('463.21');
+  });
+
+  it('retorna null para termo não-numérico', () => {
+    expect(parseBrlAmount('ACME')).toBeNull();
+    expect(parseBrlAmount('00019/112')).toBeNull();
+    expect(parseBrlAmount('')).toBeNull();
   });
 });

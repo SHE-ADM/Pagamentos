@@ -78,9 +78,31 @@ class LabeledAmountWithoutRSTest(unittest.TestCase):
         # Havendo "R$", ele vence (o fallback sem R$ nem é alcançado).
         self.assertEqual(read_emails._extract_body_amount("Valor 50,00\nPague R$ 80,00"), 80.00)
 
+    def test_valor_de_n_com_conectivo(self):
+        # Caso real (reembolso de postagem): "o valor de 172,39 ref .a despesa".
+        # O conectivo "de" entre o rótulo e o número não pode impedir a captura.
+        self.assertEqual(
+            read_emails._extract_body_amount(
+                "deposita o valor de 172,39 ref .a despesa de postagem"), 172.39)
+
+    def test_conectivo_colado_ao_numero(self):
+        # O conectivo tolerado fica IMEDIATAMENTE antes do número ("total de 1.250,00").
+        self.assertEqual(read_emails._extract_body_amount("Total de 1.250,00"), 1250.00)
+
+    def test_substantivo_entre_rotulo_e_numero_nao_captura(self):
+        # Conservador: um substantivo entre o rótulo e o número ("Total da nota
+        # 1.250,00", sem R$) NÃO é capturado — evita falso positivo. O caminho
+        # primário com "R$" cobre o caso comum ("valor da nota R$ 1.250,00").
+        self.assertIsNone(read_emails._extract_body_amount("Total da nota 1.250,00"))
+
     # --- Guardas (não pode capturar número solto / sem centavos / sem rótulo) ---
     def test_sem_centavos_nao_captura(self):
         self.assertIsNone(read_emails._extract_body_amount("Valor 50"))
+
+    def test_valor_seguido_de_palavra_nao_captura(self):
+        # "valor desconto" não pode casar o conectivo "de" dentro de "desconto"
+        # (o número não segue o conectivo) — sem centavos rotulados, é None.
+        self.assertIsNone(read_emails._extract_body_amount("valor desconto aplicado"))
 
     def test_numero_sem_rotulo_nao_captura(self):
         self.assertIsNone(read_emails._extract_body_amount("foram 50,00 reais no caixa"))

@@ -1,6 +1,24 @@
 import { describe, it, expect, vi } from 'vitest';
 import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
+
+// Stubs dos lookups (react-select async) — evitam o react-select + rede no teste.
+// Um botão por select dispara onChange com um id fixo, simulando a seleção.
+vi.mock('../molecules/CostCenterSelect', () => ({
+  default: ({ label, onChange }: { label: string; onChange: (id: number | null) => void }) => (
+    <button type="button" aria-label={label} onClick={() => onChange(5)}>
+      {label}
+    </button>
+  ),
+}));
+vi.mock('../molecules/ChartAccountSelect', () => ({
+  default: ({ label, onChange }: { label: string; onChange: (id: number | null) => void }) => (
+    <button type="button" aria-label={label} onClick={() => onChange(9)}>
+      {label}
+    </button>
+  ),
+}));
+
 import SupplierForm from './SupplierForm';
 
 function setup(mode: 'create' | 'edit' = 'create') {
@@ -16,6 +34,8 @@ describe('SupplierForm', () => {
     expect(screen.getByLabelText('Razão social')).toBeInTheDocument();
     expect(screen.getByLabelText('Nome fantasia')).toBeInTheDocument();
     expect(screen.getByLabelText('CNPJ (só dígitos)')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Centro de custo' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Plano de contas' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Cadastrar' })).toBeInTheDocument();
   });
 
@@ -26,11 +46,24 @@ describe('SupplierForm', () => {
     expect(onSubmit).not.toHaveBeenCalled();
   });
 
-  it('submete com um identificador preenchido', async () => {
+  it('submete com um identificador preenchido (classificação 0 quando não informada)', async () => {
     const { onSubmit } = setup();
     await userEvent.type(screen.getByLabelText('Nome fantasia'), 'ACME');
     await userEvent.click(screen.getByRole('button', { name: 'Cadastrar' }));
-    await waitFor(() => expect(onSubmit).toHaveBeenCalledWith({ trade_name: 'ACME' }));
+    await waitFor(() =>
+      expect(onSubmit).toHaveBeenCalledWith({ trade_name: 'ACME', cost_center_id: 0, chart_account_id: 0 }),
+    );
+  });
+
+  it('envia o centro de custo e o plano de contas selecionados', async () => {
+    const { onSubmit } = setup();
+    await userEvent.type(screen.getByLabelText('Nome fantasia'), 'ACME');
+    await userEvent.click(screen.getByRole('button', { name: 'Centro de custo' }));
+    await userEvent.click(screen.getByRole('button', { name: 'Plano de contas' }));
+    await userEvent.click(screen.getByRole('button', { name: 'Cadastrar' }));
+    await waitFor(() =>
+      expect(onSubmit).toHaveBeenCalledWith({ trade_name: 'ACME', cost_center_id: 5, chart_account_id: 9 }),
+    );
   });
 
   it('valida o formato de e-mail', async () => {

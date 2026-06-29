@@ -11,11 +11,15 @@ import { RefreshCw, Plus, type LucideIcon } from 'lucide-react';
 import type { ColumnDef } from '../../hooks/useGridColumns';
 import DataGrid from './DataGrid';
 import Alert from '../atoms/Alert';
+import SearchInput from '../molecules/SearchInput';
 import { getErrorMessage } from '../../lib/getErrorMessage';
 
 const SEARCH_DEBOUNCE_MS = 350;
 const NOTICE_DISMISS_MS = 5000;
 const DEFAULT_PAGE_SIZE = 20;
+// Altura máxima do corpo do grid — habilita o cabeçalho fixo (viewport rolável),
+// padronizando com o grid de /consulta. Vh para acompanhar a altura da janela.
+const GRID_MAX_BODY_HEIGHT = '70vh';
 
 interface CrudFormRenderArgs<T, TInput> {
   mode: 'create' | 'edit';
@@ -30,9 +34,17 @@ interface CrudTablePageProps<T, TInput> {
   title: string;
   subtitle: string;
   icon: LucideIcon;
+  /** Identificador estável do grid — chave das preferências de layout (localStorage). */
+  gridId: string;
   rowKey: (row: T) => string;
   columns: (onEdit: (r: T) => void) => ColumnDef<T>[];
-  list: (params: { page: number; limit: number; search?: string }) => Promise<{ data: T[]; total: number }>;
+  list: (params: {
+    page: number;
+    limit: number;
+    search?: string;
+    sort?: string;
+    order?: 'asc' | 'desc';
+  }) => Promise<{ data: T[]; total: number }>;
   onCreate: (data: TInput) => Promise<unknown>;
   onUpdate: (row: T, data: TInput) => Promise<unknown>;
   renderForm: (args: CrudFormRenderArgs<T, TInput>) => ReactNode;
@@ -63,6 +75,9 @@ export default function CrudTablePage<T, TInput>(props: Readonly<CrudTablePagePr
   const [searchInput, setSearchInput] = useState('');
   const [search, setSearch] = useState('');
 
+  // Ordenação server-side: col/dir aplicados na requisição. Ciclo asc→desc→nenhum.
+  const [sort, setSort] = useState<{ col: string | null; dir: 'asc' | 'desc' | null }>({ col: null, dir: null });
+
   const [form, setForm] = useState<FormState<T>>(null);
   const [formError, setFormError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
@@ -73,7 +88,13 @@ export default function CrudTablePage<T, TInput>(props: Readonly<CrudTablePagePr
     setLoading(true);
     setError(null);
     try {
-      const result = await props.list({ page, limit: pageSize, search: search || undefined });
+      const result = await props.list({
+        page,
+        limit: pageSize,
+        search: search || undefined,
+        sort: sort.col ?? undefined,
+        order: sort.dir ?? undefined,
+      });
       setRows(result.data);
       setTotal(result.total);
     } catch (e) {
@@ -81,7 +102,7 @@ export default function CrudTablePage<T, TInput>(props: Readonly<CrudTablePagePr
     } finally {
       setLoading(false);
     }
-  }, [page, search, pageSize, props]);
+  }, [page, search, sort, pageSize, props]);
 
   useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect
@@ -113,6 +134,16 @@ export default function CrudTablePage<T, TInput>(props: Readonly<CrudTablePagePr
     const t = setTimeout(() => setNotice(null), NOTICE_DISMISS_MS);
     return () => clearTimeout(t);
   }, [notice]);
+
+  // Ciclo de ordenação: nenhuma → asc → desc → nenhuma. Reseta para a 1ª página.
+  const handleSort = (col: string) => {
+    setSort((prev) => {
+      if (prev.col !== col) return { col, dir: 'asc' };
+      if (prev.dir === 'asc') return { col, dir: 'desc' };
+      return { col: null, dir: null };
+    });
+    setPage(1);
+  };
 
   const openCreate = () => {
     setFormError(null);
@@ -179,14 +210,12 @@ export default function CrudTablePage<T, TInput>(props: Readonly<CrudTablePagePr
         )}
 
         <div className="flex gap-2 mb-4 flex-wrap">
-          <input
+          <SearchInput
             id={props.searchId}
-            name={props.searchId}
-            aria-label={props.searchAriaLabel}
-            className="input w-72"
+            ariaLabel={props.searchAriaLabel}
             placeholder={props.searchPlaceholder}
             value={searchInput}
-            onChange={(e) => setSearchInput(e.target.value)}
+            onChange={setSearchInput}
           />
         </div>
 
@@ -196,9 +225,15 @@ export default function CrudTablePage<T, TInput>(props: Readonly<CrudTablePagePr
             rows={rows}
             rowKey={props.rowKey}
             onRowClick={() => undefined}
-            sortCol={null}
-            sortDir={null}
-            onSort={() => undefined}
+            sortCol={sort.col}
+            sortDir={sort.dir}
+            onSort={handleSort}
+            // Padrão do grid de /consulta: gestão de colunas (mostrar/ocultar, fixar,
+            // reordenar, redimensionar, restaurar), densidade compacta e cabeçalho fixo.
+            gridId={props.gridId}
+            enableColumnManagement
+            defaultDensity="compact"
+            maxBodyHeight={GRID_MAX_BODY_HEIGHT}
             loading={loading}
             ariaLabel={props.gridAriaLabel}
             emptyMessage={props.emptyMessage}

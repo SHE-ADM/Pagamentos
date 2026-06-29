@@ -13,6 +13,7 @@ import { getCostCenterColumns } from '../hooks/useGridColumns';
 import { getErrorMessage } from '../lib/getErrorMessage';
 import DataGrid from '../components/organisms/DataGrid';
 import CostCenterForm from '../components/organisms/CostCenterForm';
+import SearchInput from '../components/molecules/SearchInput';
 import Alert from '../components/atoms/Alert';
 
 const PAGE_SIZE = 20;
@@ -33,6 +34,9 @@ export default function CostCentersPage() {
   const [searchInput, setSearchInput] = useState('');
   const [search, setSearch] = useState('');
 
+  // Ordenação server-side (ciclo asc→desc→nenhum).
+  const [sort, setSort] = useState<{ col: string | null; dir: 'asc' | 'desc' | null }>({ col: null, dir: null });
+
   // Modal de criação/edição
   const [form, setForm] = useState<FormState>(null);
   const [formError, setFormError] = useState<string | null>(null);
@@ -44,7 +48,13 @@ export default function CostCentersPage() {
     setLoading(true);
     setError(null);
     try {
-      const result = await listCostCentersPage({ page, limit: PAGE_SIZE, search: search || undefined });
+      const result = await listCostCentersPage({
+        page,
+        limit: PAGE_SIZE,
+        search: search || undefined,
+        sort: sort.col ?? undefined,
+        order: sort.dir ?? undefined,
+      });
       setRows(result.data);
       setTotal(result.total);
     } catch (e) {
@@ -52,7 +62,7 @@ export default function CostCentersPage() {
     } finally {
       setLoading(false);
     }
-  }, [page, search]);
+  }, [page, search, sort]);
 
   useEffect(() => {
     // fetch-on-change (seta loading no início) — o effect é a ferramenta correta.
@@ -88,6 +98,16 @@ export default function CostCentersPage() {
     const t = setTimeout(() => setNotice(null), NOTICE_DISMISS_MS);
     return () => clearTimeout(t);
   }, [notice]);
+
+  // Ciclo de ordenação: nenhuma → asc → desc → nenhuma. Reseta para a 1ª página.
+  const handleSort = (col: string) => {
+    setSort((prev) => {
+      if (prev.col !== col) return { col, dir: 'asc' };
+      if (prev.dir === 'asc') return { col, dir: 'desc' };
+      return { col: null, dir: null };
+    });
+    setPage(1);
+  };
 
   const openCreate = () => {
     setFormError(null);
@@ -154,14 +174,12 @@ export default function CostCentersPage() {
         )}
 
         <div className="flex gap-2 mb-4 flex-wrap">
-          <input
+          <SearchInput
             id="cost-centers-search"
-            name="cost-centers-search"
-            aria-label="Buscar centro de custo por código ou descrição"
-            className="input w-72"
+            ariaLabel="Buscar centro de custo por código ou descrição"
             placeholder="Buscar por código ou descrição…"
             value={searchInput}
-            onChange={(e) => setSearchInput(e.target.value)}
+            onChange={setSearchInput}
           />
         </div>
 
@@ -172,9 +190,14 @@ export default function CostCentersPage() {
             rowKey={(c) => String(c.cost_center_id)}
             // Edição abre SÓ pelo botão de lápis (coluna "Ações"); clicar na linha não abre.
             onRowClick={() => undefined}
-            sortCol={null}
-            sortDir={null}
-            onSort={() => undefined}
+            sortCol={sort.col}
+            sortDir={sort.dir}
+            onSort={handleSort}
+            // Padrão do grid de /consulta: gestão de colunas, densidade compacta e cabeçalho fixo.
+            gridId="tabela-centros-de-custo"
+            enableColumnManagement
+            defaultDensity="compact"
+            maxBodyHeight="70vh"
             loading={loading}
             ariaLabel="Centros de custo cadastrados"
             emptyMessage="Nenhum centro de custo encontrado"

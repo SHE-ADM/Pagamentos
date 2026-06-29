@@ -30,11 +30,11 @@ describe('CobrancaEnvios — filtros de data', () => {
     expect(screen.getByLabelText('Vencimento até')).toBeInTheDocument();
   });
 
-  it('ordena por vencimento descendente por padrão', async () => {
+  it('ordena por data de envio descendente por padrão', async () => {
     render(<CobrancaEnvios />);
     await waitFor(() =>
       expect(fetchEnviosLog).toHaveBeenLastCalledWith(
-        expect.objectContaining({ sortCol: 'due_date', sortDir: 'desc' }),
+        expect.objectContaining({ sortCol: 'sent_at', sortDir: 'desc' }),
       ),
     );
   });

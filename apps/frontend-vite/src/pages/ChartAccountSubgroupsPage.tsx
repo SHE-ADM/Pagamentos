@@ -41,6 +41,7 @@ export default function ChartAccountSubgroupsPage() {
       title="Sub grupos de plano de contas"
       subtitle="Tabelas"
       icon={ListTree}
+      gridId="tabela-subgrupos-plano-de-contas"
       rowKey={(s) => String(s.chart_account_subgroup_id)}
       columns={getChartAccountSubgroupColumns}
       list={listChartAccountSubgroupsPage}

@@ -4,6 +4,7 @@ import userEvent from '@testing-library/user-event';
 import ChartAccountForm from './ChartAccountForm';
 
 const costCenterOptions = [{ value: 1, label: 'ADM — Administrativo' }];
+const groupOptions = [{ value: 1, label: '1 — Ativo' }];
 const subgroupOptions = [{ value: 1, label: '1.1 — Ativo Circulante' }];
 
 function setup() {
@@ -12,6 +13,7 @@ function setup() {
     <ChartAccountForm
       mode="create"
       costCenterOptions={costCenterOptions}
+      groupOptions={groupOptions}
       subgroupOptions={subgroupOptions}
       onSubmit={onSubmit}
       onCancel={vi.fn()}
@@ -25,6 +27,7 @@ describe('ChartAccountForm', () => {
     setup();
     expect(screen.getByLabelText('Código')).toBeInTheDocument();
     expect(screen.getByLabelText('Centro de custo')).toBeInTheDocument();
+    expect(screen.getByLabelText('Grupo')).toBeInTheDocument();
     expect(screen.getByLabelText('Subgrupo')).toBeInTheDocument();
     expect(screen.getByLabelText('Lançável (postável)')).toBeInTheDocument();
   });
@@ -41,6 +44,7 @@ describe('ChartAccountForm', () => {
         account_level: 2,
         is_postable: true,
         cost_center_id: 0,
+        chart_account_group_id: 0,
         chart_account_subgroup_id: 0,
       }),
     );

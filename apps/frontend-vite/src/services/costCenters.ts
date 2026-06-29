@@ -47,15 +47,23 @@ interface CostCenterListParams {
   page?: number;
   limit?: number;
   search?: string;
+  sort?: string;
+  order?: 'asc' | 'desc';
 }
 
 export async function listCostCentersPage({
   page = 1,
   limit = 20,
   search,
+  sort,
+  order,
 }: CostCenterListParams = {}): Promise<CostCenterListResult> {
   const qs = new URLSearchParams({ page: String(page), limit: String(limit) });
   if (search) qs.set('search', search);
+  if (sort) {
+    qs.set('sort', sort);
+    if (order) qs.set('order', order);
+  }
   const body = await call<CostCenter[]>(`/cost-centers?${qs.toString()}`);
   return {
     data: body.data ?? [],

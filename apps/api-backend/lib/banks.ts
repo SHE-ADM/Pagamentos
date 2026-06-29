@@ -14,8 +14,10 @@ import {
 } from '@sheild/shared/schemas';
 import type { ZodError } from 'zod';
 import { getSupabaseAdmin } from './supabase-admin';
+import { resolveSort, type SortOrder } from './sort';
 
 const TABLE = 'financial_bank';
+const SORTABLE_COLUMNS = ['bank_code', 'bank_name'] as const;
 const REFERENCING_TABLES = ['financial_account'] as const;
 const REF_COLUMN = 'bank_id';
 const SENTINEL_ID = 0;
@@ -40,6 +42,8 @@ export interface BankListParams {
   page?: number;
   limit?: number;
   search?: string;
+  sort?: string;
+  order?: SortOrder;
 }
 
 export interface BankListResult {
@@ -58,7 +62,7 @@ function sanitizeTerm(term: string): string {
 }
 
 const repository = {
-  async findAll(params: { from: number; to: number; search?: string }) {
+  async findAll(params: { from: number; to: number; search?: string; sort?: string; order?: SortOrder }) {
     let query = getSupabaseAdmin().from(TABLE).select(SELECT_COLS, { count: 'exact' }).neq('bank_id', SENTINEL_ID);
 
     if (params.search) {
@@ -66,7 +70,12 @@ const repository = {
       query = query.or(`bank_code.ilike.%${term}%,bank_name.ilike.%${term}%`);
     }
 
-    return query.order('bank_code', { ascending: true, nullsFirst: false }).range(params.from, params.to);
+    const sorted = resolveSort(params.sort, params.order, SORTABLE_COLUMNS);
+    const ordered = sorted
+      ? query.order(sorted.column, { ascending: sorted.ascending, nullsFirst: false })
+      : query.order('bank_code', { ascending: true, nullsFirst: false });
+
+    return ordered.range(params.from, params.to);
   },
 
   findById(id: number) {
@@ -111,6 +120,8 @@ export const bankService = {
       from,
       to: from + limit - 1,
       search: params.search?.trim() || undefined,
+      sort: params.sort,
+      order: params.order,
     });
     if (error) throw new BankServiceError(error.message, 500);
     return { data: (data ?? []) as Bank[], total: count ?? 0, page, limit };

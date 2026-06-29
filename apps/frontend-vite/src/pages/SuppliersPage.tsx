@@ -6,11 +6,12 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { RefreshCw, Plus, Building2 } from 'lucide-react';
 import type { Supplier, SupplierCreateInput } from '@sheild/shared';
-import { listSuppliers, createSupplier, updateSupplier } from '../services/suppliers';
+import { listSuppliers, createSupplier, updateSupplier, getSupplier } from '../services/suppliers';
 import { getSupplierColumns } from '../hooks/useGridColumns';
 import { getErrorMessage } from '../lib/getErrorMessage';
 import DataGrid from '../components/organisms/DataGrid';
 import SupplierForm from '../components/organisms/SupplierForm';
+import SearchInput from '../components/molecules/SearchInput';
 import Alert from '../components/atoms/Alert';
 
 const PAGE_SIZE = 20;
@@ -31,6 +32,9 @@ export default function SuppliersPage() {
   const [searchInput, setSearchInput] = useState('');
   const [search, setSearch] = useState('');
 
+  // Ordenação server-side (ciclo asc→desc→nenhum).
+  const [sort, setSort] = useState<{ col: string | null; dir: 'asc' | 'desc' | null }>({ col: null, dir: null });
+
   // Modal de criação/edição
   const [form, setForm] = useState<FormState>(null);
   const [formError, setFormError] = useState<string | null>(null);
@@ -42,7 +46,13 @@ export default function SuppliersPage() {
     setLoading(true);
     setError(null);
     try {
-      const result = await listSuppliers({ page, limit: PAGE_SIZE, search: search || undefined });
+      const result = await listSuppliers({
+        page,
+        limit: PAGE_SIZE,
+        search: search || undefined,
+        sort: sort.col ?? undefined,
+        order: sort.dir ?? undefined,
+      });
       setRows(result.data);
       setTotal(result.total);
     } catch (e) {
@@ -50,7 +60,7 @@ export default function SuppliersPage() {
     } finally {
       setLoading(false);
     }
-  }, [page, search]);
+  }, [page, search, sort]);
 
   useEffect(() => {
     // fetch-on-change (seta loading no início) — o effect é a ferramenta correta.
@@ -87,13 +97,34 @@ export default function SuppliersPage() {
     return () => clearTimeout(t);
   }, [notice]);
 
+  // Ciclo de ordenação: nenhuma → asc → desc → nenhuma. Reseta para a 1ª página.
+  const handleSort = (col: string) => {
+    setSort((prev) => {
+      if (prev.col !== col) return { col, dir: 'asc' };
+      if (prev.dir === 'asc') return { col, dir: 'desc' };
+      return { col: null, dir: null };
+    });
+    setPage(1);
+  };
+
   const openCreate = () => {
     setFormError(null);
     setForm({ mode: 'create' });
   };
+  // Síncrono (assina SupplierRowAction = (s) => void); o fetch dos embeds é voided.
   const openEdit = (supplier: Supplier) => {
     setFormError(null);
-    setForm({ mode: 'edit', supplier });
+    // A lista (GET /suppliers) traz só os ids da classificação; o GET /suppliers/:sk
+    // traz os embeds (cost_center/chart_account) para rotular os selects. Em falha,
+    // abre com a linha da lista (selects caem no fallback #id).
+    void (async () => {
+      try {
+        const full = await getSupplier(supplier.sk_supplier);
+        setForm({ mode: 'edit', supplier: full });
+      } catch {
+        setForm({ mode: 'edit', supplier });
+      }
+    })();
   };
   const closeForm = () => setForm(null);
 
@@ -152,14 +183,12 @@ export default function SuppliersPage() {
         )}
 
         <div className="flex gap-2 mb-4 flex-wrap">
-          <input
+          <SearchInput
             id="suppliers-search"
-            name="suppliers-search"
-            aria-label="Buscar fornecedor por nome, CNPJ, CPF ou e-mail"
-            className="input w-72"
+            ariaLabel="Buscar fornecedor por nome, CNPJ, CPF ou e-mail"
             placeholder="Buscar por nome, CNPJ, CPF ou e-mail…"
             value={searchInput}
-            onChange={(e) => setSearchInput(e.target.value)}
+            onChange={setSearchInput}
           />
         </div>
 
@@ -170,9 +199,14 @@ export default function SuppliersPage() {
             rowKey={(s) => String(s.sk_supplier)}
             // Edição abre SÓ pelo botão de lápis (coluna "Ações"); clicar na linha não abre.
             onRowClick={() => undefined}
-            sortCol={null}
-            sortDir={null}
-            onSort={() => undefined}
+            sortCol={sort.col}
+            sortDir={sort.dir}
+            onSort={handleSort}
+            // Padrão do grid de /consulta: gestão de colunas, densidade compacta e cabeçalho fixo.
+            gridId="fornecedores"
+            enableColumnManagement
+            defaultDensity="compact"
+            maxBodyHeight="70vh"
             loading={loading}
             ariaLabel="Fornecedores cadastrados"
             emptyMessage="Nenhum fornecedor encontrado"

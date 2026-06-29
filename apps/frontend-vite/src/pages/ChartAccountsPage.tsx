@@ -13,22 +13,33 @@ import {
   createChartAccount,
   updateChartAccount,
 } from '../services/chartAccounts';
-import { listCostCenters, listChartAccountSubgroups } from '../services/lookups';
+import { listCostCenters, listChartAccountGroups, listChartAccountSubgroups } from '../services/lookups';
 
 const optionLabel = (code?: string | null, desc?: string | null): string => [code, desc].filter(Boolean).join(' — ');
 
 export default function ChartAccountsPage() {
   const [costCenterOptions, setCostCenterOptions] = useState<SelectOption[]>([]);
+  const [groupOptions, setGroupOptions] = useState<SelectOption[]>([]);
   const [subgroupOptions, setSubgroupOptions] = useState<SelectOption[]>([]);
 
   useEffect(() => {
     void (async () => {
       try {
-        const [centers, subgroups] = await Promise.all([listCostCenters(), listChartAccountSubgroups()]);
+        const [centers, groups, subgroups] = await Promise.all([
+          listCostCenters(),
+          listChartAccountGroups(),
+          listChartAccountSubgroups(),
+        ]);
         setCostCenterOptions(
           centers.map((c) => ({
             value: c.cost_center_id,
             label: optionLabel(c.cost_center_code, c.cost_center_description),
+          })),
+        );
+        setGroupOptions(
+          groups.map((g) => ({
+            value: g.chart_account_group_id,
+            label: optionLabel(g.group_code, g.group_description),
           })),
         );
         setSubgroupOptions(
@@ -48,6 +59,7 @@ export default function ChartAccountsPage() {
       title="Plano de contas"
       subtitle="Tabelas"
       icon={BookText}
+      gridId="tabela-plano-de-contas"
       rowKey={(c) => String(c.chart_account_id)}
       columns={getChartAccountColumns}
       list={listChartAccountsPage}
@@ -58,6 +70,7 @@ export default function ChartAccountsPage() {
           mode={a.mode}
           defaultValues={a.row}
           costCenterOptions={costCenterOptions}
+          groupOptions={groupOptions}
           subgroupOptions={subgroupOptions}
           onSubmit={a.onSubmit}
           onCancel={a.onCancel}

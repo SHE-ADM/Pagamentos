@@ -15,19 +15,32 @@ import {
 } from '@sheild/shared/schemas';
 import type { ZodError } from 'zod';
 import { getSupabaseAdmin } from './supabase-admin';
+import { resolveSort, type SortOrder } from './sort';
 
 const TABLE = 'financial_chart_of_account';
+// Colunas ordenáveis. Além das colunas próprias (código/descrição), as 3 colunas de
+// classificação ordenam ALFABETICAMENTE pela descrição do embed, via a sintaxe do
+// PostgREST `alias(coluna)` (mesmo padrão do /consulta; o alias casa o SELECT_WITH_EMBEDS).
+// O allowlist contém os valores literais permitidos (defesa contra coluna arbitrária).
+const SORTABLE_COLUMNS = [
+  'account_code',
+  'account_description',
+  'cost_center(cost_center_description)',
+  'group(group_description)',
+  'subgroup(subgroup_description)',
+] as const;
 const REFERENCING_TABLES = ['financial_account_control', 'supplier'] as const;
 const REF_COLUMN = 'chart_account_id';
 const SENTINEL_ID = 0;
 const DEFAULT_LIMIT = 20;
 const MAX_LIMIT = 100;
 
-// Leitura com centro de custo e subgrupo embutidos (rótulos na grade).
+// Leitura com centro de custo, grupo e subgrupo embutidos (rótulos na grade).
 const SELECT_WITH_EMBEDS =
-  'chart_account_id,account_code,account_description,account_level,is_postable,cost_center_id,chart_account_subgroup_id,' +
+  'chart_account_id,account_code,account_description,account_level,is_postable,cost_center_id,chart_account_subgroup_id,chart_account_group_id,' +
   'cost_center:financial_cost_center(cost_center_code,cost_center_description),' +
-  'subgroup:financial_chart_of_account_subgroup(subgroup_code,subgroup_description)';
+  'subgroup:financial_chart_of_account_subgroup(subgroup_code,subgroup_description),' +
+  'group:financial_chart_of_account_group(group_code,group_description)';
 
 export class ChartAccountServiceError extends Error {
   status: number;
@@ -42,6 +55,8 @@ export interface ChartAccountListParams {
   page?: number;
   limit?: number;
   search?: string;
+  sort?: string;
+  order?: SortOrder;
 }
 
 export interface ChartAccountListResult {
@@ -59,14 +74,14 @@ function sanitizeTerm(term: string): string {
   return term.replace(/[%,()]/g, ' ').trim();
 }
 
-// 23503 (FK) = centro de custo ou subgrupo inexistente → 422.
+// 23503 (FK) = centro de custo, grupo ou subgrupo inexistente → 422.
 function mapWriteError(error: { code?: string; message: string }): ChartAccountServiceError {
-  if (error.code === '23503') return new ChartAccountServiceError('Centro de custo ou subgrupo informado não existe', 422);
+  if (error.code === '23503') return new ChartAccountServiceError('Centro de custo, grupo ou subgrupo informado não existe', 422);
   return new ChartAccountServiceError(error.message, 422);
 }
 
 const repository = {
-  async findAll(params: { from: number; to: number; search?: string }) {
+  async findAll(params: { from: number; to: number; search?: string; sort?: string; order?: SortOrder }) {
     let query = getSupabaseAdmin()
       .from(TABLE)
       .select(SELECT_WITH_EMBEDS, { count: 'exact' })
@@ -77,7 +92,12 @@ const repository = {
       query = query.or(`account_code.ilike.%${term}%,account_description.ilike.%${term}%`);
     }
 
-    return query.order('account_code', { ascending: true, nullsFirst: false }).range(params.from, params.to);
+    const sorted = resolveSort(params.sort, params.order, SORTABLE_COLUMNS);
+    const ordered = sorted
+      ? query.order(sorted.column, { ascending: sorted.ascending, nullsFirst: false })
+      : query.order('account_code', { ascending: true, nullsFirst: false });
+
+    return ordered.range(params.from, params.to);
   },
 
   findById(id: number) {
@@ -117,6 +137,8 @@ export const chartAccountService = {
       from,
       to: from + limit - 1,
       search: params.search?.trim() || undefined,
+      sort: params.sort,
+      order: params.order,
     });
     if (error) throw new ChartAccountServiceError(error.message, 500);
     return { data: (data ?? []) as unknown as ChartAccount[], total: count ?? 0, page, limit };

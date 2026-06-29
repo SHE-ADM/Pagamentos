@@ -36,6 +36,46 @@ class ApplyPixOverrideTest(unittest.TestCase):
         self.assertEqual(got, "outro")
 
 
+class ImageAttachmentVisionTest(unittest.TestCase):
+    """Anexos de IMAGEM (jpg/png/...) são lidos via Claude Vision (image_vision)."""
+
+    def test_is_image_file_por_extensao(self):
+        for ok in ("recibo.jpg", "foto.JPEG", "scan.png", "x.gif", "y.webp"):
+            self.assertTrue(e._is_image_file(ok), ok)
+        for no in ("boleto.pdf", "nota.xml", "arquivo.txt"):
+            self.assertFalse(e._is_image_file(no), no)
+
+    def test_vision_source_block_imagem(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            img = Path(d) / "recibo.png"
+            img.write_bytes(b"\x89PNG fake bytes")
+            block, src = e._vision_source_block(img)
+            self.assertEqual(src, "image_vision")
+            self.assertEqual(block["type"], "image")
+            self.assertEqual(block["source"]["media_type"], "image/png")
+
+    def test_vision_source_block_pdf(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            pdf = Path(d) / "boleto.pdf"
+            pdf.write_bytes(b"%PDF-1.4 fake")
+            block, src = e._vision_source_block(pdf)
+            self.assertEqual(src, "pdf_vision")
+            self.assertEqual(block["type"], "document")
+            self.assertEqual(block["source"]["media_type"], "application/pdf")
+
+    def test_build_record_dispatch_image_vision(self):
+        # build_record com source=image_vision usa o caminho JSON (sem rede) e
+        # preserva extraction_source — mesma rota do pdf_vision.
+        raw = ('{"document_type":"recibo","amount":"172,39",'
+               '"supplier_name":"CORREIOS","payment_method":"pix"}')
+        rec = e.build_record(Path("recibo.jpg"), raw, "image_vision")
+        self.assertEqual(rec["extraction_source"], "image_vision")
+        self.assertEqual(rec["amount"], 172.39)
+        self.assertEqual(rec["supplier_name"], "CORREIOS")
+
+
 class FallbackInvoiceNumberTest(unittest.TestCase):
     """N documento sintetico: PIX usa o valor; demais tipos usam tipo+vencimento."""
 
