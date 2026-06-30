@@ -18,24 +18,24 @@ const links: SocialLink[] = [
 // Molecule — fileira de logos clicáveis com rótulo abaixo de cada círculo.
 export default function SocialLinksBar() {
   return (
-    <div className="flex flex-col items-center gap-2">
+    <div className="flex flex-col items-center gap-1.5">
       <span className="text-xs font-medium text-loginGreen-inkMuted tracking-wider uppercase">
         fale com a gente
       </span>
-      <div className="flex justify-center gap-8">
+      <div className="flex justify-center gap-6">
         {links.map(({ name, href, logo }) => (
-          <div key={name} className="flex flex-col items-center gap-1.5">
+          <div key={name} className="flex flex-col items-center gap-1">
             <a
               href={href}
               target="_blank"
               rel="noopener noreferrer"
               title={name}
-              className="flex w-12 h-12 items-center justify-center rounded-full
+              className="flex w-10 h-10 items-center justify-center rounded-full
                 border-2 border-loginGreen-borderField bg-loginGreen-socialBg
                 overflow-hidden transition-colors
                 hover:border-loginGreen-borderFocus hover:bg-loginGreen-fieldFocus"
             >
-              <img src={logo} alt={name} className="w-7 h-7 object-contain" />
+              <img src={logo} alt={name} className="w-6 h-6 object-contain" />
             </a>
             <span className="text-xs font-medium text-loginGreen-inkMuted">{name}</span>
           </div>

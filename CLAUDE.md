@@ -955,8 +955,10 @@ próprio com a base + o neutro do tema — string literal completa.
 ### Guia de tamanhos — tokens Tailwind em uso
 
 Usar o token mais próximo; valor arbitrário só como exceção documentada (ver abaixo).
-A login passou por compactação para centralizar melhor o card — os valores abaixo são
-os **atuais** (não os do design original).
+A login passou por compactação para centralizar melhor o card e, depois, por uma **redução
+global de ~20% de todas as suas dimensões** (cada valor foi multiplicado por 0,8 e snapado
+ao token Tailwind mais próximo) — os valores abaixo são os **atuais** (não os do design
+original).
 
 > **Snap aplicado em todo o app (não só na login):** tamanhos arbitrários de fonte foram
 > eliminados — `text-[9px]/[10px]/[11px]` → `text-xs`, `text-[13px]`/`body` → `text-sm`,
@@ -969,40 +971,42 @@ os **atuais** (não os do design original).
 
 | Classe | Tamanho | Uso no projeto |
 |---|---|---|
-| `text-xs` | 12px | labels sociais ("fale com a gente"), rótulos dos círculos |
-| `text-sm` | 14px | labels de campo, "lembrar-me", erro inline, links |
+| `text-xs` | 12px | labels sociais ("fale com a gente"), rótulos dos círculos, labels/inputs dos campos (`FilledTextField`) |
+| `text-sm` | 14px | "lembrar-me", erro inline, links, subtítulo do login + texto do botão primário (`AccentPillButton`) |
 | `text-base` | 16px | corpo padrão do restante do app |
-| `text-lg` | 18px | subtítulo do login + texto do botão primário (`AccentPillButton`) |
-| `text-3xl` | 30px | h1 do login ("Login") — reduzido de `text-4xl` nesta sessão |
+| `text-2xl` | 24px | h1 do login ("Login") — reduzido de `text-3xl` na redução de ~20% |
 
 **Espaçamento e dimensões recorrentes (login page):**
 
 | Classe | px | Uso |
 |---|---|---|
-| `h-10` | 40px | altura dos campos de input (`FilledTextField`) |
-| `h-12` | 48px | altura do botão primário (`AccentPillButton`) |
-| `h-56` | 224px | altura do banner da login page |
-| `h-1` | 4px | divisor verde entre banner e card |
-| `w-12 h-12` | 48px | círculos sociais |
-| `w-7 h-7` | 28px | ícone dentro do círculo social |
-| `w-4 h-4` | 16px | checkbox "lembrar-me" (a escala Tailwind **não tem `4.5`** — não usar) |
-| `border-[6px]` | 6px | frame externo + moldura interna do banner (exceção arbitrária) |
+| `h-8` | 32px | altura dos campos de input (`FilledTextField`) |
+| `h-10` | 40px | altura do botão primário (`AccentPillButton`) |
+| `h-44` | 176px | altura do banner da login page |
+| `h-1` | 4px | divisor verde entre banner e card (decorativo — não reduzido) |
+| `w-10 h-10` | 40px | círculos sociais |
+| `w-6 h-6` | 24px | ícone dentro do círculo social |
+| `w-3 h-3` | 12px | checkbox "lembrar-me" |
+| `border-[5px]` | 5px | frame externo + moldura interna do banner (exceção arbitrária) |
 | `border-2` | 2px | borda dos campos e círculos |
-| `ring-4` | 4px | anel interno do card (`ring-inset ring-loginGreen-border/25`) |
-| `rounded-2xl` | 16px | border-radius do card/frame |
-| `rounded-lg` | 8px | border-radius de campos e botão |
-| `gap-3` | 12px | espaçamento entre seções do formulário |
-| `gap-1.5` | 6px | label↔campo e círculo↔rótulo social |
-| `gap-8` | 32px | espaçamento entre círculos sociais |
-| `my-3` | 12px | folga vertical extra do botão Login (acima/abaixo, somada ao `gap-3`) |
-| `px-6` | 24px | padding horizontal do card |
-| `pt-2.5` / `pb-3` | 10px / 12px | padding vertical do card (topo/base) |
-| `px-3.5` | 14px | padding horizontal dos campos |
+| `ring-4` | 4px | anel interno do card (`ring-inset ring-loginGreen-border/25`) — decorativo, não reduzido |
+| `rounded-xl` | 12px | border-radius do card/frame |
+| `rounded-md` | 6px | border-radius de campos e botão |
+| `gap-2.5` | 10px | espaçamento entre seções do formulário |
+| `gap-1` | 4px | label↔campo e círculo↔rótulo social |
+| `gap-6` | 24px | espaçamento entre círculos sociais |
+| `my-2.5` | 10px | folga vertical extra do botão Login (acima/abaixo, somada ao `gap-2.5`) |
+| `px-5` | 20px | padding horizontal do card |
+| `pt-2` / `pb-2.5` | 8px / 10px | padding vertical do card (topo/base) |
+| `px-3` | 12px | padding horizontal dos campos |
+| `max-w-[19rem]` | 304px | largura máxima do frame (exceção arbitrária — 20% de `max-w-sm`/384px) |
 
 **Exceções de valor arbitrário aceitas (login page):**
 
-- `border-[6px]` — 6px não existe na escala (`border-2`/`-4`/`-8`); usado no frame e na
-  moldura do banner por decisão visual.
+- `max-w-[19rem]` — 304px ≈ 80% de `max-w-sm` (384px); não há token entre `max-w-xs` (320px)
+  e `max-w-sm`, então o valor de layout é arbitrário para honrar a redução de ~20%.
+- `border-[5px]` — 5px não existe na escala (`border-2`/`-4`/`-8`); usado no frame e na
+  moldura do banner por decisão visual (≈80% do antigo `border-[6px]`).
 - `object-[center_25%]` — enquadramento do banner sem token equivalente.
 - `w-[calc(100%+2px)] max-w-none -ml-px` no `<img>` do banner — "sangra" 1px para cada
   lado, recortado pelo `overflow-hidden` do frame, para **eliminar o risco escuro** que a
@@ -1648,6 +1652,23 @@ faturas SIEG em `ignorado`; o handler A1 (baixar o boleto real) segue como melho
   com erros de tipos de **terceiros** não acionáveis — `@supabase/auth-js` (`webauthn.dom.d.ts`),
   `@tanstack/table-core` (`ColumnMeta`) e os `.next/types/*` gerados pelo Next. Testado na
   auditoria pós-upgrade (2026-06-19); **não remover**.
+
+### Deploy do frontend (Vercel)
+
+Deploy automático pelo GitHub (push em `main` → **production**; `Features`/PR → **preview**).
+Topologia (team **`sheild`** = `team_z1BPf9qevCGsfohGRhm52iBn`):
+
+| Projeto Vercel | Papel | Domínio |
+|---|---|---|
+| `pagamentos-web` | Frontend (Vite SPA) | **pag.otimotex.com.br** (alias de produção) |
+| `pagamentos-api-backend` | Next API de dados | `pagamentos-alpha-six.vercel.app` (rewrite `/data-api` em `apps/frontend-vite/vercel.json`) |
+
+**O repo NÃO tem `.vercel/project.json`** — para inspecionar deploys (estado/commit), descubra o
+team/projeto via Vercel MCP (`list_teams` → `list_projects` → `list_deployments`). O deploy de
+produção correto é o `state=READY` + `target=production` cujo `githubCommitSha` casa o merge em
+`main`; um `CANCELED` logo após, com `githubCommitRef=Features` e o mesmo SHA, é só o preview
+redundante (normal, sem impacto). Flask/IMAP **não** vão para o Vercel — a leitura de e-mails fica
+local/agendada (ver flag `EMAIL_READER_ENABLED` acima e memória [[vercel-deploy]]).
 
 ## Banco de dados (Supabase)
 
