@@ -9,7 +9,7 @@ interface FilledTextFieldProps extends InputHTMLAttributes<HTMLInputElement> {
 }
 
 // Wrapper do campo — variante booleana `focused` alterna fundo/borda.
-const fieldWrapper = cva('flex items-center h-10 px-3.5 gap-2.5 rounded-lg border-2 transition-colors', {
+const fieldWrapper = cva('flex items-center h-8 px-3 gap-2 rounded-md border-2 transition-colors', {
   variants: {
     focused: {
       true: 'bg-loginGreen-fieldFocus border-loginGreen-borderFocus',
@@ -29,8 +29,8 @@ const FilledTextField = forwardRef<HTMLInputElement, FilledTextFieldProps>(
     const errorId = `${inputId}-error`;
 
     return (
-      <div className="flex flex-col gap-1.5">
-        <label htmlFor={inputId} className="text-sm font-bold text-loginGreen-ink">{label}</label>
+      <div className="flex flex-col gap-1">
+        <label htmlFor={inputId} className="text-xs font-bold text-loginGreen-ink">{label}</label>
         <div className={cn(fieldWrapper({ focused }))}>
           <input
             {...inputProps}
@@ -46,7 +46,7 @@ const FilledTextField = forwardRef<HTMLInputElement, FilledTextFieldProps>(
               setFocused(false);
               inputProps.onBlur?.(e);
             }}
-            className="flex-1 bg-transparent border-0 outline-hidden text-sm font-medium text-loginGreen-ink placeholder:text-loginGreen-placeholder min-w-0"
+            className="flex-1 bg-transparent border-0 outline-hidden text-xs font-medium text-loginGreen-ink placeholder:text-loginGreen-placeholder min-w-0"
           />
           {endAdornment}
         </div>

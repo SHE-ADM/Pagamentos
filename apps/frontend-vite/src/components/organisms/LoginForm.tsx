@@ -43,11 +43,11 @@ export default function LoginForm() {
   };
 
   return (
-    <form onSubmit={handleSubmit(onSubmit)} className="flex flex-col gap-3 w-full">
+    <form onSubmit={handleSubmit(onSubmit)} className="flex flex-col gap-2.5 w-full">
       {/* Cabeçalho */}
-      <div className="flex flex-col gap-1.5">
-        <h1 className="text-3xl font-extrabold text-loginGreen-ink tracking-tight leading-none">Login</h1>
-        <p className="text-lg font-medium text-loginGreen-accent">Boas-vindas! Faça seu login.</p>
+      <div className="flex flex-col gap-1">
+        <h1 className="text-2xl font-extrabold text-loginGreen-ink tracking-tight leading-none">Login</h1>
+        <p className="text-sm font-medium text-loginGreen-accent">Boas-vindas! Faça seu login.</p>
       </div>
 
       {/* Campo e-mail */}
@@ -85,7 +85,7 @@ export default function LoginForm() {
                 aria-label={showPassword ? 'Ocultar senha' : 'Mostrar senha'}
                 className="text-loginGreen-inkFaint hover:text-loginGreen-borderFocus flex items-center shrink-0 transition-colors"
               >
-                {showPassword ? <EyeOff size={20} /> : <Eye size={20} />}
+                {showPassword ? <EyeOff size={16} /> : <Eye size={16} />}
               </button>
             }
           />
@@ -99,7 +99,7 @@ export default function LoginForm() {
             type="checkbox"
             checked={remember}
             onChange={(e) => setRemember(e.target.checked)}
-            className="w-4 h-4 accent-loginGreen-borderFocus cursor-pointer shrink-0"
+            className="w-3 h-3 accent-loginGreen-borderFocus cursor-pointer shrink-0"
           />
           <span>Lembrar-me</span>
         </label>
@@ -113,11 +113,11 @@ export default function LoginForm() {
 
       {/* Erro do servidor (credenciais inválidas) */}
       {serverError && (
-        <p className="bg-status-error-bg text-status-error-fg rounded-lg px-3.5 py-2.5 text-sm">{serverError}</p>
+        <p className="bg-status-error-bg text-status-error-fg rounded-md px-3 py-2 text-sm">{serverError}</p>
       )}
 
       {/* Botão Login */}
-      <AccentPillButton type="submit" loading={loading} loadingLabel="Entrando…" className="my-3">
+      <AccentPillButton type="submit" loading={loading} loadingLabel="Entrando…" className="my-2.5">
         Login
       </AccentPillButton>
 
