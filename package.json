@@ -7,6 +7,9 @@
     "apps/*",
     "packages/*"
   ],
+  "engines": {
+    "node": "^20.9.0 || ^22.0.0"
+  },
   "scripts": {
     "dev": "concurrently -n flask,vite,api,portal -c yellow,green,cyan,magenta npm:dev:flask npm:dev:vite npm:dev:api npm:dev:portal",
     "dev:flask": "py -3 server/app.py",
