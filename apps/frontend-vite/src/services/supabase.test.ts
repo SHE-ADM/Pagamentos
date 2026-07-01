@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { parsePaginationTotal, parseBrlAmount } from './supabase';
+import { parsePaginationTotal, parseBrlAmount, isCurrencyValueSearch } from './supabase';
 
 describe('parsePaginationTotal', () => {
   it('usa a contagem exata do Content-Range (count=exact)', () => {
@@ -69,9 +69,32 @@ describe('parseBrlAmount', () => {
     expect(parseBrlAmount('  463,21  ')).toBe('463.21');
   });
 
+  it('aceita o símbolo "R$" (3 formas) como busca por valor', () => {
+    expect(parseBrlAmount('R$ 1.999,99')).toBe('1999.99'); // com milhar
+    expect(parseBrlAmount('R$ 1999,99')).toBe('1999.99'); // sem milhar
+    expect(parseBrlAmount('R$1999,99')).toBe('1999.99'); // sem espaço
+    expect(parseBrlAmount('R$ 391')).toBe('391'); // inteiro
+  });
+
   it('retorna null para termo não-numérico', () => {
     expect(parseBrlAmount('ACME')).toBeNull();
     expect(parseBrlAmount('00019/112')).toBeNull();
     expect(parseBrlAmount('')).toBeNull();
+    expect(parseBrlAmount('R$')).toBeNull(); // só o símbolo, sem número
+    expect(parseBrlAmount('R$ abc')).toBeNull();
+  });
+});
+
+describe('isCurrencyValueSearch', () => {
+  it('true quando há "R$" e um valor válido (busca por valor do documento)', () => {
+    expect(isCurrencyValueSearch('R$ 1.999,99')).toBe(true);
+    expect(isCurrencyValueSearch('R$1999,99')).toBe(true);
+    expect(isCurrencyValueSearch('r$ 391')).toBe(true);
+  });
+
+  it('false sem "R$" (mesmo numérico) ou sem valor válido', () => {
+    expect(isCurrencyValueSearch('1999,99')).toBe(false); // número sem R$ → busca textual+valor
+    expect(isCurrencyValueSearch('R$ abc')).toBe(false); // R$ sem número
+    expect(isCurrencyValueSearch('ACME')).toBe(false);
   });
 });

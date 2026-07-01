@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, waitFor } from '@testing-library/react';
+import { render, screen, waitFor, within, fireEvent } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import type { FinancialAccountControl } from '@sheild/shared';
 
@@ -171,5 +171,95 @@ describe('Consulta', () => {
     );
     // ...e o card passa a refletir o valor filtrado
     await waitFor(() => expect(screen.getByText(/1\.234,00/)).toBeInTheDocument());
+  });
+
+  it('abre filtrado no mês/ano corrente por vencimento', async () => {
+    render(<Consulta />);
+    const now = new Date();
+    await waitFor(() =>
+      expect(getFinancialAccountControl).toHaveBeenCalledWith(
+        expect.objectContaining({
+          dateField: 'due_date',
+          month: now.getMonth(),
+          year: now.getFullYear(),
+        }),
+      ),
+    );
+  });
+
+  it('o seletor "Tipo de data" alterna para Emissão (issue_date)', async () => {
+    const user = userEvent.setup();
+    render(<Consulta />);
+    await waitFor(() => expect(getFinancialAccountControl).toHaveBeenCalled());
+
+    await user.selectOptions(screen.getByLabelText(/Tipo de data/i), 'issue_date');
+
+    await waitFor(() =>
+      expect(getFinancialAccountControl).toHaveBeenLastCalledWith(
+        expect.objectContaining({ dateField: 'issue_date' }),
+      ),
+    );
+  });
+
+  it('o botão "Todas" remove o filtro de mês/ano', async () => {
+    const user = userEvent.setup();
+    render(<Consulta />);
+    await waitFor(() => expect(getFinancialAccountControl).toHaveBeenCalled());
+
+    await user.click(screen.getByRole('button', { name: /Todas/ }));
+
+    await waitFor(() =>
+      expect(getFinancialAccountControl).toHaveBeenLastCalledWith(
+        expect.objectContaining({ month: null, year: null }),
+      ),
+    );
+  });
+
+  it('a busca por intervalo De/Até é global (zera mês/ano) e usa dateFrom/dateTo', async () => {
+    const user = userEvent.setup();
+    render(<Consulta />);
+    await waitFor(() => expect(getFinancialAccountControl).toHaveBeenCalled());
+
+    fireEvent.change(screen.getByLabelText(/data inicial/i), { target: { value: '2026-03-01' } });
+    fireEvent.change(screen.getByLabelText(/data final/i), { target: { value: '2026-03-31' } });
+    await user.click(screen.getByRole('button', { name: 'Buscar' }));
+
+    await waitFor(() =>
+      expect(getFinancialAccountControl).toHaveBeenLastCalledWith(
+        expect.objectContaining({ dateFrom: '2026-03-01', dateTo: '2026-03-31', month: null, year: null }),
+      ),
+    );
+  });
+
+  it('card de KPI continua ativo ao navegar por mês; clicar de novo volta ao mês atual', async () => {
+    const user = userEvent.setup();
+    render(<Consulta />);
+    await waitFor(() => expect(getFinancialAccountControl).toHaveBeenCalled());
+
+    // ativa "Pagos" → global (mês/ano null) + status pago
+    await user.click(screen.getByText('Pagos'));
+    await waitFor(() =>
+      expect(getFinancialAccountControl).toHaveBeenLastCalledWith(
+        expect.objectContaining({ status: 'pago', month: null, year: null }),
+      ),
+    );
+
+    // navega para Janeiro → card permanece, status preservado, narrows para o mês
+    const months = screen.getByRole('group', { name: 'Filtrar por mês' });
+    await user.click(within(months).getByRole('button', { name: 'Mês Janeiro' }));
+    await waitFor(() =>
+      expect(getFinancialAccountControl).toHaveBeenLastCalledWith(
+        expect.objectContaining({ status: 'pago', month: 0 }),
+      ),
+    );
+
+    // clicar "Pagos" de novo → volta ao mês atual, sem status
+    const now = new Date();
+    await user.click(screen.getByText('Pagos'));
+    await waitFor(() =>
+      expect(getFinancialAccountControl).toHaveBeenLastCalledWith(
+        expect.objectContaining({ status: '', month: now.getMonth(), year: now.getFullYear() }),
+      ),
+    );
   });
 });
