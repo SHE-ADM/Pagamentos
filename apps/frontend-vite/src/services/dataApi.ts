@@ -30,7 +30,15 @@ export async function dataApiCall<T>(path: string, init: RequestInit = {}): Prom
   const res = await fetch(`${DATA_API_BASE}${path}`, { ...init, headers: await authHeaders() });
   const body = (await res.json().catch(() => ({}))) as ApiEnvelope<T>;
   if (!res.ok || !body.success) {
-    throw new Error(body.error ?? `Erro ${res.status} ao acessar a API de dados`);
+    // Mensagem curada do backend (4xx leigo) tem precedência. Sem envelope (resposta
+    // não-JSON: API fora do ar / erro transitório 5xx), dá uma mensagem ACIONÁVEL
+    // ("tente novamente") em vez do críptico "Erro 500 ao acessar a API de dados".
+    if (body.error) throw new Error(body.error);
+    throw new Error(
+      res.status >= 500
+        ? `A API de dados está indisponível no momento (erro ${res.status}). Tente novamente em instantes.`
+        : `Erro ${res.status} ao acessar a API de dados`,
+    );
   }
   return body;
 }

@@ -196,6 +196,12 @@ interface FinancialAccountControlFilters {
   docType?: string;
   status?: string;
   paymentMethod?: string;
+  // Coluna de data do filtro de período: vencimento (default) ou emissão.
+  dateField?: 'due_date' | 'issue_date';
+  // Filtro por mês/ano (0-indexed). Ambos presentes → range do mês na coluna dateField.
+  // null/ausente → escopo "todas" (cai no range explícito dateFrom/dateTo, ou nada).
+  month?: number | null;
+  year?: number | null;
   dateFrom?: string;
   dateTo?: string;
   page?: number;
@@ -247,10 +253,12 @@ function ilikeContains(term: string): string {
 
 // Interpreta o termo de busca como VALOR monetário (formato BR ou simples) e devolve
 // o número canônico a casar em `amount` (NUMERIC(15,2)); null quando o termo não é um
-// valor numérico completo — aí a busca segue apenas textual. A correspondência é EXATA
-// (ex.: "463,21" → 463.21). Exemplos: "44.406,08" → "44406.08" · "391" → "391".
+// valor numérico completo — aí a busca segue apenas textual. A correspondência é EXATA.
+// Aceita o símbolo monetário opcional "R$" (com/sem espaço), indicador de busca por valor.
+// Exemplos: "463,21" → "463.21" · "R$ 1.999,99" → "1999.99" · "R$1999,99" → "1999.99" · "391".
 export function parseBrlAmount(term: string): string | null {
-  const t = term.trim();
+  // Remove o prefixo "R$" (e espaços) antes de validar o número.
+  const t = term.trim().replace(/^r\$\s*/i, '').trim();
   let normalized: string;
   if (/^\d{1,3}(\.\d{3})+(,\d{1,2})?$/.test(t)) {
     // BR com separador de milhar: remove os pontos, vírgula → ponto decimal.
@@ -266,6 +274,12 @@ export function parseBrlAmount(term: string): string | null {
   }
   const n = Number(normalized);
   return Number.isFinite(n) ? String(n) : null;
+}
+
+// O símbolo "R$" no termo indica busca EXPLÍCITA por valor do documento: correspondência
+// exata em `amount`, sem busca textual (nº doc/assunto/remetente) nem lookup de fornecedor.
+export function isCurrencyValueSearch(term: string): boolean {
+  return /r\$/i.test(term) && parseBrlAmount(term) !== null;
 }
 
 async function findSupplierIdsByTerm(term: string): Promise<number[]> {
@@ -287,7 +301,7 @@ async function findSupplierIdsByTerm(term: string): Promise<number[]> {
 
 function applyFinancialFilters(
   params: URLSearchParams,
-  { supplier, docType, status, paymentMethod, dateFrom, dateTo }: FinancialAccountControlFilters,
+  { supplier, docType, status, paymentMethod, dateField, month, year, dateFrom, dateTo }: FinancialAccountControlFilters,
   supplierIds: number[] = [],
   // Só o GRID inclui canceladas; os KPIs (Valor total) mantêm a exclusão para não
   // somar cancelado (evita confusão). Default = excluir cancelado.
@@ -296,17 +310,22 @@ function applyFinancialFilters(
   // or= nas colunas próprias da conta (nº documento, assunto, remetente) mais os
   // sk_supplier resolvidos pelo termo (nome/CNPJ/CPF/e-mail do cadastro supplier).
   if (supplier) {
-    const like = ilikeContains(supplier);
-    const clauses = [
-      `invoice_number.ilike.${like}`,
-      `subject.ilike.${like}`,
-      `sender_email.ilike.${like}`,
-    ];
-    // Termo que é um valor monetário (ex.: "463,21") também casa o VALOR da conta.
-    const amount = parseBrlAmount(supplier);
-    if (amount) clauses.push(`amount.eq.${amount}`);
-    if (supplierIds.length) clauses.push(`sk_supplier.in.(${supplierIds.join(',')})`);
-    params.set('or', `(${clauses.join(',')})`);
+    if (isCurrencyValueSearch(supplier)) {
+      // "R$ ..." → busca EXATA pelo valor do documento, sem busca textual.
+      params.set('amount', `eq.${parseBrlAmount(supplier)}`);
+    } else {
+      const like = ilikeContains(supplier);
+      const clauses = [
+        `invoice_number.ilike.${like}`,
+        `subject.ilike.${like}`,
+        `sender_email.ilike.${like}`,
+      ];
+      // Termo numérico SEM R$ (ex.: "463,21") também casa o VALOR, além do texto.
+      const amount = parseBrlAmount(supplier);
+      if (amount) clauses.push(`amount.eq.${amount}`);
+      if (supplierIds.length) clauses.push(`sk_supplier.in.(${supplierIds.join(',')})`);
+      params.set('or', `(${clauses.join(',')})`);
+    }
   }
   if (docType) params.set('document_type', `eq.${docType}`);
   // Situação: filtro explícito sobrescreve tudo. Sem filtro, o grid mostra TODAS
@@ -314,8 +333,21 @@ function applyFinancialFilters(
   if (status) params.set('status', `eq.${status}`);
   else if (!includeCancelled) params.set('status', 'neq.cancelado');
   if (paymentMethod) params.set('payment_method', `eq.${paymentMethod}`);
-  if (dateFrom) params.append('due_date', `gte.${dateFrom}`);
-  if (dateTo) params.append('due_date', `lte.${dateTo}`);
+  // Filtro de data na coluna escolhida (vencimento por padrão):
+  //  1) Intervalo explícito dateFrom/dateTo (busca global por range OU card "7 dias")
+  //     tem PRECEDÊNCIA — quando presente, vence o mês/ano.
+  //  2) Senão, mês/ano (navegação por período) monta o range do mês [01, último dia].
+  //  3) Sem nada, não filtra por data.
+  const col = dateField ?? 'due_date';
+  if (dateFrom || dateTo) {
+    if (dateFrom) params.append(col, `gte.${dateFrom}`);
+    if (dateTo) params.append(col, `lte.${dateTo}`);
+  } else if (month != null && year != null) {
+    const first = new Date(Date.UTC(year, month, 1)).toISOString().slice(0, 10);
+    const last = new Date(Date.UTC(year, month + 1, 0)).toISOString().slice(0, 10);
+    params.append(col, `gte.${first}`);
+    params.append(col, `lte.${last}`);
+  }
 }
 
 export async function getFinancialAccountControl({
@@ -323,6 +355,9 @@ export async function getFinancialAccountControl({
   docType,
   status,
   paymentMethod,
+  dateField,
+  month,
+  year,
   dateFrom,
   dateTo,
   page = 1,
@@ -341,9 +376,15 @@ export async function getFinancialAccountControl({
   url.searchParams.set('order', sortCol ? `${sortCol}.${sortDir ?? 'asc'}` : 'created_at.desc');
   url.searchParams.set('limit', String(pageSize));
   url.searchParams.set('offset', String(offset));
-  const supplierIds = supplier ? await findSupplierIdsByTerm(supplier) : [];
+  // Busca "R$ ..." é por valor → não resolve fornecedor pelo termo.
+  const supplierIds = supplier && !isCurrencyValueSearch(supplier) ? await findSupplierIdsByTerm(supplier) : [];
   // Grid: inclui canceladas (includeCancelled=true). Os KPIs continuam excluindo.
-  applyFinancialFilters(url.searchParams, { supplier, docType, status, paymentMethod, dateFrom, dateTo }, supplierIds, true);
+  applyFinancialFilters(
+    url.searchParams,
+    { supplier, docType, status, paymentMethod, dateField, month, year, dateFrom, dateTo },
+    supplierIds,
+    true,
+  );
   const reqHeaders = await authHeaders({ Prefer: 'count=exact' });
   const res = await fetch(url.toString(), { headers: reqHeaders });
   if (!res.ok) throw new Error(`Supabase ${res.status}: ${await res.text()}`);
@@ -407,7 +448,8 @@ export async function getFinancialAccountTotalValue(
   const url = new URL(`${BASE_URL}/rest/v1/financial_account_control`);
   url.searchParams.set('select', 'amount');
   url.searchParams.set('limit', '10000');
-  const supplierIds = filters.supplier ? await findSupplierIdsByTerm(filters.supplier) : [];
+  const supplierIds =
+    filters.supplier && !isCurrencyValueSearch(filters.supplier) ? await findSupplierIdsByTerm(filters.supplier) : [];
   applyFinancialFilters(url.searchParams, filters, supplierIds);
   const res = await fetch(url.toString(), { headers: await authHeaders() });
   if (!res.ok) throw new Error(`Supabase ${res.status}: ${await res.text()}`);

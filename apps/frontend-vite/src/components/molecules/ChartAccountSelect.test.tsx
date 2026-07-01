@@ -6,6 +6,7 @@ vi.mock('../../services/lookups', () => ({
   listCostCenters: vi.fn(),
 }));
 
+import { listChartAccounts } from '../../services/lookups';
 import ChartAccountSelect from './ChartAccountSelect';
 
 describe('ChartAccountSelect', () => {
@@ -32,5 +33,20 @@ describe('ChartAccountSelect', () => {
   it('habilita quando há um centro de custo selecionado', () => {
     render(<ChartAccountSelect label="Plano de contas" value={null} costCenterId={1} onChange={vi.fn()} />);
     expect(screen.getByRole('combobox')).toBeEnabled();
+  });
+
+  it('é controlado: reflete a mudança do value após montado (não some)', () => {
+    // Regressão: o valor não pode sumir quando o pai o atualiza (pré-preenchimento/edição).
+    const { rerender } = render(
+      <ChartAccountSelect label="Plano de contas" value={null} costCenterId={1} onChange={vi.fn()} />,
+    );
+    rerender(<ChartAccountSelect label="Plano de contas" value={9} costCenterId={1} defaultLabel="Frete" onChange={vi.fn()} />);
+    expect(screen.getByText('Frete')).toBeInTheDocument();
+  });
+
+  it('mostra erro claro quando o lookup falha (API indisponível), não "nenhuma encontrada"', async () => {
+    vi.mocked(listChartAccounts).mockRejectedValueOnce(new Error('network'));
+    render(<ChartAccountSelect label="Plano de contas" value={null} costCenterId={1} onChange={vi.fn()} />);
+    expect(await screen.findByText(/API de dados indisponível/i)).toBeInTheDocument();
   });
 });

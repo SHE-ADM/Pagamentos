@@ -2,10 +2,14 @@
 // Molecule — seletor de plano de contas com react-select (AsyncSelect): pesquisa
 // o cadastro financial_chart_of_account (apenas contas postáveis) na Next API e
 // retorna o chart_account_id escolhido. NÃO é creatable (cadastro externo ao app).
-import { useState } from 'react';
+import { useCallback, useState } from 'react';
 import AsyncSelect from 'react-select/async';
 import type { ChartAccount } from '@sheild/shared';
 import { listChartAccounts } from '../../services/lookups';
+
+// Mensagem exibida quando o lookup FALHA (API de dados fora, 401/500) — distinta de
+// "lista vazia". Evita o engano de "Nenhuma conta encontrada" quando a Next API não respondeu.
+const LOAD_ERROR_MSG = 'Não foi possível carregar os planos de contas (API de dados indisponível).';
 
 interface ChartAccountOption {
   value: number; // chart_account_id
@@ -34,23 +38,45 @@ const chartAccountLabel = (c: ChartAccount): string =>
   c.account_description ?? c.account_code ?? `#${c.chart_account_id}`;
 
 export default function ChartAccountSelect({ value, costCenterId, defaultLabel, onChange, label, error, id }: Readonly<ChartAccountSelectProps>) {
+  // Mirror CONTROLADO do `value` (mesma estratégia do CostCenterSelect): sincroniza
+  // `selected` com a prop no render, sem useEffect nem remonte por `key` do componente —
+  // o que antes zerava o valor em races de timing. Preserva o rótulo quando o id não muda.
   const [selected, setSelected] = useState<ChartAccountOption | null>(
     value == null ? null : { value, label: defaultLabel ?? `#${value}` },
   );
+  if (value !== (selected?.value ?? null)) {
+    setSelected(value == null ? null : { value, label: defaultLabel ?? `#${value}` });
+  }
 
   const disabled = costCenterId == null;
 
+  // Erro de carregamento (API indisponível) — distingue "falhou" de "lista vazia".
+  const [loadError, setLoadError] = useState<string | null>(null);
+
   // Carrega os planos do centro de custo selecionado (código/descrição). Sem centro,
-  // não vai à rede (lista vazia). Fecha sobre `costCenterId` (prop).
-  const loadOptions = async (input: string): Promise<ChartAccountOption[]> => {
-    const data = await listChartAccounts(costCenterId, input || undefined);
-    return data.map((c) => ({ value: c.chart_account_id, label: chartAccountLabel(c) }));
-  };
+  // não vai à rede (lista vazia). Em falha, marca o erro e devolve []. Fecha sobre `costCenterId`.
+  const loadOptions = useCallback(
+    async (input: string): Promise<ChartAccountOption[]> => {
+      try {
+        const data = await listChartAccounts(costCenterId, input || undefined);
+        setLoadError(null);
+        return data.map((c) => ({ value: c.chart_account_id, label: chartAccountLabel(c) }));
+      } catch {
+        setLoadError(LOAD_ERROR_MSG);
+        return [];
+      }
+    },
+    [costCenterId],
+  );
 
   return (
     <div>
       <span className="block text-sm font-medium text-gray-700 mb-1">{label}</span>
       <AsyncSelect<ChartAccountOption>
+        // Recarrega as opções (defaultOptions) ao trocar o centro de custo — cascata.
+        // O `value` é controlado pelo pai, então o item selecionado PERSISTE através
+        // deste remonte interno (diferente de remontar o componente inteiro por `key`).
+        key={costCenterId ?? 'none'}
         inputId={id}
         aria-label={label}
         aria-invalid={error ? true : undefined}
@@ -66,7 +92,7 @@ export default function ChartAccountSelect({ value, costCenterId, defaultLabel, 
         }}
         placeholder={disabled ? 'Selecione um centro de custo primeiro' : 'Buscar plano de contas…'}
         loadingMessage={() => 'Buscando…'}
-        noOptionsMessage={() => 'Nenhuma conta encontrada para este centro de custo'}
+        noOptionsMessage={() => loadError ?? 'Nenhuma conta encontrada para este centro de custo'}
         classNamePrefix="rs"
         classNames={{
           control: ({ isDisabled }) =>
@@ -77,7 +103,9 @@ export default function ChartAccountSelect({ value, costCenterId, defaultLabel, 
           option: ({ isFocused }) => (isFocused ? 'bg-brand/10 px-3 py-2' : 'px-3 py-2'),
         }}
       />
-      {error && <span className="block mt-1 text-xs text-status-error-fg">{error}</span>}
+      {(error ?? loadError) && (
+        <span className="block mt-1 text-xs text-status-error-fg">{error ?? loadError}</span>
+      )}
     </div>
   );
 }

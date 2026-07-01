@@ -109,23 +109,48 @@ function exportCsv(rows: FinancialAccountControl[]) {
   a.click();
 }
 
+// Rótulos de mês — mesmos do /dashboard (princípio de filtro por mês/ano reaproveitado).
+const MONTHS = ['Jan', 'Fev', 'Mar', 'Abr', 'Mai', 'Jun', 'Jul', 'Ago', 'Set', 'Out', 'Nov', 'Dez'];
+const MONTHS_FULL = ['Janeiro', 'Fevereiro', 'Março', 'Abril', 'Maio', 'Junho', 'Julho', 'Agosto', 'Setembro', 'Outubro', 'Novembro', 'Dezembro'];
+
 interface ConsultaFilters {
   supplier: string;
   docType: string;
   status: string;
   paymentMethod: string;
+  // Coluna do filtro de período: vencimento (padrão) ou emissão.
+  dateField: 'due_date' | 'issue_date';
+  // Mês (0-indexed) / ano selecionados. Ambos null = escopo "Todas" (sem filtro de período).
+  month: number | null;
+  year: number | null;
+  // Range explícito — usado só pelo card "A vencer em 7 dias" (sobre due_date).
   dateFrom: string;
   dateTo: string;
 }
 
-const EMPTY_FILTERS: ConsultaFilters = {
+// Campos não-período zerados (vencimento como campo de data padrão).
+const BASE_FILTERS = {
   supplier: '',
   docType: '',
   status: '',
   paymentMethod: '',
+  dateField: 'due_date' as const,
   dateFrom: '',
   dateTo: '',
 };
+
+// Estado padrão de navegação: mês/ano corrente por vencimento (grid abre no mês atual).
+// Função de MÓDULO — new Date() é impuro e não pode ser chamado no escopo de render
+// (mesma razão de next7DaysRange).
+function initialFilters(): ConsultaFilters {
+  const d = new Date();
+  return { ...BASE_FILTERS, month: d.getMonth(), year: d.getFullYear() };
+}
+
+// Base "todos os períodos" para os cards globais (sem filtro de mês/ano).
+function allPeriodFilters(): ConsultaFilters {
+  return { ...BASE_FILTERS, month: null, year: null };
+}
 
 interface MetricCard {
   icon: LucideIcon;
@@ -156,8 +181,14 @@ export default function Consulta() {
   const editDialogRef = useRef<HTMLDialogElement>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [f, setF] = useState<ConsultaFilters>({ ...EMPTY_FILTERS });
-  const [applied, setApplied] = useState<ConsultaFilters>({ ...EMPTY_FILTERS });
+  const [f, setF] = useState<ConsultaFilters>(initialFilters);
+  const [applied, setApplied] = useState<ConsultaFilters>(initialFilters);
+  // Referência do mês/ano corrente (base dos botões de ano quando o escopo é "Todas").
+  // Inicializador de useState — fora do escopo de render puro.
+  const [nowRef] = useState(() => {
+    const d = new Date();
+    return { month: d.getMonth(), year: d.getFullYear() };
+  });
   const [page, setPage] = useState(1);
   const [total, setTotal] = useState(0);
   const [activeCard, setActiveCard] = useState<string | null>(null);
@@ -239,7 +270,11 @@ export default function Consulta() {
   useEffect(() => {
     if (f.supplier === applied.supplier) return; // já sincronizado (inclui o 1º mount)
     const t = setTimeout(() => {
-      setApplied((prev) => ({ ...prev, supplier: f.supplier }));
+      // Busca por fornecedor é GLOBAL: ao ter texto, zera o período (mês/ano → "Todas")
+      // para procurar em toda a base; ao limpar, mantém o período como está.
+      const goGlobal = f.supplier !== '';
+      setApplied((prev) => ({ ...prev, supplier: f.supplier, ...(goGlobal ? { month: null, year: null } : {}) }));
+      if (goGlobal) setF((prev) => ({ ...prev, month: null, year: null }));
       setPage(1);
     }, 350);
     return () => clearTimeout(t);
@@ -395,19 +430,33 @@ export default function Consulta() {
     }
   }, [load, refreshStats]);
 
-  // Buscar: congela filtro atual em applied e volta para pagina 1.
-  // React 18 faz batch dos dois setState — gera um unico load novo.
+  // Buscar: aplica o filtro atual. Busca é GLOBAL — zera o período (mês/ano → "Todas")
+  // para procurar em toda a base (inclui o intervalo De/Até, que filtra por dateField).
+  // React faz batch dos setState — gera um único load novo.
   const handleSearch = () => {
-    setApplied({ ...f });
+    const next = { ...f, month: null, year: null };
+    setF(next);
+    setApplied(next);
     setActiveCard(null);
     setPage(1);
   };
-  // Limpar: reseta filtros do form e a busca aplicada, voltando para pagina 1.
+  // Limpar: volta ao estado padrão (mês/ano corrente por vencimento) e reseta a ordenação.
   const handleClear = () => {
-    setF({ ...EMPTY_FILTERS });
-    setApplied({ ...EMPTY_FILTERS });
+    const init = initialFilters();
+    setF(init);
+    setApplied(init);
     setActiveCard(null);
     setSort({ col: null, dir: null });
+    setPage(1);
+  };
+
+  // Período (campo/mês/ano/"Todas"): aplica imediatamente em f e applied, como o
+  // dashboard — os filtros de texto/select continuam dependendo de "Buscar".
+  // NÃO limpa o card ativo: navegar por mês mantém o card destacado (narrows aquele
+  // mês), e clicar o card de novo continua sendo o caminho de volta ao mês atual.
+  const applyPeriod = (patch: Partial<ConsultaFilters>) => {
+    setF((x) => ({ ...x, ...patch }));
+    setApplied((a) => ({ ...a, ...patch }));
     setPage(1);
   };
 
@@ -421,20 +470,26 @@ export default function Consulta() {
     setPage(1);
   };
 
+  // Cards são GLOBAIS: ativar um mostra TODOS os períodos do status (month/year null);
+  // desligar volta ao padrão mês a mês (mês/ano corrente).
   const handleCardFilter = (cardId: string, filterOverride: Partial<ConsultaFilters>) => {
     setSort({ col: null, dir: null });
     if (activeCard === cardId) {
       setActiveCard(null);
-      setF({ ...EMPTY_FILTERS });
-      setApplied({ ...EMPTY_FILTERS });
+      const init = initialFilters();
+      setF(init);
+      setApplied(init);
     } else {
       setActiveCard(cardId);
-      const next = { ...EMPTY_FILTERS, ...filterOverride };
+      const next = { ...allPeriodFilters(), ...filterOverride };
       setF(next);
       setApplied(next);
     }
     setPage(1);
   };
+
+  // Rótulo do campo de data ativo (compartilhado pelos botões de mês e pelo intervalo De/Até).
+  const dateFieldLabel = f.dateField === 'due_date' ? 'Vencimento' : 'Emissão';
 
   const vencidasCount = stats.vencidas ?? 0;
   const cards: MetricCard[] = [
@@ -573,6 +628,62 @@ export default function Consulta() {
           })}
         </div>
 
+        {/* Período: tipo de data (vencimento/emissão) + mês + ano + "Todas" — mesmo
+            princípio do /dashboard. O seletor "Tipo de data" fica AQUI, junto do período
+            que ele controla (campo usado pelos botões de mês E pelo intervalo De/Até).
+            Aplica imediatamente; o grid e o card "Valor total" seguem o período (cards de KPI ficam globais). */}
+        <div className="flex items-center justify-start gap-3 flex-wrap mb-2">
+          {/* Tipo de data: coluna usada pelos botões de mês E pelo intervalo De/Até.
+              Aplica imediatamente (re-filtra a visão atual na nova coluna). */}
+          <select
+            id="consulta-date-field"
+            name="consulta-date-field"
+            aria-label="Tipo de data (vencimento ou emissão)"
+            className="input h-7 w-32 py-0 text-xs"
+            value={f.dateField}
+            onChange={(e) => applyPeriod({ dateField: e.target.value as ConsultaFilters['dateField'] })}
+          >
+            <option value="due_date">Vencimento</option>
+            <option value="issue_date">Emissão</option>
+          </select>
+
+          <div className="flex gap-0.5 flex-wrap" role="group" aria-label="Filtrar por mês">
+            {MONTHS.map((m, i) => (
+              <button
+                key={m}
+                onClick={() => applyPeriod({ month: i, year: f.year ?? nowRef.year, dateFrom: '', dateTo: '' })}
+                aria-label={`Mês ${MONTHS_FULL[i]}`}
+                aria-pressed={f.month === i}
+                className={`text-xs px-2 py-0.5 rounded-sm transition-colors ${f.month === i ? 'bg-brand-light text-brand-dark font-semibold' : 'text-slate-500 hover:bg-slate-100'}`}
+              >
+                {m}
+              </button>
+            ))}
+          </div>
+
+          <div className="flex gap-1" role="group" aria-label="Filtrar por ano">
+            {[(f.year ?? nowRef.year) - 1, f.year ?? nowRef.year, (f.year ?? nowRef.year) + 1].map((y) => (
+              <button
+                key={y}
+                onClick={() => applyPeriod({ year: y, month: f.month ?? nowRef.month, dateFrom: '', dateTo: '' })}
+                aria-pressed={f.year === y}
+                className={`text-xs font-medium px-2.5 py-1 rounded-md border transition-colors ${f.year === y ? 'bg-brand border-brand text-white' : 'bg-white border-slate-200 text-slate-600 hover:bg-slate-50'}`}
+              >
+                {y}
+              </button>
+            ))}
+          </div>
+
+          <button
+            onClick={() => applyPeriod({ month: null, year: null, dateFrom: '', dateTo: '' })}
+            aria-label="Todas as datas"
+            aria-pressed={f.month === null}
+            className={`text-xs font-medium px-2.5 py-1 rounded-md border transition-colors ${f.month === null ? 'bg-brand border-brand text-white' : 'bg-white border-slate-200 text-slate-600 hover:bg-slate-50'}`}
+          >
+            Todas
+          </button>
+        </div>
+
         <div className="flex gap-2 flex-wrap mb-2">
           <div className="relative w-90 max-w-full">
             <input
@@ -616,25 +727,35 @@ export default function Consulta() {
               <option key={s}>{s}</option>
             ))}
           </select>
+          {/* Intervalo De/Até — busca GLOBAL por range de data na coluna escolhida no
+              seletor "Tipo de data" da barra de período (acima). Aplica via "Buscar" (ou Enter). */}
           <input
             id="consulta-date-from"
             name="consulta-date-from"
-            aria-label="Vencimento inicial"
+            aria-label={`${dateFieldLabel} — data inicial`}
             type="date"
             className="input w-36"
             value={f.dateFrom}
+            max={f.dateTo || undefined}
             onChange={(e) => sf('dateFrom', e.target.value)}
-            title="Vencimento de"
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') handleSearch();
+            }}
+            title={`${dateFieldLabel} de`}
           />
           <input
             id="consulta-date-to"
             name="consulta-date-to"
-            aria-label="Vencimento final"
+            aria-label={`${dateFieldLabel} — data final`}
             type="date"
             className="input w-36"
             value={f.dateTo}
+            min={f.dateFrom || undefined}
             onChange={(e) => sf('dateTo', e.target.value)}
-            title="Vencimento até"
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') handleSearch();
+            }}
+            title={`${dateFieldLabel} até`}
           />
           <button onClick={handleSearch} className="btn btn-primary w-24">
             <Search size={14} /> Buscar

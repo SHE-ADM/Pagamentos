@@ -645,6 +645,21 @@ subir só os apps Node, use os `dev:vite|dev:api|dev:portal` individuais.
 > **Para sessões de trabalho exclusivamente de frontend, prefira `npm run dev:vite`** —
 > o Vite sobe sem depender do Flask e não há risco de queda por serviços externos.
 
+> **Versão do Node — use 20.9+ ou 22 LTS, NUNCA a 24 (não regredir — 2026-06-30):** o
+> `next dev` do **Next 16** (api-backend/portal) **crasha o worker** no **Node 24**
+> (*"Jest worker encountered N child process exceptions, exceeding retry limit"*) — TODAS
+> as rotas `/api/*` autenticadas passam a devolver uma **página HTML de erro 500** (não o
+> envelope JSON), e o frontend mostra o genérico **"Erro 500 ao acessar a API de dados"**.
+> **Só acontece no dev local** (a Vercel roda Node LTS, produção intocada), o que confunde
+> o diagnóstico. O manifesto agora trava a versão: **`.nvmrc` = `22`** + **`engines.node`
+> = `"^20.9.0 || ^22.0.0"`** na raiz (`nvm use` seleciona a certa; `npm install` avisa no
+> Node fora da faixa). Se aparecer 500 HTML em TODAS as rotas autenticadas mas `/api/health`
+> (pública) responder JSON: é o worker do dev, não o código — troque para Node 22
+> (`nvm use 22`) e/ou limpe `apps/api-backend/.next` e reinicie. **Sintoma-chave:** o
+> genérico "Erro {status} ao acessar a API de dados" só aparece quando a resposta **não é
+> JSON** (`dataApiCall` não achou `error` no corpo) — indica falha de infra/dev-server,
+> não erro de validação (que ecoa a mensagem curada do backend).
+
 Acessibilidade em navegador (Playwright + axe) — **não** roda no `npm test`; runner
 separado em `apps/frontend-vite` (sobe o Vite dev sozinho via `webServer`):
 
@@ -1102,6 +1117,20 @@ vencimento **mais recente**, chama `update_financial` para atualizar `due_date` 
 guia paga uma vez, sempre com o boleto válido. A trigger recalcula a situação em `status` no
 UPDATE (só quando em aberto — migration 034).
 
+**Boletos DISTINTOS não podem fundir por número SINTÉTICO nem por valor/vencimento
+quando têm código de barras próprio (não regredir):** quando o PDF não traz Nº do
+documento nem vencimento, o pipeline gera um `invoice_number` **sintético**
+(`{tipo}_{ddmmaa}` ou `PIX_…`) e *defaulta* o vencimento p/ a data da extração. Dois
+boletos diferentes do mesmo fornecedor com o **mesmo valor** colidiam nessas duas
+impressões e a dedup **perdia** um deles (caso real: HYOSUNG 181063-1/2/3 e 5 guias GNRE,
+duas de R$ 399,03). Correção em `find_financial_duplicate`: a **impressão 2 IGNORA número
+sintético** (`_is_synthetic_invoice_number` — só Nº PRÓPRIO do documento é chave; a reemissão
+de DAS/guia segue funcionando por número real) e a **impressão 3 só casa candidatos SEM
+barcode quando o NOVO tem barcode** (`barcode=is.null`) — código de barras presente e
+diferente = documento distinto (a impressão 1 já teria casado se fossem o mesmo). Sem barcode
+no novo (corpo do e-mail), a impressão 3 segue por valor+vencimento+tipo. Testes:
+`tests/test_dup_barcode_synthetic.py`.
+
 **A dedup casa por `sk_supplier`, não por texto do fornecedor** (migrations 040/041/042): o
 fornecedor é resolvido ANTES da dedup por `_finalize_supplier` (RPC
 `resolve_supplier_for_account` → `SupabaseControl.resolve_supplier`), que grava
@@ -1160,6 +1189,39 @@ pagamento é forçado a `pix` tanto no corpo (`extract_from_email_body`) quanto 
 (`build_financial_payload`).
 
 ### Auto-resolução de fornecedor
+
+**ASSUNTO como ÚLTIMO recurso para o nome do fornecedor (não regredir):** e-mail INTERNO de
+pagamento ("PAGAMENTO BOLETO HYOSUNG 181063-3", "ENC: GUIA GNRE", "PAGAMENTO PIX FULANO")
+encaminha um boleto/imagem cujo anexo **não traz nome/CNPJ/CPF**, e o remetente interno
+(`@otimotex`/`@lebianco`) é **bloqueado** como fornecedor (migration 046) — a RPC então lança
+"nenhum identificador válido" e a conta (com valor + código de barras) era **PERDIDA** como
+`db_erro`. Correção: `_finalize_supplier`, quando não há nome/CNPJ/CPF extraído, deriva o nome
+do favorecido do **assunto** via `_supplier_name_from_subject` (remove prefixos de
+encaminhamento `ENC:/RES:/RE:/FWD:`, as palavras de ação `pagamento/boleto/pix/guia/…` e a
+cauda de número de documento). Vale para TODOS os caminhos (PDF/imagem/corpo — todos passam
+por `_finalize_supplier` com `payload['subject']` preenchido). Conservador: só roda como
+último recurso e devolve `''` para assunto sem nome utilizável.
+Testes: `tests/test_supplier_from_subject.py`. **Efeito colateral conhecido:** o assunto pode
+criar um fornecedor com nome "curto" (ex.: `HYOSUNG`) divergente de um cadastro canônico
+existente (`HYOSUNG SC`, CNPJ 11703922000181) — o operador funde os dois em `/fornecedores`
+quando forem o mesmo (não há merge automático, pois o boleto não trouxe CNPJ para provar).
+
+**Um TIPO DE DOCUMENTO ou TIPO DE PAGAMENTO NUNCA vira fornecedor (não regredir):** o assunto
+"ENC: GUIA GNRE" reduzia a "GNRE" (um `document_type`) e virava fornecedor — errado.
+`_is_non_supplier_term` (set `_NON_SUPPLIER_TERMS`, espelha `DOCUMENT_TYPES`/acrônimos de tributo
+de `WORD_KEYWORDS` + `PAYMENT_METHODS` de `@sheild/shared`) rejeita o candidato quando ele É, no
+todo, um tipo (`GNRE`, `BOLETO`, `PIX`, `DARF SP` — acrônimo isolado + UF/número). **Não** rejeita
+nomes que apenas CONTÊM a palavra (`Porto Seguro`, `Vale Fertilizantes`). O filtro vale para o nome
+**extraído** E o derivado do assunto.
+
+**Fallback final — o PAGADOR (último recurso de todos):** quando esgotam CNPJ/CPF/nome/e-mail/
+assunto e o pagador está claro, `_resolve_supplier_by_payer` usa `payer_cnpj` (14 dígitos, casa o
+fornecedor por CNPJ) ou `payer_name` (ex.: `OTIMOTEX`) como fornecedor — garante que a conta a pagar
+**nunca se perca** por falta de fornecedor identificável; o operador reclassifica em `/consulta`. É o
+que as 5 guias GNRE internas usam (favorecido real = a SEFAZ da UF, que a extração não captura → caem
+no pagador OTIMOTEX). A guarda `sem_fornecedor` (PDF) também aceita assunto/pagador como chave, para
+não barrar a conta antes do fallback rodar. Ordem completa: **extraído → assunto → e-mail (RPC) →
+PAGADOR**.
 
 O pipeline resolve o fornecedor **antes do INSERT** via RPC `resolve_supplier_for_account`
 (`migration 040`; `_finalize_supplier` → `SupabaseControl.resolve_supplier`), que chama

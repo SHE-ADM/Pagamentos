@@ -433,8 +433,13 @@ class SupabaseControl:
         supplier_clause = f"sk_supplier=eq.{int(sk_supplier)}"
 
         # 2. fornecedor + numero do documento + valor (numero substancial).
+        # IGNORA numero SINTETICO (PIX_/{tipo}_{ddmmaa}): ele colide entre boletos
+        # distintos do mesmo fornecedor/valor/vencimento (ex.: parcelas com
+        # vencimento defaultado p/ a data da extracao), causando falso-positivo de
+        # duplicidade. So o numero PROPRIO do documento e chave confiavel aqui; o
+        # codigo de barras distingue os demais (impressoes 1 e 3).
         invoice = str(payload.get("invoice_number") or "").strip()
-        if len(invoice) >= 6:
+        if len(invoice) >= 6 and not _is_synthetic_invoice_number(invoice):
             m = _find([
                 supplier_clause,
                 f"invoice_number=eq.{urllib.parse.quote(invoice, safe='')}",
@@ -444,10 +449,18 @@ class SupabaseControl:
                 return m
 
         # 3. fornecedor + valor + vencimento + tipo (mesmo encargo, numero distinto).
-        return _find([supplier_clause] + [
+        # Quando o NOVO documento tem codigo de barras, so casa candidatos SEM
+        # barcode: barcode presente e DIFERENTE = documento distinto (boletos com
+        # valor/vencimento iguais mas linhas digitaveis proprias — impressao 1 ja
+        # teria casado se fossem o mesmo). Sem barcode no novo, mantem o casamento
+        # por valor+vencimento+tipo (caminho de corpo / reemissao sem barcode).
+        impressao3 = [supplier_clause] + [
             _eq_clause(col, payload.get(col))
             for col in ("amount", "due_date", "document_type")
-        ])
+        ]
+        if barcode:
+            impressao3.append("barcode=is.null")
+        return _find(impressao3)
 
     def resolve_supplier(self, payload: dict) -> int | None:
         """Resolve/cria o fornecedor via RPC resolve_supplier_for_account e devolve
@@ -661,6 +674,101 @@ def _supplier_from_sender(sender_email: str | None) -> "str | None":
         if domain == known or domain.endswith("." + known):
             return name
     return None
+
+
+# Assunto como ULTIMO recurso para o nome do fornecedor/favorecido.
+# E-mails internos de pagamento ("PAGAMENTO BOLETO HYOSUNG 181063-3",
+# "PAGAMENTO PIX FULANO") nomeiam o favorecido no assunto, mas o anexo/imagem
+# nem sempre traz nome/CNPJ/CPF e o remetente interno (@otimotex/@lebianco) e
+# BLOQUEADO como fornecedor (migration 046) — sem este fallback a conta (com
+# valor e codigo de barras) era PERDIDA como db_erro. Remove prefixos de
+# encaminhamento (ENC:/RES:/RE:/FWD:), as palavras de ACAO de pagamento e a
+# cauda de numero de documento, devolvendo o nome do favorecido.
+_SUBJECT_FWD_PREFIX_RE = re.compile(
+    r"^\s*(?:enc|res|re|fw|fwd|encaminhar|encaminhado)\s*[:.]\s*", re.IGNORECASE)
+_SUBJECT_PAYMENT_PREFIX_RE = re.compile(
+    r"^(?:\s*(?:pagamento|pagar|pgto|pgmto|boleto|bol|pix|ted|doc|"
+    r"transfer[eê]ncia|dep[oó]sito|fatura|guia|t[ií]tulo|cobran[cç]a|"
+    r"comprovante|recibo)\b[ \t.:\-/]*)+",
+    re.IGNORECASE)
+# Cauda de numero de documento ("181063-3", "Nº 12345", "- 998407913").
+_SUBJECT_DOCNUM_TAIL_RE = re.compile(
+    r"[ \t]*[-–—]?[ \t]*(?:n[º°o.]?\s*)?\d[\d.\-/_]*\s*$", re.IGNORECASE)
+
+
+def _norm_term(s: str | None) -> str:
+    """Normaliza (NFD strip de acentos + lowercase) para comparar termos."""
+    return unicodedata.normalize("NFD", s or "").encode("ascii", "ignore").decode().lower()
+
+
+# Termos que NUNCA sao fornecedor — TIPOS DE DOCUMENTO + TIPOS DE PAGAMENTO (e os
+# acronimos de tributo). Um e-mail interno "ENC: GUIA GNRE" reduzia para "GNRE"
+# (um tipo de documento) e virava fornecedor — errado. A lista espelha o CHECK de
+# document_type (+ keywords de tributo de WORD_KEYWORDS / _DOC_TYPE_NORM) e os
+# PAYMENT_METHODS do @sheild/shared. Tudo normalizado (sem acento, minusculo).
+_NON_SUPPLIER_TERMS = frozenset(_norm_term(t) for t in {
+    # tipos de documento (CHECK + sinonimos de extracao)
+    "boleto", "cte", "ct-e", "nfe", "nf-e", "nfse", "nfs-e", "nota fiscal",
+    "tributo", "seguro", "recibo", "contrato", "fatura", "fechamento",
+    "cobranca", "cobrança", "outro", "outros", "honorario", "honorarios",
+    "honorário", "honorários", "container", "conteiner", "contêiner",
+    "conhecimento de transporte", "dacte", "guia", "cambio", "câmbio",
+    "conta de agua", "conta de água", "conta de luz",
+    "conta de telefone", "internet", "conta de telefone / internet",
+    # acronimos de tributo / guias
+    "darf", "gps", "das", "simples nacional", "simei", "gru", "dae", "dare",
+    "gnre", "ipva", "iptu", "dam", "duam", "dam / duam", "iss", "itbi", "gare",
+    # tipos de pagamento (PAYMENT_METHODS)
+    "pix", "ted", "doc", "cartao", "cartão", "deposito", "depósito",
+    "duplicata", "bancario", "bancário", "carteira", "vale", "credito",
+    "crédito", "debito", "débito", "dinheiro", "transferencia", "transferência",
+    "cheque",
+})
+
+
+def _is_non_supplier_term(name: str | None) -> bool:
+    """True quando `name` E, no todo, um tipo de documento/pagamento (ex.: 'GNRE',
+    'Boleto', 'PIX', 'DARF SP') — robustez para nao cadastrar um TIPO como
+    fornecedor. NAO rejeita nomes que apenas CONTÊM a palavra ('Porto Seguro',
+    'Vale Fertilizantes' permanecem fornecedores validos)."""
+    n = re.sub(r"\s+", " ", _norm_term(name)).strip(" .-/")
+    if not n:
+        return False
+    if n in _NON_SUPPLIER_TERMS:
+        return True
+    # acronimo isolado + ruido (UF de 2 letras / numero solto): "gnre mg", "darf sp".
+    core = [t for t in re.split(r"[\s/]+", n) if t and not t.isdigit() and len(t) > 2]
+    return len(core) == 1 and core[0] in _NON_SUPPLIER_TERMS
+
+
+def _supplier_name_from_subject(subject: str | None) -> str:
+    """Deriva um nome de fornecedor/favorecido do ASSUNTO (ultimo recurso).
+
+    Retorna '' quando o assunto nao rende um nome utilizavel (vazio, so numeros,
+    curto demais OU um TIPO DE DOCUMENTO/PAGAMENTO — ex.: 'GNRE', 'BOLETO').
+    Conservador de proposito — so deve ser usado quando a extracao NAO trouxe
+    nome/CNPJ/CPF do fornecedor. Ex.:
+      "PAGAMENTO BOLETO HYOSUNG 181063-3"        -> "HYOSUNG"
+      "ENC: PAGAMENTO PIX SORTEIO BLUSAS - JOAO" -> "SORTEIO BLUSAS - JOAO"
+      "ENC: GUIA GNRE"                           -> ""  (tipo de documento)
+    """
+    if not subject:
+        return ""
+    s = " ".join(str(subject).split())  # colapsa espacos e quebras de linha
+    # remove prefixos de encaminhamento repetidos (ENC: RES: RE: FWD:)
+    prev = None
+    while prev != s:
+        prev = s
+        s = _SUBJECT_FWD_PREFIX_RE.sub("", s)
+    s = _SUBJECT_PAYMENT_PREFIX_RE.sub("", s).strip()
+    s = _SUBJECT_DOCNUM_TAIL_RE.sub("", s).strip(" -–—:.\t")
+    # precisa restar pelo menos uma LETRA e tamanho minimo (evita "12345", "-")
+    if len(s) < 3 or not re.search(r"[A-Za-zÀ-ÿ]", s):
+        return ""
+    # robustez: um tipo de documento/pagamento nao e fornecedor (ex.: "GNRE").
+    if _is_non_supplier_term(s):
+        return ""
+    return s
 
 
 def safe_filename(text: str, max_len: int = 40) -> str:
@@ -906,6 +1014,31 @@ def build_financial_payload(row: dict, gmail_message_id: str,
     return payload
 
 
+def _resolve_supplier_by_payer(ctrl: "SupabaseControl", payload: dict) -> int | None:
+    """ULTIMO RECURSO: usa o PAGADOR (payer_name/payer_cnpj — ex.: OTIMOTEX) como
+    fornecedor, apenas quando TODAS as outras formas (nome/CNPJ/CPF/e-mail/assunto)
+    falharam e o pagador esta claro. Garante que a conta a pagar nunca se perca por
+    falta de fornecedor identificavel; o operador reclassifica depois em /consulta.
+
+    Retorna sk_supplier ou None (pagador ausente/indefinido)."""
+    payer_name = (payload.get("payer_name") or "").strip()
+    payer_cnpj = re.sub(r"\D", "", str(payload.get("payer_cnpj") or ""))
+    # filtro de robustez: nome do pagador nunca pode ser um tipo de documento/pagamento.
+    if _is_non_supplier_term(payer_name):
+        payer_name = ""
+    if not payer_name and len(payer_cnpj) != 14:
+        return None  # pagador nao esta claro — nao inventa fornecedor
+    probe = dict(payload)
+    probe["supplier_name"] = payer_name or None
+    probe["supplier_cnpj"] = payer_cnpj if len(payer_cnpj) == 14 else None
+    probe["supplier_cpf"]  = None
+    sk = ctrl.resolve_supplier(probe)
+    if sk:
+        log.info(f"    [FORNECEDOR-PAGADOR] fornecedor ausente — usando o pagador: "
+                 f"{(payer_name or payer_cnpj)!r}")
+    return sk
+
+
 def _finalize_supplier(ctrl: "SupabaseControl", payload: dict) -> bool:
     """Resolve o fornecedor (RPC), grava payload['sk_supplier'] e REMOVE as colunas
     denormalizadas supplier_name/supplier_cnpj/supplier_cpf — o fornecedor passa a
@@ -913,8 +1046,31 @@ def _finalize_supplier(ctrl: "SupabaseControl", payload: dict) -> bool:
 
     Deve ser chamado APOS a validacao 'sem_fornecedor' (que usa os campos brutos
     extraidos) e ANTES de find_financial_duplicate (a dedup casa por sk_supplier).
-    Retorna False quando a resolucao falha (chamador trata como erro de gravacao)."""
+    Retorna False quando a resolucao falha (chamador trata como erro de gravacao).
+
+    Ordem de fallback (cada um so quando o anterior esgota):
+      1. nome/CNPJ/CPF EXTRAIDOS (descartando o nome que for um TIPO de
+         documento/pagamento — robustez: 'GNRE'/'BOLETO' nao e fornecedor);
+      2. nome derivado do ASSUNTO (idem filtro de tipo) — e-mail interno de
+         pagamento ("PAGAMENTO BOLETO HYOSUNG 181063-3") nomeia o favorecido;
+      3. e-mail do remetente (nao interno) — dentro da RPC resolve_supplier;
+      4. ULTIMO RECURSO: o PAGADOR (payer_name/payer_cnpj, ex.: OTIMOTEX) — so
+         quando TODAS as formas acima falham e o pagador esta claro; garante que a
+         conta a pagar nunca se perca e fique rastreavel pelo pagador."""
+    # robustez: um TIPO de documento/pagamento extraido como "fornecedor" e descartado.
+    if _is_non_supplier_term(payload.get("supplier_name")):
+        payload.pop("supplier_name", None)
+    # fallback 2: nome do assunto (tambem filtra tipo de documento/pagamento).
+    if not any(str(payload.get(k) or "").strip()
+               for k in ("supplier_name", "supplier_cnpj", "supplier_cpf")):
+        guessed = _supplier_name_from_subject(payload.get("subject"))
+        if guessed:
+            payload["supplier_name"] = guessed
+            log.info(f"    [FORNECEDOR-ASSUNTO] nome derivado do assunto: {guessed!r}")
     sk_supplier = ctrl.resolve_supplier(payload)
+    # fallback 4: PAGADOR (ultimo recurso) — esgotaram nome/CNPJ/CPF/e-mail/assunto.
+    if not sk_supplier:
+        sk_supplier = _resolve_supplier_by_payer(ctrl, payload)
     for col in ("supplier_name", "supplier_cnpj", "supplier_cpf"):
         payload.pop(col, None)
     if not sk_supplier:
@@ -1299,6 +1455,22 @@ def _synthetic_invoice_number(document_type, amount, iso_date) -> str | None:
     if ddmmyy:
         return f"{document_type or 'outro'}_{ddmmyy}"
     return None
+
+
+# Numero de documento SINTETICO (gerado por _synthetic_invoice_number quando o
+# documento nao traz numero proprio): 'PIX_R$ ...' ou '{tipo}_{ddmmaa}'. NAO e um
+# identificador confiavel — dois boletos distintos do mesmo fornecedor, mesmo valor
+# e mesmo vencimento (ou vencimento DEFAULTADO p/ a data da extracao) colidem nesse
+# numero. Por isso a dedup de conteudo (impressao 2) o IGNORA: o codigo de barras
+# (impressao 1) distingue os documentos.
+_SYNTHETIC_INVOICE_RE = re.compile(r"_\d{6}(?:\(\d+\))?$")
+
+
+def _is_synthetic_invoice_number(invoice: str | None) -> bool:
+    s = (invoice or "").strip()
+    if s.upper().startswith("PIX_"):
+        return True
+    return bool(_SYNTHETIC_INVOICE_RE.search(s))
 
 
 def extract_from_email_body(body_text: str, received_at: str, message_id: str,
@@ -2046,16 +2218,18 @@ def extract_and_store_accounts(saved_pdfs: list, message_id: str,
                 continue
 
             # Validacao 2: fornecedor nao identificado por NENHUMA chave.
-            # Alem de CNPJ/CPF/nome extraidos do PDF, o e-mail do remetente e
-            # chave valida — a RPC resolve_supplier_for_account casa por e-mail
-            # (passo 3, email/2/3/4) ou cria o fornecedor a partir dele. So
-            # rejeita quando nao ha identificador algum (espelha a guarda da
-            # propria RPC), evitando descartar uma conta que o remetente
-            # identifica (mesmo comportamento do caminho de corpo).
+            # Alem de CNPJ/CPF/nome extraidos do PDF, sao chaves validas: o e-mail
+            # do remetente (a RPC casa por email/2/3/4 ou cria o fornecedor), o
+            # ASSUNTO (favorecido de e-mail interno de pagamento) e, em ultimo
+            # recurso, o PAGADOR (payer_name/payer_cnpj). So rejeita quando NAO ha
+            # identificador algum — _finalize_supplier tenta todas essas formas.
             if not any([payload.get("supplier_cnpj"),
                         payload.get("supplier_cpf"),
                         payload.get("supplier_name"),
-                        payload.get("sender_email")]):
+                        payload.get("sender_email"),
+                        _supplier_name_from_subject(payload.get("subject")),
+                        payload.get("payer_name"),
+                        payload.get("payer_cnpj")]):
                 ctrl.register_error(
                     ctx, "sem_fornecedor",
                     f"CNPJ, CPF, nome e e-mail do fornecedor ausentes — {row.get('source_file')}",

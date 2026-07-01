@@ -111,11 +111,9 @@ export default function ContaForm({ mode, defaultValues, onSubmit, onCancel, sub
   const [chartAccountId, setChartAccountId] = useState<number | null>(orNull(defaultValues?.chart_account_id));
   // Classificação DEFAULT do fornecedor selecionado (só modo create) — fonte dos
   // rótulos do pré-preenchimento. Em edição, os rótulos vêm de `defaultValues`.
+  // Os selects de centro/plano são CONTROLADOS (espelham `value`), então o pré-preenchimento
+  // reflete sozinho ao atualizar costCenterId/chartAccountId — sem remonte por `key`.
   const [prefill, setPrefill] = useState<ClassificationSource | null>(null);
-  // Os selects de centro/plano inicializam `selected` uma vez (não sincronizam `value`).
-  // Para o pré-preenchimento refletir visualmente, este nonce — incrementado a cada
-  // aplicação — entra na `key` dos selects, forçando o remonte com o novo valor/rótulo.
-  const [prefillNonce, setPrefillNonce] = useState(0);
 
   // Cascata: trocar (ou limpar) o centro de custo zera o plano de contas, que pode não
   // pertencer ao novo centro. O ChartAccountSelect remonta via `key={costCenterId}`.
@@ -140,7 +138,7 @@ export default function ContaForm({ mode, defaultValues, onSubmit, onCancel, sub
         setPrefill(cc || ca ? sup : null);
         setCostCenterId(cc || null);
         setChartAccountId(ca || null);
-        setPrefillNonce((n) => n + 1); // força o remonte dos selects (novo valor/rótulo)
+        // Selects controlados → refletem o novo valor/rótulo sozinhos (sem nonce/remonte).
       } catch {
         // Falha ao buscar defaults não bloqueia o lançamento — segue sem pré-preencher.
       }
@@ -217,9 +215,6 @@ export default function ContaForm({ mode, defaultValues, onSubmit, onCancel, sub
       <AuthInput label="Descrição" error={errors.description?.message} {...register('description')} />
 
       <CostCenterSelect
-        // Remonta quando o pré-preenchimento aplica (nonce) para refletir o novo value
-        // + rótulo. Mudança MANUAL não bumpa o nonce → o select mantém a seleção.
-        key={`cc-${prefillNonce}`}
         id="conta-cost-center"
         label="Centro de custo"
         value={costCenterId}
@@ -228,9 +223,6 @@ export default function ContaForm({ mode, defaultValues, onSubmit, onCancel, sub
       />
 
       <ChartAccountSelect
-        // Remonta ao trocar o centro de custo (reinicia + recarrega as opções do novo
-        // centro) OU quando o pré-preenchimento aplica (nonce) — sem sincronizar estado.
-        key={`chart-${costCenterId ?? 'none'}-${prefillNonce}`}
         id="conta-chart-account"
         label="Plano de contas"
         value={chartAccountId}
