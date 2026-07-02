@@ -2,7 +2,7 @@
 // (financial_account) na Next API. URL /financial-accounts (distinta de /contas,
 // que é financial_account_control).
 import type { FinancialAccount, FinancialAccountCreateInput, FinancialAccountUpdateInput } from '@sheild/shared';
-import { dataApiCall, dataApiListPaged, type PagedParams, type PagedResult } from './dataApi';
+import { dataApiCall, dataApiDelete, dataApiListPaged, type PagedParams, type PagedResult } from './dataApi';
 
 export function listFinancialAccountsPage(params: PagedParams = {}): Promise<PagedResult<FinancialAccount>> {
   return dataApiListPaged<FinancialAccount>('/financial-accounts', params);
@@ -19,4 +19,9 @@ export async function updateFinancialAccount(id: number, input: FinancialAccount
     body: JSON.stringify(input),
   });
   return body.data as FinancialAccount;
+}
+
+// Hard delete — admin-only (403 se não-admin). Contas bancárias não têm FK reversa.
+export function deleteFinancialAccount(id: number): Promise<void> {
+  return dataApiDelete('/financial-accounts', id);
 }

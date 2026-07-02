@@ -50,5 +50,23 @@ class NormalizeBodyBarcodeTest(unittest.TestCase):
         self.assertIsNone(read_emails._normalize_body_barcode(""))
 
 
+class IsBoletoBarcodeTest(unittest.TestCase):
+    """Discriminador boleto vs chave NF-e/CT-e no caminho do corpo."""
+
+    def test_44_febraban_e_boleto(self):
+        self.assertTrue(read_emails._is_boleto_barcode("0019" + "0" * 40))
+
+    def test_44_chave_de_acesso_nao_e_boleto(self):
+        # Moeda (pos 4) != '9' -> chave NF-e/CT-e, nao boleto.
+        self.assertFalse(read_emails._is_boleto_barcode("1234" + "0" * 40))
+
+    def test_48_arrecadacao_e_boleto(self):
+        self.assertTrue(read_emails._is_boleto_barcode("8" * 48))
+
+    def test_invalidos(self):
+        for bad in (None, "", "1" * 45, "1" * 46):
+            self.assertFalse(read_emails._is_boleto_barcode(bad), repr(bad))
+
+
 if __name__ == "__main__":
     unittest.main()

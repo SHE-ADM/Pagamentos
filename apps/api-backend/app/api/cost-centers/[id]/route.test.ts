@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { NextRequest } from 'next/server';
 
-vi.mock('@/lib/auth', () => ({ requireAuth: vi.fn() }));
+vi.mock('@/lib/auth', () => ({ requireAuth: vi.fn(), requireAdmin: vi.fn() }));
 vi.mock('@/lib/cost-centers', () => {
   class CostCenterServiceError extends Error {
     status: number;
@@ -18,10 +18,11 @@ vi.mock('@/lib/cost-centers', () => {
 });
 
 import { GET, PATCH, DELETE } from './route';
-import { requireAuth } from '@/lib/auth';
+import { requireAuth, requireAdmin } from '@/lib/auth';
 import { costCenterService, CostCenterServiceError } from '@/lib/cost-centers';
 
 const requireAuthMock = vi.mocked(requireAuth);
+const requireAdminMock = vi.mocked(requireAdmin);
 const getByIdMock = vi.mocked(costCenterService.getById);
 const updateMock = vi.mocked(costCenterService.update);
 const removeMock = vi.mocked(costCenterService.remove);
@@ -36,6 +37,7 @@ const ctx = (id: string) => ({ params: Promise.resolve({ id }) });
 
 beforeEach(() => {
   requireAuthMock.mockReset().mockResolvedValue(null);
+  requireAdminMock.mockReset().mockResolvedValue(null);
   getByIdMock.mockReset();
   updateMock.mockReset();
   removeMock.mockReset();
@@ -86,5 +88,12 @@ describe('DELETE /api/cost-centers/:id', () => {
     removeMock.mockRejectedValue(new CostCenterServiceError('Centro de custo em uso e não pode ser excluído', 409));
     const res = await DELETE(req(), ctx('5'));
     expect(res.status).toBe(409);
+  });
+
+  it('403 quando não é admin (requireAdmin nega) — não toca o service', async () => {
+    requireAdminMock.mockResolvedValue(new Response(null, { status: 403 }));
+    const res = await DELETE(req(), ctx('5'));
+    expect(res.status).toBe(403);
+    expect(removeMock).not.toHaveBeenCalled();
   });
 });

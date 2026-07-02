@@ -17,6 +17,7 @@ import {
 import type { ZodError } from 'zod';
 import { getSupabaseAdmin } from './supabase-admin';
 import { resolveSort, type SortOrder } from './sort';
+import { resolveMatchingIds, parseNumericTerm } from './search';
 
 const TABLE = 'financial_account';
 const DEFAULT_LIMIT = 20;
@@ -73,13 +74,35 @@ function mapWriteError(error: { code?: string; message: string; details?: string
   return new FinancialAccountServiceError(error.message, 422);
 }
 
+// Monta as cláusulas do OR da busca cobrindo TODAS as colunas do grid: descrição e
+// moeda (texto), banco e situação (embeds de JOIN → ids pré-resolvidos), saldo e tipo
+// de pagamento (numéricos → igualdade exata quando o termo é um número).
+async function buildSearchClauses(term: string): Promise<string[]> {
+  const clauses = [`account_description.ilike.%${term}%`, `currency_code.ilike.%${term}%`];
+
+  const [bankIds, statusIds] = await Promise.all([
+    resolveMatchingIds('financial_bank', 'bank_id', ['bank_code', 'bank_name'], term),
+    resolveMatchingIds('status', 'status_id', ['status_name', 'status_short_name'], term),
+  ]);
+  if (bankIds.length > 0) clauses.push(`bank_id.in.(${bankIds.join(',')})`);
+  if (statusIds.length > 0) clauses.push(`status_id.in.(${statusIds.join(',')})`);
+
+  const num = parseNumericTerm(term);
+  if (num !== null) {
+    clauses.push(`balance_amount.eq.${num}`);
+    if (Number.isInteger(num)) clauses.push(`payment_type_id.eq.${num}`);
+  }
+
+  return clauses;
+}
+
 const repository = {
   async findAll(params: { from: number; to: number; search?: string; sort?: string; order?: SortOrder }) {
     let query = getSupabaseAdmin().from(TABLE).select(SELECT_WITH_BANK, { count: 'exact' });
 
     if (params.search) {
       const term = sanitizeTerm(params.search);
-      query = query.ilike('account_description', `%${term}%`);
+      if (term) query = query.or((await buildSearchClauses(term)).join(','));
     }
 
     const sorted = resolveSort(params.sort, params.order, SORTABLE_COLUMNS);

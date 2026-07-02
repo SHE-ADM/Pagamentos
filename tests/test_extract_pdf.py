@@ -36,6 +36,62 @@ class ApplyPixOverrideTest(unittest.TestCase):
         self.assertEqual(got, "outro")
 
 
+# Codigo de barras FEBRABAN de boleto: 44 digitos, moeda '9' (pos 4), banco != '000'.
+BOLETO_44 = "0019" + "0" * 40
+# Chave de acesso NF-e/CT-e: 44 digitos, moeda != '9' -> NAO e boleto.
+CHAVE_44 = "1234" + "0" * 40
+# Linha digitavel de arrecadacao (guia/tributo/concessionaria): 48 digitos.
+ARREC_48 = "8" * 48
+
+
+class BoletoBarcodeOverrideTest(unittest.TestCase):
+    """Boleto com PIX -> paga-se como boleto (barcode de boleto vence pix).
+
+    Chave de acesso NF-e/CT-e (44 sem moeda '9') NAO dispara o override.
+    """
+
+    def test_is_boleto_barcode(self):
+        self.assertTrue(e.is_boleto_barcode(BOLETO_44))
+        self.assertTrue(e.is_boleto_barcode(ARREC_48))
+        # Aceita mascara (pontos/espacos) em codigo de 44 digitos — normaliza para digitos.
+        self.assertTrue(e.is_boleto_barcode("0019." + ".".join(["0000"] * 10)))
+        self.assertFalse(e.is_boleto_barcode(CHAVE_44))
+        for bad in (None, "", "123", "9" * 45, "9" * 46):
+            self.assertFalse(e.is_boleto_barcode(bad), repr(bad))
+
+    def test_boleto_com_pix_vira_boleto(self):
+        rec = {"document_type": "pix", "payment_method": "pix", "barcode": BOLETO_44}
+        got = e.apply_boleto_barcode_override(dict(rec))
+        self.assertEqual(got["payment_method"], "boleto")
+        self.assertEqual(got["document_type"], "boleto")
+
+    def test_pix_puro_sem_barcode_continua_pix(self):
+        rec = {"document_type": "pix", "payment_method": "pix", "barcode": None}
+        got = e.apply_boleto_barcode_override(dict(rec))
+        self.assertEqual(got["payment_method"], "pix")
+        self.assertEqual(got["document_type"], "pix")
+
+    def test_cte_com_chave_de_acesso_nao_muda(self):
+        rec = {"document_type": "cte", "payment_method": "pix", "barcode": CHAVE_44}
+        got = e.apply_boleto_barcode_override(dict(rec))
+        self.assertEqual(got["payment_method"], "pix")
+        self.assertEqual(got["document_type"], "cte")
+
+    def test_guia_arrecadacao_preserva_tipo_fiscal(self):
+        # Guia (48 digitos) paga em boleto: metodo vira boleto, tipo real preservado.
+        rec = {"document_type": "dare", "payment_method": "pix", "barcode": ARREC_48}
+        got = e.apply_boleto_barcode_override(dict(rec))
+        self.assertEqual(got["payment_method"], "boleto")
+        self.assertEqual(got["document_type"], "dare")
+
+    def test_build_record_from_json_forca_boleto(self):
+        data = {"document_type": "pix", "payment_method": "pix", "barcode": BOLETO_44}
+        rec = e.build_record_from_json(Path("x.pdf"), data, "pdf_vision")
+        self.assertEqual(rec["payment_method"], "boleto")
+        self.assertEqual(rec["document_type"], "boleto")
+        self.assertEqual(rec["barcode"], BOLETO_44)
+
+
 class ImageAttachmentVisionTest(unittest.TestCase):
     """Anexos de IMAGEM (jpg/png/...) são lidos via Claude Vision (image_vision)."""
 

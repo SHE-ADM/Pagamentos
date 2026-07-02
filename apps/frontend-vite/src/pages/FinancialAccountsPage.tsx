@@ -12,6 +12,7 @@ import {
   listFinancialAccountsPage,
   createFinancialAccount,
   updateFinancialAccount,
+  deleteFinancialAccount,
 } from '../services/financialAccounts';
 import { listBanks, listStatuses, type StatusOption } from '../services/lookups';
 
@@ -50,10 +51,12 @@ export default function FinancialAccountsPage() {
       icon={Wallet}
       gridId="tabela-contas"
       rowKey={(a) => String(a.financial_account_id)}
-      columns={(onEdit) => getFinancialAccountColumns(statusLabel, onEdit)}
+      columns={(onEdit, onDelete) => getFinancialAccountColumns(statusLabel, onEdit, onDelete)}
       list={listFinancialAccountsPage}
       onCreate={createFinancialAccount}
       onUpdate={(row, data) => updateFinancialAccount(row.financial_account_id, data)}
+      onDelete={(row) => deleteFinancialAccount(row.financial_account_id)}
+      deleteItemName={(row) => row.account_description ?? `#${row.financial_account_id}`}
       renderForm={(a) => (
         <FinancialAccountForm
           mode={a.mode}
@@ -68,14 +71,15 @@ export default function FinancialAccountsPage() {
       )}
       newButtonLabel="Nova conta"
       searchId="financial-accounts-search"
-      searchPlaceholder="Buscar por descrição…"
-      searchAriaLabel="Buscar conta por descrição"
+      searchPlaceholder="Buscar por descrição, banco, moeda, saldo, tipo pgto ou situação…"
+      searchAriaLabel="Buscar conta por descrição, banco, moeda, saldo, tipo de pagamento ou situação"
       emptyMessage="Nenhuma conta encontrada"
       gridAriaLabel="Contas bancárias cadastradas"
       countLabel={(n) => `${n} contas`}
       messages={{
         created: 'Conta cadastrada com sucesso.',
         updated: 'Conta atualizada com sucesso.',
+        deleted: 'Conta excluída com sucesso.',
       }}
       formTitle={{ create: 'Nova conta', edit: 'Editar conta' }}
     />

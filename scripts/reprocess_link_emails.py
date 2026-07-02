@@ -88,7 +88,7 @@ def _store_pdf(pdf, ec, ctrl) -> str:
     rec = {"message_id": mid, "received_at": ec["received_at"],
            "sender_email": ec.get("sender_email"), "sender_name": ec.get("sender_name"),
            "subject": ec.get("subject")}
-    csvs, saved = R.extract_and_store_accounts([Path(pdf)], mid, ctrl, email_rec=rec)
+    csvs, saved, _nonpayable = R.extract_and_store_accounts([Path(pdf)], mid, ctrl, email_rec=rec)
     if saved > 0:
         mark_extraido(ctrl, ec["id"])
         log.info(f"    ✓ {saved} conta(s) nova(s); email_control {ec['id']} -> extraído")

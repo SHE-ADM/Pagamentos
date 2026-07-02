@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { NextRequest } from 'next/server';
 
-vi.mock('@/lib/auth', () => ({ requireAuth: vi.fn() }));
+vi.mock('@/lib/auth', () => ({ requireAuth: vi.fn(), requireAdmin: vi.fn() }));
 vi.mock('@/lib/banks', () => {
   class BankServiceError extends Error {
     status: number;
@@ -14,10 +14,11 @@ vi.mock('@/lib/banks', () => {
 });
 
 import { GET, PATCH, DELETE } from './route';
-import { requireAuth } from '@/lib/auth';
+import { requireAuth, requireAdmin } from '@/lib/auth';
 import { bankService, BankServiceError } from '@/lib/banks';
 
 const requireAuthMock = vi.mocked(requireAuth);
+const requireAdminMock = vi.mocked(requireAdmin);
 const getByIdMock = vi.mocked(bankService.getById);
 const updateMock = vi.mocked(bankService.update);
 const removeMock = vi.mocked(bankService.remove);
@@ -28,6 +29,7 @@ const ctx = (id: string) => ({ params: Promise.resolve({ id }) });
 
 beforeEach(() => {
   requireAuthMock.mockReset().mockResolvedValue(null);
+  requireAdminMock.mockReset().mockResolvedValue(null);
   getByIdMock.mockReset();
   updateMock.mockReset();
   removeMock.mockReset();
@@ -57,5 +59,11 @@ describe('/api/banks/:id', () => {
   it('DELETE 200 no sucesso', async () => {
     removeMock.mockResolvedValue({ bank_id: 5 });
     expect((await DELETE(req(), ctx('5'))).status).toBe(200);
+  });
+
+  it('DELETE 403 quando não é admin — não toca o service', async () => {
+    requireAdminMock.mockResolvedValue(new Response(null, { status: 403 }));
+    expect((await DELETE(req(), ctx('5'))).status).toBe(403);
+    expect(removeMock).not.toHaveBeenCalled();
   });
 });

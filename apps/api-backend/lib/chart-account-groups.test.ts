@@ -68,4 +68,13 @@ describe('chartAccountGroupService', () => {
   it('update 404 para o sentinela id 0', async () => {
     await expect(chartAccountGroupService.update(0, { group_code: 'X' })).rejects.toMatchObject({ status: 404 });
   });
+
+  it('busca cobre TODAS as colunas do grid (código, descrição, tipo)', async () => {
+    resultQueue.push({ data: [], count: 0, error: null }); // main query
+    await chartAccountGroupService.list({ search: 'ativo' });
+    const orArg = (builders[0].or.mock.calls[0]?.[0] ?? '') as string;
+    expect(orArg).toContain('group_code.ilike.%ativo%');
+    expect(orArg).toContain('group_description.ilike.%ativo%');
+    expect(orArg).toContain('group_type.ilike.%ativo%');
+  });
 });

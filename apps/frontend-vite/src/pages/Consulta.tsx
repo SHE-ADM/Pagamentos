@@ -20,6 +20,7 @@ import {
   getFinancialAccountControl,
   getFinancialStats,
   getFinancialAccountTotalValue,
+  getFinancialAccountCount,
   setFinancialAccountFlag,
   setFinancialAccountStatus,
   setFinancialAccountStatusBulk,
@@ -172,6 +173,8 @@ export default function Consulta() {
   const [stats, setStats] = useState<Partial<FinancialStats>>({});
   // Soma de "Valor total" para o filtro aplicado (cards/filtros). null = sem dado ainda.
   const [filteredValue, setFilteredValue] = useState<number | null>(null);
+  // Contagem de documentos NÃO cancelados para o filtro aplicado (rodapé). null = sem dado.
+  const [filteredCount, setFilteredCount] = useState<number | null>(null);
   const [sel, setSel] = useState<FinancialAccountControl | null>(null);
   const [viewing, setViewing] = useState<string | null>(null);
   // Edição de conta (modal com ContaForm → PATCH /api/contas/:id).
@@ -280,17 +283,26 @@ export default function Consulta() {
     return () => clearTimeout(t);
   }, [f.supplier, applied.supplier]);
 
-  // "Valor total" reflete o filtro aplicado (cards ou filtros manuais). Depende
-  // só de `applied` — não re-soma ao paginar/ordenar. O flag `cancelled` descarta
-  // respostas de filtros já trocados (evita sobrescrever com valor obsoleto).
+  // "Valor total" e "Total de registros" (ambos SEM cancelado) refletem o filtro
+  // aplicado (cards ou filtros manuais). Dependem só de `applied` — não re-somam ao
+  // paginar/ordenar. O flag `cancelled` descarta respostas de filtros já trocados.
   useEffect(() => {
     let cancelled = false;
     const run = async () => {
       try {
-        const v = await getFinancialAccountTotalValue(applied);
-        if (!cancelled) setFilteredValue(v);
+        const [v, c] = await Promise.all([
+          getFinancialAccountTotalValue(applied),
+          getFinancialAccountCount(applied),
+        ]);
+        if (!cancelled) {
+          setFilteredValue(v);
+          setFilteredCount(c);
+        }
       } catch {
-        if (!cancelled) setFilteredValue(null);
+        if (!cancelled) {
+          setFilteredValue(null);
+          setFilteredCount(null);
+        }
       }
     };
     void run();
@@ -366,6 +378,15 @@ export default function Consulta() {
   const columns = useMemo(
     () => getConsultaColumns(handleToggleFlag, handleStatusChange),
     [handleToggleFlag, handleStatusChange],
+  );
+
+  // Linhas carregadas SEM cancelado (N do rodapé). O grid ainda exibe as canceladas
+  // (visíveis), mas elas não entram na contagem — assim "N de M" fica consistente
+  // (N ≤ M, ambos sem cancelado). A paginação (hasMore) segue usando `total` (com
+  // cancelado) para carregar todas as linhas do grid.
+  const loadedNonCancelled = useMemo(
+    () => rows.filter((r) => r.status !== 'cancelado').length,
+    [rows],
   );
 
   // "Atualizar": dispara a leitura IMAP dos últimos 7 dias (job em background no
@@ -878,6 +899,12 @@ export default function Consulta() {
                                 <p className="text-xs text-slate-600">{r.description}</p>
                               </div>
                             )}
+                            {r.additional_info && (
+                              <div className="mt-3 p-3 bg-white rounded-lg border border-slate-100">
+                                <span className="badge bg-brand/10 text-brand mb-2">Informações adicionais</span>
+                                <p className="text-xs text-slate-600 whitespace-pre-wrap">{r.additional_info}</p>
+                              </div>
+                            )}
                             {r.email_body_excerpt && (
                               <div className="mt-3 p-3 bg-white rounded-lg border border-slate-100">
                                 <span className="badge bg-brand/10 text-brand mb-2">Mensagem do e-mail</span>
@@ -891,7 +918,8 @@ export default function Consulta() {
 
         <div className="flex items-center justify-between py-2 px-1 mb-4">
           <span className="text-xs text-slate-500">
-            {rows.length} de {total} registros
+            {loadedNonCancelled} de {filteredCount ?? loadedNonCancelled} registros
+            {filteredValue != null && ` · Valor total: ${fmtMoney(filteredValue)}`}
           </span>
           {rows.length < total && (
             <button

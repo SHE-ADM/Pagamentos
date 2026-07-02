@@ -80,6 +80,12 @@ def inspect_one(ctrl, ec: dict, body_text: str) -> str:
         motivo = f"{dtype} não gera conta" if (payload and amount) else "sem valor/sinal no corpo"
         log.info(f"[{ec['id']}] {ec['subject'][:55]} — não gravaria ({motivo})")
         return "sem_conta"
+    # CT-e/transporte SEM boleto → 'ignorado' (não é conta a pagar).
+    if (R._is_transport_context(ec.get("subject"), payload.get("supplier_name"),
+                                payload.get("document_type"))
+            and not R._is_boleto_barcode(payload.get("barcode"))):
+        log.info(f"[{ec['id']}] {ec['subject'][:55]} — CT-e/transporte sem boleto → ignoraria")
+        return "ignorado"
     # A dedup casa por sk_supplier, entao resolve o fornecedor antes (mesmo no
     # dry-run). resolve_supplier_id e idempotente — so cria cadastro novo se o
     # fornecedor ainda nao existir (o mesmo que o run real faria).
@@ -109,6 +115,12 @@ def process_one(ctrl, ec: dict, body_text: str) -> str:
                          rec.get("notes") or "Duplicata — conta já registrada")
         log.info(f"    ⊘ duplicidade ({rec.get('notes')}); email_control {ec['id']} -> duplicidade")
         return "duplicado"
+    if outcome == R.BODY_IGNORED:
+        # CT-e/transporte sem boleto — documento fiscal, não é conta a pagar.
+        set_email_status(ctrl, ec["id"], "ignorado",
+                         rec.get("notes") or "CT-e/transporte sem boleto — não gera conta a pagar")
+        log.info(f"    ⊘ ignorado ({rec.get('notes')}); email_control {ec['id']} -> ignorado")
+        return "ignorado"
     # BODY_NONE → mantém 'falha' e registra o motivo (TODA falha gera log).
     ctrl.register_error(
         rec, "falha_processamento",
@@ -135,7 +147,7 @@ def main():
     mail.login(os.getenv("IMAP_USER"), os.getenv("IMAP_PASS"))
     mail.select(os.getenv("IMAP_MAILBOX", "INBOX"))
 
-    tally = {"resolvido": 0, "duplicado": 0, "sem_conta": 0, "imap_ausente": 0}
+    tally = {"resolvido": 0, "duplicado": 0, "ignorado": 0, "sem_conta": 0, "imap_ausente": 0}
     try:
         for ec in rows:
             body_text = fetch_body_from_imap(mail, ec["message_id"])
@@ -159,6 +171,7 @@ def main():
     pre = "(dry-run) " if args.dry_run else ""
     log.info(f"  {pre}Resolvidos (corpo→conta) : {tally['resolvido']}")
     log.info(f"  Duplicidade (conta já existe): {tally['duplicado']}")
+    log.info(f"  Ignorado (CT-e/transp. s/ boleto): {tally['ignorado']}")
     log.info(f"  Sem conta no corpo        : {tally['sem_conta']}")
     log.info(f"  IMAP ausente              : {tally['imap_ausente']}")
     log.info("=" * 60)

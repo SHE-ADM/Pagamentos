@@ -123,11 +123,11 @@ export default function Layout({ children }: Readonly<{ children: ReactNode }>) 
           <p className="px-3 pt-4 pb-1.5 text-xs font-bold tracking-widest text-slate-400 uppercase">
             Tabelas
           </p>
-          <NavLink to="/tabelas/centros-de-custo" onClick={closeNav} className={({ isActive }) => navLink({ active: isActive })}>
-            <Layers size={16} /> Centro de custos
-          </NavLink>
           <NavLink to="/tabelas/bancos" onClick={closeNav} className={({ isActive }) => navLink({ active: isActive })}>
             <Landmark size={16} /> Bancos
+          </NavLink>
+          <NavLink to="/tabelas/centros-de-custo" onClick={closeNav} className={({ isActive }) => navLink({ active: isActive })}>
+            <Layers size={16} /> Centro de custos
           </NavLink>
           <NavLink to="/tabelas/contas" onClick={closeNav} className={({ isActive }) => navLink({ active: isActive })}>
             <Wallet size={16} /> Contas

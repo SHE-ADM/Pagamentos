@@ -54,6 +54,7 @@ describe('ContaForm', () => {
     expect(screen.getByLabelText('Valor (R$)')).toBeInTheDocument();
     expect(screen.getByLabelText('Tipo de documento')).toBeInTheDocument();
     expect(screen.getByLabelText('Tipo de pagamento')).toBeInTheDocument();
+    expect(screen.getByLabelText('Informações adicionais')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Lançar conta' })).toBeInTheDocument();
   });
 
@@ -101,6 +102,7 @@ describe('ContaForm', () => {
     await userEvent.type(screen.getByLabelText('Valor (R$)'), '100');
     await userEvent.selectOptions(screen.getByLabelText('Tipo de documento'), 'boleto');
     await userEvent.selectOptions(screen.getByLabelText('Tipo de pagamento'), 'pix');
+    await userEvent.type(screen.getByLabelText('Informações adicionais'), 'pagar via portal');
     await userEvent.click(screen.getByRole('button', { name: 'Lançar conta' }));
     await waitFor(() => expect(onSubmit).toHaveBeenCalled());
     expect(onSubmit.mock.calls[0][0]).toMatchObject({
@@ -108,6 +110,7 @@ describe('ContaForm', () => {
       amount: 100,
       document_type: 'boleto',
       payment_method: 'pix',
+      additional_info: 'pagar via portal',
     });
   });
 });

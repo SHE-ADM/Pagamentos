@@ -9,6 +9,7 @@ import {
   listChartAccountGroupsPage,
   createChartAccountGroup,
   updateChartAccountGroup,
+  deleteChartAccountGroup,
 } from '../services/chartAccountGroups';
 
 export default function ChartAccountGroupsPage() {
@@ -23,6 +24,8 @@ export default function ChartAccountGroupsPage() {
       list={listChartAccountGroupsPage}
       onCreate={createChartAccountGroup}
       onUpdate={(row, data) => updateChartAccountGroup(row.chart_account_group_id, data)}
+      onDelete={(row) => deleteChartAccountGroup(row.chart_account_group_id)}
+      deleteItemName={(row) => row.group_description ?? row.group_code ?? `#${row.chart_account_group_id}`}
       renderForm={(a) => (
         <ChartAccountGroupForm
           mode={a.mode}
@@ -35,14 +38,15 @@ export default function ChartAccountGroupsPage() {
       )}
       newButtonLabel="Novo grupo"
       searchId="chart-account-groups-search"
-      searchPlaceholder="Buscar por código ou descrição…"
-      searchAriaLabel="Buscar grupo por código ou descrição"
+      searchPlaceholder="Buscar por código, descrição ou tipo…"
+      searchAriaLabel="Buscar grupo por código, descrição ou tipo"
       emptyMessage="Nenhum grupo encontrado"
       gridAriaLabel="Grupos de plano de contas cadastrados"
       countLabel={(n) => `${n} grupos`}
       messages={{
         created: 'Grupo cadastrado com sucesso.',
         updated: 'Grupo atualizado com sucesso.',
+        deleted: 'Grupo excluído com sucesso.',
       }}
       formTitle={{ create: 'Novo grupo', edit: 'Editar grupo' }}
     />

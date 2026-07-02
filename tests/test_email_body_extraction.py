@@ -97,6 +97,9 @@ BOLETO_BODY = (
     "Vencimento: 14/06/2026"
 )
 
+# Codigo de barras FEBRABAN de boleto (44 digitos, moeda '9'): _is_boleto_barcode -> True.
+BOLETO_44 = "0019" + "0" * 40
+
 # Phishing / notificacao de dinheiro RECEBIDO — nao e conta a pagar.
 COMPROVANTE_BODY = (
     "Comprovante de Pix Recebido.\n"
@@ -234,6 +237,49 @@ class ExtractFromEmailBodyTest(unittest.TestCase):
         payload = read_emails.extract_from_email_body(
             body, "2026-06-15T10:00:00+00:00", "<msg-hon2>", "contador@x.com.br")
         self.assertIsNotNone(payload)
+        self.assertEqual(payload["document_type"], "honorários")
+        self.assertEqual(payload["payment_method"], "pix")
+
+    def test_boleto_com_pix_no_corpo_vira_boleto(self):
+        """Corpo com linha digitável de BOLETO válida + menção a PIX → paga-se como boleto."""
+        body = (
+            "Ola,\nSegue o boleto para pagamento — se preferir, pague por PIX.\n"
+            "Linha digitavel: 07790001161205794159807275845787314770000469086\n"
+            "Valor: R$ 4.690,86\nVencimento: 14/06/2026"
+        )
+        payload = read_emails.extract_from_email_body(
+            body, "2026-06-11T10:00:00+00:00", "<msg-bolpix>", "cobranca@fornecedor.com.br")
+        self.assertIsNotNone(payload)
+        self.assertEqual(payload["payment_method"], "boleto")
+        self.assertNotEqual(payload["document_type"], "pix")
+        # A linha digitável de boleto (moeda '9') dispara o discriminador.
+        self.assertTrue(read_emails._is_boleto_barcode(payload["barcode"]))
+
+    def test_pix_puro_no_corpo_continua_pix(self):
+        """Corpo só-PIX (sem linha digitável de boleto) permanece pix/pix."""
+        body = "Por favor, pagar via PIX o valor de R$ 250,00 hoje."
+        payload = read_emails.extract_from_email_body(
+            body, "2026-06-11T10:00:00+00:00", "<msg-pixpuro>", "fornecedor@x.com.br")
+        self.assertIsNotNone(payload)
+        self.assertIsNone(payload["barcode"])
+        self.assertEqual(payload["payment_method"], "pix")
+        self.assertEqual(payload["document_type"], "pix")
+
+    def test_honorario_com_barcode_paga_boleto(self):
+        """build_financial_payload: honorário emitido em boleto → payment_method boleto."""
+        row = {"document_type": "honorários", "payment_method": "boleto",
+               "barcode": BOLETO_44, "amount": "800,00"}
+        payload = read_emails.build_financial_payload(
+            row, "<msg-hon-bol>", received_at="2026-06-15T10:00:00+00:00", subject="Honorarios")
+        self.assertEqual(payload["document_type"], "honorários")
+        self.assertEqual(payload["payment_method"], "boleto")
+
+    def test_honorario_sem_barcode_continua_pix(self):
+        """build_financial_payload: honorário sem boleto continua forçado a pix."""
+        row = {"document_type": "honorários", "payment_method": "outro",
+               "barcode": None, "amount": "800,00"}
+        payload = read_emails.build_financial_payload(
+            row, "<msg-hon-pix>", received_at="2026-06-15T10:00:00+00:00", subject="Honorarios")
         self.assertEqual(payload["document_type"], "honorários")
         self.assertEqual(payload["payment_method"], "pix")
 

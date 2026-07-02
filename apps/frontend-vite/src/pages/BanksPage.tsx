@@ -4,7 +4,7 @@ import type { Bank, BankCreateInput } from '@sheild/shared';
 import CrudTablePage from '../components/organisms/CrudTablePage';
 import BankForm from '../components/organisms/BankForm';
 import { getBankColumns } from '../hooks/useGridColumns';
-import { listBanksPage, createBank, updateBank } from '../services/banks';
+import { listBanksPage, createBank, updateBank, deleteBank } from '../services/banks';
 
 export default function BanksPage() {
   return (
@@ -18,6 +18,8 @@ export default function BanksPage() {
       list={listBanksPage}
       onCreate={createBank}
       onUpdate={(row, data) => updateBank(row.bank_id, data)}
+      onDelete={(row) => deleteBank(row.bank_id)}
+      deleteItemName={(row) => row.bank_name ?? row.bank_code ?? String(row.bank_id)}
       renderForm={(a) => (
         <BankForm
           mode={a.mode}
@@ -38,6 +40,7 @@ export default function BanksPage() {
       messages={{
         created: 'Banco cadastrado com sucesso.',
         updated: 'Banco atualizado com sucesso.',
+        deleted: 'Banco excluído com sucesso.',
       }}
       formTitle={{ create: 'Novo banco', edit: 'Editar banco' }}
     />

@@ -457,6 +457,27 @@ export async function getFinancialAccountTotalValue(
   return data.reduce((s, r) => s + (Number(r.amount) || 0), 0);
 }
 
+// Contagem EXATA de documentos NÃO cancelados para o filtro corrente — alimenta o
+// "Total de registros" do rodapé de /consulta. Cancelado nunca entra em somas
+// (includeCancelled=false, como o "Valor total"); o grid segue mostrando as linhas
+// canceladas, mas elas não são contadas aqui. Usa Prefer: count=exact + Content-Range
+// (limit 1, sem trafegar as linhas).
+export async function getFinancialAccountCount(
+  filters: FinancialAccountControlFilters = {},
+): Promise<number> {
+  const url = new URL(`${BASE_URL}/rest/v1/financial_account_control`);
+  url.searchParams.set('select', 'id');
+  url.searchParams.set('limit', '1');
+  const supplierIds =
+    filters.supplier && !isCurrencyValueSearch(filters.supplier) ? await findSupplierIdsByTerm(filters.supplier) : [];
+  applyFinancialFilters(url.searchParams, filters, supplierIds);
+  const res = await fetch(url.toString(), { headers: await authHeaders({ Prefer: 'count=exact' }) });
+  if (!res.ok) throw new Error(`Supabase ${res.status}: ${await res.text()}`);
+  const cr = res.headers.get('Content-Range');
+  const data = (await res.json()) as unknown[];
+  return parsePaginationTotal(cr, 0, 1, data.length).total;
+}
+
 // ── email_processing_errors ───────────────────────────────────────────────
 
 interface ProcessingErrorFilters {

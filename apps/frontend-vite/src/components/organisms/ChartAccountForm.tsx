@@ -2,6 +2,7 @@
 // Organism — form de cadastro/edição do plano de contas. Centro de custo e subgrupo
 // são FKs OPCIONAIS (DEFAULT 0 = "não informado") — <select> com a opção neutra 0.
 // account_level (numérico) e is_postable (checkbox) têm defaults do banco.
+import { useEffect } from 'react';
 import { useForm } from 'react-hook-form';
 import { chartAccountCreateSchema, type ChartAccount, type ChartAccountCreateInput } from '@sheild/shared';
 import AuthInput from '../atoms/AuthInput';
@@ -28,16 +29,25 @@ interface ChartAccountFormProps {
   onCancel: () => void;
   submitError?: string | null;
   submitting?: boolean;
+  /**
+   * Lançamento rápido (CrudTablePage.keepOpenOnCreate): incrementado a cada criação
+   * bem-sucedida. Ao mudar, limpa APENAS a descrição e devolve o foco ao código,
+   * mantendo os demais campos para o próximo cadastro em sequência.
+   */
+  resetSignal?: number;
 }
 
 // Opção neutra (FK opcional = "não informado", id 0) prefixada aos lookups.
 const NONE_OPTION: SelectOption = { value: 0, label: '— não informado —' };
 
+// Nível padrão de um novo plano de contas (espelha o DEFAULT do banco — migration 062).
+const DEFAULT_ACCOUNT_LEVEL = 3;
+
 function toFormValues(c?: Partial<ChartAccount>): ChartAccountFormValues {
   return {
     account_code: c?.account_code ?? '',
     account_description: c?.account_description ?? '',
-    account_level: c?.account_level ?? 2,
+    account_level: c?.account_level ?? DEFAULT_ACCOUNT_LEVEL,
     is_postable: c?.is_postable ?? true,
     cost_center_id: c?.cost_center_id ?? 0,
     chart_account_group_id: c?.chart_account_group_id ?? 0,
@@ -65,20 +75,31 @@ export default function ChartAccountForm({
   onCancel,
   submitError,
   submitting = false,
+  resetSignal = 0,
 }: Readonly<ChartAccountFormProps>) {
   const {
     register,
     handleSubmit,
     setError,
+    resetField,
+    setFocus,
     formState: { errors },
   } = useForm<ChartAccountFormValues>({ defaultValues: toFormValues(defaultValues) });
+
+  // Fluxo de lançamento rápido: após cada criação, limpa só a descrição e devolve o
+  // foco ao código, preservando classificação/nível para o próximo cadastro em sequência.
+  useEffect(() => {
+    if (!resetSignal) return;
+    resetField('account_description');
+    setFocus('account_code');
+  }, [resetSignal, resetField, setFocus]);
 
   const submit = handleSubmit(async (raw) => {
     // Campo numérico esvaziado → NaN (valueAsNumber); normaliza para 0.
     const num = (v: number, fallback = 0): number => (Number.isNaN(v) ? fallback : v);
     const parsed = chartAccountCreateSchema.safeParse({
       ...raw,
-      account_level: num(raw.account_level, 2),
+      account_level: num(raw.account_level, DEFAULT_ACCOUNT_LEVEL),
       cost_center_id: num(raw.cost_center_id),
       chart_account_group_id: num(raw.chart_account_group_id),
       chart_account_subgroup_id: num(raw.chart_account_subgroup_id),

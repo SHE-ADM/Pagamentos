@@ -130,13 +130,17 @@ EXTRACTION_PROMPT = (
     "CT-e (Conhecimento de Transporte, DACTE) | NF-e (DANFE, Nota Fiscal Eletronica) | "
     "nfse (Nota Fiscal de Servicos Eletronica) | recibo | contrato | "
     "honorários (recibo/cobranca de honorarios advocaticios, contabeis ou profissionais) | "
-    "container (frete/demurrage/movimentacao de conteineres) | outro\n"
-    "  Tributos — use o subtipo especifico quando identificado:\n"
+    "container (frete/demurrage/movimentacao de conteineres) | "
+    "multa (multa/penalidade/juros avulsos, auto de infracao) | outro\n"
+    "  Tributos — use o subtipo especifico quando identificado. IMPORTANTE: para guias "
+    "estaduais quase identicas (DARE, GARE, GNRE), copie EXATAMENTE o acronimo IMPRESSO "
+    "no cabecalho/titulo do documento — NUNCA infira pelo estado nem troque um pelo outro:\n"
     "  DARF (Documento de Arrecadacao de Receitas Federais) | "
     "GPS (Guia da Previdencia Social) | "
     "DAS (Simples Nacional, SIMEI, Documento de Arrecadacao do Simples) | "
     "GRU (Guia de Recolhimento da Uniao) | "
-    "DAE (Documento de Arrecadacao do eSocial ou DARE - Receitas Estaduais) | "
+    "DAE (Documento de Arrecadacao do eSocial) | "
+    "DARE (Documento de Arrecadacao de Receitas Estaduais) | "
     "GNRE (Guia Nacional de Recolhimento de Tributos Estaduais) | "
     "IPVA (Guia de IPVA) | IPTU (Guia de IPTU) | "
     "DAM / DUAM (Documento de Arrecadacao Municipal) | "
@@ -183,7 +187,11 @@ EXTRACTION_PROMPT = (
     "impresso, no formato XXXXX.XXXXX XXXXX.XXXXXX XXXXX.XXXXXX X XXXXXXXXXXXXXX. "
     "Retorne apenas os digitos (sem pontos, espacos ou separadores). "
     "Retorne o valor mais completo visivel no documento. null se ausente.\n"
-    "- payment_method: boleto|pix|ted|cartao|outro\n"
+    "- payment_method: boleto|pix|ted|cartao|outro. IMPORTANTE: se o documento e um "
+    "boleto/guia com codigo de barras ou linha digitavel E TAMBEM mostra um QR Code "
+    "PIX ou 'PIX copia e cola', classifique como 'boleto' (nao 'pix') e extraia a "
+    "linha digitavel no campo barcode. So use 'pix' quando NAO houver codigo de barras "
+    "nem linha digitavel de boleto/arrecadacao.\n"
     "- competence_date: competencia no formato YYYY-MM, ou null\n"
     "- currency: moeda (BRL por padrao)\n"
     "- payer_name: nome do SACADO/PAGADOR (quem PAGA o documento). "
@@ -280,7 +288,7 @@ _DOC_TYPE_NORM = {
     _ns("simei"):           "DAS",
     _ns("gru"):             "GRU",
     _ns("dae"):             "DAE",
-    _ns("dare"):            "DAE",
+    _ns("dare"):            "DARE",
     _ns("gnre"):            "GNRE",
     _ns("ipva"):            "IPVA",
     _ns("iptu"):            "IPTU",
@@ -290,6 +298,9 @@ _DOC_TYPE_NORM = {
     _ns("iss"):             "ISS",
     _ns("itbi"):            "ITBI",
     _ns("gare"):            "GARE",
+    # Multa / penalidade avulsa (auto de infracao, juros/multa isolados).
+    _ns("multa"):           "multa",
+    _ns("penalidade"):      "multa",
 }
 
 def _normalize_doc_type(raw: str) -> str:
@@ -443,6 +454,38 @@ def amount_from_barcode(barcode):
         return None
     # Faixa plausivel: descarta valor zero e numeros absurdos (provavel chave NF-e).
     return valor if 0 < valor < 5_000_000 else None
+
+
+def is_boleto_barcode(barcode) -> bool:
+    """True quando o codigo e um BOLETO pagavel (nao chave NF-e/CT-e).
+
+    Aceita 48 digitos (linha digitavel de arrecadacao — guia/tributo/concessionaria)
+    ou 44 FEBRABAN (moeda '9', banco != '000'). Uma linha digitavel de 47 ja foi
+    convertida para 44 FEBRABAN por normalize_barcode, entrando por este ramo.
+    Uma chave de acesso NF-e/CT-e (44 digitos, moeda != '9') NAO casa — segue pix.
+    """
+    if not barcode:
+        return False
+    d = re.sub(r"\D", "", str(barcode))
+    if len(d) == 48:
+        return True
+    return len(d) == 44 and d[3] == "9" and d[:3] != "000"
+
+
+def apply_boleto_barcode_override(rec: dict) -> dict:
+    """Boleto com PIX -> paga-se como boleto (regra de negocio: barcode vence pix).
+
+    Quando ha codigo de barras / linha digitavel de BOLETO valido, o pagamento e
+    boleto — mesmo que o documento tambem exiba um QR Code PIX / 'copia e cola'.
+    O document_type so troca quando indefinido/pix; tipos fiscais reais
+    (cte/nfe/darf/das/...) sao preservados. Idempotente.
+    """
+    if not is_boleto_barcode(rec.get("barcode")):
+        return rec
+    rec["payment_method"] = "boleto"
+    if (rec.get("document_type") or "outro").lower() in ("pix", "outro", ""):
+        rec["document_type"] = "boleto"
+    return rec
 
 
 # Prompt mínimo usado apenas para recuperar o barcode via Vision.
@@ -834,6 +877,7 @@ def build_record_from_json(pdf_path, data: dict, source: str) -> dict:
     if cnpj and len(cnpj) != 14:
         notes.append("CNPJ do beneficiario invalido")
     apply_pix_override(rec)
+    apply_boleto_barcode_override(rec)
     ensure_due_date(rec, notes)
     # Emissao nao confiavel em guia de tributo: prefira nulo a uma data errada.
     if rec["document_type"] in TAX_DOC_TYPES and rec.get("issue_date"):
@@ -874,6 +918,7 @@ def build_record_regex(pdf_path, raw: str, source: str) -> dict:
     if len(raw) < 80:
         notes.append("Texto insuficiente — considerar Vision")
     apply_pix_override(rec)
+    apply_boleto_barcode_override(rec)
     ensure_due_date(rec, notes)
     if not has_document_number(rec["invoice_number"]):
         rec["invoice_number"] = fallback_invoice_number(
@@ -921,6 +966,9 @@ def build_record(pdf_path, raw, source):
         rec["barcode"] = normalize_barcode(ld)
     # Tier 1: valor ausente no texto mas presente no codigo de barras bancario.
     apply_barcode_amount(rec)
+    # Boleto com PIX: barcode de boleto valido (recuperado aqui via regex/Vision)
+    # define o pagamento como boleto, sobrepondo um payment_method='pix' do LLM.
+    apply_boleto_barcode_override(rec)
     return rec
 
 # --- Falha genérica (registro de erro) ---

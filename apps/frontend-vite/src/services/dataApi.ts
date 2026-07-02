@@ -43,6 +43,13 @@ export async function dataApiCall<T>(path: string, init: RequestInit = {}): Prom
   return body;
 }
 
+// Hard delete genérico (DELETE /:resource/:id). A rota é ADMIN-ONLY no backend
+// (requireAdmin → 403 se não-admin) e pode devolver 409 quando o registro está em uso
+// (integridade referencial) — a mensagem curada do backend sobe pelo dataApiCall.
+export async function dataApiDelete(resource: string, id: number | string): Promise<void> {
+  await dataApiCall(`${resource}/${id}`, { method: 'DELETE' });
+}
+
 // Lista paginada genérica (envelope com meta) — reusada pelos CRUDs do grupo Tabelas.
 export interface PagedResult<T> {
   data: T[];

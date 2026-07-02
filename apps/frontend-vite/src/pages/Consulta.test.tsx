@@ -7,6 +7,7 @@ import type { FinancialAccountControl } from '@sheild/shared';
 const getFinancialAccountControl = vi.fn();
 const getFinancialStats = vi.fn();
 const getFinancialAccountTotalValue = vi.fn();
+const getFinancialAccountCount = vi.fn();
 const setFinancialAccountFlag = vi.fn();
 const setFinancialAccountStatus = vi.fn();
 
@@ -14,6 +15,7 @@ vi.mock('../services/supabase', () => ({
   getFinancialAccountControl: (...args: unknown[]) => getFinancialAccountControl(...args),
   getFinancialStats: (...args: unknown[]) => getFinancialStats(...args),
   getFinancialAccountTotalValue: (...args: unknown[]) => getFinancialAccountTotalValue(...args),
+  getFinancialAccountCount: (...args: unknown[]) => getFinancialAccountCount(...args),
   setFinancialAccountFlag: (...args: unknown[]) => setFinancialAccountFlag(...args),
   setFinancialAccountStatus: (...args: unknown[]) => setFinancialAccountStatus(...args),
 }));
@@ -67,6 +69,7 @@ describe('Consulta', () => {
       vencidasValue: 0,
     });
     getFinancialAccountTotalValue.mockResolvedValue(0);
+    getFinancialAccountCount.mockResolvedValue(0);
     setFinancialAccountFlag.mockReset().mockResolvedValue(undefined);
     setFinancialAccountStatus.mockReset().mockResolvedValue(undefined);
     startEmailRead.mockReset().mockResolvedValue({ started: true, alreadyRunning: false });
@@ -158,8 +161,8 @@ describe('Consulta', () => {
     getFinancialAccountTotalValue.mockResolvedValueOnce(5000).mockResolvedValueOnce(1234);
     render(<Consulta />);
 
-    // valor global é exibido
-    await waitFor(() => expect(screen.getByText(/5\.000,00/)).toBeInTheDocument());
+    // valor global é exibido no card (match exato — o valor também aparece no rodapé)
+    await waitFor(() => expect(screen.getByText('R$ 5.000,00')).toBeInTheDocument());
 
     await user.click(screen.getByText('A vencer'));
 
@@ -169,8 +172,8 @@ describe('Consulta', () => {
         expect.objectContaining({ status: 'a vencer' }),
       ),
     );
-    // ...e o card passa a refletir o valor filtrado
-    await waitFor(() => expect(screen.getByText(/1\.234,00/)).toBeInTheDocument());
+    // ...e o card passa a refletir o valor filtrado (match exato — também no rodapé)
+    await waitFor(() => expect(screen.getByText('R$ 1.234,00')).toBeInTheDocument());
   });
 
   it('abre filtrado no mês/ano corrente por vencimento', async () => {

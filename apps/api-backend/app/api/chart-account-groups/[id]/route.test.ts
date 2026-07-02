@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { NextRequest } from 'next/server';
 
-vi.mock('@/lib/auth', () => ({ requireAuth: vi.fn() }));
+vi.mock('@/lib/auth', () => ({ requireAuth: vi.fn(), requireAdmin: vi.fn() }));
 vi.mock('@/lib/chart-account-groups', () => {
   class ChartAccountGroupServiceError extends Error {
     status: number;
@@ -17,10 +17,11 @@ vi.mock('@/lib/chart-account-groups', () => {
 });
 
 import { GET, PATCH, DELETE } from './route';
-import { requireAuth } from '@/lib/auth';
+import { requireAuth, requireAdmin } from '@/lib/auth';
 import { chartAccountGroupService, ChartAccountGroupServiceError } from '@/lib/chart-account-groups';
 
 const requireAuthMock = vi.mocked(requireAuth);
+const requireAdminMock = vi.mocked(requireAdmin);
 const getByIdMock = vi.mocked(chartAccountGroupService.getById);
 const updateMock = vi.mocked(chartAccountGroupService.update);
 const removeMock = vi.mocked(chartAccountGroupService.remove);
@@ -31,6 +32,7 @@ const ctx = (id: string) => ({ params: Promise.resolve({ id }) });
 
 beforeEach(() => {
   requireAuthMock.mockReset().mockResolvedValue(null);
+  requireAdminMock.mockReset().mockResolvedValue(null);
   getByIdMock.mockReset();
   updateMock.mockReset();
   removeMock.mockReset();
@@ -51,5 +53,10 @@ describe('/api/chart-account-groups/:id', () => {
   it('DELETE 409 em uso', async () => {
     removeMock.mockRejectedValue(new ChartAccountGroupServiceError('Grupo em uso e não pode ser excluído', 409));
     expect((await DELETE(req(), ctx('5'))).status).toBe(409);
+  });
+  it('DELETE 403 quando não é admin — não toca o service', async () => {
+    requireAdminMock.mockResolvedValue(new Response(null, { status: 403 }));
+    expect((await DELETE(req(), ctx('5'))).status).toBe(403);
+    expect(removeMock).not.toHaveBeenCalled();
   });
 });

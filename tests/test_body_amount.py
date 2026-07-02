@@ -54,6 +54,52 @@ class ExtractBodyAmountTest(unittest.TestCase):
         self.assertIsNone(read_emails._extract_body_amount("sem valor algum aqui"))
 
 
+# Corpo real da fatura consolidada Rodonaves (id 318): o mesmo valor aparece em
+# "Valor da fatura" e "Valor liquido" (Decrescimo R$ 0,00) — a soma DUPLICAVA.
+RODONAVES_BODY = (
+    "Ola TEXTIL E CONFECCOES OTIMOTEX LTDA , aqui esta sua fatura \r\n"
+    "Fatura: 13735141-26 \r\n"
+    "Valor da fatura \r\n R$ 12.985,52 \r\n"
+    "Decrescimo \r\n R$ 0,00 \r\n"
+    "Valor liquido \r\n R$ 12.985,52 \r\n"
+    "Vencimento \r\n 15/07/2026 \r\n"
+)
+
+
+class BodyAmountRepeatedValueTest(unittest.TestCase):
+    """Fatura que repete o mesmo montante em varios rotulos NAO pode ser somada."""
+
+    def test_rodonaves_valor_repetido_nao_duplica(self):
+        # Bug id 318: 'Valor da fatura' == 'Valor liquido' == R$ 12.985,52; a soma
+        # gerava 25.971,04. O correto e o valor unico (nao dobrado).
+        self.assertEqual(read_emails._extract_body_amount(RODONAVES_BODY), 12985.52)
+
+    def test_valores_identicos_sem_rotulo_de_total_nao_somam(self):
+        # Defesa em profundidade: mesmo montante repetido sob rotulos nao mapeados.
+        self.assertEqual(
+            read_emails._extract_body_amount("Subtotal R$ 100,00\r\nParcial R$ 100,00"),
+            100.00)
+
+    def test_valor_liquido_tem_precedencia_com_desconto_real(self):
+        # Com desconto real (3 valores distintos), o LIQUIDO e a fonte de verdade —
+        # nao a soma (25.999,99) nem o bruto (13.000,00).
+        body = ("Valor da fatura R$ 13.000,00\r\n"
+                "Decrescimo R$ 14,48\r\n"
+                "Valor liquido R$ 12.985,52\r\n")
+        self.assertEqual(read_emails._extract_body_amount(body), 12985.52)
+
+    def test_valor_a_pagar_tem_precedencia(self):
+        # "Valor a pagar" (final) vence o bruto "Valor do documento".
+        body = "Valor do documento R$ 500,00\r\nJuros R$ 20,00\r\nValor a pagar R$ 520,00"
+        self.assertEqual(read_emails._extract_body_amount(body), 520.00)
+
+    def test_decrescimo_zero_nao_afeta_valor_unico(self):
+        # R$ 0,00 e ignorado — resta um unico valor.
+        self.assertEqual(
+            read_emails._extract_body_amount("Pague R$ 80,00\r\nDesconto R$ 0,00"),
+            80.00)
+
+
 class LabeledAmountWithoutRSTest(unittest.TestCase):
     """Fallback: valor ROTULADO sem 'R$' (ex.: 'Valor 50,00')."""
 

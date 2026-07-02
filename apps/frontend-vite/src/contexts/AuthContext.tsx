@@ -21,10 +21,21 @@ interface AuthContextValue {
   user: User | null;
   session: Session | null;
   loading: boolean;
+  /** Papel de admin — lido de `app_metadata` (controlado pelo servidor, não pelo usuário). */
+  isAdmin: boolean;
   signOut: () => Promise<void>;
 }
 
 const AuthContext = createContext<AuthContextValue | null>(null);
+
+// Papel de admin a partir de `app_metadata` — MESMA fonte confiável do backend
+// (lib/auth.ts isAdmin): campo gravável só via Admin API/service_role, o usuário não
+// consegue forjá-lo (ao contrário de `user_metadata`). É apenas um GATE DE UI: a
+// autorização real é imposta no servidor (requireAdmin nas rotas DELETE).
+function deriveIsAdmin(user: User | null): boolean {
+  const meta = user?.app_metadata as { role?: string; roles?: string[] } | undefined;
+  return meta?.role === 'admin' || (Array.isArray(meta?.roles) && meta.roles.includes('admin'));
+}
 
 // getSession() apenas lê o localStorage e não confirma se a sessão ainda é
 // válida no servidor (usuário removido, token revogado). getUser() faz a
@@ -134,7 +145,7 @@ export function AuthProvider({ children }: Readonly<{ children: ReactNode }>) {
   }, []);
 
   const value = useMemo<AuthContextValue>(
-    () => ({ user, session, loading, signOut }),
+    () => ({ user, session, loading, isAdmin: deriveIsAdmin(user), signOut }),
     [user, session, loading, signOut],
   );
 

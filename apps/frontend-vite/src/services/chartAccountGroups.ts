@@ -5,7 +5,7 @@ import type {
   ChartAccountGroupCreateInput,
   ChartAccountGroupUpdateInput,
 } from '@sheild/shared';
-import { dataApiCall, dataApiListPaged, type PagedParams, type PagedResult } from './dataApi';
+import { dataApiCall, dataApiDelete, dataApiListPaged, type PagedParams, type PagedResult } from './dataApi';
 
 export function listChartAccountGroupsPage(params: PagedParams = {}): Promise<PagedResult<ChartAccountGroup>> {
   return dataApiListPaged<ChartAccountGroup>('/chart-account-groups', params);
@@ -28,4 +28,9 @@ export async function updateChartAccountGroup(
     body: JSON.stringify(input),
   });
   return body.data as ChartAccountGroup;
+}
+
+// Hard delete — admin-only (403 se não-admin); 409 se o grupo estiver em uso (subgrupos).
+export function deleteChartAccountGroup(id: number): Promise<void> {
+  return dataApiDelete('/chart-account-groups', id);
 }

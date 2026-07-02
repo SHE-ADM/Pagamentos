@@ -12,6 +12,7 @@ import {
   listChartAccountsPage,
   createChartAccount,
   updateChartAccount,
+  deleteChartAccount,
 } from '../services/chartAccounts';
 import { listCostCenters, listChartAccountGroups, listChartAccountSubgroups } from '../services/lookups';
 
@@ -65,6 +66,11 @@ export default function ChartAccountsPage() {
       list={listChartAccountsPage}
       onCreate={createChartAccount}
       onUpdate={(row, data) => updateChartAccount(row.chart_account_id, data)}
+      onDelete={(row) => deleteChartAccount(row.chart_account_id)}
+      deleteItemName={(row) => row.account_description ?? row.account_code ?? `#${row.chart_account_id}`}
+      // Lançamento rápido: cadastrar mantém o modal aberto, limpa só a descrição e
+      // foca o código — agiliza o cadastro de vários planos de contas em sequência.
+      keepOpenOnCreate
       renderForm={(a) => (
         <ChartAccountForm
           mode={a.mode}
@@ -76,18 +82,20 @@ export default function ChartAccountsPage() {
           onCancel={a.onCancel}
           submitError={a.submitError}
           submitting={a.submitting}
+          resetSignal={a.resetSignal}
         />
       )}
       newButtonLabel="Novo plano de contas"
       searchId="chart-accounts-search"
-      searchPlaceholder="Buscar por código ou descrição…"
-      searchAriaLabel="Buscar plano de contas por código ou descrição"
+      searchPlaceholder="Buscar por código, descrição, centro de custo, grupo ou sub grupo…"
+      searchAriaLabel="Buscar plano de contas por código, descrição, centro de custo, grupo ou sub grupo"
       emptyMessage="Nenhum plano de contas encontrado"
       gridAriaLabel="Plano de contas cadastrado"
       countLabel={(n) => `${n} planos de contas`}
       messages={{
         created: 'Plano de contas cadastrado com sucesso.',
         updated: 'Plano de contas atualizado com sucesso.',
+        deleted: 'Plano de contas excluído com sucesso.',
       }}
       formTitle={{ create: 'Novo plano de contas', edit: 'Editar plano de contas' }}
     />

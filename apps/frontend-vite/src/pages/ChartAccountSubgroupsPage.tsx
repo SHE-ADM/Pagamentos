@@ -12,6 +12,7 @@ import {
   listChartAccountSubgroupsPage,
   createChartAccountSubgroup,
   updateChartAccountSubgroup,
+  deleteChartAccountSubgroup,
 } from '../services/chartAccountSubgroups';
 import { listChartAccountGroups } from '../services/lookups';
 
@@ -47,6 +48,8 @@ export default function ChartAccountSubgroupsPage() {
       list={listChartAccountSubgroupsPage}
       onCreate={createChartAccountSubgroup}
       onUpdate={(row, data) => updateChartAccountSubgroup(row.chart_account_subgroup_id, data)}
+      onDelete={(row) => deleteChartAccountSubgroup(row.chart_account_subgroup_id)}
+      deleteItemName={(row) => row.subgroup_description ?? row.subgroup_code ?? `#${row.chart_account_subgroup_id}`}
       renderForm={(a) => (
         <ChartAccountSubgroupForm
           mode={a.mode}
@@ -60,14 +63,15 @@ export default function ChartAccountSubgroupsPage() {
       )}
       newButtonLabel="Novo subgrupo"
       searchId="chart-account-subgroups-search"
-      searchPlaceholder="Buscar por código ou descrição…"
-      searchAriaLabel="Buscar subgrupo por código ou descrição"
+      searchPlaceholder="Buscar por código, descrição ou grupo…"
+      searchAriaLabel="Buscar subgrupo por código, descrição ou grupo"
       emptyMessage="Nenhum subgrupo encontrado"
       gridAriaLabel="Sub grupos de plano de contas cadastrados"
       countLabel={(n) => `${n} subgrupos`}
       messages={{
         created: 'Subgrupo cadastrado com sucesso.',
         updated: 'Subgrupo atualizado com sucesso.',
+        deleted: 'Subgrupo excluído com sucesso.',
       }}
       formTitle={{ create: 'Novo subgrupo', edit: 'Editar subgrupo' }}
     />
