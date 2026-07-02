@@ -3,13 +3,15 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 type QueryResult = { data?: unknown; count?: number; error?: { code?: string; message: string } | null };
 
 const resultQueue: QueryResult[] = [];
+const builders: Record<string, ReturnType<typeof vi.fn>>[] = [];
 
 function makeBuilder(result: QueryResult) {
   const b: Record<string, ReturnType<typeof vi.fn>> & { then?: unknown } = {};
-  for (const m of ['select', 'ilike', 'order', 'range', 'eq', 'insert', 'update', 'delete', 'maybeSingle', 'single']) {
+  for (const m of ['select', 'or', 'ilike', 'order', 'range', 'eq', 'insert', 'update', 'delete', 'maybeSingle', 'single']) {
     b[m] = vi.fn(() => b);
   }
   b.then = (onF: (v: QueryResult) => unknown, onR?: (e: unknown) => unknown) => Promise.resolve(result).then(onF, onR);
+  builders.push(b);
   return b;
 }
 
@@ -20,6 +22,7 @@ const { financialAccountService } = await import('./financial-accounts');
 
 beforeEach(() => {
   resultQueue.length = 0;
+  builders.length = 0;
   fromMock.mockClear();
 });
 
@@ -29,6 +32,35 @@ describe('financialAccountService', () => {
     const r = await financialAccountService.list({ page: 1, limit: 20 });
     expect(r).toMatchObject({ total: 1 });
     expect(r.data).toHaveLength(1);
+  });
+
+  it('busca numérica cobre TODAS as colunas do grid (descrição/moeda + banco/situação embed + saldo/tipo pgto)', async () => {
+    resultQueue.push({ data: [], count: 0, error: null }); // main query
+    resultQueue.push({ data: [{ bank_id: 3 }], error: null }); // financial_bank ids
+    resultQueue.push({ data: [{ status_id: 30 }], error: null }); // status ids
+
+    await financialAccountService.list({ search: '391' });
+
+    const orArg = (builders[0].or.mock.calls[0]?.[0] ?? '') as string;
+    expect(orArg).toContain('account_description.ilike.%391%');
+    expect(orArg).toContain('currency_code.ilike.%391%');
+    expect(orArg).toContain('bank_id.in.(3)');
+    expect(orArg).toContain('status_id.in.(30)');
+    expect(orArg).toContain('balance_amount.eq.391');
+    expect(orArg).toContain('payment_type_id.eq.391');
+  });
+
+  it('busca textual não adiciona cláusulas numéricas (saldo/tipo pgto)', async () => {
+    resultQueue.push({ data: [], count: 0, error: null }); // main query
+    resultQueue.push({ data: [], error: null }); // financial_bank ids
+    resultQueue.push({ data: [], error: null }); // status ids
+
+    await financialAccountService.list({ search: 'caixa' });
+
+    const orArg = (builders[0].or.mock.calls[0]?.[0] ?? '') as string;
+    expect(orArg).toContain('account_description.ilike.%caixa%');
+    expect(orArg).not.toContain('balance_amount.eq');
+    expect(orArg).not.toContain('payment_type_id.eq');
   });
 
   it('create 422 sem campos obrigatórios (Zod) — não toca o banco', async () => {

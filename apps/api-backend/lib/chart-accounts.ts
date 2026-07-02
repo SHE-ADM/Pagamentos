@@ -16,6 +16,7 @@ import {
 import type { ZodError } from 'zod';
 import { getSupabaseAdmin } from './supabase-admin';
 import { resolveSort, type SortOrder } from './sort';
+import { resolveMatchingIds } from './search';
 
 const TABLE = 'financial_chart_of_account';
 // Colunas ordenáveis. Além das colunas próprias (código/descrição), as 3 colunas de
@@ -74,6 +75,31 @@ function sanitizeTerm(term: string): string {
   return term.replace(/[%,()]/g, ' ').trim();
 }
 
+// Tabelas de classificação exibidas em colunas (embeds) — o termo casa TAMBÉM o
+// código/descrição delas. Como são JOINs, resolvemos os ids que casam o termo e os
+// injetamos no OR da query principal (mesmo padrão da busca por fornecedor em /consulta).
+const CLASSIFICATION_LOOKUPS = [
+  { table: 'financial_cost_center', idColumn: 'cost_center_id', searchColumns: ['cost_center_code', 'cost_center_description'], accountColumn: 'cost_center_id' },
+  { table: 'financial_chart_of_account_group', idColumn: 'chart_account_group_id', searchColumns: ['group_code', 'group_description'], accountColumn: 'chart_account_group_id' },
+  { table: 'financial_chart_of_account_subgroup', idColumn: 'chart_account_subgroup_id', searchColumns: ['subgroup_code', 'subgroup_description'], accountColumn: 'chart_account_subgroup_id' },
+] as const;
+
+// Monta as cláusulas do OR da busca cobrindo TODAS as colunas do grid: código e
+// descrição próprios + centro de custo, grupo e sub grupo (via ids pré-resolvidos).
+async function buildSearchClauses(term: string): Promise<string[]> {
+  const clauses = [`account_code.ilike.%${term}%`, `account_description.ilike.%${term}%`];
+
+  const idLists = await Promise.all(
+    CLASSIFICATION_LOOKUPS.map((l) => resolveMatchingIds(l.table, l.idColumn, l.searchColumns, term)),
+  );
+  CLASSIFICATION_LOOKUPS.forEach((lookup, i) => {
+    const ids = idLists[i];
+    if (ids.length > 0) clauses.push(`${lookup.accountColumn}.in.(${ids.join(',')})`);
+  });
+
+  return clauses;
+}
+
 // 23503 (FK) = centro de custo, grupo ou subgrupo inexistente → 422.
 function mapWriteError(error: { code?: string; message: string }): ChartAccountServiceError {
   if (error.code === '23503') return new ChartAccountServiceError('Centro de custo, grupo ou subgrupo informado não existe', 422);
@@ -89,7 +115,10 @@ const repository = {
 
     if (params.search) {
       const term = sanitizeTerm(params.search);
-      query = query.or(`account_code.ilike.%${term}%,account_description.ilike.%${term}%`);
+      if (term) {
+        const clauses = await buildSearchClauses(term);
+        query = query.or(clauses.join(','));
+      }
     }
 
     const sorted = resolveSort(params.sort, params.order, SORTABLE_COLUMNS);

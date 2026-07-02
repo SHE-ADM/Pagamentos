@@ -3,11 +3,18 @@
 As migrations `001 → 061` são aplicadas **manualmente no SQL Editor do Supabase**, em
 **ordem numérica** e **uma única vez cada**. Não há runner automático.
 
-> **`059`/`060`/`061` foram aplicadas DIRETO via Supabase MCP** (não pelo SQL Editor) — o
+> **`059`/`060`/`061`/`063` foram aplicadas DIRETO via Supabase MCP** (não pelo SQL Editor) — o
 > arquivo numerado é só histórico. Todas idempotentes; **não reaplicar** no SQL Editor.
 > `059` = backfill único da classificação das contas a partir do supplier (fora do fluxo
 > diário). `060` = índices de performance da busca em `/consulta` (GIN trigram + btree).
 > `061` = adiciona `image_vision` ao CHECK de `extraction_source` (anexos de imagem via Vision).
+> `063` = fundação de grupos de usuário: catálogo `public.user_group` (id 0 sentinela + RLS
+> read `authenticated`/write `service_role`) + backfill de `app_metadata.group_id=0` nos
+> usuários existentes. A atribuição de grupo por usuário vive no claim `app_metadata.group_id`
+> (padrão do `role`), não em `auth.users`/tabela de perfil. (Há um `062` duplicado no diretório
+> — `062_chart_account_default_level_3` e `062_doc_type_multa_dare`; a numeração seguiu para 063.)
+> `064` = adiciona `financial_account_control.additional_info` TEXT (nullable) — texto livre do
+> usuário no cadastro de contas (ContaForm), exibido no card de detalhe de `/consulta`.
 
 > **`057_revoke_write_supplier_status.sql` (segurança, idempotente)** — `REVOKE` de escrita
 > do papel `authenticated` em `supplier`/`status` (defesa em profundidade; o RLS já bloqueia).

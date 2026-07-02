@@ -82,3 +82,8 @@ export async function updateCostCenter(id: number, input: CostCenterUpdateInput)
   const body = await call<CostCenter>(`/cost-centers/${id}`, { method: 'PATCH', body: JSON.stringify(input) });
   return body.data as CostCenter;
 }
+
+// Hard delete — admin-only (403 se não-admin); 409 se o centro estiver em uso.
+export async function deleteCostCenter(id: number): Promise<void> {
+  await call(`/cost-centers/${id}`, { method: 'DELETE' });
+}

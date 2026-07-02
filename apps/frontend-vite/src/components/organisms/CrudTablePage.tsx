@@ -7,12 +7,13 @@
 // Genérico em <T, TInput>: T = linha do grid; TInput = payload de criação/edição
 // (o form valida e chama onSubmit(TInput)).
 import { useState, useEffect, useCallback, useRef, type ReactNode } from 'react';
-import { RefreshCw, Plus, type LucideIcon } from 'lucide-react';
+import { RefreshCw, Plus, Trash2, type LucideIcon } from 'lucide-react';
 import type { ColumnDef } from '../../hooks/useGridColumns';
 import DataGrid from './DataGrid';
 import Alert from '../atoms/Alert';
 import SearchInput from '../molecules/SearchInput';
 import { getErrorMessage } from '../../lib/getErrorMessage';
+import { useAuth } from '../../contexts/AuthContext';
 
 const SEARCH_DEBOUNCE_MS = 350;
 const NOTICE_DISMISS_MS = 5000;
@@ -28,6 +29,12 @@ interface CrudFormRenderArgs<T, TInput> {
   onCancel: () => void;
   submitError: string | null;
   submitting: boolean;
+  /**
+   * Contador incrementado a cada criação bem-sucedida quando `keepOpenOnCreate` está
+   * ativo (fluxo de lançamento rápido). O form observa a mudança para limpar campos e
+   * reposicionar o foco sem fechar o modal. É 0 e imutável quando o fluxo não é usado.
+   */
+  resetSignal: number;
 }
 
 interface CrudTablePageProps<T, TInput> {
@@ -37,7 +44,7 @@ interface CrudTablePageProps<T, TInput> {
   /** Identificador estável do grid — chave das preferências de layout (localStorage). */
   gridId: string;
   rowKey: (row: T) => string;
-  columns: (onEdit: (r: T) => void) => ColumnDef<T>[];
+  columns: (onEdit: (r: T) => void, onDelete?: (r: T) => void) => ColumnDef<T>[];
   list: (params: {
     page: number;
     limit: number;
@@ -47,6 +54,14 @@ interface CrudTablePageProps<T, TInput> {
   }) => Promise<{ data: T[]; total: number }>;
   onCreate: (data: TInput) => Promise<unknown>;
   onUpdate: (row: T, data: TInput) => Promise<unknown>;
+  /**
+   * Hard delete (admin-only). Quando fornecido, o botão de excluir aparece na coluna
+   * "Ações" APENAS para usuários admin; a exclusão pede confirmação e o backend impõe
+   * a autorização de verdade (requireAdmin → 403) e a integridade referencial (409).
+   */
+  onDelete?: (row: T) => Promise<unknown>;
+  /** Nome do item na confirmação de exclusão (default: rowKey). */
+  deleteItemName?: (row: T) => string;
   renderForm: (args: CrudFormRenderArgs<T, TInput>) => ReactNode;
   newButtonLabel: string;
   searchId: string;
@@ -55,15 +70,23 @@ interface CrudTablePageProps<T, TInput> {
   emptyMessage: string;
   gridAriaLabel: string;
   countLabel: (total: number) => string; // ex.: (n) => `${n} bancos`
-  messages: { created: string; updated: string };
+  messages: { created: string; updated: string; deleted?: string };
   formTitle: { create: string; edit: string };
   pageSize?: number;
+  /**
+   * Lançamento rápido: após criar com sucesso, mantém o modal aberto (não fecha) e
+   * incrementa `resetSignal` para o form limpar campos e reposicionar o foco. Só ative
+   * em páginas cujo form trata `resetSignal` — caso contrário o modal ficaria aberto
+   * com os valores recém-enviados. Edição sempre fecha o modal normalmente.
+   */
+  keepOpenOnCreate?: boolean;
 }
 
 type FormState<T> = { mode: 'create' | 'edit'; row?: T } | null;
 
 export default function CrudTablePage<T, TInput>(props: Readonly<CrudTablePageProps<T, TInput>>) {
   const { icon: Icon, pageSize = DEFAULT_PAGE_SIZE } = props;
+  const { isAdmin } = useAuth();
 
   const [rows, setRows] = useState<T[]>([]);
   const [total, setTotal] = useState(0);
@@ -81,8 +104,17 @@ export default function CrudTablePage<T, TInput>(props: Readonly<CrudTablePagePr
   const [form, setForm] = useState<FormState<T>>(null);
   const [formError, setFormError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  // Sinal de reset do fluxo de lançamento rápido (keepOpenOnCreate): a cada criação
+  // bem-sucedida incrementa e o form limpa campos + reposiciona o foco sem fechar.
+  const [createResetSignal, setCreateResetSignal] = useState(0);
+
+  // Exclusão (hard delete, admin-only): linha alvo da confirmação + estado do request.
+  const [deleteTarget, setDeleteTarget] = useState<T | null>(null);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
+  const [deleting, setDeleting] = useState(false);
 
   const formDialogRef = useRef<HTMLDialogElement>(null);
+  const deleteDialogRef = useRef<HTMLDialogElement>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -130,6 +162,17 @@ export default function CrudTablePage<T, TInput>(props: Readonly<CrudTablePagePr
   }, [form]);
 
   useEffect(() => {
+    const el = deleteDialogRef.current;
+    if (!el) return;
+    try {
+      if (deleteTarget) el.showModal();
+      else el.close();
+    } catch {
+      /* jsdom */
+    }
+  }, [deleteTarget]);
+
+  useEffect(() => {
     if (!notice) return;
     const t = setTimeout(() => setNotice(null), NOTICE_DISMISS_MS);
     return () => clearTimeout(t);
@@ -163,12 +206,20 @@ export default function CrudTablePage<T, TInput>(props: Readonly<CrudTablePagePr
       if (form.mode === 'create') {
         await props.onCreate(data);
         setNotice(props.messages.created);
+        await load();
+        if (props.keepOpenOnCreate) {
+          // Lançamento rápido: mantém o modal aberto e sinaliza o form para limpar a
+          // descrição e devolver o foco ao código (cadastro de várias contas em sequência).
+          setCreateResetSignal((n) => n + 1);
+        } else {
+          setForm(null);
+        }
       } else if (form.row) {
         await props.onUpdate(form.row, data);
         setNotice(props.messages.updated);
+        setForm(null);
+        await load();
       }
-      setForm(null);
-      await load();
     } catch (e) {
       setFormError(getErrorMessage(e));
     } finally {
@@ -176,8 +227,37 @@ export default function CrudTablePage<T, TInput>(props: Readonly<CrudTablePagePr
     }
   };
 
-  const columns = props.columns(openEdit);
+  // Exclusão (hard delete) só é oferecida a admin E quando a página passou onDelete.
+  const canDelete = isAdmin && !!props.onDelete;
+  const requestDelete = (row: T) => {
+    setDeleteError(null);
+    setDeleteTarget(row);
+  };
+  const closeDelete = () => {
+    setDeleteTarget(null);
+    setDeleteError(null);
+  };
+  const confirmDelete = async () => {
+    if (!deleteTarget || !props.onDelete) return;
+    setDeleting(true);
+    setDeleteError(null);
+    try {
+      await props.onDelete(deleteTarget);
+      setNotice(props.messages.deleted ?? 'Registro excluído com sucesso.');
+      setDeleteTarget(null);
+      await load();
+    } catch (e) {
+      setDeleteError(getErrorMessage(e));
+    } finally {
+      setDeleting(false);
+    }
+  };
+
+  const columns = props.columns(openEdit, canDelete ? requestDelete : undefined);
   const totalPages = Math.max(1, Math.ceil(total / pageSize));
+  const deleteName = deleteTarget
+    ? (props.deleteItemName?.(deleteTarget) ?? props.rowKey(deleteTarget))
+    : '';
 
   return (
     <div className="flex flex-col h-full">
@@ -278,7 +358,49 @@ export default function CrudTablePage<T, TInput>(props: Readonly<CrudTablePagePr
               onCancel: closeForm,
               submitError: formError,
               submitting,
+              resetSignal: createResetSignal,
             })}
+          </div>
+        </dialog>
+      )}
+
+      {/* Confirmação de exclusão (hard delete, admin-only) */}
+      {deleteTarget && (
+        <dialog
+          ref={deleteDialogRef}
+          aria-label="Confirmar exclusão"
+          onCancel={closeDelete}
+          className="fixed inset-0 m-auto h-fit max-h-[90vh] w-full max-w-md overflow-y-auto rounded-xl border-0 bg-white p-0 shadow-lg backdrop:bg-black/50"
+        >
+          <div className="p-6">
+            <div className="mb-3 flex items-center gap-2">
+              <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-status-error-bg text-status-error-fg">
+                <Trash2 size={16} />
+              </div>
+              <h2 className="text-base font-semibold text-gray-900">Excluir registro</h2>
+            </div>
+            <p className="mb-4 text-sm text-gray-600">
+              Tem certeza que deseja excluir <strong className="text-gray-900">{deleteName}</strong>? Esta
+              ação é permanente e não pode ser desfeita.
+            </p>
+            {deleteError && (
+              <Alert variant="error" className="mb-4">
+                {deleteError}
+              </Alert>
+            )}
+            <div className="flex justify-end gap-2">
+              <button type="button" onClick={closeDelete} className="btn" disabled={deleting}>
+                Cancelar
+              </button>
+              <button
+                type="button"
+                onClick={confirmDelete}
+                disabled={deleting}
+                className="btn bg-status-error-fg text-white hover:bg-status-error-fg/90"
+              >
+                <Trash2 size={14} /> {deleting ? 'Excluindo…' : 'Excluir'}
+              </button>
+            </div>
           </div>
         </dialog>
       )}

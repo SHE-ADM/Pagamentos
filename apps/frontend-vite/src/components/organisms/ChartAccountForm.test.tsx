@@ -32,6 +32,44 @@ describe('ChartAccountForm', () => {
     expect(screen.getByLabelText('Lançável (postável)')).toBeInTheDocument();
   });
 
+  it('resetSignal (lançamento rápido): limpa só a descrição e foca o código', async () => {
+    const onSubmit = vi.fn().mockResolvedValue(undefined);
+    const { rerender } = render(
+      <ChartAccountForm
+        mode="create"
+        costCenterOptions={costCenterOptions}
+        groupOptions={groupOptions}
+        subgroupOptions={subgroupOptions}
+        onSubmit={onSubmit}
+        onCancel={vi.fn()}
+        resetSignal={0}
+      />,
+    );
+
+    const codigo = screen.getByLabelText('Código');
+    const descricao = screen.getByLabelText('Descrição');
+    await userEvent.type(codigo, '1.1.01');
+    await userEvent.type(descricao, 'Clientes');
+
+    // Simula uma criação bem-sucedida: o CrudTablePage incrementa o resetSignal.
+    rerender(
+      <ChartAccountForm
+        mode="create"
+        costCenterOptions={costCenterOptions}
+        groupOptions={groupOptions}
+        subgroupOptions={subgroupOptions}
+        onSubmit={onSubmit}
+        onCancel={vi.fn()}
+        resetSignal={1}
+      />,
+    );
+
+    await waitFor(() => expect(screen.getByLabelText('Descrição')).toHaveValue(''));
+    // Código é preservado (não é limpo) e recebe o foco.
+    expect(screen.getByLabelText('Código')).toHaveValue('1.1.01');
+    expect(screen.getByLabelText('Código')).toHaveFocus();
+  });
+
   it('submete com defaults (FKs = 0, nível 2, postável)', async () => {
     const { onSubmit } = setup();
     await userEvent.type(screen.getByLabelText('Código'), '1.1.01');

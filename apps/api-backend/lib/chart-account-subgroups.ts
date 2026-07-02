@@ -15,6 +15,7 @@ import {
 import type { ZodError } from 'zod';
 import { getSupabaseAdmin } from './supabase-admin';
 import { resolveSort, type SortOrder } from './sort';
+import { resolveMatchingIds } from './search';
 
 const TABLE = 'financial_chart_of_account_subgroup';
 // Colunas ordenáveis (própria tabela) — o grupo é embed de JOIN, não ordenável aqui.
@@ -79,7 +80,19 @@ const repository = {
 
     if (params.search) {
       const term = sanitizeTerm(params.search);
-      query = query.or(`subgroup_code.ilike.%${term}%,subgroup_description.ilike.%${term}%`);
+      if (term) {
+        // Cobre TODAS as colunas do grid: código, descrição e Grupo (embed). O grupo
+        // vem de JOIN — resolvemos os ids que casam o termo e os injetamos no OR.
+        const clauses = [`subgroup_code.ilike.%${term}%`, `subgroup_description.ilike.%${term}%`];
+        const groupIds = await resolveMatchingIds(
+          'financial_chart_of_account_group',
+          'chart_account_group_id',
+          ['group_code', 'group_description'],
+          term,
+        );
+        if (groupIds.length > 0) clauses.push(`chart_account_group_id.in.(${groupIds.join(',')})`);
+        query = query.or(clauses.join(','));
+      }
     }
 
     const sorted = resolveSort(params.sort, params.order, SORTABLE_COLUMNS);

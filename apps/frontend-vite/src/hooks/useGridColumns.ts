@@ -1,5 +1,5 @@
 import { createElement, type ReactNode, type MouseEvent } from 'react';
-import { CheckCircle2, Pencil } from 'lucide-react';
+import { CheckCircle2, Pencil, Trash2 } from 'lucide-react';
 import type {
   FinancialAccountControl,
   EmailControl,
@@ -342,10 +342,12 @@ function actionButton(
   label: string,
   className: string,
   onClick: () => void,
+  key?: string,
 ): ReactNode {
   return createElement(
     'button',
     {
+      key,
       type: 'button',
       'aria-label': label,
       title: label,
@@ -378,16 +380,37 @@ const costCenterLabel = (c: CostCenter): string =>
 const EDIT_BTN_CLS =
   'inline-flex h-7 w-7 items-center justify-center rounded-md text-slate-500 hover:bg-slate-100 hover:text-brand transition-colors';
 
-// Célula "Ações" padrão dos CRUDs de cadastro: apenas editar (a exclusão foi removida da UI).
-function editCell<T>(row: T, label: string, onEdit: (r: T) => void): ReactNode {
-  return actionButton(Pencil, `Editar ${label}`, EDIT_BTN_CLS, () => onEdit(row));
+// Botão de excluir (hard delete) — vermelho semântico (status-error). Ícone-only:
+// aria-label descritivo + contraste AA (status-error-fg ≥ 3:1 sobre branco/hover).
+const DELETE_BTN_CLS =
+  'inline-flex h-7 w-7 items-center justify-center rounded-md text-status-error-fg hover:bg-status-error-bg transition-colors';
+
+// Célula "Ações" dos CRUDs de cadastro: editar sempre; excluir (hard delete) SÓ quando
+// `onDelete` é fornecido — as páginas o passam apenas para admin (o hard delete é
+// admin-only, imposto de verdade no servidor via requireAdmin).
+function actionsCell<T>(
+  row: T,
+  label: string,
+  onEdit: (r: T) => void,
+  onDelete?: (r: T) => void,
+): ReactNode {
+  const buttons: ReactNode[] = [
+    actionButton(Pencil, `Editar ${label}`, EDIT_BTN_CLS, () => onEdit(row), 'edit'),
+  ];
+  if (onDelete) {
+    buttons.push(actionButton(Trash2, `Excluir ${label}`, DELETE_BTN_CLS, () => onDelete(row), 'delete'));
+  }
+  return createElement('div', { className: 'flex items-center justify-center gap-1' }, buttons);
 }
 
 /**
  * Colunas do grid de /tabelas/centros-de-custo. É uma **factory** porque a coluna
  * "Ações" renderiza o botão de editar, que depende do callback da página.
  */
-export function getCostCenterColumns(onEdit: CostCenterRowAction): ColumnDef<CostCenter>[] {
+export function getCostCenterColumns(
+  onEdit: CostCenterRowAction,
+  onDelete?: CostCenterRowAction,
+): ColumnDef<CostCenter>[] {
   return [
     {
       key: 'cost_center_code',
@@ -408,9 +431,9 @@ export function getCostCenterColumns(onEdit: CostCenterRowAction): ColumnDef<Cos
     {
       key: '__actions__',
       header: 'Ações',
-      size: 72,
+      size: onDelete ? ACTIONS_COL_SIZE_WITH_DELETE : ACTIONS_COL_SIZE,
       align: 'center',
-      render: (c) => editCell(c, costCenterLabel(c), onEdit),
+      render: (c) => actionsCell(c, costCenterLabel(c), onEdit, onDelete),
     },
   ];
 }
@@ -504,9 +527,12 @@ export function getSupplierColumns(onEdit: SupplierRowAction): ColumnDef<Supplie
 }
 
 // ── Cadastros do grupo Tabelas (bancos, contas, plano/grupos/subgrupos) ──────────
-// Cada factory recebe o callback de editar da página (célula "Ações" só-edição).
+// Cada factory recebe o callback de editar e um `onDelete` OPCIONAL (só admin) —
+// a célula "Ações" mostra editar sempre e excluir só quando onDelete é fornecido.
 
 const ACTIONS_COL_SIZE = 72;
+// Mais larga quando há também o botão de excluir (2 botões na célula).
+const ACTIONS_COL_SIZE_WITH_DELETE = 104;
 
 /** Junta código + descrição de um embed ("código — descrição"), com fallbacks. */
 const joinCodeDesc = (code?: string | null, desc?: string | null): string =>
@@ -514,7 +540,7 @@ const joinCodeDesc = (code?: string | null, desc?: string | null): string =>
 
 type RowAction<T> = (row: T) => void;
 
-export function getBankColumns(onEdit: RowAction<Bank>): ColumnDef<Bank>[] {
+export function getBankColumns(onEdit: RowAction<Bank>, onDelete?: RowAction<Bank>): ColumnDef<Bank>[] {
   const label = (b: Bank): string => b.bank_code ?? b.bank_name ?? `#${b.bank_id}`;
   return [
     { key: 'bank_code', header: 'Código', sortKey: 'bank_code', size: 120, render: (b) => b.bank_code ?? '—' },
@@ -522,9 +548,9 @@ export function getBankColumns(onEdit: RowAction<Bank>): ColumnDef<Bank>[] {
     {
       key: '__actions__',
       header: 'Ações',
-      size: ACTIONS_COL_SIZE,
+      size: onDelete ? ACTIONS_COL_SIZE_WITH_DELETE : ACTIONS_COL_SIZE,
       align: 'center',
-      render: (b) => editCell(b, label(b), onEdit),
+      render: (b) => actionsCell(b, label(b), onEdit, onDelete),
     },
   ];
 }
@@ -536,6 +562,7 @@ export function getBankColumns(onEdit: RowAction<Bank>): ColumnDef<Bank>[] {
 export function getFinancialAccountColumns(
   statusLabel: (statusId: number) => string,
   onEdit: RowAction<FinancialAccount>,
+  onDelete?: RowAction<FinancialAccount>,
 ): ColumnDef<FinancialAccount>[] {
   const label = (a: FinancialAccount): string => a.account_description ?? `#${a.financial_account_id}`;
   return [
@@ -554,14 +581,17 @@ export function getFinancialAccountColumns(
     {
       key: '__actions__',
       header: 'Ações',
-      size: ACTIONS_COL_SIZE,
+      size: onDelete ? ACTIONS_COL_SIZE_WITH_DELETE : ACTIONS_COL_SIZE,
       align: 'center',
-      render: (a) => editCell(a, label(a), onEdit),
+      render: (a) => actionsCell(a, label(a), onEdit, onDelete),
     },
   ];
 }
 
-export function getChartAccountColumns(onEdit: RowAction<ChartAccount>): ColumnDef<ChartAccount>[] {
+export function getChartAccountColumns(
+  onEdit: RowAction<ChartAccount>,
+  onDelete?: RowAction<ChartAccount>,
+): ColumnDef<ChartAccount>[] {
   const label = (c: ChartAccount): string => c.account_code ?? c.account_description ?? `#${c.chart_account_id}`;
   return [
     { key: 'account_code', header: 'Código', sortKey: 'account_code', size: 130, render: (c) => c.account_code ?? '—' },
@@ -599,15 +629,16 @@ export function getChartAccountColumns(onEdit: RowAction<ChartAccount>): ColumnD
     {
       key: '__actions__',
       header: 'Ações',
-      size: ACTIONS_COL_SIZE,
+      size: onDelete ? ACTIONS_COL_SIZE_WITH_DELETE : ACTIONS_COL_SIZE,
       align: 'center',
-      render: (c) => editCell(c, label(c), onEdit),
+      render: (c) => actionsCell(c, label(c), onEdit, onDelete),
     },
   ];
 }
 
 export function getChartAccountGroupColumns(
   onEdit: RowAction<ChartAccountGroup>,
+  onDelete?: RowAction<ChartAccountGroup>,
 ): ColumnDef<ChartAccountGroup>[] {
   const label = (g: ChartAccountGroup): string => g.group_code ?? g.group_description ?? `#${g.chart_account_group_id}`;
   return [
@@ -617,15 +648,16 @@ export function getChartAccountGroupColumns(
     {
       key: '__actions__',
       header: 'Ações',
-      size: ACTIONS_COL_SIZE,
+      size: onDelete ? ACTIONS_COL_SIZE_WITH_DELETE : ACTIONS_COL_SIZE,
       align: 'center',
-      render: (g) => editCell(g, label(g), onEdit),
+      render: (g) => actionsCell(g, label(g), onEdit, onDelete),
     },
   ];
 }
 
 export function getChartAccountSubgroupColumns(
   onEdit: RowAction<ChartAccountSubgroup>,
+  onDelete?: RowAction<ChartAccountSubgroup>,
 ): ColumnDef<ChartAccountSubgroup>[] {
   const label = (s: ChartAccountSubgroup): string =>
     s.subgroup_code ?? s.subgroup_description ?? `#${s.chart_account_subgroup_id}`;
@@ -642,9 +674,9 @@ export function getChartAccountSubgroupColumns(
     {
       key: '__actions__',
       header: 'Ações',
-      size: ACTIONS_COL_SIZE,
+      size: onDelete ? ACTIONS_COL_SIZE_WITH_DELETE : ACTIONS_COL_SIZE,
       align: 'center',
-      render: (s) => editCell(s, label(s), onEdit),
+      render: (s) => actionsCell(s, label(s), onEdit, onDelete),
     },
   ];
 }

@@ -88,6 +88,22 @@ def _normalize_body_barcode(raw: str | None) -> str | None:
         digits = re.sub(r"\D", "", raw)
         return digits if 44 <= len(digits) <= 48 else None
 
+
+def _is_boleto_barcode(barcode: str | None) -> bool:
+    """True quando o barcode e um BOLETO pagavel (nao chave NF-e/CT-e). Reusa a
+    funcao canonica do extract_pdf (44 FEBRABAN moeda '9' banco != '000', ou 48
+    de arrecadacao); import lazy com fallback defensivo, como _normalize_body_barcode."""
+    if not barcode:
+        return False
+    try:
+        if str(EXTRACT_SCRIPT.parent) not in sys.path:
+            sys.path.insert(0, str(EXTRACT_SCRIPT.parent))
+        from extract_pdf import is_boleto_barcode
+        return is_boleto_barcode(barcode)
+    except Exception:
+        d = re.sub(r"\D", "", barcode)
+        return len(d) == 48 or (len(d) == 44 and d[3:4] == "9" and d[:3] != "000")
+
 PDF_INBOX.mkdir(parents=True, exist_ok=True)
 CSV_OUTPUT.mkdir(parents=True, exist_ok=True)
 
@@ -718,6 +734,7 @@ _NON_SUPPLIER_TERMS = frozenset(_norm_term(t) for t in {
     # acronimos de tributo / guias
     "darf", "gps", "das", "simples nacional", "simei", "gru", "dae", "dare",
     "gnre", "ipva", "iptu", "dam", "duam", "dam / duam", "iss", "itbi", "gare",
+    "multa", "penalidade",
     # tipos de pagamento (PAYMENT_METHODS)
     "pix", "ted", "doc", "cartao", "cartão", "deposito", "depósito",
     "duplicata", "bancario", "bancário", "carteira", "vale", "credito",
@@ -788,7 +805,7 @@ def safe_filename(text: str, max_len: int = 40) -> str:
 # remove acentos e baixa a caixa, entao a chave 'cambio' casa 'cambio'/'câmbio'/
 # 'CÂMBIO' e a forma gramatical correta 'câmbio' fica gravada como keyword.
 WORD_KEYWORDS = frozenset({
-    "darf", "das", "dae", "dam", "duam", "gps", "gru", "gnre", "gare",
+    "darf", "das", "dae", "dare", "dam", "duam", "gps", "gru", "gnre", "gare",
     "ipva", "iptu", "iss", "itbi", "cambio",
 })
 
@@ -801,8 +818,8 @@ NFE_SUBJECT_TERMS = ("notas fiscais", "nota fiscal", "nfe", "nf-e", "nfse", "nfs
 # 'ignorado' — pode ser um boleto/fatura cuja extracao falhou e precisa revisao.
 PAYABLE_HINT_TERMS = ("boleto", "fatura", "cobranca", "guia", "pix", "duplicata",
                       "vencimento", "vencer", "pagar", "darf", "das", "dae",
-                      "dam", "duam", "gps", "gru", "gnre", "gare", "ipva",
-                      "iptu", "iss", "itbi", "tributo", "imposto", "taxa")
+                      "dare", "dam", "duam", "gps", "gru", "gnre", "gare", "ipva",
+                      "iptu", "iss", "itbi", "tributo", "imposto", "taxa", "multa")
 
 
 def _strip_accents_lower(s: str) -> str:
@@ -995,6 +1012,21 @@ def build_financial_payload(row: dict, gmail_message_id: str,
                or _classify_utility_by_supplier(payload.get("supplier_name")))
     if utility:
         payload["document_type"] = utility
+    else:
+        # Guia tributária pelo ACRÔNIMO no assunto (DARE/GARE/GNRE/DARF…) sobrepõe a
+        # classificação do PDF — guias estaduais são quase idênticas e o Claude troca
+        # uma pela outra; o assunto traz o tipo que o remetente declarou.
+        tax_subject = _classify_tax_doc_type_from_subject(subject)
+        if tax_subject:
+            payload["document_type"] = tax_subject
+
+    # Boleto de TRANSPORTE (contexto cte/transporte/transportadora ou fornecedor de
+    # transporte) → document_type='cte' (regra 4). Abaixo de utility/tax (uma
+    # transportadora que manda um DARF continua DARF), acima de 'boleto'. Antes do
+    # nº sintético para o prefixo usar 'cte'.
+    payload["document_type"] = _apply_transport_boleto_doc_type(
+        payload.get("document_type"), subject, payload.get("supplier_name"),
+        payload.get("barcode"))
 
     # Nº documento em branco → sintético (PIX: valor; demais: tipo+vencimento) — mesma regra do corpo.
     if not payload.get("invoice_number"):
@@ -1004,9 +1036,12 @@ def build_financial_payload(row: dict, gmail_message_id: str,
         if synthetic:
             payload["invoice_number"] = synthetic
 
-    # Honorários: forma de pagamento sempre PIX (regra de negócio), mesmo via PDF.
+    # Honorários: PIX por padrão, EXCETO quando há código de barras / linha digitável
+    # de boleto válido — aí paga-se como boleto (honorário emitido em boleto). Boleto
+    # vence a regra do PIX; a chave NF-e/CT-e de 44 dígitos não casa (segue pix).
     if (payload.get("document_type") or "").lower() == "honorários":
-        payload["payment_method"] = "pix"
+        payload["payment_method"] = (
+            "boleto" if _is_boleto_barcode(payload.get("barcode")) else "pix")
 
     payload["currency"] = payload.get("currency") or "BRL"
     payload["status"]   = payload.get("status") or "pendente"
@@ -1129,6 +1164,18 @@ _BODY_AMOUNT_RE  = re.compile(r"R\$\s*[:\-]?\s*([\d.,]+)")
 # lista parcelas somadas/subtraidas, o total e o valor a pagar (nao a 1a parcela).
 _BODY_TOTAL_RE   = re.compile(
     r"(?i)(?:valor\s+)?total\s*[:\-]?\s*R\$\s*[:\-]?\s*([\d.,]+)")
+# Valor LIQUIDO / A PAGAR — o montante EFETIVO do documento (apos descontos). Tem
+# precedencia MAXIMA (antes de "Total" e da soma). Rotulos que denotam o unico
+# valor a pagar, jamais uma parcela. Cobre faturas que REPETEM o mesmo valor em
+# varios rotulos (ex.: Rodonaves "Valor da fatura" == "Valor liquido"), que a soma
+# das parcelas duplicava; e, quando ha desconto, o liquido e o correto (nao o bruto).
+# So os rotulos INEQUIVOCOS do valor final: "liquido" e "a pagar". NAO inclui
+# "valor da fatura"/"do documento"/"do boleto" (podem ser o BRUTO, antes de juros)
+# — se ha varios rotulos com o MESMO valor, a dedup da soma (regra 2) ja resolve;
+# se ha desconto real, so o "liquido"/"a pagar" e a fonte de verdade.
+_BODY_NET_RE     = re.compile(
+    r"(?i)valor\s+(?:l[ií]quido|a\s+pagar)"
+    r"\s*[:\-]?\s*R\$\s*[:\-]?\s*([\d.,]+)")
 # Valor ROTULADO sem "R$" (ex.: "Valor 50,00", "Valor: 1.250,00", "Total 304,04",
 # "o valor de 172,39"). So usado como FALLBACK quando nao ha nenhum valor com "R$".
 # Exige o rotulo (valor/total) E o formato monetario BR com EXATAMENTE 2 casas
@@ -1241,8 +1288,8 @@ _BODY_DOC_KEYWORDS: list[tuple[str, list[str]]] = [
     ("DAS",        ["simples nacional", "das-simples", "das simples",
                     "documento de arrecadacao do simples", "simei"]),
     ("GRU",        ["guia de recolhimento da uniao", "gru"]),
-    ("DAE",        ["documento de arrecadacao do esocial",
-                    "documento de arrecadacao de receitas estaduais", "dare", "dae"]),
+    ("DAE",        ["documento de arrecadacao do esocial", "dae"]),
+    ("DARE",       ["documento de arrecadacao de receitas estaduais", "dare"]),
     ("GNRE",       ["guia nacional de recolhimento", "gnre"]),
     ("IPVA",       ["guia de ipva", "ipva"]),
     ("IPTU",       ["guia de iptu", "iptu"]),
@@ -1252,6 +1299,8 @@ _BODY_DOC_KEYWORDS: list[tuple[str, list[str]]] = [
     ("GARE",       ["gare"]),
     ("tributo",    ["guia de recolhimento", "guia de pagamento",
                     "documento de arrecadacao"]),
+    # Multa / penalidade avulsa (auto de infracao, juros/multa isolados).
+    ("multa",      ["auto de infracao", "multa", "penalidade"]),
     # Fatura generica (ex.: Correios "Valor da fatura") — fallback antes de 'outro'.
     ("fatura",     ["fatura"]),
 ]
@@ -1329,6 +1378,114 @@ def _classify_utility_by_supplier(supplier_name: str | None) -> str | None:
     return None
 
 
+# ---------------------------------------------------------------------------
+# Transporte / CT-e — regra de negocio: o CT-e (documento FISCAL de transporte)
+# NAO gera conta a pagar; so o BOLETO de frete gera. Um boleto de transporte fica
+# rotulado como document_type='cte' (relatorio). Ver regras 1-5 do plano CTe.
+# ---------------------------------------------------------------------------
+# Termos de transporte no ASSUNTO (frase/sigla), sem acento (casados via _ns_body).
+_TRANSPORT_SUBJECT_TERMS = (
+    "cte", "ct-e", "dacte", "conhecimento de transporte", "transporte", "transportadora",
+)
+
+# Palavras no NOME DO FORNECEDOR que o identificam como transportadora (palavra
+# inteira, sem acento). Escopo restrito ao supplier_name — termos como "frete"/
+# "cargas" sao comuns; casar no corpo livre geraria falso positivo (mesmo criterio
+# de _UTILITY_SUPPLIER_BRANDS).
+_TRANSPORT_SUPPLIER_TERMS = (
+    "transporte", "transportes", "transportadora", "logistica", "cargas",
+    "encomendas", "frete", "fretes",
+)
+
+
+def _is_transport_supplier(supplier_name: str | None) -> bool:
+    """True se o nome do fornecedor indica transportadora (transporte(s)/
+    transportadora/logistica/cargas/encomendas/frete(s)). Palavra inteira, sem acento."""
+    if not supplier_name:
+        return False
+    blob = _ns_body(supplier_name)
+    return any(_has_word(blob, term) for term in _TRANSPORT_SUPPLIER_TERMS)
+
+
+def _is_transport_context(subject: str | None, supplier_name: str | None,
+                          document_type: str | None) -> bool:
+    """True se o e-mail/documento e de TRANSPORTE por qualquer uma das fontes:
+    assunto com termo de transporte, fornecedor de transporte (nome) ou
+    document_type ja classificado como 'cte'. Base da regra: transporte SEM boleto
+    e pulado (nao gera conta); boleto DE transporte vira document_type='cte'."""
+    if (document_type or "").strip().lower() == "cte":
+        return True
+    if _is_transport_supplier(supplier_name):
+        return True
+    if subject:
+        s = _ns_body(subject)
+        if any(_has_word(s, t) if " " not in t else (t in s)
+               for t in _TRANSPORT_SUBJECT_TERMS):
+            return True
+    return False
+
+
+# Tipos "genericos" cujo rotulo pode virar 'cte' quando o documento e um BOLETO de
+# transporte. NAO inclui guias/utilities (darf/gnre/conta de luz…): uma transportadora
+# que manda um DARF continua DARF — o rotulo transporte so vale para o proprio boleto.
+_TRANSPORT_RELABELABLE_TYPES = ("boleto", "cte", "outro", "pix", "")
+
+
+def _apply_transport_boleto_doc_type(document_type: str | None, subject: str | None,
+                                     supplier_name: str | None, barcode: str | None) -> str | None:
+    """Regra 4: um BOLETO de transporte (contexto cte/transporte/transportadora ou
+    fornecedor de transporte) e rotulado como document_type='cte'. So relabela tipos
+    genericos (_TRANSPORT_RELABELABLE_TYPES) — guias/utilities sao preservadas. Exige
+    codigo de barras de BOLETO valido (chave NF-e/CT-e nao casa). Idempotente."""
+    if not _is_boleto_barcode(barcode):
+        return document_type
+    if (document_type or "").strip().lower() not in _TRANSPORT_RELABELABLE_TYPES:
+        return document_type
+    if _is_transport_context(subject, supplier_name, document_type):
+        return "cte"
+    return document_type
+
+
+# Acronimos/frases de GUIA TRIBUTARIA no ASSUNTO -> document_type canonico (lowercase,
+# como no CHECK do banco e no enum @sheild/shared). O ASSUNTO e o sinal MAIS confiavel
+# do tipo de guia: quem encaminha o pagamento digita o tipo certo ("PAGAMENTO DARE -
+# REF. T05S1"), enquanto as guias estaduais sao visualmente quase identicas (DARE x GARE
+# x GNRE) e o PDF/Claude troca uma pela outra. Casado por PALAVRA INTEIRA (_has_word),
+# sem acento. CONSERVADOR: acronimos que colidem com palavras do portugues ('das' =
+# artigo, 'dam') NAO sao casados pela forma pura — so por frase inequivoca ('simples
+# nacional'/'simei') para nao gerar falso positivo em "pagamento DAS contas".
+_SUBJECT_TAX_DOC_KEYWORDS: list[tuple[str, list[str]]] = [
+    ("darf",       ["darf"]),
+    ("gps",        ["gps"]),
+    ("das",        ["simples nacional", "simei"]),
+    ("gru",        ["gru"]),
+    ("dare",       ["dare"]),
+    ("dae",        ["dae"]),
+    ("gnre",       ["gnre"]),
+    ("gare",       ["gare"]),
+    ("ipva",       ["ipva"]),
+    ("iptu",       ["iptu"]),
+    ("iss",        ["iss"]),
+    ("itbi",       ["itbi"]),
+    ("dam / duam", ["duam"]),
+    ("multa",      ["multa", "penalidade", "auto de infracao"]),
+]
+
+
+def _classify_tax_doc_type_from_subject(subject: str | None) -> str | None:
+    """Detecta a GUIA TRIBUTARIA pelo ACRONIMO EXPLICITO no assunto (DARE/GARE/GNRE/
+    DARF/...). Precedencia sobre a classificacao do PDF: o remetente declarou o tipo no
+    assunto e as guias estaduais confundem o extrator. Casa por PALAVRA INTEIRA, sem
+    acento. Retorna o document_type canonico (lowercase) ou None."""
+    if not subject:
+        return None
+    blob = _ns_body(subject)
+    for doc_type, terms in _SUBJECT_TAX_DOC_KEYWORDS:
+        if any(_has_word(blob, term) for term in terms):
+            return doc_type
+    return None
+
+
 def _brl_to_decimal(raw: str | None):
     """Converte valor em formato BR ('8.650,00' ou '8650,00') para float.
 
@@ -1352,23 +1509,38 @@ def _extract_body_amount(body_text: str) -> "float | None":
     """Determina o valor a pagar a partir do corpo do e-mail.
 
     Regra (decisao de negocio):
+      0. Valor "liquido"/"a pagar" (montante efetivo, apos descontos) tem
+         precedencia MAXIMA — Ex.: fatura Rodonaves "Valor liquido R$ 12.985,52".
       1. Valor rotulado como "Total"/"Valor Total" tem precedencia — quando o
          corpo lista parcelas (lado a lado, somando ou subtraindo), o total e o
          valor a pagar. Ex.: "Valor: R$ 297,08 + R$ 6,96 / Total: R$ 304,04".
-      2. Sem rotulo de total e com varios valores → soma as parcelas (fallback).
+      2. Sem rotulo de total e com varios valores → soma as parcelas (fallback),
+         MAS valores identicos repetidos (mesmo montante sob rotulos diferentes,
+         ex.: "Valor da fatura" == "Valor liquido") contam como UM so — nunca
+         somar; e R$ 0,00 (ex.: "Decrescimo R$ 0,00") e ignorado.
       3. Um unico valor → o proprio valor.
       4. Sem "R$": valor ROTULADO ("Valor 50,00"/"Total 304,04") — precedencia ao total.
       5. Nenhum valor → None.
     """
+    net_match = _BODY_NET_RE.search(body_text)
+    if net_match:
+        return _brl_to_decimal(net_match.group(1))
+
     total_match = _BODY_TOTAL_RE.search(body_text)
     if total_match:
         return _brl_to_decimal(total_match.group(1))
 
+    # Ignora R$ 0,00 (linhas "Decrescimo/Desconto R$ 0,00" nao sao valor a pagar).
     valores = [v for v in (_brl_to_decimal(m) for m in _BODY_AMOUNT_RE.findall(body_text))
-               if v is not None]
+               if v is not None and v > 0]
     if len(valores) == 1:
         return valores[0]
     if valores:
+        # Valores todos IDENTICOS = o mesmo montante repetido (subtotal/liquido/
+        # total sob rotulos distintos) → e UM valor, nao parcelas. Somar duplicava
+        # (caso Rodonaves). So soma quando ha valores REALMENTE distintos (parcelas).
+        if len(set(valores)) == 1:
+            return valores[0]
         return round(sum(valores), 2)
 
     # Fallback sem "R$": numero rotulado por "Valor"/"Total" (precedencia ao total).
@@ -1584,12 +1756,16 @@ def extract_from_email_body(body_text: str, received_at: str, message_id: str,
     # Conta de concessionária (água/luz/telefone-internet) tem PRECEDÊNCIA MÁXIMA:
     # a frase no assunto/corpo define o tipo mesmo que pareça fatura/boleto/PIX.
     # payment_method permanece o detectado (pix se houver) — utility não força forma.
-    # Depois: honorários (precedência sobre PIX) → PIX → classificação por keyword.
+    # Depois: GUIA TRIBUTÁRIA pelo acrônimo no assunto (DARE/GARE/GNRE/DARF…) →
+    # honorários (precedência sobre PIX) → PIX → classificação por keyword do corpo.
     utility = (_classify_utility_doc_type(subject, body_text)
                or _classify_utility_by_supplier(supplier_name))
+    tax_subject = _classify_tax_doc_type_from_subject(subject)
     classified = _classify_body_doc_type(body_text)
     if utility:
         document_type, payment_method = utility, ("pix" if has_pix else "outro")
+    elif tax_subject:
+        document_type, payment_method = tax_subject, ("pix" if has_pix else "outro")
     elif classified == "honorários":
         document_type, payment_method = "honorários", "pix"
     elif has_pix:
@@ -1599,6 +1775,19 @@ def extract_from_email_body(body_text: str, received_at: str, message_id: str,
         document_type, payment_method = "pix", "pix"
     else:
         document_type, payment_method = classified, "outro"
+
+    # Boleto com PIX: linha digitavel / codigo de barras de BOLETO valido tem
+    # precedencia sobre TODOS os ramos acima (inclusive has_pix e honorarios) —
+    # paga-se como boleto. Chave NF-e/CT-e (44 sem moeda '9') nao casa -> segue pix.
+    if barcode and _is_boleto_barcode(barcode):
+        payment_method = "boleto"
+        if (document_type or "outro").lower() in ("pix", "outro", ""):
+            document_type = "boleto"
+
+    # Boleto de TRANSPORTE → document_type='cte' (regra 4). Mesma regra do caminho de
+    # PDF; roda depois do override de boleto (o boleto ja foi identificado acima).
+    document_type = _apply_transport_boleto_doc_type(
+        document_type, subject, supplier_name, barcode)
 
     # Numero de documento: valor encontrado no corpo ou sintetico
     # (PIX: 'PIX_' + valor; demais: tipo+ddmmyy do vencimento/emissao).
@@ -2153,9 +2342,16 @@ def extract_and_store_accounts(saved_pdfs: list, message_id: str,
     Liga cada conta ao e-mail por gmail_message_id; multiplos PDFs no mesmo
     e-mail recebem sufixo (#1, #2, ...) para nao colidir na chave unica.
     Emails defeituosos sao logados em email_processing_errors e pulados.
-    Retorna (lista de CSVs gerados, total de contas gravadas).
+    Retorna (lista de CSVs gerados, total de contas gravadas, nonpayable_only).
+
+    `nonpayable_only` = True quando TODO registro extraido foi pulado como
+    NAO-PAGAVEL (NF-e/NFS-e ou CT-e/transporte sem boleto) e NENHUM registro pagavel
+    foi tentado — sinaliza o chamador a marcar o e-mail 'ignorado' (nao 'falha'). Se
+    houve um boleto que falhou por sem_valor/sem_fornecedor, NAO e nonpayable_only
+    (segue 'falha' para revisao).
     """
     csvs_ok, accounts_saved, acc_index = [], 0, 0
+    skipped_nonpayable, payable_attempts = 0, 0
     err_ctx = email_rec or {}
 
     # Senhas candidatas (CNPJ[:4]/[:5]/[:6] do pagador) para boletos protegidos —
@@ -2197,6 +2393,7 @@ def extract_and_store_accounts(saved_pdfs: list, message_id: str,
             dtype = (row.get("document_type") or "").strip().lower()
             if dtype in SKIP_ACCOUNT_TYPES:
                 log.info(f"    {dtype.upper()} ignorado — nao gera conta a pagar")
+                skipped_nonpayable += 1
                 continue
 
             gmid    = message_id if acc_index == 0 else f"{message_id}#{acc_index}"
@@ -2206,6 +2403,20 @@ def extract_and_store_accounts(saved_pdfs: list, message_id: str,
             payload["sender_email"] = err_ctx.get("sender_email")
             payload["subject"]      = err_ctx.get("subject")  # exibido/buscado em /consulta (migration 025)
             ctx     = {**err_ctx, "source_file": row.get("source_file")}
+
+            # CT-e / transporte SEM boleto NAO gera conta a pagar (regra 1): o CT-e e
+            # documento fiscal; so o boleto de frete e pagavel. supplier_name ainda
+            # existe no payload aqui (removido so em _finalize_supplier). Um boleto de
+            # transporte ja foi rotulado 'cte' em build_financial_payload e TEM barcode
+            # de boleto — logo NAO cai aqui.
+            if (_is_transport_context(err_ctx.get("subject"), payload.get("supplier_name"),
+                                      payload.get("document_type"))
+                    and not _is_boleto_barcode(payload.get("barcode"))):
+                log.info("    CT-e/transporte sem boleto ignorado — nao gera conta a pagar")
+                skipped_nonpayable += 1
+                continue
+
+            payable_attempts += 1
 
             # Validacao 1: valor ausente ou zero
             if not payload.get("amount"):
@@ -2294,7 +2505,8 @@ def extract_and_store_accounts(saved_pdfs: list, message_id: str,
                 )
             acc_index += 1
 
-    return csvs_ok, accounts_saved
+    nonpayable_only = skipped_nonpayable > 0 and payable_attempts == 0
+    return csvs_ok, accounts_saved, nonpayable_only
 
 
 # Resultado da extração pelo corpo (try_extract_from_body) — orienta o status do
@@ -2304,6 +2516,7 @@ def extract_and_store_accounts(saved_pdfs: list, message_id: str,
 BODY_CREATED   = "created"    # conta nova gravada            → 'recebido'
 BODY_DUPLICATE = "duplicate"  # pagável duplica conta existente → 'ignorado'
 BODY_NONE      = "none"       # sem pagável utilizável         → falha/notificação
+BODY_IGNORED   = "ignored"    # CT-e/transporte sem boleto     → 'ignorado' (não pagável)
 
 
 def try_extract_from_body(email_rec: dict, body_text: str, received_at: str,
@@ -2316,7 +2529,9 @@ def try_extract_from_body(email_rec: dict, body_text: str, received_at: str,
       BODY_DUPLICATE — o pagavel do corpo DUPLICA uma conta ja registrada: nao
                        grava de novo, anota a referencia em email_rec['duplicate_of']
                        e o chamador marca 'ignorado' (nao e falha — a conta existe);
-      BODY_NONE      — sem pagavel utilizavel (chamador segue p/ falha/notificacao).
+      BODY_NONE      — sem pagavel utilizavel (chamador segue p/ falha/notificacao);
+      BODY_IGNORED   — CT-e/transporte SEM boleto: nao e conta a pagar (chamador
+                       marca 'ignorado', nao 'falha').
     Anota o motivo em email_rec['notes']. O log em email_processing_errors e feito
     de forma centralizada no chamador (process_message), para TODA falha.
     """
@@ -2339,6 +2554,16 @@ def try_extract_from_body(email_rec: dict, body_text: str, received_at: str,
         log.info(f"    {dtype.upper()} (corpo do e-mail) ignorado — nao gera conta a pagar")
         email_rec["notes"] = f"{dtype.upper()} (corpo do e-mail) — nao gera conta a pagar"
         return BODY_NONE
+
+    # CT-e / transporte SEM boleto (corpo) NAO gera conta a pagar (regra 1). O corpo
+    # raramente traz linha digitavel; um boleto de transporte ja teria sido rotulado
+    # 'cte' com barcode valido em extract_from_email_body → nao cai aqui.
+    if (_is_transport_context(email_rec.get("subject"), payload.get("supplier_name"),
+                              payload.get("document_type"))
+            and not _is_boleto_barcode(payload.get("barcode"))):
+        log.info("    CT-e/transporte sem boleto (corpo) ignorado — nao gera conta a pagar")
+        email_rec["notes"] = "CT-e/transporte sem boleto (corpo) — nao gera conta a pagar"
+        return BODY_IGNORED
 
     # Mesma validacao de valor do caminho de PDF (extract_and_store_accounts):
     # sem valor nao ha conta a pagar.
@@ -2461,7 +2686,7 @@ def _received_at_from(meta: bytes | None, date_header: str) -> str:
 def status_for_result(has_attachment: bool, csv_generated: bool,
                        body_created: bool, pure_nfe: bool = False,
                        accounts_saved: int = 0, notification: bool = False,
-                       duplicate: bool = False) -> str:
+                       duplicate: bool = False, nonpayable: bool = False) -> str:
     """Deriva email_control.status a partir do resultado real do processamento.
 
     Prioridade (CHECK migration 022): conta do PDF > conta do corpo > NF-e pura
@@ -2470,6 +2695,9 @@ def status_for_result(has_attachment: bool, csv_generated: bool,
       - accounts_saved -> 'extraído'  (conta(s) a pagar gravada(s) do PDF)
       - pure_nfe       -> 'ignorado'  (assunto NF-e/NFS-e puro, sem pagavel e sem
                                        conta: notificacao fiscal, nao e conta a pagar)
+      - nonpayable     -> 'ignorado'  (CT-e/transporte sem boleto — documento fiscal,
+                                       nao e conta a pagar; vem ANTES de csv_generated
+                                       porque o PDF do CT-e gera CSV sem conta)
       - csv_generated  -> 'extraído'  (PDF lido — conta nova ou reemissao deduplicada)
       - body_created   -> 'recebido'     (conta extraida do corpo do e-mail)
       - duplicate      -> 'duplicidade'  (pagavel do corpo duplica conta ja registrada)
@@ -2488,6 +2716,11 @@ def status_for_result(has_attachment: bool, csv_generated: bool,
     if accounts_saved > 0:
         return "extraído"
     if pure_nfe:
+        return "ignorado"
+    # CT-e/transporte sem boleto (ou NF-e/NFS-e pulada): documento nao-pagavel — vem
+    # ANTES de csv_generated, pois o PDF do CT-e gera CSV mas nenhuma conta (seria
+    # 'extraído', errado). Ver regra 1 do CTe.
+    if nonpayable:
         return "ignorado"
     if csv_generated:
         return "extraído"
@@ -2606,7 +2839,7 @@ def process_message(mail, uid: bytes, keywords: list,
         elif inline_image:
             rec["notes"] = "Imagem inline do corpo lida via Vision"
 
-        csvs_ok, accounts_saved = extract_and_store_accounts(
+        csvs_ok, accounts_saved, nonpayable_only = extract_and_store_accounts(
             saved_pdfs, message_id, ctrl, email_rec=rec)
 
         csv_generated = len(csvs_ok) > 0
@@ -2639,7 +2872,8 @@ def process_message(mail, uid: bytes, keywords: list,
             has_att, csv_generated, body_created,
             pure_nfe=subject_is_pure_nfe(subject), accounts_saved=accounts_saved,
             notification=subject_is_ignorable_notification(subject),
-            duplicate=(body_outcome == BODY_DUPLICATE))
+            duplicate=(body_outcome == BODY_DUPLICATE),
+            nonpayable=(nonpayable_only or body_outcome == BODY_IGNORED))
 
         # Regra: TODA falha gera log em email_processing_errors para revisão —
         # inclusive o corpo sem sinal financeiro, que antes saía silencioso.

@@ -68,7 +68,8 @@ const repository = {
 
     if (params.search) {
       const term = sanitizeTerm(params.search);
-      query = query.or(`group_code.ilike.%${term}%,group_description.ilike.%${term}%`);
+      // Cobre TODAS as colunas do grid: código, descrição e tipo.
+      query = query.or(`group_code.ilike.%${term}%,group_description.ilike.%${term}%,group_type.ilike.%${term}%`);
     }
 
     const sorted = resolveSort(params.sort, params.order, SORTABLE_COLUMNS);

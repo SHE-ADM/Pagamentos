@@ -6,11 +6,12 @@
 // ("não informado") é preservado e nunca aparece nesta lista. A exclusão foi
 // removida da UI (só criar/editar).
 import { useState, useEffect, useCallback, useRef } from 'react';
-import { RefreshCw, Plus, Layers } from 'lucide-react';
+import { RefreshCw, Plus, Layers, Trash2 } from 'lucide-react';
 import type { CostCenter, CostCenterCreateInput } from '@sheild/shared';
-import { listCostCentersPage, createCostCenter, updateCostCenter } from '../services/costCenters';
+import { listCostCentersPage, createCostCenter, updateCostCenter, deleteCostCenter } from '../services/costCenters';
 import { getCostCenterColumns } from '../hooks/useGridColumns';
 import { getErrorMessage } from '../lib/getErrorMessage';
+import { useAuth } from '../contexts/AuthContext';
 import DataGrid from '../components/organisms/DataGrid';
 import CostCenterForm from '../components/organisms/CostCenterForm';
 import SearchInput from '../components/molecules/SearchInput';
@@ -23,6 +24,7 @@ const NOTICE_DISMISS_MS = 5000; // banner de sucesso some sozinho após este tem
 type FormState = { mode: 'create' | 'edit'; costCenter?: CostCenter } | null;
 
 export default function CostCentersPage() {
+  const { isAdmin } = useAuth();
   const [rows, setRows] = useState<CostCenter[]>([]);
   const [total, setTotal] = useState(0);
   const [page, setPage] = useState(1);
@@ -42,7 +44,13 @@ export default function CostCentersPage() {
   const [formError, setFormError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
 
+  // Exclusão (hard delete, admin-only): linha alvo da confirmação + estado do request.
+  const [deleteTarget, setDeleteTarget] = useState<CostCenter | null>(null);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
+  const [deleting, setDeleting] = useState(false);
+
   const formDialogRef = useRef<HTMLDialogElement>(null);
+  const deleteDialogRef = useRef<HTMLDialogElement>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -92,6 +100,17 @@ export default function CostCentersPage() {
     }
   }, [form]);
 
+  useEffect(() => {
+    const el = deleteDialogRef.current;
+    if (!el) return;
+    try {
+      if (deleteTarget) el.showModal();
+      else el.close();
+    } catch {
+      /* jsdom */
+    }
+  }, [deleteTarget]);
+
   // Auto-dispensa o banner de sucesso (evita `notice` stale aparecer para uma ação nova).
   useEffect(() => {
     if (!notice) return;
@@ -140,8 +159,36 @@ export default function CostCentersPage() {
     }
   };
 
-  const columns = getCostCenterColumns(openEdit);
+  // Exclusão (hard delete) só é oferecida a admin (o backend impõe requireAdmin → 403).
+  const requestDelete = (costCenter: CostCenter) => {
+    setDeleteError(null);
+    setDeleteTarget(costCenter);
+  };
+  const closeDelete = () => {
+    setDeleteTarget(null);
+    setDeleteError(null);
+  };
+  const confirmDelete = async () => {
+    if (!deleteTarget) return;
+    setDeleting(true);
+    setDeleteError(null);
+    try {
+      await deleteCostCenter(deleteTarget.cost_center_id);
+      setNotice('Centro de custo excluído com sucesso.');
+      setDeleteTarget(null);
+      await load();
+    } catch (e) {
+      setDeleteError(getErrorMessage(e));
+    } finally {
+      setDeleting(false);
+    }
+  };
+
+  const columns = getCostCenterColumns(openEdit, isAdmin ? requestDelete : undefined);
   const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
+  const deleteName = deleteTarget
+    ? (deleteTarget.cost_center_description ?? deleteTarget.cost_center_code ?? `#${deleteTarget.cost_center_id}`)
+    : '';
 
   return (
     <div className="flex flex-col h-full">
@@ -245,6 +292,47 @@ export default function CostCentersPage() {
               submitError={formError}
               submitting={submitting}
             />
+          </div>
+        </dialog>
+      )}
+
+      {/* Confirmação de exclusão (hard delete, admin-only) */}
+      {deleteTarget && (
+        <dialog
+          ref={deleteDialogRef}
+          aria-label="Confirmar exclusão"
+          onCancel={closeDelete}
+          className="fixed inset-0 m-auto h-fit max-h-[90vh] w-full max-w-md overflow-y-auto rounded-xl border-0 bg-white p-0 shadow-lg backdrop:bg-black/50"
+        >
+          <div className="p-6">
+            <div className="mb-3 flex items-center gap-2">
+              <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-status-error-bg text-status-error-fg">
+                <Trash2 size={16} />
+              </div>
+              <h2 className="text-base font-semibold text-gray-900">Excluir centro de custo</h2>
+            </div>
+            <p className="mb-4 text-sm text-gray-600">
+              Tem certeza que deseja excluir <strong className="text-gray-900">{deleteName}</strong>? Esta
+              ação é permanente e não pode ser desfeita.
+            </p>
+            {deleteError && (
+              <Alert variant="error" className="mb-4">
+                {deleteError}
+              </Alert>
+            )}
+            <div className="flex justify-end gap-2">
+              <button type="button" onClick={closeDelete} className="btn" disabled={deleting}>
+                Cancelar
+              </button>
+              <button
+                type="button"
+                onClick={confirmDelete}
+                disabled={deleting}
+                className="btn bg-status-error-fg text-white hover:bg-status-error-fg/90"
+              >
+                <Trash2 size={14} /> {deleting ? 'Excluindo…' : 'Excluir'}
+              </button>
+            </div>
           </div>
         </dialog>
       )}

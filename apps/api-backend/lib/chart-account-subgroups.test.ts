@@ -61,4 +61,14 @@ describe('chartAccountSubgroupService', () => {
     resultQueue.push({ error: null }); // delete
     expect(await chartAccountSubgroupService.remove(5)).toEqual({ chart_account_subgroup_id: 5 });
   });
+
+  it('busca cobre TODAS as colunas do grid (código, descrição, grupo embed)', async () => {
+    resultQueue.push({ data: [], count: 0, error: null }); // main query
+    resultQueue.push({ data: [{ chart_account_group_id: 4 }], error: null }); // grupo ids (embed)
+    await chartAccountSubgroupService.list({ search: 'circulante' });
+    const orArg = (builders[0].or.mock.calls[0]?.[0] ?? '') as string;
+    expect(orArg).toContain('subgroup_code.ilike.%circulante%');
+    expect(orArg).toContain('subgroup_description.ilike.%circulante%');
+    expect(orArg).toContain('chart_account_group_id.in.(4)');
+  });
 });

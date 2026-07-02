@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { NextRequest } from 'next/server';
 
-vi.mock('@/lib/auth', () => ({ requireAuth: vi.fn() }));
+vi.mock('@/lib/auth', () => ({ requireAuth: vi.fn(), requireAdmin: vi.fn() }));
 vi.mock('@/lib/chart-account-subgroups', () => {
   class ChartAccountSubgroupServiceError extends Error {
     status: number;
@@ -17,10 +17,11 @@ vi.mock('@/lib/chart-account-subgroups', () => {
 });
 
 import { GET, PATCH, DELETE } from './route';
-import { requireAuth } from '@/lib/auth';
+import { requireAuth, requireAdmin } from '@/lib/auth';
 import { chartAccountSubgroupService, ChartAccountSubgroupServiceError } from '@/lib/chart-account-subgroups';
 
 const requireAuthMock = vi.mocked(requireAuth);
+const requireAdminMock = vi.mocked(requireAdmin);
 const removeMock = vi.mocked(chartAccountSubgroupService.remove);
 const updateMock = vi.mocked(chartAccountSubgroupService.update);
 
@@ -30,6 +31,7 @@ const ctx = (id: string) => ({ params: Promise.resolve({ id }) });
 
 beforeEach(() => {
   requireAuthMock.mockReset().mockResolvedValue(null);
+  requireAdminMock.mockReset().mockResolvedValue(null);
   vi.mocked(chartAccountSubgroupService.getById).mockReset();
   updateMock.mockReset();
   removeMock.mockReset();
@@ -51,5 +53,10 @@ describe('/api/chart-account-subgroups/:id', () => {
   it('DELETE 409 em uso', async () => {
     removeMock.mockRejectedValue(new ChartAccountSubgroupServiceError('Subgrupo em uso e não pode ser excluído', 409));
     expect((await DELETE(req(), ctx('5'))).status).toBe(409);
+  });
+  it('DELETE 403 quando não é admin — não toca o service', async () => {
+    requireAdminMock.mockResolvedValue(new Response(null, { status: 403 }));
+    expect((await DELETE(req(), ctx('5'))).status).toBe(403);
+    expect(removeMock).not.toHaveBeenCalled();
   });
 });

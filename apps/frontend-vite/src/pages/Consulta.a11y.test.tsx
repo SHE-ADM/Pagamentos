@@ -6,11 +6,13 @@ import { axe } from '../../tests/axe';
 const getFinancialAccountControl = vi.fn();
 const getFinancialStats = vi.fn();
 const getFinancialAccountTotalValue = vi.fn();
+const getFinancialAccountCount = vi.fn();
 
 vi.mock('../services/supabase', () => ({
   getFinancialAccountControl: (...args: unknown[]) => getFinancialAccountControl(...args),
   getFinancialStats: (...args: unknown[]) => getFinancialStats(...args),
   getFinancialAccountTotalValue: (...args: unknown[]) => getFinancialAccountTotalValue(...args),
+  getFinancialAccountCount: (...args: unknown[]) => getFinancialAccountCount(...args),
   setFinancialAccountFlag: vi.fn(),
   setFinancialAccountStatus: vi.fn(),
 }));
@@ -22,6 +24,7 @@ describe('Consulta — acessibilidade (WCAG AA)', () => {
     getFinancialAccountControl.mockResolvedValue({ data: [], total: 0 });
     getFinancialStats.mockResolvedValue({ totalRecords: 0, pending: 0, totalValue: 0, vencendo: 0, vencidas: 0 });
     getFinancialAccountTotalValue.mockResolvedValue(0);
+    getFinancialAccountCount.mockResolvedValue(0);
   });
 
   it('página de consulta (filtros + tabela) não tem violações', async () => {

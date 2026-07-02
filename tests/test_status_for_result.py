@@ -66,6 +66,25 @@ class StatusForResultTest(unittest.TestCase):
             "extraído",
         )
 
+    def test_nonpayable_cte_sem_boleto_resulta_ignorado(self):
+        # CT-e/transporte sem boleto: PDF gera CSV mas nenhuma conta. `nonpayable`
+        # tem precedencia sobre csv_generated (senao viraria 'extraído', errado).
+        self.assertEqual(
+            read_emails.status_for_result(has_attachment=True, csv_generated=True,
+                                          body_created=False, accounts_saved=0,
+                                          nonpayable=True),
+            "ignorado",
+        )
+
+    def test_conta_salva_vence_nonpayable(self):
+        # E-mail misto (CT-e fiscal pulado + boleto gravado): 'extraído' prevalece.
+        self.assertEqual(
+            read_emails.status_for_result(has_attachment=True, csv_generated=True,
+                                          body_created=False, accounts_saved=1,
+                                          nonpayable=True),
+            "extraído",
+        )
+
     def test_nfe_pura_sem_conta_resulta_ignorado(self):
         # Assunto NF-e puro, PDF gerou CSV (NF-e e SKIP_ACCOUNT_TYPES → sem conta):
         # nao e conta a pagar, vira 'ignorado' em vez do antigo 'extraído'.

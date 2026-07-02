@@ -67,4 +67,22 @@ describe('chartAccountService', () => {
   it('remove 409 para o sentinela id 0', async () => {
     await expect(chartAccountService.remove(0)).rejects.toMatchObject({ status: 409 });
   });
+
+  it('busca cobre TODAS as colunas do grid (código, descrição + embeds de classificação)', async () => {
+    resultQueue.push({ data: [], count: 0, error: null }); // main query
+    resultQueue.push({ data: [{ cost_center_id: 3 }], error: null }); // financial_cost_center
+    resultQueue.push({ data: [], error: null }); // financial_chart_of_account_group
+    resultQueue.push({ data: [{ chart_account_subgroup_id: 7 }], error: null }); // subgroup
+
+    await chartAccountService.list({ search: 'admin' });
+
+    const mainBuilder = builders[0];
+    const orArg = (mainBuilder.or.mock.calls[0]?.[0] ?? '') as string;
+    expect(orArg).toContain('account_code.ilike.%admin%');
+    expect(orArg).toContain('account_description.ilike.%admin%');
+    expect(orArg).toContain('cost_center_id.in.(3)');
+    expect(orArg).toContain('chart_account_subgroup_id.in.(7)');
+    // grupo sem match não gera cláusula
+    expect(orArg).not.toContain('chart_account_group_id.in.');
+  });
 });

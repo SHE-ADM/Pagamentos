@@ -190,7 +190,12 @@ inline via `POST /api/suppliers`); **tipo de documento e tipo de pagamento** sã
 (`molecules/ChartAccountSelect.tsx`), em CASCATA: ver "Lookups de classificação contábil (cascata)".
 Ordem dos campos do form: **Fornecedor → Descrição → Centro de custo → Plano de contas →
 (Tipo de documento + Tipo de pagamento) → (Nº documento + Emissão) → (Valor + Vencimento) →
-Código de barras** (os 3 pares na mesma linha; código de barras isolado por último). Na
+Código de barras → Informações adicionais** (os 3 pares na mesma linha; código de barras isolado;
+**Informações adicionais** por último — `<textarea>` de texto livre, coluna
+`financial_account_control.additional_info` TEXT nullable, migration 064). Esse texto é escrito
+pelo usuário e **aparece no card de detalhe de `/consulta`** (bloco "Informações adicionais",
+`whitespace-pre-wrap`); é distinto de `processing_notes` (auditoria/pipeline, exibido como
+"Observações") e nunca é tocado pela extração. Na
 **inclusão** (modo `create`), **Emissão e Vencimento já vêm com a data de hoje** (`todayISO()`,
 data local — `toFormValues` só preenche quando não há `defaultValues`; edição mantém os valores
 da conta). **Sem botão de exclusão** em nenhuma das telas.
@@ -370,6 +375,25 @@ que for criar outros via API precisa de `app_metadata.role: "admin"`. RLS (migra
 não afeta o app: o CRUD escreve via Next API com **`service_role`** (ignora RLS); só a curadoria
 inline (`has_invoice`/`has_bank_slip`/`status` em `financial_account_control`, `reviewed_at` em
 `email_control`) é escrita direto pelo papel `authenticated`, via grants por coluna preservados.
+
+**Grupos de usuário — permissões por grupo (FUNDAÇÃO aplicada; RBAC completo DESENHADO, não
+implementado):** existe a base para, no futuro, segregar acesso/visualização por grupo (o "abrir
+tarefa dedicada" citado acima). **Aplicado (migration 063):** catálogo `public.user_group`
+(`group_id` IDENTITY ALWAYS PK, `group_name` VARCHAR(30) DEFAULT ''; **id 0 = sentinela "não
+informado"**; RLS read `authenticated`/write `service_role`) + backfill `app_metadata.group_id=0`
+nos usuários existentes. **`user_group` é editado EXCLUSIVAMENTE via Supabase** (SQL Editor/
+Dashboard) — **sem CRUD no app** (o frontend só lê o catálogo); preservar em limpezas de dados.
+**Design aprovado, ainda NÃO implementado** (blueprint em
+[docs/design/permissoes-por-grupo.md](docs/design/permissoes-por-grupo.md)): vínculo usuário→grupo
+por **FK real** em `public.user_profile` (fonte de verdade — supersede a ideia de "só claim");
+permissões via `permission(resource,action)` + `group_permission` (cobre tela/menu **e** CRUD);
+visibilidade por linha via `group_company`/`group_cost_center`/`group_chart_account` (empresa +
+centro de custo + plano de contas). **Semântica RLS:** dimensão sem linhas = vê tudo (restrição
+opt-in), dimensões com AND, bypass `service_role`/`app_metadata.role='admin'`. Enforcement por
+camada: `view`=menu (frontend esconde + guarda rota) · CRUD=Next API `requirePermission` (escrita
+é `service_role`, RLS não pega) · linha=RLS em `financial_account_control`. Roadmap: migrations
+064–067 + helpers `belongsToGroup`/`requirePermission` em `lib/auth.ts` + menu no `Layout.tsx`.
+Ler o blueprint antes de implementar.
 
 **Erros 5xx não vazam detalhe interno (segurança §3 M-2):** os route handlers de CRUD usam
 `failFromError(e, '<tag>')` (`lib/response.ts`) — erro com `status` 4xx ecoa a mensagem
@@ -706,6 +730,16 @@ NF-e pura sem conta a pagar → reclassifica para `ignorado` (só status, sem IM
 py -3 scripts\reprocess_ignored_emails.py --dry-run
 ```
 
+Alinhar dados JÁ gravados à regra de **CT-e/transporte** (ver "CT-e / transporte" em
+"Normalização de `document_type`"). Fase A: boleto de fornecedor de transporte →
+`document_type='cte'`. Fase B: `cte` que não é boleto → **hard delete** + e-mail órfão →
+`ignorado`. Roda uma vez (rodado em 2026-07-02):
+
+```powershell
+py -3 scripts\reprocess_cte_accounts.py --dry-run   # lista o que faria
+py -3 scripts\reprocess_cte_accounts.py             # re-rotula + exclui
+```
+
 Reprocessar **UM e-mail específico** pelo **pipeline completo** (Message-ID) — único que
 cobre **anexo e IMAGEM INLINE** (recibo/comprovante colado no corpo, via Vision), que os
 reprocessadores de corpo/link não cobrem. Rebusca o e-mail no IMAP, roda `process_message`,
@@ -970,10 +1004,11 @@ próprio com a base + o neutro do tema — string literal completa.
 ### Guia de tamanhos — tokens Tailwind em uso
 
 Usar o token mais próximo; valor arbitrário só como exceção documentada (ver abaixo).
-A login passou por compactação para centralizar melhor o card e, depois, por uma **redução
-global de ~20% de todas as suas dimensões** (cada valor foi multiplicado por 0,8 e snapado
-ao token Tailwind mais próximo) — os valores abaixo são os **atuais** (não os do design
-original).
+A login passou por compactação para centralizar melhor o card, depois por uma **redução
+global de ~20%** (×0,8) e, mais tarde, por um **aumento global de ~10%** (cada valor foi
+multiplicado por 1,1 e snapado ao token Tailwind mais próximo — por isso alguns tokens
+sobem um passo cheio, ex.: `h-8`→`h-9`, `text-xs`→`text-sm`) — os valores abaixo são os
+**atuais** (não os do design original).
 
 > **Snap aplicado em todo o app (não só na login):** tamanhos arbitrários de fonte foram
 > eliminados — `text-[9px]/[10px]/[11px]` → `text-xs`, `text-[13px]`/`body` → `text-sm`,
@@ -986,42 +1021,41 @@ original).
 
 | Classe | Tamanho | Uso no projeto |
 |---|---|---|
-| `text-xs` | 12px | labels sociais ("fale com a gente"), rótulos dos círculos, labels/inputs dos campos (`FilledTextField`) |
-| `text-sm` | 14px | "lembrar-me", erro inline, links, subtítulo do login + texto do botão primário (`AccentPillButton`) |
-| `text-base` | 16px | corpo padrão do restante do app |
-| `text-2xl` | 24px | h1 do login ("Login") — reduzido de `text-3xl` na redução de ~20% |
+| `text-sm` | 14px | labels sociais ("fale com a gente"), rótulos dos círculos, labels/inputs/erro dos campos (`FilledTextField`) — subiram de `text-xs` no aumento de ~10% |
+| `text-base` | 16px | "lembrar-me", erro inline, links, subtítulo do login + texto do botão primário (`AccentPillButton`) — subiram de `text-sm` no aumento de ~10%; também o corpo padrão do restante do app |
+| `text-2xl` | 24px | h1 do login ("Login") — mantido (24×1,1=26,4 snapa de volta a `text-2xl`) |
 
 **Espaçamento e dimensões recorrentes (login page):**
 
 | Classe | px | Uso |
 |---|---|---|
-| `h-8` | 32px | altura dos campos de input (`FilledTextField`) |
-| `h-10` | 40px | altura do botão primário (`AccentPillButton`) |
-| `h-44` | 176px | altura do banner da login page |
-| `h-1` | 4px | divisor verde entre banner e card (decorativo — não reduzido) |
-| `w-10 h-10` | 40px | círculos sociais |
-| `w-6 h-6` | 24px | ícone dentro do círculo social |
-| `w-3 h-3` | 12px | checkbox "lembrar-me" |
-| `border-[5px]` | 5px | frame externo + moldura interna do banner (exceção arbitrária) |
-| `border-2` | 2px | borda dos campos e círculos |
-| `ring-4` | 4px | anel interno do card (`ring-inset ring-loginGreen-border/25`) — decorativo, não reduzido |
+| `h-9` | 36px | altura dos campos de input (`FilledTextField`) — subiu de `h-8` no aumento de ~10% |
+| `h-11` | 44px | altura do botão primário (`AccentPillButton`) — subiu de `h-10` (40×1,1=44 exato) |
+| `h-48` | 192px | altura do banner da login page — subiu de `h-44` no aumento de ~10% |
+| `h-1` | 4px | divisor verde entre banner e card (decorativo — não escalado) |
+| `w-11 h-11` | 44px | círculos sociais — subiu de `w-10 h-10` no aumento de ~10% |
+| `w-7 h-7` | 28px | ícone dentro do círculo social — subiu de `w-6 h-6` |
+| `w-3.5 h-3.5` | 14px | checkbox "lembrar-me" — subiu de `w-3 h-3` |
+| `border-[6px]` | 6px | frame externo + moldura interna do banner (exceção arbitrária — subiu de `border-[5px]`) |
+| `border-2` | 2px | borda dos campos e círculos (mantido — 2×1,1 snapa de volta a `border-2`) |
+| `ring-4` | 4px | anel interno do card (`ring-inset ring-loginGreen-border/25`) — decorativo, não escalado |
 | `rounded-xl` | 12px | border-radius do card/frame |
 | `rounded-md` | 6px | border-radius de campos e botão |
-| `gap-2.5` | 10px | espaçamento entre seções do formulário |
+| `gap-2.5` | 10px | espaçamento entre seções do formulário (mantido — 10×1,1 fica entre `gap-2.5`/`gap-3`) |
 | `gap-1` | 4px | label↔campo e círculo↔rótulo social |
-| `gap-6` | 24px | espaçamento entre círculos sociais |
+| `gap-7` | 28px | espaçamento entre círculos sociais — subiu de `gap-6` no aumento de ~10% |
 | `my-2.5` | 10px | folga vertical extra do botão Login (acima/abaixo, somada ao `gap-2.5`) |
-| `px-5` | 20px | padding horizontal do card |
+| `px-5` | 20px | padding horizontal do card (mantido — fica entre `px-5`/`px-6`) |
 | `pt-2` / `pb-2.5` | 8px / 10px | padding vertical do card (topo/base) |
 | `px-3` | 12px | padding horizontal dos campos |
-| `max-w-[19rem]` | 304px | largura máxima do frame (exceção arbitrária — 20% de `max-w-sm`/384px) |
+| `max-w-[21rem]` | 336px | largura máxima do frame (exceção arbitrária — ~10% acima de `max-w-[19rem]`) |
 
 **Exceções de valor arbitrário aceitas (login page):**
 
-- `max-w-[19rem]` — 304px ≈ 80% de `max-w-sm` (384px); não há token entre `max-w-xs` (320px)
-  e `max-w-sm`, então o valor de layout é arbitrário para honrar a redução de ~20%.
-- `border-[5px]` — 5px não existe na escala (`border-2`/`-4`/`-8`); usado no frame e na
-  moldura do banner por decisão visual (≈80% do antigo `border-[6px]`).
+- `max-w-[21rem]` — 336px; não há token entre `max-w-xs` (320px) e `max-w-sm` (384px), então
+  o valor de layout é arbitrário para honrar o aumento de ~10% sobre o antigo `max-w-[19rem]`.
+- `border-[6px]` — 6px não existe na escala (`border-2`/`-4`/`-8`); usado no frame e na
+  moldura do banner por decisão visual (5×1,1≈6, após o aumento de ~10%).
 - `object-[center_25%]` — enquadramento do banner sem token equivalente.
 - `w-[calc(100%+2px)] max-w-none -ml-px` no `<img>` do banner — "sangra" 1px para cada
   lado, recortado pelo `overflow-hidden` do frame, para **eliminar o risco escuro** que a
@@ -1150,11 +1184,58 @@ por nome (RPC `financial_dup_by_name` / `_dup_by_name`) foi **removida** — "EF
 
 `extract_pdf.py` usa `_ns()` (strip de acentos + lowercase) para lookup em `_DOC_TYPE_NORM`.
 CHECK constraint em `financial_account_control.document_type` usa `lower()` (migrations 014,
-017, **024**, **026** e **043**). Tipos aceitos incluem: `boleto`, `cte`, `nfe`, `nfse`, `tributo`,
-`das`, `pix`, `seguro`, `fatura`, `recibo`, `contrato`, `honorários`, `container`, `outro`
-(DAS de Simples Nacional → `das`; PIX → `pix`). `container` = frete/demurrage/movimentação de
+017, **024**, **026**, **043** e **062**). Tipos aceitos incluem: `boleto`, `cte`, `nfe`, `nfse`, `tributo`,
+`das`, `pix`, `seguro`, `fatura`, `recibo`, `contrato`, `honorários`, `container`, `multa`, `dare`, `outro`
+(DAS de Simples Nacional → `das`; PIX → `pix`; **`multa`** = multa/penalidade/juros avulsos, auto de
+infração; **`dare`** = Documento de Arrecadação de Receitas Estaduais, antes dobrado em `dae` — a
+migration 062 separou DAE=eSocial de DARE=estadual em `_DOC_TYPE_NORM`/`_BODY_DOC_KEYWORDS`).
+`container` = frete/demurrage/movimentação de
 contêineres (keyword de assunto + classificação no corpo e PDF; migration 026).
 `SKIP_ACCOUNT_TYPES = ['nfe', 'nfse']` — não geram conta a pagar.
+
+**CT-e / transporte: só o BOLETO gera conta; o CT-e fiscal é ignorado (não regredir):** o
+CT-e (Conhecimento de Transporte) é documento **fiscal**, não pagável — quem se paga é o
+**boleto** de frete. Regra (espelha a NF-e, mas condicional ao boleto):
+- **CT-e/transporte SEM boleto → não gera conta; e-mail vira `ignorado`** (não `falha`).
+- **CT-e/transporte COM boleto → extrai só o boleto**, rotulado `document_type='cte'`.
+- **Boleto de transporte → `document_type='cte'`** quando o **contexto é de transporte**:
+  assunto com `cte`/`ct-e`/`dacte`/`conhecimento de transporte`/`transporte`/`transportadora`,
+  **ou** fornecedor de transporte (nome com `transporte(s)`/`transportadora`/`logística`/
+  `cargas`/`encomendas`/`frete(s)`), **ou** já classificado `cte`.
+
+Implementação em `read_emails.py` (não em `extract_pdf.py`, que continua classificando CT-e por
+chave de acesso): helpers `_is_transport_supplier`, `_is_transport_context` e
+`_apply_transport_boleto_doc_type` (mesmo padrão de `_classify_utility_by_supplier`). O
+**boleto** é distinguido da chave de acesso NF-e/CT-e por `_is_boleto_barcode` (44 FEBRABAN
+moeda '9' ou 48 de arrecadação; a chave de acesso de 44 dígitos **não** casa). O re-rótulo
+boleto→cte é aplicado nos **dois caminhos** (`build_financial_payload` do PDF e
+`extract_from_email_body` do corpo), **abaixo** de utility/tax (uma transportadora que manda um
+DARF continua DARF — só tipos genéricos `boleto`/`outro`/`pix`/`cte` são re-rotulados) e **acima**
+de `boleto`. O **skip** de CT-e-sem-boleto ocorre em `extract_and_store_accounts` (que passa a
+retornar também `nonpayable_only`) e em `try_extract_from_body` (novo retorno `BODY_IGNORED`); o
+status `ignorado` vem de `status_for_result(nonpayable=…)`, posicionado **antes** de
+`csv_generated` (o PDF do CT-e gera CSV mas nenhuma conta — senão viraria `extraído`, errado).
+Caso misto (CT-e fiscal + boleto no mesmo e-mail): o boleto grava → `accounts_saved>0` →
+`extraído`; o CT-e é pulado. Testes: `tests/test_doc_type_transporte.py` (+ casos `nonpayable` em
+`tests/test_status_for_result.py`). **Limpeza retroativa** dos dados já gravados:
+`scripts/reprocess_cte_accounts.py` (aplicado em 2026-07-02 — Fase A re-rotulou 28 boletos de
+transporte para `cte`; Fase B **hard delete** de 100 CT-e fiscais + 87 e-mails → `ignorado`;
+estado final: as únicas contas `cte` são boletos de transporte).
+
+**Override de GUIA TRIBUTÁRIA pelo ACRÔNIMO no ASSUNTO (não regredir):** guias estaduais
+são visualmente quase idênticas (DARE × GARE × GNRE) e o Claude do `extract_pdf.py` troca
+uma pela outra (caso real: id 326, assunto "PAGAMENTO DARE - REF. T05S1" extraído do
+`pdf_text` como `gare`). Regra: o **acrônimo explícito no assunto é o sinal mais confiável**
+do tipo de guia (quem encaminha o pagamento digita o tipo certo) e **sobrepõe** a
+classificação do PDF/corpo. `_classify_tax_doc_type_from_subject(subject)`
+(`_SUBJECT_TAX_DOC_KEYWORDS`) casa por **palavra inteira** (`_has_word`, sem acento) →
+`darf/gps/das/gru/dare/dae/gnre/gare/ipva/iptu/iss/itbi/dam / duam/multa`. **Conservador:**
+`das` (artigo do português) e `dam` **não** casam pela forma pura — só por frase inequívoca
+(`simples nacional`/`simei`) para não gerar falso positivo em "pagamento DAS contas".
+Aplicado nos **dois caminhos** com precedência **abaixo da concessionária** e **acima** de
+honorários/PIX/keyword: `build_financial_payload` (PDF) e `extract_from_email_body` (corpo).
+O prompt do `extract_pdf.py` também instrui o Claude a copiar EXATAMENTE o acrônimo impresso
+no cabeçalho (não inferir pelo estado). Teste: `tests/test_doc_type_tax_subject.py`.
 
 **Contas de concessionária** (migration 043): `conta de água`, `conta de luz` e
 `conta de telefone / internet` (com barra, estilo `dam / duam`). Classificadas em `read_emails.py`
@@ -1735,9 +1816,16 @@ local/agendada (ver flag `EMAIL_READER_ENABLED` acima e memória [[vercel-deploy
 ## Banco de dados (Supabase)
 
 Migrations em `supabase/migrations/`, aplicadas **manualmente no SQL Editor** em ordem
-numérica (`001` → `061`). Não há migration automática. (As `059`/`060`/`061` foram aplicadas
-**direto via Supabase MCP** nesta máquina — o arquivo numerado serve de histórico; **não
-reaplicar** no SQL Editor (todas idempotentes, mas evite re-run). A `061` adiciona
+numérica (`001` → `064`). Não há migration automática. (As `059`/`060`/`061`/`063`/`064` foram
+aplicadas **direto via Supabase MCP** nesta máquina — o arquivo numerado serve de histórico; **não
+reaplicar** no SQL Editor (todas idempotentes, mas evite re-run). A `064` adiciona
+`financial_account_control.additional_info` TEXT (nullable) — texto livre do usuário no cadastro
+de contas, exibido no card de detalhe de `/consulta`; ver "CRUD de contas". A `063` cria o catálogo
+**`public.user_group`** (fundação de permissões por grupo — id 0 sentinela + RLS read
+`authenticated`/write `service_role`) + backfill `app_metadata.group_id=0` nos usuários; ver
+"Grupos de usuário" na seção de papéis e o blueprint `docs/design/permissoes-por-grupo.md`.
+(Há um `062` **duplicado** no diretório — `062_chart_account_default_level_3` e
+`062_doc_type_multa_dare`; a numeração seguiu para 063.) A `061` adiciona
 **`image_vision`** ao CHECK de `financial_account_control.extraction_source` — anexos de IMAGEM
 lidos via Claude Vision; ver "extraction_source — origem dos dados". A `060` cria **índices de
 performance** da pesquisa em `/consulta` (GIN trigram em `invoice_number`/`subject`/`sender_email`
@@ -1810,6 +1898,7 @@ internet` ao CHECK de `document_type` e faz backfill — ver "Normalização de 
 | `supplier` | Fornecedores. PK = `sk_supplier` (surrogate key snowflake auto-incremental — **migration 042**); `supplier_id` é **chave de negócio** (NOT NULL UNIQUE, só nesta tabela; = `sk_supplier` nos fornecedores criados pela extração, via trigger de espelho `trg_supplier_mirror_id`, podendo divergir em cargas externas). Auto-criados pelo trigger de resolução, mas **cadastro PRESERVADO** (curadoria manual de `email`/`email2`/`email3`/`email4`) — **nunca truncar** em limpezas (ver "Limpeza / reset de dados"). Reconhecimento por **e-mail** em `email`/`email2`/`email3`/`email4` (migrations 023/027/028) — ver "Auto-resolução de fornecedor". **Soft delete** via `deleted_at` (migration 045) — a baixa pelo CRUD da Next API marca `deleted_at` (nunca hard delete) e é bloqueada quando há contas vinculadas; ver "CRUD de fornecedores (Next API)". **Classificação default** `cost_center_id`/`chart_account_id` (SMALLINT NOT NULL DEFAULT 0 + FKs — migration 052): semeia o lançamento de novas contas e é atualizada pelo write-back do modal; ver "Classificação default do fornecedor — sync bidirecional" |
 | `company` | Empresa pagadora (**cadastro**, tem campo `email`). Auto-resolvida pelo trigger `resolve_company_id` a partir de `payer_cnpj`/`payer_name`. **Preservada em limpezas** (ver abaixo) |
 | `status` | **Dimensão** de situação (`status_id`, `status_name`, `status_short_name`, `has_opened`/`has_closed`/`has_invoiced`). 10 linhas = domínio de `financial_account_control.status`. A trigger resolve `financial_account_control.status_id` por `status_name` (migration 035). **Cadastro/configuração — preservar em limpezas** |
+| `user_group` | **Catálogo de grupos de usuário** (migration 063 — fundação de permissões por grupo). `group_id` IDENTITY ALWAYS PK, `group_name` VARCHAR(30) DEFAULT ''; **id 0 = sentinela "não informado"**. RLS read `authenticated`/write `service_role`. **Editado SÓ via Supabase** (sem CRUD no app); o usuário pretende acrescentar campos. A atribuição por usuário e o RBAC completo (`user_profile`/`permission`/`group_*`) estão **desenhados, não implementados** — ver "Grupos de usuário" na seção de papéis e `docs/design/permissoes-por-grupo.md`. **Cadastro/configuração — preservar em limpezas** |
 | `cobranca_envios_log` | Cobranças de vencidos **enviadas com sucesso** (migration 037). `document_id` (= TÍTULO no Firebird) **UNIQUE** = chave de deduplicação: `already_sent()` consulta aqui antes de enviar. Exibida em `/cobranca/envios`. Alvo de limpeza (dados de teste) |
 | `cobranca_erros_log` | **Falhas** da cobrança (migration 037), **sem UNIQUE** (reprocessável — o mesmo título pode falhar em execuções distintas). `error_type` ∈ (`email_ausente`, `email_invalido`, `smtp_falha`, `smtp_bloqueio`, `supabase_falha`, `firebird_falha`, `erro_inesperado`); `error_message` = motivo em linguagem leiga (exibido em `/cobranca/erros`), `error_detail` = traceback técnico. Alvo de limpeza |
 
@@ -1917,6 +2006,7 @@ cadastro/configuração** — não são alimentadas pelo pipeline e nunca devem 
 - `financial_chart_of_account_group`
 - `financial_chart_of_account_subgroup`
 - `financial_cost_center`
+- `user_group` (catálogo de grupos de usuário — migration 063; id 0 = sentinela "não informado". A atribuição por usuário vive no claim `app_metadata.group_id`, não aqui. Truncar destruiria as definições de grupo/permissão)
 
 **Alvos da limpeza** (truncar com `RESTART IDENTITY CASCADE`): `email_control`,
 `financial_account_control`, `email_processing_errors`, `audit_log` — e, para os testes da

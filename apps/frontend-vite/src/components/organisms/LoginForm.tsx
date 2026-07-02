@@ -47,7 +47,7 @@ export default function LoginForm() {
       {/* Cabeçalho */}
       <div className="flex flex-col gap-1">
         <h1 className="text-2xl font-extrabold text-loginGreen-ink tracking-tight leading-none">Login</h1>
-        <p className="text-sm font-medium text-loginGreen-accent">Boas-vindas! Faça seu login.</p>
+        <p className="text-base font-medium text-loginGreen-accent">Boas-vindas! Faça seu login.</p>
       </div>
 
       {/* Campo e-mail */}
@@ -85,7 +85,7 @@ export default function LoginForm() {
                 aria-label={showPassword ? 'Ocultar senha' : 'Mostrar senha'}
                 className="text-loginGreen-inkFaint hover:text-loginGreen-borderFocus flex items-center shrink-0 transition-colors"
               >
-                {showPassword ? <EyeOff size={16} /> : <Eye size={16} />}
+                {showPassword ? <EyeOff size={18} /> : <Eye size={18} />}
               </button>
             }
           />
@@ -94,18 +94,18 @@ export default function LoginForm() {
 
       {/* Lembrar-me + Esqueci a senha */}
       <div className="flex items-center justify-between">
-        <label className="flex items-center gap-2 text-sm font-medium text-loginGreen-inkMid cursor-pointer select-none">
+        <label className="flex items-center gap-2 text-base font-medium text-loginGreen-inkMid cursor-pointer select-none">
           <input
             type="checkbox"
             checked={remember}
             onChange={(e) => setRemember(e.target.checked)}
-            className="w-3 h-3 accent-loginGreen-borderFocus cursor-pointer shrink-0"
+            className="w-3.5 h-3.5 accent-loginGreen-borderFocus cursor-pointer shrink-0"
           />
           <span>Lembrar-me</span>
         </label>
         <Link
           to="/auth/forgot-password"
-          className="text-sm font-semibold text-loginGreen-accent hover:underline whitespace-nowrap"
+          className="text-base font-semibold text-loginGreen-accent hover:underline whitespace-nowrap"
         >
           Esqueci a senha
         </Link>
@@ -113,7 +113,7 @@ export default function LoginForm() {
 
       {/* Erro do servidor (credenciais inválidas) */}
       {serverError && (
-        <p className="bg-status-error-bg text-status-error-fg rounded-md px-3 py-2 text-sm">{serverError}</p>
+        <p className="bg-status-error-bg text-status-error-fg rounded-md px-3 py-2 text-base">{serverError}</p>
       )}
 
       {/* Botão Login */}

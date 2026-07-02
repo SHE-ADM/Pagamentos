@@ -34,6 +34,7 @@ interface ContaFormValues {
   invoice_number: string;
   description: string;
   barcode: string;
+  additional_info: string;
 }
 
 interface ContaFormProps {
@@ -67,6 +68,7 @@ function toFormValues(c?: FinancialAccountControl): ContaFormValues {
     invoice_number: c?.invoice_number ?? '',
     description: c?.description ?? '',
     barcode: c?.barcode ?? '',
+    additional_info: c?.additional_info ?? '',
   };
 }
 
@@ -178,6 +180,7 @@ export default function ContaForm({ mode, defaultValues, onSubmit, onCancel, sub
       invoice_number: blankToNull(raw.invoice_number),
       description: blankToNull(raw.description),
       barcode: blankToNull(raw.barcode),
+      additional_info: blankToNull(raw.additional_info),
     };
 
     const parsed = financialAccountControlCreateSchema.safeParse(payload);
@@ -278,6 +281,16 @@ export default function ContaForm({ mode, defaultValues, onSubmit, onCancel, sub
       </div>
 
       <AuthInput label="Código de barras" error={errors.barcode?.message} {...register('barcode')} />
+
+      <label className="block">
+        <span className="block text-sm font-medium text-gray-700 mb-1">Informações adicionais</span>
+        <textarea
+          className="input min-h-20"
+          rows={3}
+          placeholder="Observações livres sobre a conta…"
+          {...register('additional_info')}
+        />
+      </label>
 
       <div className="flex justify-end gap-2 pt-2">
         {onCancel && (

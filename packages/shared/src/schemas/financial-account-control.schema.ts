@@ -25,6 +25,7 @@ export const DOCUMENT_TYPES = [
   'das',
   'gru',
   'dae',
+  'dare',
   'gnre',
   'ipva',
   'iptu',
@@ -33,6 +34,7 @@ export const DOCUMENT_TYPES = [
   'itbi',
   'gare',
   'tributo',
+  'multa',
   'pix',
   'honorários',
   'container',
@@ -164,6 +166,11 @@ export const financialAccountControlSchema = z.object({
   payment_method: paymentMethodSchema.nullable(),
   barcode: z.string().nullable(),
   description: z.string().nullable(),
+
+  // Texto livre escrito pelo USUÁRIO no cadastro de contas (ContaForm) — exibido no
+  // card de detalhe de /consulta (migration 064). Distinto de processing_notes
+  // (auditoria/pipeline); este nunca é tocado pela extração.
+  additional_info: z.string().nullable(),
 
   // Campos de boleto (NOT NULL DEFAULT 0 no banco)
   nosso_numero: z.string().nullable(),
