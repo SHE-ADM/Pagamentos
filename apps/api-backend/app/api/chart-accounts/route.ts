@@ -17,11 +17,16 @@ export const dynamic = 'force-dynamic';
 async function listPaginated(sp: URLSearchParams): Promise<Response> {
   const page = Number(sp.get('page') ?? '1');
   const limit = Number(sp.get('limit') ?? '20');
+  // Filtros do grid complementar (plano de contas de um centro de custo): centro válido > 0.
+  const ccRaw = Number(sp.get('cost_center_id'));
+  const costCenterId = Number.isInteger(ccRaw) && ccRaw > 0 ? ccRaw : undefined;
   try {
     const r = await chartAccountCrud.list({
       page: Number.isFinite(page) ? page : 1,
       limit: Number.isFinite(limit) ? limit : 20,
       search: sp.get('search') ?? undefined,
+      costCenterId,
+      postableOnly: sp.get('postable') === 'true',
       ...parseSortParams(sp),
     });
     return ok(r.data, { total: r.total, page: r.page, limit: r.limit });

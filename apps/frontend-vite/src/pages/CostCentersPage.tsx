@@ -3,13 +3,14 @@
 // editar sobre o CRUD da Next API (services/costCenters.ts). A escrita não passa
 // pelo REST direto do Supabase porque `financial_cost_center` tem RLS só-leitura
 // para authenticated; a Next API grava com service_role. O sentinela id 0
-// ("não informado") é preservado e nunca aparece nesta lista. A exclusão foi
-// removida da UI (só criar/editar).
+// ("não informado") é preservado e nunca aparece nesta lista. O hard delete é
+// oferecido APENAS ao grupo Administrador (isAdminGroup); o backend impõe a trava real.
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { RefreshCw, Plus, Layers, Trash2 } from 'lucide-react';
-import type { CostCenter, CostCenterCreateInput } from '@sheild/shared';
+import type { CostCenter, CostCenterCreateInput, ChartAccount } from '@sheild/shared';
 import { listCostCentersPage, createCostCenter, updateCostCenter, deleteCostCenter } from '../services/costCenters';
-import { getCostCenterColumns } from '../hooks/useGridColumns';
+import { listChartAccountsByCostCenter } from '../services/chartAccounts';
+import { getCostCenterColumns, getCostCenterChartAccountColumns } from '../hooks/useGridColumns';
 import { getErrorMessage } from '../lib/getErrorMessage';
 import { useAuth } from '../contexts/AuthContext';
 import DataGrid from '../components/organisms/DataGrid';
@@ -18,13 +19,18 @@ import SearchInput from '../components/molecules/SearchInput';
 import Alert from '../components/atoms/Alert';
 
 const PAGE_SIZE = 20;
+// Colunas do grid complementar são estáticas (read-only) — definir uma vez fora do componente.
+const DETAIL_COLUMNS = getCostCenterChartAccountColumns();
+// Rótulo do centro selecionado no cabeçalho do grid complementar ("código — descrição").
+const costCenterHeading = (c: CostCenter): string =>
+  [c.cost_center_code, c.cost_center_description].filter(Boolean).join(' — ') || `#${c.cost_center_id}`;
 const SEARCH_DEBOUNCE_MS = 350;
 const NOTICE_DISMISS_MS = 5000; // banner de sucesso some sozinho após este tempo
 
 type FormState = { mode: 'create' | 'edit'; costCenter?: CostCenter } | null;
 
 export default function CostCentersPage() {
-  const { isAdmin } = useAuth();
+  const { isAdminGroup } = useAuth();
   const [rows, setRows] = useState<CostCenter[]>([]);
   const [total, setTotal] = useState(0);
   const [page, setPage] = useState(1);
@@ -38,6 +44,15 @@ export default function CostCentersPage() {
 
   // Ordenação server-side (ciclo asc→desc→nenhum).
   const [sort, setSort] = useState<{ col: string | null; dir: 'asc' | 'desc' | null }>({ col: null, dir: null });
+
+  // Mestre-detalhe: centro selecionado + grid complementar do plano de contas dele.
+  const [selected, setSelected] = useState<CostCenter | null>(null);
+  const [detailRows, setDetailRows] = useState<ChartAccount[]>([]);
+  const [detailTotal, setDetailTotal] = useState(0);
+  const [detailPage, setDetailPage] = useState(1);
+  const [detailLoading, setDetailLoading] = useState(false);
+  const [detailError, setDetailError] = useState<string | null>(null);
+  const [detailSort, setDetailSort] = useState<{ col: string | null; dir: 'asc' | 'desc' | null }>({ col: null, dir: null });
 
   // Modal de criação/edição
   const [form, setForm] = useState<FormState>(null);
@@ -77,6 +92,40 @@ export default function CostCentersPage() {
     // eslint-disable-next-line react-hooks/set-state-in-effect
     void load();
   }, [load]);
+
+  // Carga do grid complementar: plano de contas lançável do centro selecionado.
+  // Sem seleção, não busca (limpa as linhas). Keyed em [selected, detailSort, detailPage].
+  const loadDetail = useCallback(async () => {
+    if (!selected) {
+      setDetailRows([]);
+      setDetailTotal(0);
+      setDetailError(null);
+      return;
+    }
+    setDetailLoading(true);
+    setDetailError(null);
+    try {
+      const result = await listChartAccountsByCostCenter(selected.cost_center_id, {
+        page: detailPage,
+        limit: PAGE_SIZE,
+        sort: detailSort.col ?? undefined,
+        order: detailSort.dir ?? undefined,
+      });
+      setDetailRows(result.data);
+      setDetailTotal(result.total);
+    } catch (e) {
+      setDetailError(getErrorMessage(e));
+      setDetailRows([]);
+      setDetailTotal(0);
+    } finally {
+      setDetailLoading(false);
+    }
+  }, [selected, detailPage, detailSort]);
+
+  useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    void loadDetail();
+  }, [loadDetail]);
 
   // Debounce do input de busca → valor aplicado. Cleanup cancela o timeout pendente.
   useEffect(() => {
@@ -128,6 +177,23 @@ export default function CostCentersPage() {
     setPage(1);
   };
 
+  // Clique na linha do mestre alterna a seleção (mesmo centro → desmarca). O grid
+  // complementar recarrega via efeito; sempre volta à 1ª página do detalhe.
+  const handleSelect = (costCenter: CostCenter) => {
+    setSelected((prev) => (prev?.cost_center_id === costCenter.cost_center_id ? null : costCenter));
+    setDetailPage(1);
+  };
+
+  // Ciclo de ordenação do grid complementar (idem mestre); reseta para a 1ª página do detalhe.
+  const handleDetailSort = (col: string) => {
+    setDetailSort((prev) => {
+      if (prev.col !== col) return { col, dir: 'asc' };
+      if (prev.dir === 'asc') return { col, dir: 'desc' };
+      return { col: null, dir: null };
+    });
+    setDetailPage(1);
+  };
+
   const openCreate = () => {
     setFormError(null);
     setForm({ mode: 'create' });
@@ -159,7 +225,7 @@ export default function CostCentersPage() {
     }
   };
 
-  // Exclusão (hard delete) só é oferecida a admin (o backend impõe requireAdmin → 403).
+  // Exclusão (hard delete) só é oferecida ao grupo Administrador (o backend impõe requireAdminGroup → 403).
   const requestDelete = (costCenter: CostCenter) => {
     setDeleteError(null);
     setDeleteTarget(costCenter);
@@ -184,8 +250,9 @@ export default function CostCentersPage() {
     }
   };
 
-  const columns = getCostCenterColumns(openEdit, isAdmin ? requestDelete : undefined);
+  const columns = getCostCenterColumns(openEdit, isAdminGroup ? requestDelete : undefined);
   const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
+  const detailTotalPages = Math.max(1, Math.ceil(detailTotal / PAGE_SIZE));
   const deleteName = deleteTarget
     ? (deleteTarget.cost_center_description ?? deleteTarget.cost_center_code ?? `#${deleteTarget.cost_center_id}`)
     : '';
@@ -235,8 +302,10 @@ export default function CostCentersPage() {
             columns={columns}
             rows={rows}
             rowKey={(c) => String(c.cost_center_id)}
-            // Edição abre SÓ pelo botão de lápis (coluna "Ações"); clicar na linha não abre.
-            onRowClick={() => undefined}
+            // Clicar na linha SELECIONA o centro (carrega o plano de contas abaixo); a edição
+            // continua abrindo só pelo botão de lápis (coluna "Ações").
+            selectedId={selected ? String(selected.cost_center_id) : null}
+            onRowClick={handleSelect}
             sortCol={sort.col}
             sortDir={sort.dir}
             onSort={handleSort}
@@ -264,6 +333,67 @@ export default function CostCentersPage() {
             </button>
           </div>
         </div>
+
+        {/* Grid complementar: plano de contas lançável do centro de custo selecionado. */}
+        <section className="mt-8" aria-label="Plano de contas do centro de custo">
+          <div className="mb-2 flex items-center gap-2">
+            <Layers size={16} className="text-brand" />
+            <h2 className="text-sm font-semibold text-gray-900">
+              Plano de contas
+              {selected && <span className="font-normal text-gray-500"> — {costCenterHeading(selected)}</span>}
+            </h2>
+          </div>
+
+          {detailError && (
+            <Alert variant="error" className="mb-4">
+              <strong>Erro:</strong> {detailError}
+            </Alert>
+          )}
+
+          <div className="card overflow-hidden mb-2">
+            <DataGrid<ChartAccount>
+              columns={DETAIL_COLUMNS}
+              rows={detailRows}
+              rowKey={(c) => String(c.chart_account_id)}
+              // Read-only: as linhas do plano de contas não são clicáveis aqui.
+              onRowClick={() => undefined}
+              sortCol={detailSort.col}
+              sortDir={detailSort.dir}
+              onSort={handleDetailSort}
+              gridId="tabela-centros-de-custo-plano"
+              enableColumnManagement
+              defaultDensity="compact"
+              maxBodyHeight="40vh"
+              loading={detailLoading}
+              ariaLabel="Plano de contas do centro de custo selecionado"
+              emptyMessage={
+                selected
+                  ? 'Nenhum plano de contas vinculado a este centro'
+                  : 'Selecione um centro de custo para ver o plano de contas'
+              }
+            />
+          </div>
+
+          {selected && (
+            <div className="flex items-center justify-between py-2 px-1">
+              <span className="text-xs text-gray-500">
+                {detailTotal} planos de contas · Página {detailPage} de {detailTotalPages}
+              </span>
+              <div className="flex items-center gap-2">
+                <button onClick={() => setDetailPage(detailPage - 1)} disabled={detailPage <= 1 || detailLoading} className="btn">
+                  ← Anterior
+                </button>
+                <button
+                  onClick={() => setDetailPage(detailPage + 1)}
+                  disabled={detailPage >= detailTotalPages || detailLoading}
+                  className="btn"
+                >
+                  Próxima →
+                </button>
+              </div>
+            </div>
+          )}
+        </section>
       </div>
 
       {/* Modal de criação/edição */}

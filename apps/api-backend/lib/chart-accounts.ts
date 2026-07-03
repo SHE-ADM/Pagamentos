@@ -58,6 +58,10 @@ export interface ChartAccountListParams {
   search?: string;
   sort?: string;
   order?: SortOrder;
+  /** Filtra os planos pelo centro de custo (grid complementar de /tabelas/centros-de-custo). */
+  costCenterId?: number;
+  /** Restringe aos planos lançáveis (is_postable = true). */
+  postableOnly?: boolean;
 }
 
 export interface ChartAccountListResult {
@@ -107,11 +111,23 @@ function mapWriteError(error: { code?: string; message: string }): ChartAccountS
 }
 
 const repository = {
-  async findAll(params: { from: number; to: number; search?: string; sort?: string; order?: SortOrder }) {
+  async findAll(params: {
+    from: number;
+    to: number;
+    search?: string;
+    sort?: string;
+    order?: SortOrder;
+    costCenterId?: number;
+    postableOnly?: boolean;
+  }) {
     let query = getSupabaseAdmin()
       .from(TABLE)
       .select(SELECT_WITH_EMBEDS, { count: 'exact' })
       .neq('chart_account_id', SENTINEL_ID);
+
+    // Filtros aditivos do grid complementar (plano de contas de um centro de custo).
+    if (params.costCenterId != null) query = query.eq('cost_center_id', params.costCenterId);
+    if (params.postableOnly) query = query.is('is_postable', true);
 
     if (params.search) {
       const term = sanitizeTerm(params.search);
@@ -168,6 +184,8 @@ export const chartAccountService = {
       search: params.search?.trim() || undefined,
       sort: params.sort,
       order: params.order,
+      costCenterId: params.costCenterId,
+      postableOnly: params.postableOnly,
     });
     if (error) throw new ChartAccountServiceError(error.message, 500);
     return { data: (data ?? []) as unknown as ChartAccount[], total: count ?? 0, page, limit };

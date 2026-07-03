@@ -1,8 +1,10 @@
 # Design — Permissões por grupo de usuário
 
-> Status: **desenho aprovado; implementação NÃO iniciada.** Só a fundação `user_group`
-> (migration 063) está aplicada. Este documento é o blueprint das *referências* para as
-> próximas migrations + enforcement.
+> Status: **desenho aprovado; implementação PARCIAL.** Aplicadas: `user_group` (migration 063)
+> e o **vínculo usuário → grupo** `public.user_profile` (migration **065** — Passo 1 do roadmap,
+> FK real + trigger `handle_new_user` + backfill). Pendente: `permission`/`group_permission`/
+> `group_*` + enforcement (Next API + RLS de escopo + menu). Este documento é o blueprint das
+> *referências* para as próximas migrations + enforcement.
 
 ## Contexto e decisões
 
@@ -99,11 +101,13 @@ linha pesar, otimização futura: espelhar `group_id` no claim `app_metadata.gro
 
 ## Roadmap de implementação (quando liberar)
 
-1. **Migration 064** — `user_profile` (+ trigger handle_new_user + backfill dos usuários atuais
-   com group_id=0).
-2. **Migration 065** — `permission` + `group_permission` + seed do catálogo de recursos×ações.
-3. **Migration 066** — `group_company` + `group_cost_center` + `group_chart_account`.
-4. **Migration 067** — funções `STABLE` de escopo + policy RLS de SELECT em
+1. **Migration 065** — `user_profile` (+ trigger handle_new_user + backfill dos usuários atuais
+   com group_id=0). ✅ **APLICADA** (o nº 064 do repo já era `additional_info`; RLS de SELECT
+   restrita a `auth.uid() = user_id`). Neste ato o usuário `ricardo@sheild.com.br` foi
+   classificado no `group_id=1` (Administrador).
+2. **Migration 066** — `permission` + `group_permission` + seed do catálogo de recursos×ações.
+3. **Migration 067** — `group_company` + `group_cost_center` + `group_chart_account`.
+4. **Migration 068** — funções `STABLE` de escopo + policy RLS de SELECT em
    `financial_account_control` (substitui a policy `authenticated_select` atual por uma com escopo).
 5. **Backend** — helpers `belongsToGroup` / `requirePermission` em
    [lib/auth.ts](../../apps/api-backend/lib/auth.ts); aplicar `requirePermission` nas rotas de CRUD.
@@ -117,4 +121,12 @@ Cada passo é uma unidade testável; a config (linhas de `group_*`) é feita no 
 ## Estado atual
 
 - **Aplicado:** migration 063 — `user_group` (catálogo) + `app_metadata.group_id=0` nos 3 usuários.
-- **Pendente:** tudo acima (migrations 064–067 + enforcement). Nada iniciado.
+- **Aplicado:** migration 065 — `public.user_profile` (vínculo usuário → grupo por FK real,
+  fonte de verdade) + trigger `handle_new_user` (AFTER INSERT ON auth.users) + backfill dos 3
+  usuários com group_id=0. `ricardo@sheild.com.br` classificado no group_id=1 (Administrador);
+  os demais em 0. **O claim `app_metadata.group_id` (063) permanece** — a fonte de verdade passa
+  a ser `user_profile`; ainda não há sincronização automática entre os dois (o claim ficou
+  desatualizado para o ricardo — reconciliar quando o RBAC/enforcement for implementado, ou usar
+  só o `user_profile`).
+- **Pendente:** migrations 066–068 + enforcement (Next API `requirePermission` + RLS de escopo +
+  menu). Não iniciado.

@@ -17,12 +17,20 @@ import {
   isIdleExpired,
 } from '../hooks/useIdleLogout';
 
+// Grupo cuja associação libera o hard delete dos cadastros — espelha ADMIN_GROUP_ID do
+// backend (lib/auth.ts). Vínculo em public.user_profile (migration 065).
+const ADMIN_GROUP_ID = 1;
+
 interface AuthContextValue {
   user: User | null;
   session: Session | null;
   loading: boolean;
   /** Papel de admin — lido de `app_metadata` (controlado pelo servidor, não pelo usuário). */
   isAdmin: boolean;
+  /** Grupo do usuário (user_profile.group_id); null enquanto carrega ou sem sessão. */
+  groupId: number | null;
+  /** Pertence ao grupo Administrador — GATE DE UI do hard delete (a trava real é o backend). */
+  isAdminGroup: boolean;
   signOut: () => Promise<void>;
 }
 
@@ -53,6 +61,7 @@ export function AuthProvider({ children }: Readonly<{ children: ReactNode }>) {
   const [user, setUser] = useState<User | null>(null);
   const [session, setSession] = useState<Session | null>(null);
   const [loading, setLoading] = useState(true);
+  const [groupId, setGroupId] = useState<number | null>(null);
 
   useEffect(() => {
     let active = true;
@@ -140,13 +149,46 @@ export function AuthProvider({ children }: Readonly<{ children: ReactNode }>) {
 
   useIdleLogout({ enabled: !!user, timeoutMs: IDLE_TIMEOUT_MS, onTimeout: handleIdleTimeout });
 
+  // Carrega o grupo do usuário (user_profile.group_id) a cada mudança de sessão — fonte
+  // do gate de UI do hard delete. O RLS da migration 065 permite ao usuário ler apenas o
+  // próprio perfil. Puramente cosmético: a autorização real é imposta no servidor
+  // (requireAdminGroup nas rotas DELETE). Perfil ausente → 0 (sentinela).
+  const uid = user?.id ?? null;
+  useEffect(() => {
+    let active = true;
+    const loadGroup = async () => {
+      if (!uid) {
+        if (active) setGroupId(null);
+        return;
+      }
+      const { data } = await supabase
+        .from('user_profile')
+        .select('group_id')
+        .eq('user_id', uid)
+        .maybeSingle();
+      if (active) setGroupId((data?.group_id as number | undefined) ?? 0);
+    };
+    void loadGroup();
+    return () => {
+      active = false;
+    };
+  }, [uid]);
+
   const signOut = useCallback(async () => {
     await supabase.auth.signOut();
   }, []);
 
   const value = useMemo<AuthContextValue>(
-    () => ({ user, session, loading, isAdmin: deriveIsAdmin(user), signOut }),
-    [user, session, loading, signOut],
+    () => ({
+      user,
+      session,
+      loading,
+      isAdmin: deriveIsAdmin(user),
+      groupId,
+      isAdminGroup: groupId === ADMIN_GROUP_ID,
+      signOut,
+    }),
+    [user, session, loading, groupId, signOut],
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

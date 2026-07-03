@@ -636,6 +636,35 @@ export function getChartAccountColumns(
   ];
 }
 
+/**
+ * Colunas do grid COMPLEMENTAR de /tabelas/centros-de-custo — o plano de contas
+ * lançável vinculado ao centro selecionado. Read-only (sem ações) e sem a coluna
+ * "Centro de custo" (é o centro selecionado, redundante). Ordenação server-side pela
+ * descrição dos embeds grupo/subgrupo (mesma sintaxe `alias(coluna)` do /consulta).
+ */
+export function getCostCenterChartAccountColumns(): ColumnDef<ChartAccount>[] {
+  return [
+    { key: 'account_code', header: 'Código', sortKey: 'account_code', size: 130, render: (c) => c.account_code ?? '—' },
+    { key: 'account_description', header: 'Descrição', sortKey: 'account_description', size: 280, wrap: true, render: (c) => c.account_description ?? '—' },
+    {
+      key: 'group',
+      header: 'Grupo',
+      sortKey: 'group(group_description)',
+      size: 200,
+      wrap: true,
+      render: (c) => (c.chart_account_group_id ? joinCodeDesc(c.group?.group_code, c.group?.group_description) : '—'),
+    },
+    {
+      key: 'subgroup',
+      header: 'Sub Grupo',
+      sortKey: 'subgroup(subgroup_description)',
+      size: 220,
+      wrap: true,
+      render: (c) => (c.chart_account_subgroup_id ? joinCodeDesc(c.subgroup?.subgroup_code, c.subgroup?.subgroup_description) : '—'),
+    },
+  ];
+}
+
 export function getChartAccountGroupColumns(
   onEdit: RowAction<ChartAccountGroup>,
   onDelete?: RowAction<ChartAccountGroup>,

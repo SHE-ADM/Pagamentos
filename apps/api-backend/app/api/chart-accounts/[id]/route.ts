@@ -1,6 +1,6 @@
 import type { NextRequest } from 'next/server';
 import { ok, fail, failFromError } from '@/lib/response';
-import { requireAuth, requireAdmin } from '@/lib/auth';
+import { requireAuth, requireAdminGroup } from '@/lib/auth';
 import { chartAccountService } from '@/lib/chart-accounts';
 
 // /api/chart-accounts/:id — GET + PATCH + DELETE (hard delete protegido). CRUD do
@@ -49,9 +49,9 @@ export async function PATCH(req: NextRequest, ctx: Context) {
   }
 }
 
-// Hard delete é ADMIN-ONLY (requireAdmin → 403 para sessão não-admin).
+// Hard delete é restrito ao GRUPO ADMINISTRADOR (requireAdminGroup → 403 fora do grupo).
 export async function DELETE(req: NextRequest, ctx: Context) {
-  const denied = await requireAdmin(req);
+  const denied = await requireAdminGroup(req);
   if (denied) return denied;
   const id = parseId((await ctx.params).id);
   if (id === null) return fail('Identificador de plano de contas inválido', 400);

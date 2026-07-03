@@ -758,6 +758,26 @@ def _is_non_supplier_term(name: str | None) -> bool:
     return len(core) == 1 and core[0] in _NON_SUPPLIER_TERMS
 
 
+# Tipos de documento que sao IMPOSTO/tributo (guia de arrecadacao). Lista definida
+# com o usuario. Para esses, quando a extracao NAO traz favorecido real, o credor e o
+# orgao arrecadador (Fisco), que a extracao nao captura — a conta e lancada sob a
+# OTIMOTEX (a empresa pagadora). Ver _finalize_supplier. NAO inclui 'gps' (INSS) por
+# decisao do usuario; 'multa' tambem fica de fora (pode ter fornecedor proprio).
+_TAX_DOCUMENT_TYPES = frozenset({
+    "darf", "das", "gru", "dae", "dare", "gnre", "ipva", "iptu",
+    "dam", "duam", "iss", "itbi", "gare", "tributo",
+})
+
+# sk_supplier (= supplier_id) da OTIMOTEX, a propria empresa pagadora (constante do
+# sistema). Guias de imposto sem favorecido identificavel sao lancadas sob a OTIMOTEX.
+OTIMOTEX_SK_SUPPLIER = 1
+
+
+def _is_tax_document(document_type: str | None) -> bool:
+    """True quando o document_type e uma guia de IMPOSTO/tributo (darf/das/gnre/...)."""
+    return _norm_term(document_type) in _TAX_DOCUMENT_TYPES
+
+
 def _supplier_name_from_subject(subject: str | None) -> str:
     """Deriva um nome de fornecedor/favorecido do ASSUNTO (ultimo recurso).
 
@@ -1095,9 +1115,28 @@ def _finalize_supplier(ctrl: "SupabaseControl", payload: dict) -> bool:
     # robustez: um TIPO de documento/pagamento extraido como "fornecedor" e descartado.
     if _is_non_supplier_term(payload.get("supplier_name")):
         payload.pop("supplier_name", None)
+    has_real_supplier = any(str(payload.get(k) or "").strip()
+                            for k in ("supplier_name", "supplier_cnpj", "supplier_cpf"))
+    # Regra de IMPOSTO: guia de tributo (darf/das/gnre/gare/dare/iss/...) SEM favorecido
+    # real extraido do documento — o credor e o orgao arrecadador (Fisco), que a
+    # extracao nao captura. Lanca sob a OTIMOTEX (a empresa pagadora) em vez de derivar
+    # um "fornecedor" generico do assunto (ex.: "IMPOSTOS", "GNRE -PAGAMENTO", "DARE -
+    # REF"). Curto-circuita os fallbacks de assunto e pagador. Favorecido real extraido
+    # (ex.: "PREFEITURA DE SP") NAO dispara a regra e e preservado.
+    if not has_real_supplier and _is_tax_document(payload.get("document_type")):
+        for col in ("supplier_name", "supplier_cnpj", "supplier_cpf"):
+            payload.pop(col, None)
+        payload["sk_supplier"] = OTIMOTEX_SK_SUPPLIER
+        log.info("    [FORNECEDOR-IMPOSTO] guia de tributo sem favorecido — "
+                 f"gravando OTIMOTEX (sk={OTIMOTEX_SK_SUPPLIER})")
+        cost_center_id, chart_account_id = ctrl.supplier_defaults(OTIMOTEX_SK_SUPPLIER)
+        if cost_center_id:
+            payload["cost_center_id"] = cost_center_id
+        if chart_account_id:
+            payload["chart_account_id"] = chart_account_id
+        return True
     # fallback 2: nome do assunto (tambem filtra tipo de documento/pagamento).
-    if not any(str(payload.get(k) or "").strip()
-               for k in ("supplier_name", "supplier_cnpj", "supplier_cpf")):
+    if not has_real_supplier:
         guessed = _supplier_name_from_subject(payload.get("subject"))
         if guessed:
             payload["supplier_name"] = guessed
@@ -2334,6 +2373,14 @@ def run_extraction(pdf_path: Path, pdf_passwords: list[str] | None = None) -> tu
     return None, reason
 
 
+def _email_has_real_boleto(rows: list) -> bool:
+    """True quando ALGUMA linha extraida do e-mail traz um BOLETO REAL (linha
+    digitavel valida). Base da regra fatura+boleto: havendo boleto, as linhas sem
+    boleto (fatura/relatorio do mesmo debito) sao ignoradas. Usa o CODIGO DE BARRAS
+    (nao o document_type — o extrator rotula relatorio e boleto ambos como 'boleto')."""
+    return any(_is_boleto_barcode(r.get("barcode")) for r in rows)
+
+
 def extract_and_store_accounts(saved_pdfs: list, message_id: str,
                                ctrl: "SupabaseControl",
                                email_rec: dict = None) -> tuple:
@@ -2358,6 +2405,12 @@ def extract_and_store_accounts(saved_pdfs: list, message_id: str,
     # computadas uma vez por e-mail; vazias quando o CNPJ não está disponível.
     pdf_passwords = pdf_password_candidates(ctrl.company_cnpj())
 
+    # ------------------------------------------------------------------
+    # Passo 1 — extrai TODOS os anexos e coleta as linhas. Upload no Storage
+    # + extracao acontecem aqui; a decisao de gravar cada conta fica para o
+    # passo 2, que precisa enxergar o e-mail INTEIRO (regra fatura+boleto).
+    # ------------------------------------------------------------------
+    pending = []  # linhas extraidas de todos os PDFs do e-mail, na ordem de chegada
     for pdf_path in saved_pdfs:
         # Publica o PDF no Storage SEMPRE (antes da extracao) — assim o anexo fica
         # disponivel para revisao manual mesmo quando a extracao falha por completo.
@@ -2389,121 +2442,148 @@ def extract_and_store_accounts(saved_pdfs: list, message_id: str,
                 raise ApiUnavailableError(
                     row.get("processing_notes") or "API Anthropic indisponível"
                 )
+            pending.append(row)
 
-            dtype = (row.get("document_type") or "").strip().lower()
-            if dtype in SKIP_ACCOUNT_TYPES:
-                log.info(f"    {dtype.upper()} ignorado — nao gera conta a pagar")
-                skipped_nonpayable += 1
-                continue
+    # Regra FATURA + BOLETO (multi-anexo): quando ALGUM anexo do e-mail traz um
+    # BOLETO REAL (linha digitavel valida), as linhas SEM boleto real — a fatura/
+    # relatorio do MESMO debito — sao ignoradas ("o boleto sempre vence"). Sozinha
+    # (sem boleto no e-mail), a fatura e extraida normalmente. O sinal e o CODIGO DE
+    # BARRAS, nao o document_type: o extrator rotula tanto o boleto quanto o
+    # relatorio como 'boleto', mas so o boleto tem linha digitavel (_is_boleto_barcode).
+    has_real_boleto = _email_has_real_boleto(pending)
 
-            gmid    = message_id if acc_index == 0 else f"{message_id}#{acc_index}"
-            payload = build_financial_payload(row, gmid, received_at=err_ctx.get("received_at"),
-                                              subject=err_ctx.get("subject"))
-            # Remetente do e-mail → o trigger alinha supplier.email (migration 023).
-            payload["sender_email"] = err_ctx.get("sender_email")
-            payload["subject"]      = err_ctx.get("subject")  # exibido/buscado em /consulta (migration 025)
-            ctx     = {**err_ctx, "source_file": row.get("source_file")}
+    # ------------------------------------------------------------------
+    # Passo 2 — grava as contas
+    # ------------------------------------------------------------------
+    for row in pending:
+        dtype = (row.get("document_type") or "").strip().lower()
+        if dtype in SKIP_ACCOUNT_TYPES:
+            log.info(f"    {dtype.upper()} ignorado — nao gera conta a pagar")
+            skipped_nonpayable += 1
+            continue
 
-            # CT-e / transporte SEM boleto NAO gera conta a pagar (regra 1): o CT-e e
-            # documento fiscal; so o boleto de frete e pagavel. supplier_name ainda
-            # existe no payload aqui (removido so em _finalize_supplier). Um boleto de
-            # transporte ja foi rotulado 'cte' em build_financial_payload e TEM barcode
-            # de boleto — logo NAO cai aqui.
-            if (_is_transport_context(err_ctx.get("subject"), payload.get("supplier_name"),
-                                      payload.get("document_type"))
-                    and not _is_boleto_barcode(payload.get("barcode"))):
-                log.info("    CT-e/transporte sem boleto ignorado — nao gera conta a pagar")
-                skipped_nonpayable += 1
-                continue
+        gmid    = message_id if acc_index == 0 else f"{message_id}#{acc_index}"
+        payload = build_financial_payload(row, gmid, received_at=err_ctx.get("received_at"),
+                                          subject=err_ctx.get("subject"))
+        # Remetente do e-mail → o trigger alinha supplier.email (migration 023).
+        payload["sender_email"] = err_ctx.get("sender_email")
+        payload["subject"]      = err_ctx.get("subject")  # exibido/buscado em /consulta (migration 025)
+        ctx     = {**err_ctx, "source_file": row.get("source_file")}
 
-            payable_attempts += 1
+        # CT-e / transporte SEM boleto NAO gera conta a pagar (regra 1): o CT-e e
+        # documento fiscal; so o boleto de frete e pagavel. supplier_name ainda
+        # existe no payload aqui (removido so em _finalize_supplier). Um boleto de
+        # transporte ja foi rotulado 'cte' em build_financial_payload e TEM barcode
+        # de boleto — logo NAO cai aqui.
+        if (_is_transport_context(err_ctx.get("subject"), payload.get("supplier_name"),
+                                  payload.get("document_type"))
+                and not _is_boleto_barcode(payload.get("barcode"))):
+            log.info("    CT-e/transporte sem boleto ignorado — nao gera conta a pagar")
+            skipped_nonpayable += 1
+            continue
 
-            # Validacao 1: valor ausente ou zero
-            if not payload.get("amount"):
-                ctrl.register_error(
-                    ctx, "sem_valor",
-                    f"Valor ausente ou zero — {row.get('source_file')}",
-                    raw_payload=row
+        # Fatura/relatorio acompanhando um BOLETO no mesmo e-mail → ignorado (regra
+        # fatura+boleto). So o boleto (linha digitavel) vira conta a pagar; a fatura
+        # descreve o MESMO debito e geraria conta duplicada.
+        if has_real_boleto and not _is_boleto_barcode(payload.get("barcode")):
+            log.info(
+                f"    Fatura/relatorio ignorado — boleto presente no mesmo e-mail "
+                f"({row.get('source_file')})"
+            )
+            skipped_nonpayable += 1
+            continue
+
+        payable_attempts += 1
+
+        # Validacao 1: valor ausente ou zero
+        if not payload.get("amount"):
+            ctrl.register_error(
+                ctx, "sem_valor",
+                f"Valor ausente ou zero — {row.get('source_file')}",
+                raw_payload=row
+            )
+            acc_index += 1
+            continue
+
+        # Validacao 2: fornecedor nao identificado por NENHUMA chave.
+        # Alem de CNPJ/CPF/nome extraidos do PDF, sao chaves validas: o e-mail
+        # do remetente (a RPC casa por email/2/3/4 ou cria o fornecedor), o
+        # ASSUNTO (favorecido de e-mail interno de pagamento) e, em ultimo
+        # recurso, o PAGADOR (payer_name/payer_cnpj). So rejeita quando NAO ha
+        # identificador algum — _finalize_supplier tenta todas essas formas.
+        # Guia de IMPOSTO tambem passa: mesmo sem nome/CNPJ/CPF/e-mail/assunto/
+        # pagador, _finalize_supplier lanca a conta sob a OTIMOTEX (sk=1).
+        if not any([payload.get("supplier_cnpj"),
+                    payload.get("supplier_cpf"),
+                    payload.get("supplier_name"),
+                    payload.get("sender_email"),
+                    _supplier_name_from_subject(payload.get("subject")),
+                    payload.get("payer_name"),
+                    payload.get("payer_cnpj"),
+                    _is_tax_document(payload.get("document_type"))]):
+            ctrl.register_error(
+                ctx, "sem_fornecedor",
+                f"CNPJ, CPF, nome e e-mail do fornecedor ausentes — {row.get('source_file')}",
+                raw_payload=row
+            )
+            acc_index += 1
+            continue
+
+        # Resolve o fornecedor (RPC) → grava sk_supplier e remove as colunas
+        # denormalizadas do payload. Roda APOS a validacao sem_fornecedor (que
+        # usa os campos brutos) e ANTES da dedup (que casa por sk_supplier).
+        if not _finalize_supplier(ctrl, payload):
+            ctrl.register_error(
+                ctx, "db_erro",
+                f"Falha ao resolver fornecedor — {row.get('source_file')}",
+                raw_payload=row
+            )
+            acc_index += 1
+            continue
+
+        # Dedup de conteudo: o mesmo documento ja gravado por outro e-mail
+        # (remetente reenvia o mesmo boleto/guia, com Message-ID diferente).
+        # Reemissao com vencimento mais novo (mesma guia) → ATUALIZA a conta
+        # existente para o vencimento/boleto atual, em vez de duplicar ou
+        # manter dados de pagamento vencidos. Roda ANTES da uniquificacao do
+        # invoice_number para nao gravar duplicata.
+        dup = ctrl.find_financial_duplicate(payload)
+        if dup:
+            new_due = payload.get("due_date")
+            old_due = dup.get("due_date")
+            # ISO 'YYYY-MM-DD' compara corretamente como string.
+            if new_due and (not old_due or str(new_due) > str(old_due)):
+                ctrl.update_financial(dup["id"], {
+                    "due_date":       new_due,
+                    "barcode":        payload.get("barcode"),
+                    "amount_charged": payload.get("amount_charged"),
+                    "fine_interest":  payload.get("fine_interest"),
+                    "other_additions": payload.get("other_additions"),
+                })
+                log.info(
+                    f"    [REEMISSAO] mesma guia — conta atualizada p/ vencimento "
+                    f"{new_due} ({row.get('source_file')})"
                 )
-                acc_index += 1
-                continue
-
-            # Validacao 2: fornecedor nao identificado por NENHUMA chave.
-            # Alem de CNPJ/CPF/nome extraidos do PDF, sao chaves validas: o e-mail
-            # do remetente (a RPC casa por email/2/3/4 ou cria o fornecedor), o
-            # ASSUNTO (favorecido de e-mail interno de pagamento) e, em ultimo
-            # recurso, o PAGADOR (payer_name/payer_cnpj). So rejeita quando NAO ha
-            # identificador algum — _finalize_supplier tenta todas essas formas.
-            if not any([payload.get("supplier_cnpj"),
-                        payload.get("supplier_cpf"),
-                        payload.get("supplier_name"),
-                        payload.get("sender_email"),
-                        _supplier_name_from_subject(payload.get("subject")),
-                        payload.get("payer_name"),
-                        payload.get("payer_cnpj")]):
-                ctrl.register_error(
-                    ctx, "sem_fornecedor",
-                    f"CNPJ, CPF, nome e e-mail do fornecedor ausentes — {row.get('source_file')}",
-                    raw_payload=row
-                )
-                acc_index += 1
-                continue
-
-            # Resolve o fornecedor (RPC) → grava sk_supplier e remove as colunas
-            # denormalizadas do payload. Roda APOS a validacao sem_fornecedor (que
-            # usa os campos brutos) e ANTES da dedup (que casa por sk_supplier).
-            if not _finalize_supplier(ctrl, payload):
-                ctrl.register_error(
-                    ctx, "db_erro",
-                    f"Falha ao resolver fornecedor — {row.get('source_file')}",
-                    raw_payload=row
-                )
-                acc_index += 1
-                continue
-
-            # Dedup de conteudo: o mesmo documento ja gravado por outro e-mail
-            # (remetente reenvia o mesmo boleto/guia, com Message-ID diferente).
-            # Reemissao com vencimento mais novo (mesma guia) → ATUALIZA a conta
-            # existente para o vencimento/boleto atual, em vez de duplicar ou
-            # manter dados de pagamento vencidos. Roda ANTES da uniquificacao do
-            # invoice_number para nao gravar duplicata.
-            dup = ctrl.find_financial_duplicate(payload)
-            if dup:
-                new_due = payload.get("due_date")
-                old_due = dup.get("due_date")
-                # ISO 'YYYY-MM-DD' compara corretamente como string.
-                if new_due and (not old_due or str(new_due) > str(old_due)):
-                    ctrl.update_financial(dup["id"], {
-                        "due_date":       new_due,
-                        "barcode":        payload.get("barcode"),
-                        "amount_charged": payload.get("amount_charged"),
-                        "fine_interest":  payload.get("fine_interest"),
-                        "other_additions": payload.get("other_additions"),
-                    })
-                    log.info(
-                        f"    [REEMISSAO] mesma guia — conta atualizada p/ vencimento "
-                        f"{new_due} ({row.get('source_file')})"
-                    )
-                else:
-                    log.info(
-                        f"    [DUP-DOC] reemissão igual/mais antiga — mantido "
-                        f"({row.get('source_file')})"
-                    )
-                acc_index += 1
-                continue
-
-            if payload.get("invoice_number"):
-                payload["invoice_number"] = ctrl.unique_invoice_number(payload["invoice_number"])
-
-            if ctrl.register_financial(payload):
-                accounts_saved += 1
             else:
-                ctrl.register_error(
-                    ctx, "db_erro",
-                    f"Falha ao gravar em financial_account_control — {row.get('source_file')}",
-                    raw_payload=row
+                log.info(
+                    f"    [DUP-DOC] reemissão igual/mais antiga — mantido "
+                    f"({row.get('source_file')})"
                 )
             acc_index += 1
+            continue
+
+        if payload.get("invoice_number"):
+            payload["invoice_number"] = ctrl.unique_invoice_number(payload["invoice_number"])
+
+        if ctrl.register_financial(payload):
+            accounts_saved += 1
+        else:
+            ctrl.register_error(
+                ctx, "db_erro",
+                f"Falha ao gravar em financial_account_control — {row.get('source_file')}",
+                raw_payload=row
+            )
+        acc_index += 1
 
     nonpayable_only = skipped_nonpayable > 0 and payable_attempts == 0
     return csvs_ok, accounts_saved, nonpayable_only

@@ -2,7 +2,8 @@
 // Organism genérico de página CRUD de cadastro (grupo Tabelas): lista paginada +
 // busca (debounce) e modal de criar/editar (form via render prop). Generaliza o
 // padrão de CostCentersPage para reuso pelos cadastros de Bancos/Contas/Plano de
-// contas/Grupos/Sub grupos. A EXCLUSÃO foi removida da UI (só criar/editar).
+// contas/Grupos/Sub grupos. Hard delete é oferecido APENAS ao grupo Administrador
+// (isAdminGroup); a trava real é o backend (requireAdminGroup → 403).
 //
 // Genérico em <T, TInput>: T = linha do grid; TInput = payload de criação/edição
 // (o form valida e chama onSubmit(TInput)).
@@ -55,9 +56,10 @@ interface CrudTablePageProps<T, TInput> {
   onCreate: (data: TInput) => Promise<unknown>;
   onUpdate: (row: T, data: TInput) => Promise<unknown>;
   /**
-   * Hard delete (admin-only). Quando fornecido, o botão de excluir aparece na coluna
-   * "Ações" APENAS para usuários admin; a exclusão pede confirmação e o backend impõe
-   * a autorização de verdade (requireAdmin → 403) e a integridade referencial (409).
+   * Hard delete (grupo Administrador). Quando fornecido, o botão de excluir aparece na
+   * coluna "Ações" APENAS para o grupo Administrador; a exclusão pede confirmação e o
+   * backend impõe a autorização de verdade (requireAdminGroup → 403) e a integridade
+   * referencial (409).
    */
   onDelete?: (row: T) => Promise<unknown>;
   /** Nome do item na confirmação de exclusão (default: rowKey). */
@@ -86,7 +88,7 @@ type FormState<T> = { mode: 'create' | 'edit'; row?: T } | null;
 
 export default function CrudTablePage<T, TInput>(props: Readonly<CrudTablePageProps<T, TInput>>) {
   const { icon: Icon, pageSize = DEFAULT_PAGE_SIZE } = props;
-  const { isAdmin } = useAuth();
+  const { isAdminGroup } = useAuth();
 
   const [rows, setRows] = useState<T[]>([]);
   const [total, setTotal] = useState(0);
@@ -227,8 +229,8 @@ export default function CrudTablePage<T, TInput>(props: Readonly<CrudTablePagePr
     }
   };
 
-  // Exclusão (hard delete) só é oferecida a admin E quando a página passou onDelete.
-  const canDelete = isAdmin && !!props.onDelete;
+  // Exclusão (hard delete) só é oferecida ao grupo Administrador E quando a página passou onDelete.
+  const canDelete = isAdminGroup && !!props.onDelete;
   const requestDelete = (row: T) => {
     setDeleteError(null);
     setDeleteTarget(row);

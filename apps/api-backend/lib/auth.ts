@@ -6,6 +6,11 @@
 
 import { createClient, type SupabaseClient, type User } from '@supabase/supabase-js';
 import { fail } from './response';
+import { getSupabaseAdmin } from './supabase-admin';
+
+// Grupo cuja associação libera operações restritas (hard delete dos cadastros).
+// Fonte de verdade do vínculo usuário → grupo: public.user_profile (migration 065).
+export const ADMIN_GROUP_ID = 1;
 
 let anonClient: SupabaseClient | null = null;
 
@@ -82,6 +87,40 @@ export async function requireAdmin(req: Request): Promise<Response | null> {
     const user = await verifyBearerToken(token);
     if (!user) return fail('Sessão inválida ou expirada', 401);
     if (!isAdmin(user)) return fail('Acesso restrito a administradores', 403);
+    return null;
+  } catch {
+    return fail('Falha ao validar a sessão', 500);
+  }
+}
+
+// Resolve o group_id do usuário a partir de public.user_profile (fonte de verdade do
+// vínculo — migration 065). Lê com service_role (ignora RLS): a autorização não pode
+// depender da policy de leitura do próprio usuário. Perfil ausente → group_id 0
+// (sentinela "não informado"). Lança em falha real de query (o caller devolve 500).
+async function getUserGroupId(userId: string): Promise<number> {
+  const { data, error } = await getSupabaseAdmin()
+    .from('user_profile')
+    .select('group_id')
+    .eq('user_id', userId)
+    .maybeSingle();
+  if (error) throw new Error(error.message);
+  return data?.group_id ?? 0;
+}
+
+// Porteiro do GRUPO ADMINISTRADOR (user_profile.group_id = 1): 401 sem sessão válida,
+// 403 quando autenticado mas fora do grupo, null quando pode prosseguir. É a trava REAL
+// do hard delete dos cadastros — o gate de UI (isAdminGroup) é só cosmético.
+export async function requireAdminGroup(req: Request): Promise<Response | null> {
+  const token = getBearerToken(req);
+  if (!token) return fail('Autenticação necessária', 401);
+
+  try {
+    const user = await verifyBearerToken(token);
+    if (!user) return fail('Sessão inválida ou expirada', 401);
+    const groupId = await getUserGroupId(user.id);
+    if (groupId !== ADMIN_GROUP_ID) {
+      return fail('Acesso restrito ao grupo Administrador', 403);
+    }
     return null;
   } catch {
     return fail('Falha ao validar a sessão', 500);
