@@ -8,6 +8,13 @@ const getSession = vi.fn();
 const getUser = vi.fn();
 const signOut = vi.fn();
 const onAuthStateChange = vi.fn();
+// Leitura de user_profile.group_id (gate isAdminGroup) — controlada por teste.
+const maybeSingle = vi.fn();
+const profileQuery = {
+  select: () => profileQuery,
+  eq: () => profileQuery,
+  maybeSingle: () => maybeSingle(),
+};
 
 // Callback registrado pelo AuthContext em onAuthStateChange — capturado para
 // simular eventos de auth (SIGNED_IN / SIGNED_OUT) nos testes.
@@ -21,6 +28,7 @@ vi.mock('../lib/supabaseClient', () => ({
       signOut: (...args: unknown[]) => signOut(...args),
       onAuthStateChange: (...args: unknown[]) => onAuthStateChange(...args),
     },
+    from: () => profileQuery,
   },
 }));
 
@@ -28,9 +36,14 @@ import { AuthProvider, useAuth } from './AuthContext';
 
 // Consumidor mínimo que expõe o estado do contexto para asserção.
 function Probe() {
-  const { user, loading } = useAuth();
+  const { user, loading, isAdminGroup } = useAuth();
   if (loading) return <span>loading</span>;
-  return <span>{user ? `user:${user.email}` : 'anon'}</span>;
+  return (
+    <>
+      <span>{user ? `user:${user.email}` : 'anon'}</span>
+      <span>{`admingroup:${isAdminGroup}`}</span>
+    </>
+  );
 }
 
 function renderProvider() {
@@ -48,6 +61,7 @@ describe('AuthContext', () => {
     getUser.mockReset();
     signOut.mockReset();
     onAuthStateChange.mockReset();
+    maybeSingle.mockReset().mockResolvedValue({ data: { group_id: 0 }, error: null });
     authCallback = null;
     onAuthStateChange.mockImplementation((cb: (event: string, session: unknown) => void) => {
       authCallback = cb;
@@ -127,5 +141,28 @@ describe('AuthContext', () => {
       authCallback?.('SIGNED_OUT', null);
     });
     expect(localStorage.getItem(IDLE_KEY)).toBeNull();
+  });
+
+  it('grupo Administrador (group_id=1) → isAdminGroup true', async () => {
+    const user = { id: '1', email: 'ricardo@sheild.com.br' };
+    getSession.mockResolvedValue({ data: { session: { user } } });
+    getUser.mockResolvedValue({ data: { user }, error: null });
+    maybeSingle.mockResolvedValue({ data: { group_id: 1 }, error: null });
+
+    renderProvider();
+
+    expect(await screen.findByText('admingroup:true')).toBeInTheDocument();
+  });
+
+  it('grupo não-Administrador (group_id=7) → isAdminGroup false', async () => {
+    const user = { id: '2', email: 'barbara@otimotex.com.br' };
+    getSession.mockResolvedValue({ data: { session: { user } } });
+    getUser.mockResolvedValue({ data: { user }, error: null });
+    maybeSingle.mockResolvedValue({ data: { group_id: 7 }, error: null });
+
+    renderProvider();
+
+    expect(await screen.findByText('user:barbara@otimotex.com.br')).toBeInTheDocument();
+    expect(await screen.findByText('admingroup:false')).toBeInTheDocument();
   });
 });

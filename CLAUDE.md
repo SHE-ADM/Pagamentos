@@ -12,6 +12,10 @@ Há também um **segundo pipeline (saída): cobrança de títulos vencidos** —
 **envia e-mails de cobrança por SMTP (Locaweb)**, com logs próprios. Ver "Pipeline de cobrança
 de vencidos (skill `cobranca-vencidos`)".
 
+E um **terceiro pipeline (infra): backup diário do Supabase** (skill `backup-supabase`) —
+`pg_dump` do banco + download do bucket `attachments`, agendado às 02:00. Ver "Pipeline de
+backup do Supabase (skill `backup-supabase`)".
+
 > **Arquitetura: monorepo Sheild com backend híbrido.** Desde a reestruturação de
 > 2026-06-09, o projeto adota o monorepo `apps/* + packages/shared` (npm workspaces),
 > mas o backend é **híbrido** — pontos onde ainda diverge do padrão genérico:
@@ -215,22 +219,61 @@ ao menos um campo). **Código único** validado na aplicação (case-insensitive
 **409**. **`DELETE` é HARD DELETE** (a tabela não tem `deleted_at`), **bloqueado com 409** quando o centro
 está referenciado por `financial_account_control`, `financial_chart_of_account` ou `supplier` (as 3 FKs);
 o sentinela id 0 também é bloqueado. Status: `201` criação · `409` (código duplicado / em uso) · `404` ·
-`422` Zod · `400` id inválido. (A rota/lib `DELETE` existe no backend, mas **não é exposta pela UI**.)
-Frontend: `services/costCenters.ts` (proxy `/data-api`), `organisms/CostCenterForm.tsx` (código +
-descrição), grid via `getCostCenterColumns` (ação **editar** por linha — a **exclusão foi removida da
-UI**; clicar na linha é no-op). O utilitário CSS `btn-danger` foi removido junto (sem mais uso).
+`422` Zod · `400` id inválido. A rota/lib `DELETE` é exposta na UI **apenas ao grupo Administrador**
+(gate por `user_profile.group_id = 1` — ver "Hard delete dos cadastros"). Frontend:
+`services/costCenters.ts` (proxy `/data-api`), `organisms/CostCenterForm.tsx` (código +
+descrição), grid via `getCostCenterColumns` (ação **editar** por linha + **excluir** só para o grupo
+Administrador). O botão de exclusão usa estilo inline (`bg-status-error-fg`) —
+não há utilitário `btn-danger`.
+
+**Grid COMPLEMENTAR — plano de contas do centro selecionado (mestre-detalhe):** `/tabelas/centros-de-custo`
+é a única página de cadastro que é **mestre-detalhe**. **Clicar numa linha do centro SELECIONA** o centro
+(alterna: clicar de novo/noutro desmarca) e carrega, **abaixo** da grade mestre, um **segundo `DataGrid`**
+(`gridId="tabela-centros-de-custo-plano"`, isolado) com o **plano de contas LANÇÁVEL** (`is_postable=true`)
+vinculado àquele centro — colunas **Código · Descrição · Grupo · Sub Grupo** (read-only, sem ações;
+factory `getCostCenterChartAccountColumns` em `useGridColumns`). A **edição do centro continua abrindo SÓ
+pelo lápis** (a seleção pela linha não abre o modal — não conflita com a regra "editar só pelo lápis").
+Sem seleção, o grid mostra "Selecione um centro de custo para ver o plano de contas" e **não** consulta a
+API; com centro sem planos lançáveis, "Nenhum plano de contas vinculado a este centro". Ordenação
+server-side (Código/Descrição + Grupo/Sub Grupo pela descrição do embed via `alias(coluna)`) e paginação
+própria (evita truncar acima de `MAX_LIMIT=100`). **Backend (aditivo, retrocompatível):** o CRUD paginado
+de plano de contas (`lib/chart-accounts.ts` + `app/api/chart-accounts` ramo COM `page`) ganhou os filtros
+`cost_center_id` (inteiro > 0) e `postable=true` — antes só o **lookup** da cascata (sem `page`) filtrava
+por centro, mas devolvia só código/descrição (sem embeds grupo/subgrupo); o ramo de lookup ficou
+**INTOCADO**. Cliente: `listChartAccountsByCostCenter(costCenterId, params)` em `services/chartAccounts.ts`
+(reusa o CRUD paginado, envelope com `meta` + embeds).
 
 **CRUDs dos demais cadastros contábeis (grupo Tabelas) — Bancos, Contas, Plano de contas, Grupos,
 Sub grupos:** mesmo padrão do CRUD de centros de custo (Repository → Service `service_role` → Route
-dual-mode; código único na aplicação; **sem migrations**). **A EXCLUSÃO foi REMOVIDA da UI** — todas
-as telas do grupo Tabelas têm só **criar/editar** (sem botão de lixeira, sem modal de confirmação,
-sem `deleteX` no service frontend). As rotas/lib `DELETE` do backend foram **preservadas** (não
-expostas pela UI). Um componente genérico **`organisms/CrudTablePage.tsx`** (`<T, TInput>`: lista
-paginada + busca debounce + modais criar/editar) é a base das 5 páginas finas; o form de cada um vai
-por **render prop**. A busca usa a molécula **`SearchInput`** (lupa + botão limpar/X que aparece só
-com texto e devolve o foco ao input) — compartilhada com `CostCentersPage` e `SuppliersPage`. A célula "Ações" do grid renderiza só o lápis (`editCell` em `useGridColumns`).
+dual-mode; código único na aplicação; **sem migrations**). **O HARD DELETE é exposto na UI apenas ao
+grupo Administrador** — ver "Hard delete dos cadastros (grupo Administrador)". Um componente genérico
+**`organisms/CrudTablePage.tsx`** (`<T, TInput>`: lista
+paginada + busca debounce + modais criar/editar + confirmação de exclusão) é a base das 5 páginas
+finas; o form de cada um vai por **render prop**. A busca usa a molécula **`SearchInput`** (lupa +
+botão limpar/X que aparece só com texto e devolve o foco ao input) — compartilhada com
+`CostCentersPage` e `SuppliersPage`. A célula "Ações" do grid renderiza o lápis (editar) e, **para o
+grupo Administrador**, a lixeira (excluir) — `editCell`/`actionsCell` em `useGridColumns`.
 Lookups nos forms via **`atoms/LabeledSelect.tsx`** (`<select>` rotulado, associação `htmlFor`/`id`).
-Cliente HTTP compartilhado em **`services/dataApi.ts`** (`dataApiCall`/`dataApiListPaged`).
+Cliente HTTP compartilhado em **`services/dataApi.ts`** (`dataApiCall`/`dataApiListPaged`/`dataApiDelete`).
+
+**Hard delete dos cadastros (grupo Administrador):** o botão de exclusão dos **6 cadastros do grupo
+Tabelas** aparece **apenas para usuários do grupo Administrador** (`user_profile.group_id = 1`,
+migration 065) e a exclusão é **HARD DELETE** (físico, bloqueado com **409** por FK quando o registro
+está em uso; o sentinela id 0 também é bloqueado). **Duas camadas:** (1) **gate de UI** — `AuthContext`
+carrega `groupId`/`isAdminGroup` lendo `user_profile` do próprio usuário (RLS da 065 permite só o
+próprio perfil); `CrudTablePage` e `CostCentersPage` só oferecem a lixeira + o modal de confirmação
+quando `isAdminGroup`; (2) **trava real (backend)** — as 6 rotas `DELETE` (`app/api/{banks,
+financial-accounts,chart-accounts,chart-account-groups,chart-account-subgroups,cost-centers}/[id]`)
+usam **`requireAdminGroup`** (`lib/auth.ts`), que resolve o `group_id` do usuário via `service_role` e
+devolve **403** fora do grupo. O gate de UI é só cosmético — a autorização é imposta no servidor.
+**Distinto de `requireAdmin`** (papel `app_metadata.role='admin'`), que segue restrito a
+`POST /api/users` (criar usuário): os dois convivem — papel `role` para gestão de usuários, **grupo**
+para o hard delete. Constante `ADMIN_GROUP_ID = 1` espelhada no backend (`lib/auth.ts`) e no frontend
+(`AuthContext.tsx`). **Escopo (decisão travada):** só os 6 cadastros de Tabelas — `/fornecedores`
+segue **soft delete** e `/consulta` (contas) não tem delete (remoção = `PATCH status='cancelado'`).
+Testes: `lib/auth.test.ts` (`requireAdminGroup`: 401/403/500 + grupo 1 segue), `AuthContext.test.tsx`
+(gate por grupo), `CrudTablePage.test.tsx` (lixeira só p/ o grupo Administrador) + os 6 `route.test.ts`
+(mock de `requireAdminGroup`).
 
 **Grids dos cadastros = padrão do `/consulta` (gestão de colunas):** todos os grids de cadastro —
 os **6 do grupo Tabelas** (`CrudTablePage` + a página autônoma `CostCentersPage`) **e** `/fornecedores`
@@ -239,7 +282,8 @@ mostrar/ocultar, **fixar**, **reordenar por arraste**, **redimensionar**, restau
 `defaultDensity="compact"`, `maxBodyHeight` (`70vh` → **cabeçalho fixo**) e `gridId` próprio
 (preferências de layout persistidas em `localStorage` por tabela — ids `tabela-bancos`,
 `tabela-contas`, `tabela-plano-de-contas`, `tabela-grupos-plano-de-contas`,
-`tabela-subgrupos-plano-de-contas`, `tabela-centros-de-custo`, `fornecedores`). No `CrudTablePage` o
+`tabela-subgrupos-plano-de-contas`, `tabela-centros-de-custo`, `tabela-centros-de-custo-plano`
+(grid complementar do plano de contas — ver "Grid COMPLEMENTAR"), `fornecedores`). No `CrudTablePage` o
 `gridId` é prop obrigatória, passada por cada página fina. **Não** ligam `enableSelection` (sem ação
 em lote nesses cadastros) nem `enableRowVirtualization`/scroll infinito (a paginação é por botões
 Anterior/Próxima) — decisão de escopo: o grid é o **mesmo componente** e a mesma experiência de
@@ -357,18 +401,21 @@ ficam públicos) exigindo
 `Authorization: Bearer <token>`. O token é validado contra o Supabase Auth (`auth.getUser`)
 com a **chave anon** (`SUPABASE_ANON_KEY`, nunca a service_role); sem token/ inválido →
 `401`, falha de validação → `500` (envelope `fail`). A lógica fica em `lib/auth.ts`
-(`requireAuth`/`requireAdmin`/`getBearerToken`, testável). `/api/emails/read` também chama
+(`requireAuth`/`requireAdmin`/`requireAdminGroup`/`getBearerToken`, testável). `/api/emails/read` também chama
 `requireAuth` no handler (defesa em profundidade, não só o middleware). Isso **não**
 intercepta o caminho atual do frontend (leitura de e-mails fala com o Flask direto); cobre a
 API de dados Next p/ a fase do portal.
 
 **Modelo de papéis (decisão de design — ferramenta single-org):** **toda sessão autenticada
-é confiável para operar o app** — qualquer usuário logado faz **CRUD completo** (fornecedores,
-contas, cadastros das Tabelas) e **consultas/dashboards**. As rotas de CRUD usam só
-`requireAuth` (sessão válida), **não** papel. A **ÚNICA** exceção é `POST /api/users`
-(criar usuário), que exige `requireAdmin` — papel lido de `app_metadata.role === 'admin'`
-(campo controlado pelo servidor/Admin API; ver §1 A-1 da auditoria de segurança). Não há
-segregação de papéis no CRUD por enquanto — se um projeto precisar, abrir tarefa dedicada.
+é confiável para operar o app** — qualquer usuário logado faz **criação/edição** (fornecedores,
+contas, cadastros das Tabelas) e **consultas/dashboards**. As rotas de criação/edição usam só
+`requireAuth` (sessão válida), **não** papel. **Duas exceções restritas:** (1) `POST /api/users`
+(criar usuário) exige `requireAdmin` — papel lido de `app_metadata.role === 'admin'` (campo
+controlado pelo servidor/Admin API; ver §1 A-1 da auditoria de segurança); (2) o **hard delete dos
+6 cadastros do grupo Tabelas** exige `requireAdminGroup` — pertencer ao **grupo Administrador**
+(`user_profile.group_id = 1`, migration 065; ver "Hard delete dos cadastros"). Fora dessas duas, não
+há segregação de papéis no CRUD — se um projeto precisar de mais, abrir tarefa dedicada (RBAC
+completo desenhado em `docs/design/permissoes-por-grupo.md`).
 **Cadastro de operadores:** crie no **Supabase Dashboard** (Authentication → Users → Add user,
 com "Auto Confirm User"); operador comum **não** precisa de papel/`app_metadata` — só o usuário
 que for criar outros via API precisa de `app_metadata.role: "admin"`. RLS (migrations 056/057)
@@ -376,24 +423,33 @@ não afeta o app: o CRUD escreve via Next API com **`service_role`** (ignora RLS
 inline (`has_invoice`/`has_bank_slip`/`status` em `financial_account_control`, `reviewed_at` em
 `email_control`) é escrita direto pelo papel `authenticated`, via grants por coluna preservados.
 
-**Grupos de usuário — permissões por grupo (FUNDAÇÃO aplicada; RBAC completo DESENHADO, não
-implementado):** existe a base para, no futuro, segregar acesso/visualização por grupo (o "abrir
+**Grupos de usuário — permissões por grupo (FUNDAÇÃO + VÍNCULO aplicados; RESTO do RBAC DESENHADO,
+não implementado):** existe a base para, no futuro, segregar acesso/visualização por grupo (o "abrir
 tarefa dedicada" citado acima). **Aplicado (migration 063):** catálogo `public.user_group`
 (`group_id` IDENTITY ALWAYS PK, `group_name` VARCHAR(30) DEFAULT ''; **id 0 = sentinela "não
 informado"**; RLS read `authenticated`/write `service_role`) + backfill `app_metadata.group_id=0`
 nos usuários existentes. **`user_group` é editado EXCLUSIVAMENTE via Supabase** (SQL Editor/
 Dashboard) — **sem CRUD no app** (o frontend só lê o catálogo); preservar em limpezas de dados.
-**Design aprovado, ainda NÃO implementado** (blueprint em
-[docs/design/permissoes-por-grupo.md](docs/design/permissoes-por-grupo.md)): vínculo usuário→grupo
-por **FK real** em `public.user_profile` (fonte de verdade — supersede a ideia de "só claim");
-permissões via `permission(resource,action)` + `group_permission` (cobre tela/menu **e** CRUD);
-visibilidade por linha via `group_company`/`group_cost_center`/`group_chart_account` (empresa +
-centro de custo + plano de contas). **Semântica RLS:** dimensão sem linhas = vê tudo (restrição
-opt-in), dimensões com AND, bypass `service_role`/`app_metadata.role='admin'`. Enforcement por
-camada: `view`=menu (frontend esconde + guarda rota) · CRUD=Next API `requirePermission` (escrita
-é `service_role`, RLS não pega) · linha=RLS em `financial_account_control`. Roadmap: migrations
-064–067 + helpers `belongsToGroup`/`requirePermission` em `lib/auth.ts` + menu no `Layout.tsx`.
-Ler o blueprint antes de implementar.
+**Aplicado (migration 065) — vínculo usuário→grupo por FK real:** `public.user_profile`
+(`user_id` PK → `auth.users(id)` ON DELETE CASCADE; `group_id` SMALLINT NOT NULL DEFAULT 0 →
+`user_group`; RLS SELECT restrita a `auth.uid() = user_id`, write `service_role`) + trigger
+`handle_new_user` (AFTER INSERT ON `auth.users`, SECURITY DEFINER → cria perfil com group_id=0) +
+backfill dos usuários atuais. **`user_profile` é a FONTE DE VERDADE** do vínculo (supersede o claim
+`app_metadata.group_id` da 063, que **não** é sincronizado — reconciliar no enforcement futuro).
+Atribuição é feita **via Supabase** (`UPDATE public.user_profile SET group_id=… WHERE user_id=…`;
+sem tela de admin). Classificações atuais: `ricardo@sheild.com.br`=1 (Administrador),
+`barbara@otimotex.com.br`=7 (Financeiro), demais=0. **Preservar `user_profile` em limpezas.** O nº
+064 do repo já era `additional_info` → o user_profile virou **065** (roadmap renumerado 066–068).
+**Resto do RBAC — desenhado, ainda NÃO implementado** (blueprint em
+[docs/design/permissoes-por-grupo.md](docs/design/permissoes-por-grupo.md)): permissões via
+`permission(resource,action)` + `group_permission` (cobre tela/menu **e** CRUD); visibilidade por
+linha via `group_company`/`group_cost_center`/`group_chart_account` (empresa + centro de custo +
+plano de contas). **Semântica RLS:** dimensão sem linhas = vê tudo (restrição opt-in), dimensões com
+AND, bypass `service_role`/`app_metadata.role='admin'`. Enforcement por camada: `view`=menu
+(frontend esconde + guarda rota) · CRUD=Next API `requirePermission` (escrita é `service_role`, RLS
+não pega) · linha=RLS em `financial_account_control`. Roadmap restante: migrations 066–068 + helpers
+`belongsToGroup`/`requirePermission` em `lib/auth.ts` + menu no `Layout.tsx`. Ler o blueprint antes
+de implementar.
 
 **Erros 5xx não vazam detalhe interno (segurança §3 M-2):** os route handlers de CRUD usam
 `failFromError(e, '<tag>')` (`lib/response.ts`) — erro com `status` 4xx ecoa a mensagem
@@ -756,6 +812,16 @@ Extração isolada:
 
 ```powershell
 py -3 skills\pdf-contas-pagar\scripts\extract_pdf.py --input data\pdfs_inbox\ --output data\csv_output\ --batch
+```
+
+Backup do Supabase (banco `pg_dump` + Storage `attachments`) — ver "Pipeline de backup do
+Supabase (skill `backup-supabase`)":
+
+```powershell
+py -3 skills\backup-supabase\scripts\run.py --dry-run     # valida config/conexão sem gravar
+py -3 skills\backup-supabase\scripts\run.py               # backup completo (banco + Storage)
+py -3 skills\backup-supabase\scripts\run.py --skip-storage  # só o banco  (valida a senha)
+py -3 skills\backup-supabase\scripts\run.py --skip-db       # só o Storage
 ```
 
 Dependências:
@@ -1139,6 +1205,34 @@ Gravado em `email_control.message_id` (UNIQUE). `register()` usa
 atualizar o registro existente. Fallback local em CSV quando Supabase indisponível
 (`SupabaseControl._available`).
 
+### Fatura + boleto no MESMO e-mail → só o boleto vira conta (não regredir)
+
+E-mail com **2 anexos** (uma **fatura/relatório** + um **boleto**) descreve **um único
+débito**: "o boleto sempre vence". Regra (em `extract_and_store_accounts`):
+- **fatura + boleto → extrai só o BOLETO** (a fatura é ignorada — geraria conta duplicada);
+- **só fatura (sem boleto) → extrai a fatura** normalmente.
+
+O sinal é o **CÓDIGO DE BARRAS** (`_is_boleto_barcode` — linha digitável 44 FEBRABAN moeda
+'9' ou 48 de arrecadação), **NÃO** o `document_type`: o extrator rotula tanto o boleto quanto
+o relatório como `boleto`, mas só o boleto tem linha digitável (o relatório traz uma chave de
+44 dígitos com moeda ≠ '9', ex.: padariabelga id 387). Por isso a decisão **não** pode ser por
+`document_type`.
+
+Implementação — `extract_and_store_accounts` roda em **DOIS PASSOS** (não regredir para o
+loop anexo-a-anexo, que era cego ao resto do e-mail): **Passo 1** extrai TODOS os anexos e
+coleta as linhas (`pending`); calcula `has_real_boleto = _email_has_real_boleto(pending)`
+(algum anexo com boleto real). **Passo 2** grava as contas — quando `has_real_boleto`, cada
+linha **sem** boleto real (`not _is_boleto_barcode(payload['barcode'])`) é **ignorada** (skip
+intencional, logado, contado em `skipped_nonpayable`; **não** é `falha`). A regra fica **acima**
+das validações (`sem_valor`/`sem_fornecedor`) e da dedup. Sem boleto no e-mail, `has_real_boleto`
+é False → a fatura é gravada. Casos preservados: carnê / 2 boletos reais (ambos com linha
+digitável → nenhum descartado); boleto + guia com barcode de arrecadação (ambos pagáveis). É
+**independente da ORDEM** dos anexos (o pré-scan do passo 1 decide antes de gravar). Testes:
+`tests/test_fatura_boleto.py` (helper + fluxo completo com `run_extraction` mockado, incluindo
+ordem inversa). **Limpeza retroativa** aplicada em 2026-07-03: hard delete de 7 faturas/relatórios
+que coexistiam com o boleto do mesmo e-mail (ids 379/327/146/242/129/387/111; boletos
+380/328/147/243/130/388/112 preservados) — todos os pares tinham valor idêntico.
+
 ### Dedup de conteúdo + reemissão (`financial_account_control`)
 
 Além do dedup por `message_id`, `find_financial_duplicate(payload)` evita gravar o
@@ -1303,6 +1397,23 @@ que as 5 guias GNRE internas usam (favorecido real = a SEFAZ da UF, que a extra�
 no pagador OTIMOTEX). A guarda `sem_fornecedor` (PDF) também aceita assunto/pagador como chave, para
 não barrar a conta antes do fallback rodar. Ordem completa: **extraído → assunto → e-mail (RPC) →
 PAGADOR**.
+
+**GUIA DE IMPOSTO sem favorecido real → OTIMOTEX (sk=1) — precede o assunto (não regredir):** o
+credor de uma guia de tributo é o **Fisco** (SEFAZ/RFB/prefeitura), que a extração não captura; o
+"favorecido" derivado do assunto vira lixo (ex.: id 374 — `document_type='darf'`, assunto
+"PAGAMENTO IMPOSTOS" → criava o fornecedor fictício **"IMPOSTOS"**; idem "GNRE -PAGAMENTO",
+"DARE - REF"). Regra (`_finalize_supplier`): quando `document_type` é imposto
+(`_is_tax_document` → `_TAX_DOCUMENT_TYPES` = `darf, das, gru, dae, dare, gnre, ipva, iptu, dam,
+duam, iss, itbi, gare, tributo` — **`gps`/INSS e `multa` ficam de fora**, por decisão do usuário) **E**
+não há favorecido REAL extraído (`supplier_name`/`supplier_cnpj`/`supplier_cpf` do documento), a conta
+é lançada sob a **OTIMOTEX** (`OTIMOTEX_SK_SUPPLIER = 1`, a empresa pagadora — imposto próprio),
+**curto-circuitando os fallbacks de assunto e pagador**. Favorecido real extraído (ex.: "PREFEITURA
+DE SÃO PAULO", "CONTABIL ESQUEMA") **NÃO** dispara a regra e é preservado. A guarda `sem_fornecedor`
+(PDF) também aceita `_is_tax_document` como chave, para uma guia de imposto sem nenhum outro
+identificador não ser barrada antes da regra. Testes: `tests/test_supplier_imposto.py`. Backfill
+único aplicado em 2026-07-03 (ids 331/333/334/373/374 → OTIMOTEX; fornecedores-lixo 1243/1247/1248
+**hard-deletados** a pedido do usuário — eram fictícios, sem CNPJ/curadoria, e sem contas após o
+remapeamento; exceção pontual à regra de soft delete de `supplier`).
 
 O pipeline resolve o fornecedor **antes do INSERT** via RPC `resolve_supplier_for_account`
 (`migration 040`; `_finalize_supplier` → `SupabaseControl.resolve_supplier`), que chama
@@ -1608,7 +1719,7 @@ faturas SIEG em `ignorado`; o handler A1 (baixar o boleto real) segue como melho
 | `/erros` | `Erros.tsx` | `email_processing_errors` |
 | `/contas` | `ContasNovaPage.tsx` | `financial_account_control` (lançamento manual via `ContaForm`) |
 | `/fornecedores` | `SuppliersPage.tsx` | `supplier` (CRUD via Next API) |
-| `/tabelas/centros-de-custo` | `CostCentersPage.tsx` | `financial_cost_center` (CRUD via Next API) |
+| `/tabelas/centros-de-custo` | `CostCentersPage.tsx` | `financial_cost_center` (CRUD via Next API) + grid complementar mestre-detalhe do plano de contas do centro selecionado (`financial_chart_of_account` lançável) |
 | `/tabelas/bancos` | `BanksPage.tsx` | `financial_bank` (CRUD via Next API) |
 | `/tabelas/contas` | `FinancialAccountsPage.tsx` | `financial_account` (CRUD via Next API) |
 | `/tabelas/plano-de-contas` | `ChartAccountsPage.tsx` | `financial_chart_of_account` (CRUD via Next API) |
@@ -2150,7 +2261,62 @@ em `@sheild/shared`). O grid de `/cobranca/erros` liga **seleção** + a ação
 padrão de `/cobranca/envios`: `sent_at` desc** (data de envio, mais recentes no topo) — o ciclo
 de clique no cabeçalho volta a esse padrão no 3º clique.
 
+## Pipeline de backup do Supabase (skill `backup-supabase`)
+
+Terceiro pipeline (infra) — **backup diário e automático do Supabase**, independente do
+Flask/Next (mesmo padrão de `email-reader`/`cobranca-vencidos`). **Em produção desde
+2026-07-03** (`C:\Sheild\API\Pagamentos`, tarefa "Pagamentos - Backup Supabase" na pasta
+`\Sheild\` do Agendador, 02:00 diário; 1º backup real: 381 arquivos / ~52 MB, exit 0).
+
+```
+Windows Task Scheduler (02:00 diário)
+        │
+        ▼
+scheduler/run_backup.ps1  ──►  skills/backup-supabase/scripts/run.py
+        │
+        ├── pg_dump (subprocess, native exe) ──► Supabase Postgres (SUPABASE_DB_URL)
+        │       └── backups/<ts>/db/db_postgres_public.dump   (formato custom, pg_restore)
+        │
+        ├── Storage REST (urllib) ──► bucket attachments (SUPABASE_SERVICE_KEY)
+        │       └── backups/<ts>/storage/attachments/<arquivos>
+        │
+        ├── backups/<ts>/manifest.json   (resumo: contagens, tamanhos, versões, status)
+        └── retenção: remove backups/<ts> além de BACKUP_RETENTION_DAYS dias (padrão 30)
+```
+
+**Estrutura** (`skills/backup-supabase/`): `scripts/run.py` (entry-point/orquestrador —
+Task Scheduler aponta aqui) + `config.py` (.env, caminhos, **detecção do `pg_dump`**) +
+`backup_db.py` (`pg_dump`; senha via `PGPASSWORD`, **fora do argv/log**) + `backup_storage.py`
+(list + download do bucket via `urllib`, item que falha é NÃO-fatal) + `retention.py` (remove
+backups > N dias, só pastas com nome de carimbo `YYYY-MM-DD_HHMMSS`). Docs em `SKILL.md` +
+`references/env_reference.md`. Wrappers `scheduler/run_backup.ps1` + `setup-backup-task.ps1`.
+
+**Pontos NÃO óbvios (não regredir):**
+- **`pg_dump` ≥ 17 é requisito externo** (servidor é PG 17). `config.find_pg_dump` procura
+  `PG_DUMP_PATH` no `.env` → PATH → `C:\Program Files\PostgreSQL\*\bin\pg_dump.exe` → pgAdmin
+  (`...\pgAdmin 4\runtime\pg_dump.exe`, **com e sem** subpasta de versão). Em dev veio do pgAdmin
+  standalone (18.2); em produção, do **PostgreSQL 18 completo** (`...\PostgreSQL\18\bin\`).
+- **`SUPABASE_DB_URL`** (novo no `.env`) = a **MESMA** connection string do pgAdmin (**Session
+  pooler**, IPv4, porta **5432** — a 6543/Transaction NÃO funciona com `pg_dump`). Senha
+  **URL-encoded** (`@`→`%40`, etc.); `backup_db._parse_db_url` faz `unquote`. `SUPABASE_URL`/
+  `SUPABASE_SERVICE_KEY` (Storage) já existem. Sem dependência Python nova (stdlib + `dotenv`).
+- **Backup é COMPLETO todo dia** (re-baixa todo o bucket) — não incremental. Disco ≈
+  (dump + Storage) × retenção; baixar `BACKUP_RETENTION_DAYS` se o disco apertar.
+- **Exit code**: 0 = OK; ≠ 0 = falha operacional (banco ou Storage) → `run_backup.ps1` marca a
+  tarefa vermelha + Event Log (`Pagamentos-Backup`, EventId 1003). Os logs `INFO` do Python saem
+  pelo **stderr** (padrão do `logging`), então aparecem sob `--- STDERR ---` no log do wrapper
+  **mesmo em sucesso** — não é erro (igual reader/cobrança); o sinal de erro é o exit ≠ 0.
+- **Restaurar**: `pg_restore --no-owner --no-privileges --clean --if-exists` do `.dump`; Storage =
+  re-upload dos arquivos (o nome do arquivo é a chave do objeto no bucket).
+
+Variáveis do `.env` em `references/env_reference.md`. Deploy em produção: ver "Deploy manual do
+Backup do Supabase em produção".
+
 ## Windows Task Scheduler
+
+Três tarefas agendadas na pasta `\Sheild\` do Agendador (produção
+`C:\Sheild\API\Pagamentos`): **Email Reader** (leitura, 5 min), **Cobrança Vencidos**
+(envios, 08:00) e **Backup Supabase** (02:00 diário — ver seção acima).
 
 `scheduler/run_reader.ps1` — intervalo de 5 min (`$INTERVAL_MIN` em
 `scheduler/setup-task.ps1`). Detecta Python com `pdfplumber` (ordem: `py -3.12`,
@@ -2158,6 +2324,9 @@ de clique no cabeçalho volta a esse padrão no 3º clique.
 `logs/scheduler/reader_YYYYMMDD.log`, retidos 30 dias. Instalação em outra
 máquina: `scheduler/INSTALL.md` (setup detecta executor `pwsh.exe`/`powershell.exe`
 e checa o `.env`).
+
+O backup usa `scheduler/run_backup.ps1` + `setup-backup-task.ps1` (mesmo padrão do runner da
+cobrança: detecção de Python, log diário em `logs/backup/`, Event Log em falha).
 
 Checkout de **desenvolvimento**: `C:\Sheild\Projetos\Claude\Contas a pagar\Pagamentos`
 (branch `Features`, sincronizado com `main`) — clone git completo onde todo o trabalho acontece.
@@ -2264,4 +2433,58 @@ Ou melhor — `py -3 skills\cobranca-vencidos\scripts\run.py --dry-run` valida i
 conexão Firebird **sem enviar e-mail**. **Não precisa reiniciar nada** (a tarefa inicia processo
 novo). A cobrança está **em produção** (`DEV_MODE=false` — envia para clientes reais); ainda
 assim, rode um `--dry-run` após alterar o pipeline antes de confiar na próxima execução real.
+
+### Deploy manual do Backup do Supabase em produção (caso específico — não regredir)
+
+Terceiro pipeline agendado (**skill `backup-supabase`**, criada e **posta em produção em
+2026-07-03** — 1º backup OK: 381 arquivos / ~52 MB, exit 0; ver memória
+[[backup-supabase-skill]]). Mesma máquina/pasta dos outros dois (`C:\Sheild\API\Pagamentos`);
+o scheduler executa `skills\backup-supabase\scripts\run.py` (`run_backup.ps1` `$SCRIPT`), 1x/dia
+às **02:00**. A tarefa "Pagamentos - Backup Supabase" já está registrada e validada em produção
+(usar este roteiro apenas para **atualizar** os scripts, não para o setup inicial). Faz `pg_dump` do banco (formato custom, schema `public`) + download do bucket
+`attachments` (REST/`urllib` com `SUPABASE_SERVICE_KEY`) para `backups\<ts>\`; retenção 30 dias;
+`manifest.json` por execução. Mesma **preferência do usuário**: atualização de produção é **cópia
+manual + validação** (nunca `deploy-prod.ps1`).
+
+**O QUE COPIAR para produção:**
+
+| De (dev) | Para (produção) |
+|---|---|
+| `skills\backup-supabase\` (pasta inteira) | `C:\Sheild\API\Pagamentos\skills\backup-supabase\` |
+| `scheduler\run_backup.ps1` | `C:\Sheild\API\Pagamentos\scheduler\` |
+| `scheduler\setup-backup-task.ps1` | `C:\Sheild\API\Pagamentos\scheduler\` |
+
+- **5 scripts Python** (`config.py`, `backup_db.py`, `backup_storage.py`, `retention.py`,
+  `run.py`) são **módulos irmãos** (`sys.path.insert(0, <dir do run.py>)` — mesmo padrão da
+  cobrança). Copiar a pasta inteira evita `ImportError`.
+- **Pré-requisito NÃO ÓBVIO — `pg_dump` ≥ 17 na máquina de produção.** O servidor é PG 17; um
+  `pg_dump` 16 aborta com "server version mismatch". Produção pode **não ter pgAdmin** (que em dev
+  fornece o `pg_dump` 18.2 em `C:\Program Files\pgAdmin 4\runtime\pg_dump.exe`, **sem** subpasta de
+  versão — o glob de detecção de `config.py` cobre com e sem subpasta). Se faltar, instale o
+  **PostgreSQL 17+ client** ("Command Line Tools") e, se não ficar no PATH, defina
+  `PG_DUMP_PATH=C:\Program Files\PostgreSQL\17\bin\pg_dump.exe` no `.env`.
+- **`.env` de produção precisa de `SUPABASE_DB_URL`** (a MESMA connection string do pgAdmin —
+  Session pooler, IPv4, porta 5432; senha URL-encoded, ex.: `@`→`%40`). `SUPABASE_URL`/
+  `SUPABASE_SERVICE_KEY` já existem (o reader usa). É só `.env`, nenhum `.py` muda. Opcionais têm
+  padrão: `BACKUP_DB_SCHEMAS=public`, `BACKUP_STORAGE_BUCKET=attachments`, `BACKUP_RETENTION_DAYS=30`.
+- **Sem dependência Python nova** (stdlib + `python-dotenv`, já presente). A Supabase é a mesma de
+  dev — o backup rodando em produção protege o mesmo banco/Storage; a máquina de produção fica
+  ligada 24/7, ideal para o disparo das 02:00.
+- **Espaço em disco:** backup é **completo todo dia** (re-baixa todo o bucket) × retenção 30 dias.
+  Se o disco de produção for apertado, reduzir `BACKUP_RETENTION_DAYS` no `.env` de lá.
+
+Validar (esperado: `imports OK` + Storage listado; o `--dry-run` detecta `pg_dump` e confere a
+`SUPABASE_DB_URL`, **sem gravar** — mas NÃO testa a senha, só a presença da variável):
+
+```powershell
+cd C:\Sheild\API\Pagamentos
+py -3 -c "import sys; sys.path.insert(0,'skills/backup-supabase/scripts'); import config, backup_db, backup_storage, retention, run; print('imports OK')"
+py -3 skills\backup-supabase\scripts\run.py --dry-run
+```
+
+Para validar a **senha** de verdade, rode um dump real só do banco (rápido, não baixa o Storage):
+`py -3 skills\backup-supabase\scripts\run.py --skip-db` (só Storage) / `--skip-storage` (só banco).
+Registrar a tarefa (uma vez, **PowerShell como Administrador**):
+`.\scheduler\setup-backup-task.ps1` → cria **"Pagamentos - Backup Supabase"** na pasta `\Sheild\`.
+**Não precisa reiniciar nada** (a tarefa inicia processo novo a cada disparo).
 

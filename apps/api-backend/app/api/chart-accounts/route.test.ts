@@ -90,6 +90,25 @@ describe('GET /api/chart-accounts (CRUD paginado — com page)', () => {
     expect(body).toEqual({ success: true, data: [{ chart_account_id: 1 }], meta: { total: 1, page: 1, limit: 20 } });
     expect(lookupListMock).not.toHaveBeenCalled();
   });
+
+  it('encaminha cost_center_id + postable ao CRUD (grid complementar)', async () => {
+    requireAuthMock.mockResolvedValue(null);
+    crudListMock.mockResolvedValue({ data: [] as never, total: 0, page: 1, limit: 20 });
+    await GET(getRequest('page=1&limit=20&cost_center_id=42&postable=true'));
+    expect(crudListMock).toHaveBeenCalledWith(
+      expect.objectContaining({ costCenterId: 42, postableOnly: true }),
+    );
+    expect(lookupListMock).not.toHaveBeenCalled();
+  });
+
+  it('cost_center_id inválido no CRUD → costCenterId=undefined e postableOnly=false', async () => {
+    requireAuthMock.mockResolvedValue(null);
+    crudListMock.mockResolvedValue({ data: [] as never, total: 0, page: 1, limit: 20 });
+    await GET(getRequest('page=1&cost_center_id=0'));
+    expect(crudListMock).toHaveBeenCalledWith(
+      expect.objectContaining({ costCenterId: undefined, postableOnly: false }),
+    );
+  });
 });
 
 describe('POST /api/chart-accounts', () => {

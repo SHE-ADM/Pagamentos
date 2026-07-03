@@ -5,11 +5,11 @@ import type { Bank, BankCreateInput } from '@sheild/shared';
 import CrudTablePage from './CrudTablePage';
 import { getBankColumns } from '../../hooks/useGridColumns';
 
-// isAdmin controla se o botão de excluir (hard delete) é oferecido. vi.hoisted evita
+// isAdminGroup controla se o botão de excluir (hard delete) é oferecido. vi.hoisted evita
 // o TDZ ao referenciar o estado dentro da factory hoisteada do vi.mock.
-const authState = vi.hoisted(() => ({ isAdmin: false }));
+const authState = vi.hoisted(() => ({ isAdminGroup: false }));
 vi.mock('../../contexts/AuthContext', () => ({
-  useAuth: () => ({ isAdmin: authState.isAdmin, session: null, user: null, loading: false, signOut: vi.fn() }),
+  useAuth: () => ({ isAdminGroup: authState.isAdminGroup, session: null, user: null, loading: false, signOut: vi.fn() }),
 }));
 
 const banks: Bank[] = [{ bank_id: 5, bank_code: '001', bank_name: 'Banco do Brasil' }];
@@ -45,7 +45,7 @@ function renderPage() {
 }
 
 beforeEach(() => {
-  authState.isAdmin = false;
+  authState.isAdminGroup = false;
   listMock.mockReset().mockResolvedValue({ data: banks, total: 1 });
   onDelete.mockReset().mockResolvedValue(undefined);
 });
@@ -58,13 +58,13 @@ describe('CrudTablePage — hard delete admin-only', () => {
   });
 
   it('admin: mostra o botão de excluir na linha', async () => {
-    authState.isAdmin = true;
+    authState.isAdminGroup = true;
     renderPage();
     await waitFor(() => expect(screen.getByLabelText('Excluir 001')).toBeInTheDocument());
   });
 
   it('admin: confirmar a exclusão chama onDelete e recarrega a lista', async () => {
-    authState.isAdmin = true;
+    authState.isAdminGroup = true;
     renderPage();
     await waitFor(() => expect(screen.getByLabelText('Excluir 001')).toBeInTheDocument());
 
@@ -72,8 +72,9 @@ describe('CrudTablePage — hard delete admin-only', () => {
     fireEvent.click(screen.getByLabelText('Excluir 001'));
     await waitFor(() => expect(screen.getByText('Excluir registro')).toBeInTheDocument());
 
-    // Confirma no botão do diálogo (nome acessível exatamente "Excluir").
-    fireEvent.click(screen.getByRole('button', { name: 'Excluir' }));
+    // Confirma no botão do diálogo (nome acessível exatamente "Excluir"). jsdom não
+    // implementa <dialog>.showModal — o conteúdo fica hidden na a11y tree (hidden: true).
+    fireEvent.click(screen.getByRole('button', { name: 'Excluir', hidden: true }));
 
     await waitFor(() => expect(onDelete).toHaveBeenCalledWith(banks[0]));
     // Recarrega após excluir: chamada inicial + reload.

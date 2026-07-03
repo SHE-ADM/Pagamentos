@@ -1,4 +1,9 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+
+// useAuth (gate isAdminGroup do hard delete) — mock: sem grupo Administrador nestes testes.
+vi.mock('../contexts/AuthContext', () => ({
+  useAuth: () => ({ user: null, session: null, loading: false, isAdmin: false, groupId: 0, isAdminGroup: false, signOut: vi.fn() }),
+}));
 import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import type { ChartAccount } from '@sheild/shared';

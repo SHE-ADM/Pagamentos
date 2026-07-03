@@ -7,7 +7,7 @@ const builders: Record<string, ReturnType<typeof vi.fn>>[] = [];
 
 function makeBuilder(result: QueryResult) {
   const b: Record<string, ReturnType<typeof vi.fn>> & { then?: unknown } = {};
-  for (const m of ['select', 'neq', 'or', 'order', 'range', 'eq', 'ilike', 'limit', 'insert', 'update', 'delete', 'maybeSingle', 'single']) {
+  for (const m of ['select', 'neq', 'or', 'order', 'range', 'eq', 'is', 'ilike', 'limit', 'insert', 'update', 'delete', 'maybeSingle', 'single']) {
     b[m] = vi.fn(() => b);
   }
   b.then = (onF: (v: QueryResult) => unknown, onR?: (e: unknown) => unknown) => Promise.resolve(result).then(onF, onR);
@@ -84,5 +84,25 @@ describe('chartAccountService', () => {
     expect(orArg).toContain('chart_account_subgroup_id.in.(7)');
     // grupo sem match não gera cláusula
     expect(orArg).not.toContain('chart_account_group_id.in.');
+  });
+
+  it('list aplica os filtros do grid complementar (costCenterId + postableOnly)', async () => {
+    resultQueue.push({ data: [], count: 0, error: null }); // main query
+
+    await chartAccountService.list({ page: 1, limit: 20, costCenterId: 42, postableOnly: true });
+
+    const mainBuilder = builders[0];
+    expect(mainBuilder.eq).toHaveBeenCalledWith('cost_center_id', 42);
+    expect(mainBuilder.is).toHaveBeenCalledWith('is_postable', true);
+  });
+
+  it('list sem os filtros não restringe por centro nem por postável', async () => {
+    resultQueue.push({ data: [], count: 0, error: null }); // main query
+
+    await chartAccountService.list({ page: 1, limit: 20 });
+
+    const mainBuilder = builders[0];
+    expect(mainBuilder.eq).not.toHaveBeenCalledWith('cost_center_id', expect.anything());
+    expect(mainBuilder.is).not.toHaveBeenCalled();
   });
 });

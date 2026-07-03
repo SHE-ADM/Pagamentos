@@ -70,7 +70,7 @@ describe('ChartAccountForm', () => {
     expect(screen.getByLabelText('Código')).toHaveFocus();
   });
 
-  it('submete com defaults (FKs = 0, nível 2, postável)', async () => {
+  it('submete com defaults (FKs = 0, nível 3, postável)', async () => {
     const { onSubmit } = setup();
     await userEvent.type(screen.getByLabelText('Código'), '1.1.01');
     await userEvent.type(screen.getByLabelText('Descrição'), 'Clientes');
@@ -79,7 +79,7 @@ describe('ChartAccountForm', () => {
       expect(onSubmit).toHaveBeenCalledWith({
         account_code: '1.1.01',
         account_description: 'Clientes',
-        account_level: 2,
+        account_level: 3,
         is_postable: true,
         cost_center_id: 0,
         chart_account_group_id: 0,
