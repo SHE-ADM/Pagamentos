@@ -47,3 +47,23 @@ export const fmtChartAccount = (r: FinancialAccountControl): string =>
     ? [r.chart_account?.account_code, r.chart_account?.account_description].filter(Boolean).join(' — ') ||
       `#${r.chart_account_id}`
     : '—';
+
+// Une código + descrição num par legível ("código — descrição"); '' quando ambos vazios
+// (para ser descartado pelo filter no concat abaixo).
+const codeDesc = (code?: string | null, desc?: string | null): string =>
+  [code, desc].filter(Boolean).join(' — ');
+
+// Célula "Plano de contas" do grid de /consulta (visualização enriquecida): concatena
+// plano de contas + grupo + subgrupo + centro de custo. Cada parte é "código — descrição";
+// partes ausentes (id 0 / embed nulo) são omitidas. Grupo/subgrupo vêm dos embeds aninhados
+// em `chart_account`; o centro de custo é o da própria conta (`cost_center_id`), o mesmo que
+// era exibido na coluna removida. Separador ' · '.
+export const fmtChartAccountFull = (r: FinancialAccountControl): string => {
+  const parts = [
+    r.chart_account_id ? codeDesc(r.chart_account?.account_code, r.chart_account?.account_description) || `#${r.chart_account_id}` : '',
+    codeDesc(r.chart_account?.group?.group_code, r.chart_account?.group?.group_description),
+    codeDesc(r.chart_account?.subgroup?.subgroup_code, r.chart_account?.subgroup?.subgroup_description),
+    r.cost_center_id ? codeDesc(r.cost_center?.cost_center_code, r.cost_center?.cost_center_description) || `#${r.cost_center_id}` : '',
+  ].filter(Boolean);
+  return parts.length ? parts.join(' · ') : '—';
+};

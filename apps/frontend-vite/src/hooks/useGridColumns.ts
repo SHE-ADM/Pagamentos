@@ -16,7 +16,7 @@ import CheckToggle from '../components/atoms/CheckToggle';
 import StatusSelectCell, { type StatusOption } from '../components/atoms/StatusSelectCell';
 import type { FinancialAccountFlag } from '../services/supabase';
 // Formatters de exibição: fonte única em src/lib/format.ts (compartilhada com Consulta.tsx/Emails.tsx).
-import { fmtDate, fmtDateTime, fmtMoney, fmtCnpj, fmtCpf, fmtCostCenter, fmtChartAccount } from '../lib/format';
+import { fmtDate, fmtDateTime, fmtMoney, fmtCnpj, fmtCpf, fmtChartAccountFull } from '../lib/format';
 
 // Opções do dropdown inline de status — ordem de ciclo de vida, definida aqui como
 // constante de módulo para evitar qualquer dependência de fetch ou timing de estado.
@@ -139,34 +139,23 @@ export function getConsultaColumns(
     render: (r) => r.payment_method ?? '—',
   },
   {
-    // Classificação contábil — vem dos embeds (JOIN). Ordenação SERVER-SIDE pela
-    // descrição do recurso embutido via sintaxe do PostgREST `alias(coluna)` — o alias
-    // (`cost_center`) é o mesmo do SELECT_WITH_EMBEDS; usar o nome real da tabela é
-    // rejeitado (400). Texto longo QUEBRA em várias linhas (wrap) em vez de truncar.
-    key: 'cost_center',
-    header: 'Centro de custo',
-    size: 140,
-    minSize: 120,
-    sortKey: 'cost_center(cost_center_description)',
-    hideOn: ['sm', 'md'],
-    secondLine: true,
-    secondLineLabel: 'C. Custo',
-    wrap: true,
-    render: fmtCostCenter,
-  },
-  {
-    // Ordenação server-side pela descrição do plano (embed `chart_account`) — ver nota
-    // do Centro de custo acima.
+    // Classificação contábil — visualização ENRIQUECIDA: a célula concatena
+    // plano de contas + grupo + subgrupo + centro de custo (fmtChartAccountFull).
+    // A antiga coluna "Centro de custo" foi removida (dobrada aqui); a edição
+    // (inclusão/alteração) do centro e do plano permanece inalterada no ContaForm.
+    // Ordenação SERVER-SIDE pela descrição do plano (embed `chart_account`) via a
+    // sintaxe do PostgREST `alias(coluna)` — o alias é o mesmo do SELECT_WITH_EMBEDS.
+    // Texto longo QUEBRA em várias linhas (wrap) em vez de truncar.
     key: 'chart_account',
     header: 'Plano de contas',
-    size: 180,
-    minSize: 120,
+    size: 300,
+    minSize: 160,
     sortKey: 'chart_account(account_description)',
     hideOn: ['sm', 'md'],
     secondLine: true,
     secondLineLabel: 'Plano',
     wrap: true,
-    render: fmtChartAccount,
+    render: fmtChartAccountFull,
   },
   {
     key: 'due_date',

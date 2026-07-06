@@ -52,7 +52,11 @@ export default function CostCentersPage() {
   const [detailPage, setDetailPage] = useState(1);
   const [detailLoading, setDetailLoading] = useState(false);
   const [detailError, setDetailError] = useState<string | null>(null);
-  const [detailSort, setDetailSort] = useState<{ col: string | null; dir: 'asc' | 'desc' | null }>({ col: null, dir: null });
+  // Ordenação inicial do grid complementar: código (account_code) ascendente.
+  const [detailSort, setDetailSort] = useState<{ col: string | null; dir: 'asc' | 'desc' | null }>({
+    col: 'account_code',
+    dir: 'asc',
+  });
 
   // Modal de criação/edição
   const [form, setForm] = useState<FormState>(null);
@@ -66,6 +70,7 @@ export default function CostCentersPage() {
 
   const formDialogRef = useRef<HTMLDialogElement>(null);
   const deleteDialogRef = useRef<HTMLDialogElement>(null);
+  const detailRef = useRef<HTMLElement>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -159,6 +164,13 @@ export default function CostCentersPage() {
       /* jsdom */
     }
   }, [deleteTarget]);
+
+  // Ao selecionar um centro, traz o grid complementar (plano de contas) para a viewport —
+  // caso contrário ele abriria no rodapé da página, exigindo rolagem para ser visto.
+  useEffect(() => {
+    if (!selected) return;
+    detailRef.current?.scrollIntoView?.({ behavior: 'smooth', block: 'start' });
+  }, [selected]);
 
   // Auto-dispensa o banner de sucesso (evita `notice` stale aparecer para uma ação nova).
   useEffect(() => {
@@ -335,7 +347,7 @@ export default function CostCentersPage() {
         </div>
 
         {/* Grid complementar: plano de contas lançável do centro de custo selecionado. */}
-        <section className="mt-8" aria-label="Plano de contas do centro de custo">
+        <section ref={detailRef} className="mt-6 scroll-mt-4" aria-label="Plano de contas do centro de custo">
           <div className="mb-2 flex items-center gap-2">
             <Layers size={16} className="text-brand" />
             <h2 className="text-sm font-semibold text-gray-900">

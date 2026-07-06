@@ -231,12 +231,15 @@ não há utilitário `btn-danger`.
 (alterna: clicar de novo/noutro desmarca) e carrega, **abaixo** da grade mestre, um **segundo `DataGrid`**
 (`gridId="tabela-centros-de-custo-plano"`, isolado) com o **plano de contas LANÇÁVEL** (`is_postable=true`)
 vinculado àquele centro — colunas **Código · Descrição · Grupo · Sub Grupo** (read-only, sem ações;
-factory `getCostCenterChartAccountColumns` em `useGridColumns`). A **edição do centro continua abrindo SÓ
-pelo lápis** (a seleção pela linha não abre o modal — não conflita com a regra "editar só pelo lápis").
+factory `getCostCenterChartAccountColumns` em `useGridColumns`). Ao selecionar um centro, o card do plano
+**rola para a viewport** (`detailRef.scrollIntoView`, `scroll-mt-4`) — não abre no rodapé da página. A
+**edição do centro continua abrindo SÓ pelo lápis** (a seleção pela linha não abre o modal — não conflita
+com a regra "editar só pelo lápis").
 Sem seleção, o grid mostra "Selecione um centro de custo para ver o plano de contas" e **não** consulta a
-API; com centro sem planos lançáveis, "Nenhum plano de contas vinculado a este centro". Ordenação
-server-side (Código/Descrição + Grupo/Sub Grupo pela descrição do embed via `alias(coluna)`) e paginação
-própria (evita truncar acima de `MAX_LIMIT=100`). **Backend (aditivo, retrocompatível):** o CRUD paginado
+API; com centro sem planos lançáveis, "Nenhum plano de contas vinculado a este centro". **Abre ordenado
+por Código ascendente** por padrão (estado inicial `detailSort = { col: 'account_code', dir: 'asc' }`;
+envia `sort=account_code&order=asc`). Ordenação server-side (Código/Descrição + Grupo/Sub Grupo pela
+descrição do embed via `alias(coluna)`) e paginação própria (evita truncar acima de `MAX_LIMIT=100`). **Backend (aditivo, retrocompatível):** o CRUD paginado
 de plano de contas (`lib/chart-accounts.ts` + `app/api/chart-accounts` ramo COM `page`) ganhou os filtros
 `cost_center_id` (inteiro > 0) e `postable=true` — antes só o **lookup** da cascata (sem `page`) filtrava
 por centro, mas devolvia só código/descrição (sem embeds grupo/subgrupo); o ramo de lookup ficou
@@ -927,22 +930,37 @@ do botão "Editar conta" do painel de detalhe.) Os cabeçalhos são abreviados (
 largura, mas o `aria-label` do checkbox continua descritivo (`Tem NF`/`Tem Boleto`). A coluna **"Fornecedor" deriva do JOIN com `supplier`** e exibe **apenas `trade_name`**
 (razão fantasia — todos os fornecedores têm `trade_name` preenchido; sem fallback para
 `legal_name` no grid); a antiga coluna **"CNPJ/CPF" foi REMOVIDA do grid** (segue no card de
-detalhe + embed). As colunas
-**"Centro de custo" e "Plano de contas" derivam dos embeds** `cost_center`/`chart_account`
-(`código — descrição`; id 0 = "não informado" → "—"). **Fornecedor, Centro de custo e Plano de
-contas SÃO ordenáveis server-side** pelo recurso embutido, via sintaxe do PostgREST
-`alias(coluna)` no `order` — `sortKey: 'supplier(trade_name)'`,
-`'cost_center(cost_center_description)'` e `'chart_account(account_description)'`. O **alias** é o
-mesmo do `SELECT_WITH_EMBEDS` (`supplier`/`cost_center`/`chart_account`); usar o nome real da
-tabela (`financial_cost_center(...)`) é rejeitado pelo PostgREST (400). O `key` dessas
-colunas de embed no `ColumnDef` é sintético (`ColumnDef.key` é `keyof T | (string & {})`; o
-`accessorFn` só alimenta sort/filter client-side, que não usamos — a ordenação é sempre server-side). Ordem das colunas de `/consulta`: **… Tipo
-Pagamento → Centro de custo → Plano de contas → Vencimento → Valor → NF → BOL → Situação → Extração**
-(`Extração` é a última; **não há mais coluna "Ações"**). `Extração` (badge `extraction_source`) aparece
-**só** no grid (removida do detalhe e do CSV).
+detalhe + embed). A **coluna "Plano de contas" tem visualização ENRIQUECIDA** (`fmtChartAccountFull`,
+`lib/format.ts`): **concatena plano de contas + grupo + subgrupo + centro de custo** (cada parte
+`código — descrição`, separador ` · `; partes ausentes/id 0 omitidas). A **antiga coluna "Centro de
+custo" foi REMOVIDA do grid** (dobrada dentro da célula de plano de contas) — mas a **edição
+(inclusão/alteração) do centro e do plano no `ContaForm` permanece inalterada** (só a visualização do
+grid mudou). Grupo/subgrupo vêm dos **embeds ANINHADOS em `chart_account`**
+(`group:financial_chart_of_account_group(...)` via a FK direta da migration 058 +
+`subgroup:financial_chart_of_account_subgroup(...)`), acrescentados ao `SELECT_WITH_EMBEDS`; o centro
+de custo é o da própria conta (`cost_center_id`, embed `cost_center` — o mesmo que era exibido na coluna
+removida). Os schemas de embed de grupo/subgrupo reusam `chartAccountGroup/SubgroupEmbeddedSchema` dos
+cadastros (sem duplicar). **A hierarquia aninhada precisa vir nos DOIS caminhos de leitura (não
+regredir):** o `SELECT_WITH_EMBEDS` do frontend (`services/supabase.ts`, usado no fetch/refresh do grid)
+**e** o `SELECT_WITH_SUPPLIER` da Next API (`apps/api-backend/lib/contas.ts`, resposta de POST/PATCH que
+é **mesclada IN-PLACE** no grid por `Consulta.handleEditSubmit`, sem refetch). Se só um trouxer
+group/subgroup, a célula fica **parcial após salvar a edição e só corrige no refresh** — foi exatamente o
+bug corrigido ao acrescentar os embeds aninhados ao SELECT da Next API. **Fornecedor e Plano de contas
+SÃO ordenáveis server-side** pelo recurso
+embutido, via sintaxe do PostgREST `alias(coluna)` no `order` — `sortKey: 'supplier(trade_name)'` e
+`'chart_account(account_description)'` (a coluna concatenada ordena pela **descrição do plano**). O
+**alias** é o mesmo do `SELECT_WITH_EMBEDS` (`supplier`/`chart_account`); usar o nome real da tabela
+(`financial_cost_center(...)`) é rejeitado pelo PostgREST (400). O `key` dessas colunas de embed no
+`ColumnDef` é sintético (`ColumnDef.key` é `keyof T | (string & {})`; o `accessorFn` só alimenta
+sort/filter client-side, que não usamos — a ordenação é sempre server-side). Ordem das colunas de
+`/consulta`: **… Tipo Pagamento → Plano de contas → Vencimento → Valor → NF → BOL → Situação → Extração**
+(`Extração` é a última; **não há mais colunas "Ações" nem "Centro de custo"**). `Extração` (badge
+`extraction_source`) aparece **só** no grid (removida do detalhe e do CSV). O **card de detalhe** de
+`/consulta` continua mostrando **Centro de custo e Plano de contas SEPARADOS** (via `fmtCostCenter`/
+`fmtChartAccount`, inalterados) — a concatenação é exclusiva do grid.
 A coluna **"Situação" ordena alfabeticamente pelo texto** (`sortKey: 'status'`), **não** por
 `status_id` (o ciclo de vida não é linear). **`ColumnDef` ganhou `wrap?`** (quebra de linha em vez de
-truncar — usado em Fornecedor/Centro de custo/Plano de contas) e **`minSize?`** (largura mínima por
+truncar — usado em Fornecedor/Plano de contas) e **`minSize?`** (largura mínima por
 tipo de dado, ~48–120px, respeitada no resize). `hideOn` (responsividade mobile/tablet) segue como o
 mecanismo de ocultação por breakpoint.
 `useIdleLogout.ts` e `useAuth` cobrem sessão (ver Autenticação).
@@ -1278,14 +1296,72 @@ por nome (RPC `financial_dup_by_name` / `_dup_by_name`) foi **removida** — "EF
 
 `extract_pdf.py` usa `_ns()` (strip de acentos + lowercase) para lookup em `_DOC_TYPE_NORM`.
 CHECK constraint em `financial_account_control.document_type` usa `lower()` (migrations 014,
-017, **024**, **026**, **043** e **062**). Tipos aceitos incluem: `boleto`, `cte`, `nfe`, `nfse`, `tributo`,
-`das`, `pix`, `seguro`, `fatura`, `recibo`, `contrato`, `honorários`, `container`, `multa`, `dare`, `outro`
+017, **024**, **026**, **043**, **062** e **066**). Tipos aceitos incluem: `boleto`, `cte`, `nfe`, `nfse`, `tributo`,
+`das`, `pix`, `seguro`, `fatura`, `recibo`, `contrato`, `honorários`, `container`, `multa`, `dare`, `cartório`, `outro`
 (DAS de Simples Nacional → `das`; PIX → `pix`; **`multa`** = multa/penalidade/juros avulsos, auto de
 infração; **`dare`** = Documento de Arrecadação de Receitas Estaduais, antes dobrado em `dae` — a
 migration 062 separou DAE=eSocial de DARE=estadual em `_DOC_TYPE_NORM`/`_BODY_DOC_KEYWORDS`).
 `container` = frete/demurrage/movimentação de
 contêineres (keyword de assunto + classificação no corpo e PDF; migration 026).
 `SKIP_ACCOUNT_TYPES = ['nfe', 'nfse']` — não geram conta a pagar.
+
+**Cartório (`cartório`) — pagamento de/em cartório (não regredir):** custas de
+tabelionato/registro/protesto. Classificado por **contexto no ASSUNTO ou no NOME DO
+FORNECEDOR** — a palavra `cartorio`/`cartório` (ou `tabelionato`/`tabeliao`), por palavra
+inteira sem acento (`_is_cartorio_context`, `read_emails.py`). `_apply_cartorio_doc_type`
+**só re-rotula tipos genéricos** (`boleto`/`outro`/`pix`), preservando guias/utilities/`cte`/
+`honorários` (um ITBI pago no cartório continua ITBI). Aplicado nos **dois caminhos**
+(`build_financial_payload` do PDF e `extract_from_email_body` do corpo), **abaixo** de
+utility/tax/transporte. `extract_pdf.py` também mapeia `cartorio`/`tabelionato` → `cartório`
+em `_DOC_TYPE_NORM` (caso o Claude emita o tipo direto). Keyword de assunto (`cartório`/
+`cartorio`/`tabelionato`) em `KEYWORDS_DEFAULT` **e** no `EMAIL_KEYWORDS` do `.env`. Caso de
+origem: id 400 ("PAGAMENTO CARTORIO ...", boleto real → re-rotulado `cartório`). A migration
+066 amplia o CHECK + faz backfill dos genéricos com contexto de cartório no assunto. Teste:
+`tests/test_doc_type_cartorio.py`.
+
+**Classificação contábil FORÇADA por tipo de documento (extração — não regredir):** certos
+documentos vão SEMPRE para uma conta contábil fixa, e parte deles **propaga** a classificação ao
+cadastro do fornecedor (write-back). Regras (só na extração de e-mail; o CRUD manual/modal segue com o
+write-back TS próprio):
+
+| Documento | `cost_center_id` | `chart_account_id` | Write-back no `supplier`? |
+|---|---|---|---|
+| **IRRF** | 3 (Fiscal) | 28 (IRRF a Recolher) | **Não** |
+| **DUIMP** ou **ICMS Importação** | 3 (Fiscal) | 11 (ICMS Importação a Recolher) | **Sim** |
+| **Transporte / transportadora / CT-e** | 4 (Logística) | 339 (Serviços de Transportadoras) | **Sim** |
+| **DAM / DUAM** | *(do plano `4.1.06`)* | *(do plano `4.1.06`)* | **Não** |
+| **GNRE de ICMS Substituição Tributária** | *(do plano `4.1.02`)* | *(do plano `4.1.02`)* | **Não** |
+
+**Estas regras SOBREPÕEM a classificação herdada do fornecedor** (o `cost_center_id`/`chart_account_id`
+que `_finalize_supplier` injeta a partir do `supplier`): a regra roda DEPOIS e sobrescreve o payload.
+Regra global: **nunca** gravar no `supplier` quando `sk_supplier = 1` (OTIMOTEX). Implementação em
+`read_emails.py`: constantes `CC_FISCAL`/`CC_LOGISTICA`/`CA_IRRF`/`CA_ICMS_IMPORT`/`CA_TRANSPORTADORAS`
+(ids reais dos cadastros — não usar magic number), detector puro `_detect_forced_classification(
+document_type, subject, *extra_texts)` (regras de id FIXO) e o wrapper
+`resolve_forced_classification(ctrl, document_type, subject, *extra_texts)` →
+`(cost_center_id, chart_account_id, write_back)`, aplicado por `apply_forced_classification(ctrl,
+payload, extra_text=None)`. **Regras RESOLVIDAS do plano de contas por código** (`_chart_code_for_document`
++ `SupabaseControl.classification_for_account_code(code)`, cacheado): usam o `cost_center_id` + o
+`chart_account_id` (PK) da própria linha do plano — **não hardcodar** os ids (se o cadastro for
+reclassificado, a regra acompanha; se o código não existir, não força e mantém o default do fornecedor):
+**DAM / DUAM** → código `4.1.06` (`DAM_DUAM_CHART_CODE`; hoje "ISS a Recolher", cc=3/id=42, por
+`document_type`); **GNRE de ICMS Substituição Tributária** → código `4.1.02`
+(`GNRE_ICMS_ST_CHART_CODE`; hoje "ICMS-ST a Recolher", cc=3/id=33) — exige `document_type='gnre'` **E** a
+frase EXPLÍCITA de ST no texto (`_ICMS_ST_PHRASES`: `substituição tributária`/`subst.tribut`/`icms st`…;
+GNRE só com código de receita/protocolo **não** casa — decisão do usuário). **Detecção** dos demais por
+ASSUNTO + DESCRIÇÃO do documento (+ corpo no caminho de corpo, via `extra_text`), palavra inteira sem
+acento (`_has_word`/`_ns_body`): `irrf`, `duimp` e as frases `_ICMS_IMPORT_PHRASES` (`icms importacao`…;
+**nunca** casa "icms" sozinho — ICMS/GNRE normal não cai aqui); transporte reusa `_is_transport_context`
+(cobre `document_type=='cte'` + termos NO ASSUNTO). Precedência: regras fixas (IRRF → DUIMP/ICMS →
+transporte) e, só se nenhuma casar, as por código (DAM/DUAM, GNRE-ST) — assim uma GNRE de ICMS
+**Importação** vai para 3/11 (regra fixa), não para 4.1.02. **Ponto de aplicação:** APÓS
+`_finalize_supplier` (que já setou `sk_supplier` + o default do fornecedor) e ANTES da gravação, nos dois
+caminhos (PDF em `extract_and_store_accounts`; corpo em `try_extract_from_body`, onde os clones de
+parcela herdam a classificação do payload base). **Write-back** via `SupabaseControl.
+update_supplier_classification(sk, cc, ca)` (PATCH `supplier`, best-effort — espelha o TS
+`setSupplierClassification`); nunca para `sk=1`. Backfill retroativo:
+`scripts/reprocess_classification_overrides.py` (`--dry-run`, reusa `resolve_forced_classification`).
+Testes: `tests/test_classification_overrides.py`.
 
 **CT-e / transporte: só o BOLETO gera conta; o CT-e fiscal é ignorado (não regredir):** o
 CT-e (Conhecimento de Transporte) é documento **fiscal**, não pagável — quem se paga é o
@@ -1775,11 +1851,14 @@ faturas SIEG em `ignorado`; o handler A1 (baixar o boleto real) segue como melho
 - **Fornecedor + classificação vêm de JOIN/embeds (migrations 040/041/042 + 047):**
   `financial_account_control` não guarda nome/CNPJ/CPF — só a FK `sk_supplier`.
   `getFinancialAccountControl` e `getAccountsByMessageId` usam o `SELECT_WITH_EMBEDS`:
-  `*,supplier(trade_name,legal_name,cnpj,cpf),cost_center:financial_cost_center(cost_center_code,cost_center_description),chart_account:financial_chart_of_account(account_code,account_description)`.
-  O grid exibe o fornecedor por **`trade_name`** apenas (sem fallback para `legal_name` no grid — o
-  card de detalhe e o CSV mantêm o nome completo), **Centro de
-  custo** e **Plano de contas** (`código — descrição`; id 0 → "—"); a coluna **CNPJ/CPF foi removida
-  do grid** (segue no detalhe). Lookups da Next API em `services/lookups.ts`. No **card de detalhe**
+  `*,supplier(trade_name,legal_name,cnpj,cpf),cost_center:financial_cost_center(cost_center_code,cost_center_description),chart_account:financial_chart_of_account(account_code,account_description,group:financial_chart_of_account_group(group_code,group_description),subgroup:financial_chart_of_account_subgroup(subgroup_code,subgroup_description))`.
+  O embed de `chart_account` traz a **hierarquia aninhada** (grupo/subgrupo) para a **célula
+  enriquecida "Plano de contas"** do grid (plano + grupo + subgrupo + centro de custo concatenados —
+  ver seção do `useGridColumns`). O grid exibe o fornecedor por **`trade_name`** apenas (sem fallback
+  para `legal_name` no grid — o card de detalhe e o CSV mantêm o nome completo) e **Plano de contas**
+  (concatenado); a coluna **CNPJ/CPF** e a **coluna "Centro de custo"** foram **removidas do grid** (a
+  primeira segue no detalhe; o centro de custo agora aparece dentro da célula de plano de contas).
+  Lookups da Next API em `services/lookups.ts`. No **card de detalhe**
   de `/consulta`, o campo **Fornecedor** exibe `sk_supplier - nome` (helper `fmtSupplier`; fallback
   só o id quando o JOIN não traz nome) — o cabeçalho do painel, a coluna do grid e o CSV seguem só
   com o nome.
@@ -1927,9 +2006,13 @@ local/agendada (ver flag `EMAIL_READER_ENABLED` acima e memória [[vercel-deploy
 ## Banco de dados (Supabase)
 
 Migrations em `supabase/migrations/`, aplicadas **manualmente no SQL Editor** em ordem
-numérica (`001` → `064`). Não há migration automática. (As `059`/`060`/`061`/`063`/`064` foram
+numérica (`001` → `066`). Não há migration automática. (As `059`/`060`/`061`/`063`/`064`/`066` foram
 aplicadas **direto via Supabase MCP** nesta máquina — o arquivo numerado serve de histórico; **não
-reaplicar** no SQL Editor (todas idempotentes, mas evite re-run). A `064` adiciona
+reaplicar** no SQL Editor (todas idempotentes, mas evite re-run). A `066` amplia o CHECK de
+`financial_account_control.document_type` com **`cartório`** (pagamento de/em cartório) + backfill dos
+genéricos com contexto de cartório no assunto (id 400) — ver "Normalização de `document_type`"; ocupou
+o nº que o roadmap de RBAC estimava (066–068), que desloca para 067+ quando for implementado. A `065`
+cria **`public.user_profile`** (vínculo usuário→grupo por FK — ver "Grupos de usuário"). A `064` adiciona
 `financial_account_control.additional_info` TEXT (nullable) — texto livre do usuário no cadastro
 de contas, exibido no card de detalhe de `/consulta`; ver "CRUD de contas". A `063` cria o catálogo
 **`public.user_group`** (fundação de permissões por grupo — id 0 sentinela + RLS read
