@@ -135,6 +135,9 @@ KEYWORDS_DEFAULT = [
     "honorário", "honorários", "honorario", "honorarios",
     # Container (frete/demurrage/movimentação de contêineres)
     "container", "conteiner", "contêiner",
+    # Cartório (custas de tabelionato/registro/protesto) — casa por substring (termo
+    # distintivo, não colide com palavras comuns).
+    "cartório", "cartorio", "tabelionato",
 ]
 
 LOG_COLUMNS = [
@@ -550,6 +553,64 @@ class SupabaseControl:
         except Exception as e:
             log.error(f"Falha ao atualizar conta {record_id}: {e}")
             return False
+
+    def update_supplier_classification(self, sk_supplier, cost_center_id, chart_account_id) -> bool:
+        """Write-back da classificacao contabil no cadastro do fornecedor (PATCH supplier).
+        Equivalente Python do TS setSupplierClassification. Best-effort: falha NAO derruba a
+        gravacao da conta. O chamador (apply_forced_classification) ja garante a excecao da
+        OTIMOTEX (sk=1); aqui so validamos disponibilidade e sk."""
+        if not self._available or not sk_supplier:
+            return False
+        try:
+            data = json.dumps({
+                "cost_center_id":  int(cost_center_id),
+                "chart_account_id": int(chart_account_id),
+            }).encode()
+            req = urllib.request.Request(
+                f"{self.base}/rest/v1/supplier?sk_supplier=eq.{int(sk_supplier)}",
+                data=data,
+                headers={**self.headers, "Prefer": "return=minimal"},
+                method="PATCH",
+            )
+            urllib.request.urlopen(req, timeout=10)
+            return True
+        except urllib.error.HTTPError as e:
+            log.warning(f"Falha no write-back de classificacao do fornecedor {sk_supplier}: "
+                        f"{e.code} {e.read().decode(errors='replace')[:150]}")
+            return False
+        except Exception as e:
+            log.warning(f"Falha no write-back de classificacao do fornecedor {sk_supplier}: {e}")
+            return False
+
+    def classification_for_account_code(self, account_code: str) -> tuple[int, int]:
+        """Resolve (cost_center_id, chart_account_id) da linha de financial_chart_of_account
+        com o `account_code` informado (regra DAM/DUAM: classificacao vem do plano 4.1.06).
+        Retorna a classificacao PROPRIA daquela linha (seu cost_center_id + seu chart_account_id,
+        que e a PK/id do plano). (0, 0) quando indisponivel/ausente. Cacheado por codigo."""
+        cache = getattr(self, "_chart_code_cache", None)
+        if cache is None:
+            cache = self._chart_code_cache = {}
+        if account_code in cache:
+            return cache[account_code]
+
+        result = (0, 0)
+        if self._available:
+            try:
+                code = urllib.parse.quote(account_code, safe="")
+                req = urllib.request.Request(
+                    f"{self.base}/rest/v1/financial_chart_of_account"
+                    f"?account_code=eq.{code}&select=chart_account_id,cost_center_id&limit=1",
+                    headers=self.headers,
+                )
+                rows = json.loads(urllib.request.urlopen(req, timeout=10).read())
+                if rows:
+                    row = rows[0]
+                    result = (int(row.get("cost_center_id") or 0),
+                              int(row.get("chart_account_id") or 0))
+            except Exception as e:
+                log.warning(f"Falha ao resolver classificacao do plano {account_code!r}: {e}")
+        cache[account_code] = result
+        return result
 
     def load_known_ids(self) -> set:
         """Carrega todos os message_id de email_control em um set local.
@@ -1048,6 +1109,12 @@ def build_financial_payload(row: dict, gmail_message_id: str,
         payload.get("document_type"), subject, payload.get("supplier_name"),
         payload.get("barcode"))
 
+    # Cartório (contexto "cartorio" no assunto/fornecedor) → document_type='cartório'.
+    # Abaixo de utility/tax/transporte; só re-rotula tipos genéricos. Antes do nº
+    # sintético para o prefixo usar 'cartório'.
+    payload["document_type"] = _apply_cartorio_doc_type(
+        payload.get("document_type"), subject, payload.get("supplier_name"))
+
     # Nº documento em branco → sintético (PIX: valor; demais: tipo+vencimento) — mesma regra do corpo.
     if not payload.get("invoice_number"):
         synthetic = _synthetic_invoice_number(
@@ -1485,6 +1552,169 @@ def _apply_transport_boleto_doc_type(document_type: str | None, subject: str | N
     return document_type
 
 
+# ---------------------------------------------------------------------------
+# Cartorio — pagamento DE/EM cartorio (custas de tabelionato/registro/protesto).
+# Um boleto/custa de cartorio e rotulado document_type='cartório'. Sinal: a palavra
+# "cartorio" (ou tabelionato/tabeliao) no ASSUNTO ou no NOME DO FORNECEDOR — nao no
+# corpo livre (mesma cautela do transporte: casar no corpo geraria falso positivo,
+# ex.: "reconhecer firma em cartorio" num e-mail de outra cobranca).
+# ---------------------------------------------------------------------------
+_CARTORIO_TERMS = ("cartorio", "tabelionato", "tabeliao")
+
+# Tipos "genericos" cujo rotulo pode virar 'cartório'. NAO inclui guias/utilities/cte/
+# honorarios: um ITBI pago no cartorio continua ITBI (o rotulo cartorio so vale para a
+# custa generica que chega como boleto/outro/pix).
+_CARTORIO_RELABELABLE_TYPES = ("boleto", "outro", "pix", "")
+
+
+def _is_cartorio_context(subject: str | None, supplier_name: str | None) -> bool:
+    """True se o e-mail/documento e de CARTORIO: palavra "cartorio" (ou tabelionato/
+    tabeliao) no assunto OU no nome do fornecedor. Palavra inteira, sem acento
+    (_has_word/_ns_body) — evita casar dentro de outra palavra."""
+    for text in (subject, supplier_name):
+        if text and any(_has_word(_ns_body(text), t) for t in _CARTORIO_TERMS):
+            return True
+    return False
+
+
+def _apply_cartorio_doc_type(document_type: str | None, subject: str | None,
+                             supplier_name: str | None) -> str | None:
+    """Rotula como document_type='cartório' um pagamento de cartorio (contexto
+    "cartorio" no assunto/fornecedor). So relabela tipos genericos
+    (_CARTORIO_RELABELABLE_TYPES) — guias/utilities/cte/honorarios sao preservadas.
+    Idempotente ('cartório' ja nao esta no set de relabelaveis)."""
+    if (document_type or "").strip().lower() not in _CARTORIO_RELABELABLE_TYPES:
+        return document_type
+    if _is_cartorio_context(subject, supplier_name):
+        return "cartório"
+    return document_type
+
+
+# ---------------------------------------------------------------------------
+# Classificacao contabil FORCADA por tipo/contexto de documento (regra de negocio,
+# so na extracao de e-mail). Alguns documentos vao SEMPRE para uma conta contabil fixa,
+# independentemente do default do fornecedor; parte deles tambem propaga a classificacao
+# ao supplier (write-back). Ver "Classificacao contabil forcada" no CLAUDE.md.
+# ---------------------------------------------------------------------------
+# Centros de custo / planos de conta alvo (ids reais dos cadastros — nao usar magic number).
+CC_FISCAL          = 3    # financial_cost_center: FIS — Fiscal
+CC_LOGISTICA       = 4    # financial_cost_center: LOG — Logistica
+CA_IRRF            = 28   # financial_chart_of_account: 4.2.03 — IRRF a Recolher
+CA_ICMS_IMPORT     = 11   # financial_chart_of_account: 4.3.05 — ICMS Importacao a Recolher
+CA_TRANSPORTADORAS = 339  # financial_chart_of_account: 48.2.01 — Servicos de Transportadoras
+
+# Regras cuja classificacao NAO e fixa — e RESOLVIDA da linha do plano de contas por um
+# CODIGO (cost_center_id + chart_account_id da propria linha). Nenhuma propaga ao supplier.
+#   - DAM / DUAM  -> plano 4.1.06 ("extraidos da tabela ... do codigo 4.1.06").
+#   - GNRE de ICMS Substituicao Tributaria (frase explicita) -> plano 4.1.02.
+DAM_DUAM_DOC_TYPE       = "dam / duam"
+DAM_DUAM_CHART_CODE     = "4.1.06"
+GNRE_DOC_TYPE           = "gnre"
+GNRE_ICMS_ST_CHART_CODE = "4.1.02"
+
+# ICMS Substituicao Tributaria — frases EXPLICITAS (sem acento, substring). So GNRE com esse
+# sinal vira 4.1.02; GNRE so com codigo de receita/protocolo NAO casa (decisao do usuario).
+# "subst.tribut"/"subst tribut" cobrem a forma abreviada dos documentos ("ICMS SUBST.TRIBUT").
+_ICMS_ST_PHRASES = ("substituicao tributaria", "subst.tribut", "subst tribut",
+                    "subst. tribut", "icms st", "icms-st", "icms substituicao")
+
+# ICMS de importacao — frases (sem acento, substring). NUNCA casar "icms" sozinho: ICMS/GNRE
+# normal nao deve cair aqui — exige o par icms+importacao.
+_ICMS_IMPORT_PHRASES = ("icms importacao", "icms de importacao",
+                        "icms na importacao", "importacao icms")
+
+
+def _detect_forced_classification(document_type: str | None, subject: str | None,
+                                  *extra_texts: str | None) -> tuple[int, int, bool] | None:
+    """Detecta a classificacao contabil FORCADA a partir do tipo/contexto do documento.
+
+    Retorna (cost_center_id, chart_account_id, write_back_supplier) ou None. O
+    `write_back_supplier` indica se a mesma classificacao deve ser gravada no cadastro do
+    fornecedor. Precedencia: IRRF -> DUIMP/ICMS -> transporte.
+
+    - **IRRF / DUIMP / ICMS Importacao**: termos DISTINTIVOS — escaneados em assunto +
+      `extra_texts` (descricao do documento + corpo). Palavra inteira sem acento
+      (`_has_word`/`_ns_body`); ICMS importacao por FRASE (nunca "icms" sozinho).
+    - **Transporte**: reusa `_is_transport_context(subject, None, document_type)` — cobre
+      `document_type=='cte'` E termos de transporte NO ASSUNTO apenas. NAO escaneia a
+      descricao/corpo livre (mesma cautela de `_apply_transport_boleto_doc_type`: "transporte"/
+      "frete" solto no corpo geraria falso positivo). O boleto de transporte ja chega 'cte'.
+    """
+    blob = " ".join(_ns_body(t) for t in (subject, *extra_texts) if t)
+    # IRRF (imposto de renda retido) -> Fiscal / IRRF a Recolher. NAO propaga ao supplier
+    # (e imposto do documento, nao a classificacao normal do fornecedor).
+    if _has_word(blob, "irrf"):
+        return (CC_FISCAL, CA_IRRF, False)
+    # DUIMP ou ICMS Importacao -> Fiscal / ICMS Importacao a Recolher. Propaga ao supplier.
+    if _has_word(blob, "duimp") or any(p in blob for p in _ICMS_IMPORT_PHRASES):
+        return (CC_FISCAL, CA_ICMS_IMPORT, True)
+    # Transporte/transportadora/CT-e -> Logistica / Servicos de Transportadoras. Propaga ao
+    # supplier. So assunto + document_type (NAO a descricao/corpo — evita falso positivo).
+    if _is_transport_context(subject, None, document_type):
+        return (CC_LOGISTICA, CA_TRANSPORTADORAS, True)
+    return None
+
+
+def _chart_code_for_document(document_type: str | None, blob: str) -> str | None:
+    """account_code cuja classificacao deve ser FORCADA (regras RESOLVIDAS do plano de
+    contas, sem write-back), ou None. `blob` = assunto+descricao+corpo ja normalizado.
+      - DAM / DUAM -> 4.1.06 (por document_type).
+      - GNRE de ICMS Substituicao Tributaria (frase explicita no texto) -> 4.1.02."""
+    dt = (document_type or "").strip().lower()
+    if dt == DAM_DUAM_DOC_TYPE:
+        return DAM_DUAM_CHART_CODE
+    if dt == GNRE_DOC_TYPE and any(p in blob for p in _ICMS_ST_PHRASES):
+        return GNRE_ICMS_ST_CHART_CODE
+    return None
+
+
+def resolve_forced_classification(ctrl, document_type: str | None, subject: str | None,
+                                  *extra_texts: str | None) -> tuple[int, int, bool] | None:
+    """Classificacao contabil FORCADA COMPLETA (retorna (cc, ca, write_back) ou None).
+
+    Junta as regras de id FIXO (`_detect_forced_classification`: IRRF/DUIMP/ICMS/transporte)
+    com as regras RESOLVIDAS do plano de contas por codigo (`_chart_code_for_document`:
+    DAM/DUAM -> 4.1.06; GNRE de ICMS Substituicao Tributaria -> 4.1.02), que usam o
+    cost_center_id + chart_account_id da propria linha do plano. As regras fixas tem
+    precedencia; as por codigo so entram quando nenhuma fixa casa e nao propagam ao supplier
+    (write_back=False). Se o codigo nao existir no cadastro, nao forca (None)."""
+    fixed = _detect_forced_classification(document_type, subject, *extra_texts)
+    if fixed:
+        return fixed
+    blob = " ".join(_ns_body(t) for t in (subject, *extra_texts) if t)
+    code = _chart_code_for_document(document_type, blob)
+    if code:
+        cost_center_id, chart_account_id = ctrl.classification_for_account_code(code)
+        if cost_center_id or chart_account_id:
+            return (cost_center_id, chart_account_id, False)
+    return None
+
+
+def apply_forced_classification(ctrl, payload: dict, extra_text: str | None = None) -> None:
+    """Aplica as regras de classificacao FORCADA (extracao de e-mail): forca
+    cost_center_id/chart_account_id na conta por tipo de documento e, quando a regra pede,
+    grava a mesma classificacao no supplier (write-back).
+
+    Deve rodar APOS _finalize_supplier (que ja setou sk_supplier + o default do fornecedor)
+    e ANTES da gravacao — a classificacao forcada SOBREPOE o default do fornecedor. Textos
+    escaneados: assunto + descricao do documento (extraida) + `extra_text` (o corpo do e-mail
+    no caminho de corpo). Write-back nunca ocorre para a OTIMOTEX (sk_supplier=1)."""
+    override = resolve_forced_classification(
+        ctrl, payload.get("document_type"),
+        payload.get("subject"), payload.get("description"), extra_text,
+    )
+    if not override:
+        return
+    cost_center_id, chart_account_id, write_back = override
+    payload["cost_center_id"] = cost_center_id
+    payload["chart_account_id"] = chart_account_id
+
+    sk_supplier = payload.get("sk_supplier")
+    # Write-back so quando a regra pede E o fornecedor nao e a OTIMOTEX (sk=1). Best-effort.
+    if write_back and sk_supplier and sk_supplier != OTIMOTEX_SK_SUPPLIER:
+        ctrl.update_supplier_classification(sk_supplier, cost_center_id, chart_account_id)
+
+
 # Acronimos/frases de GUIA TRIBUTARIA no ASSUNTO -> document_type canonico (lowercase,
 # como no CHECK do banco e no enum @sheild/shared). O ASSUNTO e o sinal MAIS confiavel
 # do tipo de guia: quem encaminha o pagamento digita o tipo certo ("PAGAMENTO DARE -
@@ -1827,6 +2057,10 @@ def extract_from_email_body(body_text: str, received_at: str, message_id: str,
     # PDF; roda depois do override de boleto (o boleto ja foi identificado acima).
     document_type = _apply_transport_boleto_doc_type(
         document_type, subject, supplier_name, barcode)
+
+    # Cartório (contexto "cartorio" no assunto/fornecedor) → document_type='cartório'.
+    # Mesma regra do caminho de PDF; só re-rotula tipos genéricos.
+    document_type = _apply_cartorio_doc_type(document_type, subject, supplier_name)
 
     # Numero de documento: valor encontrado no corpo ou sintetico
     # (PIX: 'PIX_' + valor; demais: tipo+ddmmyy do vencimento/emissao).
@@ -2541,6 +2775,11 @@ def extract_and_store_accounts(saved_pdfs: list, message_id: str,
             acc_index += 1
             continue
 
+        # Classificacao contabil FORCADA por tipo de documento (IRRF/DUIMP/ICMS Importacao/
+        # transporte) — sobrepoe o default do fornecedor e, quando a regra pede, faz write-back
+        # no supplier (exceto OTIMOTEX). Roda apos finalize (sk/cc/ca ja setados), antes da dedup.
+        apply_forced_classification(ctrl, payload)
+
         # Dedup de conteudo: o mesmo documento ja gravado por outro e-mail
         # (remetente reenvia o mesmo boleto/guia, com Message-ID diferente).
         # Reemissao com vencimento mais novo (mesma guia) → ATUALIZA a conta
@@ -2657,6 +2896,12 @@ def try_extract_from_body(email_rec: dict, body_text: str, received_at: str,
     if not _finalize_supplier(ctrl, payload):
         email_rec["notes"] = "Falha ao resolver fornecedor do corpo do e-mail"
         return BODY_NONE
+
+    # Classificacao contabil FORCADA por tipo de documento (IRRF/DUIMP/ICMS Importacao/
+    # transporte). Passa o corpo (body_text) como texto extra alem de assunto/descricao.
+    # Roda no payload base, ANTES do bloco de parcelas — os clones herdam cost_center_id/
+    # chart_account_id.
+    apply_forced_classification(ctrl, payload, extra_text=body_text)
 
     # MÚLTIPLOS boletos no corpo (tabela de parcelas com documentos/vencimentos
     # diferentes): cria UMA conta por boleto — NUNCA uma conta somada com o total

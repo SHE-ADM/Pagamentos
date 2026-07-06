@@ -301,6 +301,11 @@ _DOC_TYPE_NORM = {
     # Multa / penalidade avulsa (auto de infracao, juros/multa isolados).
     _ns("multa"):           "multa",
     _ns("penalidade"):      "multa",
+    # Cartorio — custas de tabelionato/registro/protesto. _ns() remove o acento na
+    # CHAVE; o VALOR "cartório" (com acento) sobrevive ao .lower() de _normalize_doc_type
+    # e casa o CHECK/enum.
+    _ns("cartorio"):        "cartório",
+    _ns("tabelionato"):     "cartório",
 }
 
 def _normalize_doc_type(raw: str) -> str:
