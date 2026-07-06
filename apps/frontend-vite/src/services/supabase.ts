@@ -189,7 +189,11 @@ export async function getEmailStats(): Promise<EmailStats> {
 const SELECT_WITH_EMBEDS =
   '*,supplier(trade_name,legal_name,cnpj,cpf),' +
   'cost_center:financial_cost_center(cost_center_code,cost_center_description),' +
-  'chart_account:financial_chart_of_account(account_code,account_description)';
+  // Plano de contas + sua hierarquia (grupo/subgrupo, embeds aninhados) — a célula
+  // "Plano de contas" do grid concatena plano + grupo + subgrupo + centro de custo.
+  'chart_account:financial_chart_of_account(account_code,account_description,' +
+  'group:financial_chart_of_account_group(group_code,group_description),' +
+  'subgroup:financial_chart_of_account_subgroup(subgroup_code,subgroup_description))';
 
 interface FinancialAccountControlFilters {
   supplier?: string;

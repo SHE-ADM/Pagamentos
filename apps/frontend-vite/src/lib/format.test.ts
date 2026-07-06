@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { fmtDate, fmtDateTime, fmtMoney, fmtCnpj, fmtCpf, fmtCostCenter, fmtChartAccount } from './format';
+import { fmtDate, fmtDateTime, fmtMoney, fmtCnpj, fmtCpf, fmtCostCenter, fmtChartAccount, fmtChartAccountFull } from './format';
 import type { FinancialAccountControl } from '@sheild/shared';
 
 describe('format', () => {
@@ -45,5 +45,35 @@ describe('format', () => {
     } as unknown as FinancialAccountControl;
     expect(fmtCostCenter(withEmbed)).toBe('CC1 — Administrativo');
     expect(fmtChartAccount(withEmbed)).toBe('1.1 — Caixa');
+  });
+
+  it('fmtChartAccountFull: concatena plano + grupo + subgrupo + centro de custo (partes ausentes omitidas)', () => {
+    const full = {
+      cost_center_id: 5,
+      cost_center: { cost_center_code: 'CC1', cost_center_description: 'Administrativo' },
+      chart_account_id: 10,
+      chart_account: {
+        account_code: '1.1.01',
+        account_description: 'Fornecedores',
+        group: { group_code: '1', group_description: 'Passivo' },
+        subgroup: { subgroup_code: '1.1', subgroup_description: 'Circulante' },
+      },
+    } as unknown as FinancialAccountControl;
+    expect(fmtChartAccountFull(full)).toBe(
+      '1.1.01 — Fornecedores · 1 — Passivo · 1.1 — Circulante · CC1 — Administrativo',
+    );
+
+    // Sem plano nem centro (id 0) → '—'.
+    const none = { cost_center_id: 0, chart_account_id: 0 } as unknown as FinancialAccountControl;
+    expect(fmtChartAccountFull(none)).toBe('—');
+
+    // Plano sem grupo/subgrupo (embeds ausentes) + centro presente → só as partes existentes.
+    const partial = {
+      cost_center_id: 5,
+      cost_center: { cost_center_code: 'CC1', cost_center_description: 'Administrativo' },
+      chart_account_id: 10,
+      chart_account: { account_code: '1.1', account_description: 'Caixa' },
+    } as unknown as FinancialAccountControl;
+    expect(fmtChartAccountFull(partial)).toBe('1.1 — Caixa · CC1 — Administrativo');
   });
 });

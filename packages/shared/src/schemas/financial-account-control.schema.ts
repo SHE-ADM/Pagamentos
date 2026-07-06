@@ -1,4 +1,6 @@
 import { z } from 'zod';
+import { chartAccountGroupEmbeddedSchema } from './chart-account-group.schema';
+import { chartAccountSubgroupEmbeddedSchema } from './chart-account-subgroup.schema';
 
 // Schema da tabela `financial_account_control` — controle central de contas a
 // pagar. Uma linha por documento financeiro, alimentada por duas origens:
@@ -38,6 +40,9 @@ export const DOCUMENT_TYPES = [
   'pix',
   'honorários',
   'container',
+  // Cartório — pagamento de/em cartório (custas de tabelionato/registro/protesto);
+  // classificado pelo contexto "cartório"/"cartorio" no assunto/fornecedor (migration 066).
+  'cartório',
   // Contas de concessionária — classificadas por frase do assunto/corpo (migration 043).
   'conta de água',
   'conta de luz',
@@ -120,9 +125,16 @@ export const costCenterEmbeddedSchema = z.object({
   cost_center_description: z.string().nullable(),
 }).nullable();
 
+// Plano de contas embutido + sua HIERARQUIA (grupo/subgrupo, embeds aninhados) —
+// exibida concatenada na célula "Plano de contas" do grid de /consulta. Os embeds de
+// grupo/subgrupo reusam os schemas dos cadastros (chart-account-group/-subgroup) para
+// não divergir. group via a FK direta chart_account_group_id (migration 058); subgroup
+// via chart_account_subgroup_id.
 export const chartAccountEmbeddedSchema = z.object({
   account_code: z.string().nullable(),
   account_description: z.string().nullable(),
+  group: chartAccountGroupEmbeddedSchema.optional(),
+  subgroup: chartAccountSubgroupEmbeddedSchema.optional(),
 }).nullable();
 
 export type CostCenterEmbedded = z.infer<typeof costCenterEmbeddedSchema>;

@@ -23,10 +23,18 @@ const TABLE = 'financial_account_control';
 const SUPPLIER_TABLE = 'supplier';
 // Recursos embutidos: fornecedor (nome/CNPJ/CPF) + classificação contábil (centro
 // de custo / plano de contas) vêm de JOINs — não há colunas próprias para exibição.
+// IMPORTANTE — manter em SINCRONIA com o `SELECT_WITH_EMBEDS` do frontend
+// (apps/frontend-vite/src/services/supabase.ts): a célula "Plano de contas" do grid de
+// /consulta concatena plano + grupo + subgrupo + centro de custo, e a resposta de
+// escrita (POST/PATCH) desta API é mesclada IN-PLACE no grid (sem refetch). Se este
+// SELECT não trouxer a hierarquia aninhada (group/subgroup), a célula fica parcial até
+// um refresh da página. Por isso o embed de chart_account inclui group + subgroup.
 const SELECT_WITH_SUPPLIER =
   '*,supplier(trade_name,legal_name,cnpj,cpf),' +
   'cost_center:financial_cost_center(cost_center_code,cost_center_description),' +
-  'chart_account:financial_chart_of_account(account_code,account_description)';
+  'chart_account:financial_chart_of_account(account_code,account_description,' +
+  'group:financial_chart_of_account_group(group_code,group_description),' +
+  'subgroup:financial_chart_of_account_subgroup(subgroup_code,subgroup_description))';
 const DEFAULT_LIMIT = 20;
 const MAX_LIMIT = 100;
 
