@@ -86,10 +86,10 @@ interface DataGridProps<T> {
   enableSelection?: boolean;
   /** Ação da barra de seleção — recebe as linhas selecionadas (ex.: exportar CSV). */
   onExportSelected?: (rows: T[]) => void;
-  /** Opções de status para ação em lote — exibe select + botão "Aplicar" na barra de seleção. */
-  bulkStatusOptions?: readonly { value: string; label: string }[];
-  /** Callback disparado ao aplicar status em lote — recebe as linhas selecionadas e o novo status. */
-  onBulkStatusChange?: (rows: T[], status: string) => Promise<void>;
+  /** Opções de situação para ação em lote (value = status_id) — select + "Aplicar" na barra. */
+  bulkStatusOptions?: readonly { value: number; label: string }[];
+  /** Callback disparado ao aplicar situação em lote — linhas selecionadas + o novo status_id. */
+  onBulkStatusChange?: (rows: T[], statusId: number) => Promise<void>;
   /**
    * Ações customizadas na barra de seleção (ex.: botão "Reenviar e-mails"). Recebe as
    * linhas selecionadas e uma função para limpar a seleção. Compõe com `bulkStatusOptions`.
@@ -313,7 +313,7 @@ export default function DataGrid<T>({
 }: Readonly<DataGridProps<T>>) {
   const { ref: viewportRef, breakpoint } = useContainerBreakpoint<HTMLDivElement>();
   const [rowSelection, setRowSelection] = useState<Record<string, boolean>>({});
-  const [bulkStatus, setBulkStatus] = useState('');
+  const [bulkStatus, setBulkStatus] = useState<number | ''>('');
   const [applyingBulk, setApplyingBulk] = useState(false);
   // Altura medida do viewport rolável — 0 sem layout real (jsdom/testes) → desliga a
   // virtualização e renderiza tudo (fallback que mantém os testes verdes).
@@ -837,8 +837,8 @@ export default function DataGrid<T>({
                 {bulkStatusOptions && onBulkStatusChange && (
                   <>
                     <select
-                      value={bulkStatus}
-                      onChange={(e) => setBulkStatus(e.target.value)}
+                      value={bulkStatus === '' ? '' : String(bulkStatus)}
+                      onChange={(e) => setBulkStatus(e.target.value ? Number(e.target.value) : '')}
                       aria-label="Selecionar nova situação"
                       className="h-7 rounded-sm border border-brand/30 bg-white px-2 text-xs text-slate-700 focus:outline-hidden focus:ring-1 focus:ring-brand"
                     >
@@ -849,8 +849,9 @@ export default function DataGrid<T>({
                     </select>
                     <button
                       type="button"
-                      disabled={!bulkStatus || applyingBulk}
+                      disabled={bulkStatus === '' || applyingBulk}
                       onClick={async () => {
+                        if (bulkStatus === '') return;
                         // Trava durante o await — evita duplo clique disparar dois PATCH.
                         setApplyingBulk(true);
                         try {

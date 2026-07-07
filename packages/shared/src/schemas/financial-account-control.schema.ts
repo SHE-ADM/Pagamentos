@@ -99,6 +99,36 @@ export const extractionSourceSchema = z.enum(EXTRACTION_SOURCES);
 export const paymentMethodSchema = z.enum(PAYMENT_METHODS);
 export const accountStatusSchema = z.enum(ACCOUNT_STATUSES);
 
+// IDs da dimensão `status` (= financial_account_control.status_id). status_id é a
+// FONTE ÚNICA da situação; estes ids nomeados evitam magic number em filtros/KPIs
+// (ex.: excluir cancelado = status_id != STATUS_ID_CANCELADO). Espelham a tabela
+// `status` (nomes em ACCOUNT_STATUSES).
+export const STATUS_IDS = {
+  pendente: 1,
+  vencido: 2,
+  'a vencer': 3,
+  prorrogado: 4,
+  baixado: 5,
+  protestado: 6,
+  cartório: 7,
+  pago: 8,
+  cancelado: 9,
+  falha: 10,
+} as const satisfies Record<(typeof ACCOUNT_STATUSES)[number], number>;
+
+export const STATUS_ID_A_VENCER = STATUS_IDS['a vencer']; // 3 — default da conta
+export const STATUS_ID_VENCIDO = STATUS_IDS.vencido; // 2
+export const STATUS_ID_PAGO = STATUS_IDS.pago; // 8
+export const STATUS_ID_CANCELADO = STATUS_IDS.cancelado; // 9
+
+// Nome da situação por id (id→nome) — para exibir/mapear quando só se tem o id.
+export const STATUS_NAME_BY_ID: Record<number, (typeof ACCOUNT_STATUSES)[number]> =
+  Object.fromEntries(
+    (Object.entries(STATUS_IDS) as [(typeof ACCOUNT_STATUSES)[number], number][]).map(
+      ([name, id]) => [id, name],
+    ),
+  );
+
 // Valor monetário: aceita number ou string numérica vinda da REST.
 const money = z.coerce.number();
 
@@ -139,6 +169,19 @@ export const chartAccountEmbeddedSchema = z.object({
 
 export type CostCenterEmbedded = z.infer<typeof costCenterEmbeddedSchema>;
 export type ChartAccountEmbedded = z.infer<typeof chartAccountEmbeddedSchema>;
+
+// ── Dimensão `status` embutida (JOIN via status_id) ─────────────────────────
+// Retornada pelo PostgREST quando o select inclui o alias status_dim:status(...).
+// FONTE do NOME da situação para exibição — o texto vem da dimensão, não da linha
+// (a coluna `status` texto está sendo removida; status_id é a fonte única).
+export const statusDimEmbeddedSchema = z
+  .object({
+    status_name: z.string(),
+    status_short_name: z.string().nullable(),
+  })
+  .nullable();
+
+export type StatusDimEmbedded = z.infer<typeof statusDimEmbeddedSchema>;
 
 // ── Linha completa (leitura) ────────────────────────────────────────────────
 
@@ -192,10 +235,13 @@ export const financialAccountControlSchema = z.object({
   other_additions: money.default(0),
   amount_charged: money.default(0),
 
-  // Situação/ciclo de vida (coluna única — migration 034)
+  // Situação/ciclo de vida. FONTE ÚNICA = status_id (FK → dimensão `status`), NOT NULL
+  // DEFAULT 3 ('a vencer') — migration 067. A coluna `status` (texto) está em remoção
+  // faseada (mantida por ora, sincronizada pela trigger); o NOME de exibição vem do
+  // embed status_dim, não desta coluna.
+  status_id: z.number().int(),
+  // DEPRECATED (remoção faseada — FASE 3): texto redundante, ainda presente no banco.
   status: accountStatusSchema.default('pendente'),
-  // FK para a dimensão `status` — resolvido pela trigger a partir de `status` (035)
-  status_id: z.number().int().nullable(),
 
   // Flags de curadoria manual (checkbox em /consulta — migration 033).
   // NOT NULL DEFAULT FALSE no banco; editados pelo usuário, não pelo pipeline.
@@ -230,6 +276,10 @@ export const financialAccountControlSchema = z.object({
   // cost_center:financial_cost_center(...) / chart_account:financial_chart_of_account(...).
   cost_center: costCenterEmbeddedSchema.optional(),
   chart_account: chartAccountEmbeddedSchema.optional(),
+
+  // Dimensão `status` embutida — presente quando o select inclui status_dim:status(...).
+  // Fonte do nome da situação para exibição (badge/CSV/detalhe).
+  status_dim: statusDimEmbeddedSchema.optional(),
 });
 
 // ── Entrada (gravação pelo pipeline/API) ────────────────────────────────────
@@ -242,12 +292,16 @@ export const financialAccountControlSchema = z.object({
 export const financialAccountControlInputSchema = financialAccountControlSchema.omit({
   id: true,
   company_id: true,
-  status_id: true,
+  // FASE 2: a escrita da situação é por `status_id` (a trigger id-primária deriva o texto).
+  // O `status` texto sai do input (nenhum escritor o envia); `status_id` PERMANECE (é a
+  // entrada de escrita da situação — ex.: baixa/cancelamento via PATCH).
+  status: true,
   created_at: true,
   updated_at: true,
   supplier: true,
   cost_center: true,
   chart_account: true,
+  status_dim: true,
 });
 
 // ── Criação manual (CRUD — POST /api/contas) ─────────────────────────────────
@@ -255,12 +309,12 @@ export const financialAccountControlInputSchema = financialAccountControlSchema.
 // não cria conta — ver read_emails). Já a criação manual via API EXIGE fornecedor
 // (sk_supplier) e valor positivo; os demais campos são OPCIONAIS (o banco aplica
 // DEFAULT/NULL nas colunas omitidas), para um formulário de lançamento rápido.
-// `status` é OMITIDO: a conta sempre nasce no default do banco ('pendente') e a
-// trigger fn_set_status_from_due_date assume 'a vencer'/'vencido' — o cliente não
-// pode criar uma conta já em estado fechado (pago/cancelado/baixado). A baixa/edição
-// de situação é feita depois via PATCH (financialAccountControlUpdateSchema).
+// `status_id` é OMITIDO: a conta sempre nasce no default do banco (3 = 'a vencer') e a
+// trigger fn_set_status_from_due_date assume 'a vencer'/'vencido' por vencimento — o
+// cliente não pode criar uma conta já em estado fechado (pago/cancelado/baixado). A
+// baixa/edição de situação é feita depois via PATCH (financialAccountControlUpdateSchema).
 export const financialAccountControlCreateSchema = financialAccountControlInputSchema
-  .omit({ status: true })
+  .omit({ status_id: true })
   .partial()
   .extend({
     sk_supplier: z.number().int(),
@@ -268,7 +322,8 @@ export const financialAccountControlCreateSchema = financialAccountControlInputS
   });
 
 // ── Atualização parcial (PATCH /api/contas/:id) ──────────────────────────────
-// Todos os campos opcionais; permite alterar a situação (ex.: status='cancelado').
+// Todos os campos opcionais; permite alterar a situação por status_id (ex.: cancelar =
+// status_id do 'cancelado'). A trigger id-primária deriva o texto `status` (compat).
 export const financialAccountControlUpdateSchema = financialAccountControlInputSchema.partial();
 
 export type FinancialAccountControl = z.infer<typeof financialAccountControlSchema>;

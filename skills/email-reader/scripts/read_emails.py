@@ -147,6 +147,28 @@ LOG_COLUMNS = [
     "keyword_matched", "processed_at", "notes"
 ]
 
+# Situacao (financial_account_control) — a FONTE UNICA e status_id (FK -> dimensao
+# `status`). O pipeline ainda rotula internamente por TEXTO ('pendente'/'falha'); a
+# traducao para status_id acontece num UNICO ponto (register_financial), antes do UPSERT.
+# A trigger id-primaria (migration 068) recalcula 'a vencer'(3)/'vencido'(2) por vencimento
+# e deriva o texto a partir do id. Mapa = tabela `status` (nomes exatos, com acento).
+STATUS_ID_A_VENCER = 3   # default do banco (migration 067) — conta normal sem vencimento
+_STATUS_NAME_TO_ID = {   # 'falha' -> 10 (estado fechado, a trigger preserva)
+    "pendente": 1, "vencido": 2, "a vencer": 3, "prorrogado": 4, "baixado": 5,
+    "protestado": 6, "cartório": 7, "pago": 8, "cancelado": 9, "falha": 10,
+}
+
+
+def _apply_status_id(payload: dict) -> None:
+    """Traduz o `status` TEXTO do payload para `status_id` (fonte unica) e remove o texto.
+    'pendente' (ou vazio) NAO seta status_id -> o banco aplica o DEFAULT 3 ('a vencer') e a
+    trigger recalcula por vencimento. Demais estados (ex.: 'falha') viram o id correspondente.
+    Chamado so na gravacao; o extractor/build seguem rotulando por texto internamente."""
+    txt = (payload.pop("status", None) or "").strip().lower()
+    if txt and txt != "pendente":
+        payload["status_id"] = _STATUS_NAME_TO_ID.get(txt, STATUS_ID_A_VENCER)
+
+
 # ---------------------------------------------------------------------------
 # Supabase — controle de deduplicação
 # ---------------------------------------------------------------------------
@@ -294,14 +316,16 @@ class SupabaseControl:
     def register_financial(self, payload: dict) -> bool:
         """UPSERT de uma conta extraida em financial_account_control (service_role).
 
-        Deduplica/atualiza por gmail_message_id. A situacao de vencimento vai na
-        coluna unica `status` (migration 034): enviamos status='pendente' e a trigger
-        trg_fe_status_vencimento sobrescreve com 'a vencer'/'vencido' a partir de
-        due_date x extracted_at quando o status esta em aberto (preserva 'falha').
+        Deduplica/atualiza por gmail_message_id. A situacao e gravada por status_id (FONTE
+        UNICA): _apply_status_id traduz o `status` texto do payload -> status_id e remove o
+        texto. 'pendente' cai no DEFAULT 3 do banco; a trigger id-primaria (068) recalcula
+        'a vencer'/'vencido' por due_date x extracted_at quando em aberto (preserva 'falha').
         """
         if not self._available:
             return False
         try:
+            payload = dict(payload)   # copia — nao muta o dict do chamador ao traduzir status
+            _apply_status_id(payload)
             data = json.dumps(payload).encode()
             req = urllib.request.Request(
                 f"{self.base}/rest/v1/financial_account_control?on_conflict=gmail_message_id",
@@ -1711,6 +1735,17 @@ GNRE_ICMS_ST_CHART_CODE = "4.1.02"
 _ICMS_ST_PHRASES = ("substituicao tributaria", "subst.tribut", "subst tribut",
                     "subst. tribut", "icms st", "icms-st", "icms substituicao")
 
+# Dominio interno cujo setor envia as guias de ICMS-ST. Uma GNRE vinda deste remetente vira
+# 4.1.02 mesmo SEM a frase de ST no texto (gatilho adicional ao _ICMS_ST_PHRASES) — decisao
+# do usuario. Casa o dominio (e subdominios); as regras FIXAS (ICMS Importacao) tem precedencia.
+LEBIANCO_DOMAIN = "lebianco.com.br"
+
+
+def _is_lebianco_sender(sender_email: str | None) -> bool:
+    """True quando o remetente tem dominio lebianco.com.br (ou subdominio)."""
+    domain = (sender_email or "").split("@")[-1].lower().strip()
+    return domain == LEBIANCO_DOMAIN or domain.endswith("." + LEBIANCO_DOMAIN)
+
 # ICMS de importacao — frases (sem acento, substring). NUNCA casar "icms" sozinho: ICMS/GNRE
 # normal nao deve cair aqui — exige o par icms+importacao.
 _ICMS_IMPORT_PHRASES = ("icms importacao", "icms de importacao",
@@ -1748,34 +1783,39 @@ def _detect_forced_classification(document_type: str | None, subject: str | None
     return None
 
 
-def _chart_code_for_document(document_type: str | None, blob: str) -> str | None:
+def _chart_code_for_document(document_type: str | None, blob: str,
+                             *, sender_email: str | None = None) -> str | None:
     """account_code cuja classificacao deve ser FORCADA (regras RESOLVIDAS do plano de
     contas, sem write-back), ou None. `blob` = assunto+descricao+corpo ja normalizado.
       - DAM / DUAM -> 4.1.06 (por document_type).
-      - GNRE de ICMS Substituicao Tributaria (frase explicita no texto) -> 4.1.02."""
+      - GNRE de ICMS Substituicao Tributaria -> 4.1.02, por DOIS gatilhos: frase explicita
+        de ST no texto OU remetente do dominio @lebianco (setor que envia as guias de ST)."""
     dt = (document_type or "").strip().lower()
     if dt == DAM_DUAM_DOC_TYPE:
         return DAM_DUAM_CHART_CODE
-    if dt == GNRE_DOC_TYPE and any(p in blob for p in _ICMS_ST_PHRASES):
+    if dt == GNRE_DOC_TYPE and (any(p in blob for p in _ICMS_ST_PHRASES)
+                                or _is_lebianco_sender(sender_email)):
         return GNRE_ICMS_ST_CHART_CODE
     return None
 
 
 def resolve_forced_classification(ctrl, document_type: str | None, subject: str | None,
-                                  *extra_texts: str | None) -> tuple[int, int, bool] | None:
+                                  *extra_texts: str | None,
+                                  sender_email: str | None = None) -> tuple[int, int, bool] | None:
     """Classificacao contabil FORCADA COMPLETA (retorna (cc, ca, write_back) ou None).
 
     Junta as regras de id FIXO (`_detect_forced_classification`: IRRF/DUIMP/ICMS/transporte)
     com as regras RESOLVIDAS do plano de contas por codigo (`_chart_code_for_document`:
-    DAM/DUAM -> 4.1.06; GNRE de ICMS Substituicao Tributaria -> 4.1.02), que usam o
-    cost_center_id + chart_account_id da propria linha do plano. As regras fixas tem
-    precedencia; as por codigo so entram quando nenhuma fixa casa e nao propagam ao supplier
-    (write_back=False). Se o codigo nao existir no cadastro, nao forca (None)."""
+    DAM/DUAM -> 4.1.06; GNRE de ICMS Substituicao Tributaria -> 4.1.02, por frase de ST OU
+    remetente @lebianco), que usam o cost_center_id + chart_account_id da propria linha do
+    plano. As regras fixas tem precedencia; as por codigo so entram quando nenhuma fixa casa e
+    nao propagam ao supplier (write_back=False). Se o codigo nao existir no cadastro, nao
+    forca (None)."""
     fixed = _detect_forced_classification(document_type, subject, *extra_texts)
     if fixed:
         return fixed
     blob = " ".join(_ns_body(t) for t in (subject, *extra_texts) if t)
-    code = _chart_code_for_document(document_type, blob)
+    code = _chart_code_for_document(document_type, blob, sender_email=sender_email)
     if code:
         cost_center_id, chart_account_id = ctrl.classification_for_account_code(code)
         if cost_center_id or chart_account_id:
@@ -1791,10 +1831,12 @@ def apply_forced_classification(ctrl, payload: dict, extra_text: str | None = No
     Deve rodar APOS _finalize_supplier (que ja setou sk_supplier + o default do fornecedor)
     e ANTES da gravacao — a classificacao forcada SOBREPOE o default do fornecedor. Textos
     escaneados: assunto + descricao do documento (extraida) + `extra_text` (o corpo do e-mail
-    no caminho de corpo). Write-back nunca ocorre para a OTIMOTEX (sk_supplier=1)."""
+    no caminho de corpo). O remetente (`sender_email`) tambem e um sinal: GNRE de @lebianco
+    vira ICMS-ST. Write-back nunca ocorre para a OTIMOTEX (sk_supplier=1)."""
     override = resolve_forced_classification(
         ctrl, payload.get("document_type"),
         payload.get("subject"), payload.get("description"), extra_text,
+        sender_email=payload.get("sender_email"),
     )
     if not override:
         return

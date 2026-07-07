@@ -14,7 +14,17 @@ import {
   Pencil,
   type LucideIcon,
 } from 'lucide-react';
-import { DOCUMENT_TYPES, PAYMENT_METHODS } from '@sheild/shared';
+import {
+  DOCUMENT_TYPES,
+  PAYMENT_METHODS,
+  ACCOUNT_STATUSES,
+  STATUS_IDS,
+  STATUS_ID_PAGO,
+  STATUS_ID_VENCIDO,
+  STATUS_ID_A_VENCER,
+  STATUS_ID_CANCELADO,
+  STATUS_NAME_BY_ID,
+} from '@sheild/shared';
 import type { FinancialAccountControl, FinancialAccountControlCreate } from '@sheild/shared';
 import {
   getFinancialAccountControl,
@@ -77,7 +87,7 @@ type CsvCol = { header: string; get: (r: FinancialAccountControl) => string | nu
 
 const CSV_COLS: CsvCol[] = [
   { header: 'due_date', get: (r) => r.due_date },
-  { header: 'status', get: (r) => r.status },
+  { header: 'status', get: (r) => r.status_dim?.status_name ?? '' },
   { header: 'supplier_name', get: (r) => r.supplier?.trade_name ?? r.supplier?.legal_name },
   { header: 'supplier_cnpj', get: (r) => r.supplier?.cnpj ?? r.supplier?.cpf },
   { header: 'document_type', get: (r) => r.document_type },
@@ -117,7 +127,8 @@ const MONTHS_FULL = ['Janeiro', 'Fevereiro', 'Março', 'Abril', 'Maio', 'Junho',
 interface ConsultaFilters {
   supplier: string;
   docType: string;
-  status: string;
+  // Situação filtrada por status_id (fonte única). undefined = sem filtro.
+  statusId?: number;
   paymentMethod: string;
   // Coluna do filtro de período: vencimento (padrão) ou emissão.
   dateField: 'due_date' | 'issue_date';
@@ -133,12 +144,19 @@ interface ConsultaFilters {
 const BASE_FILTERS = {
   supplier: '',
   docType: '',
-  status: '',
+  statusId: undefined as number | undefined,
   paymentMethod: '',
   dateField: 'due_date' as const,
   dateFrom: '',
   dateTo: '',
 };
+
+// Opções do filtro de situação — value = status_id (fonte única), label = nome da
+// dimensão (mesmo estilo cru/minúsculo das demais selects de filtro: tipo/pagamento).
+const STATUS_FILTER_OPTIONS = ACCOUNT_STATUSES.map((name) => ({
+  id: STATUS_IDS[name],
+  label: name,
+}));
 
 // Estado padrão de navegação: mês/ano corrente por vencimento (grid abre no mês atual).
 // Função de MÓDULO — new Date() é impuro e não pode ser chamado no escopo de render
@@ -151,6 +169,13 @@ function initialFilters(): ConsultaFilters {
 // Base "todos os períodos" para os cards globais (sem filtro de mês/ano).
 function allPeriodFilters(): ConsultaFilters {
   return { ...BASE_FILTERS, month: null, year: null };
+}
+
+// Update otimista da situação de uma linha: grava status_id (fonte única) e sincroniza o
+// embed status_dim (nome exibido no badge/CSV/detalhe, resolvido da dimensão pelo id).
+function applyStatusId(r: FinancialAccountControl, id: number): FinancialAccountControl {
+  const name = STATUS_NAME_BY_ID[id] ?? String(id);
+  return { ...r, status_id: id, status_dim: { status_name: name, status_short_name: name } };
 }
 
 interface MetricCard {
@@ -321,23 +346,22 @@ export default function Consulta() {
     });
   }, []);
 
-  // Altera o status de uma conta no dropdown inline com update otimista.
-  // O pai (Consulta) atualiza `rows` após confirmação da API para manter consistência
-  // entre a célula editada e o painel de detalhe lateral.
-  const handleStatusChange = useCallback<StatusChangeCallback>(async (rowId, newStatus) => {
-    await setFinancialAccountStatus(rowId, newStatus);
-    setRows((prev) => prev.map((r) => (r.id === rowId ? { ...r, status: newStatus as FinancialAccountControl['status'] } : r)));
+  // Altera a situação de uma conta no dropdown inline com update otimista (por status_id).
+  // O pai (Consulta) atualiza `rows` após confirmação da API para manter consistência entre
+  // a célula editada e o painel de detalhe lateral. Atualiza status_id E o embed status_dim
+  // (nome exibido no badge/CSV/detalhe) — a fonte do nome é a dimensão `status`.
+  const handleStatusChange = useCallback<StatusChangeCallback>(async (rowId, newStatusId) => {
+    await setFinancialAccountStatus(rowId, newStatusId);
+    setRows((prev) => prev.map((r) => (r.id === rowId ? applyStatusId(r, newStatusId) : r)));
     void refreshStats();
   }, [refreshStats]);
 
-  const handleBulkStatusChange = useCallback(async (selected: FinancialAccountControl[], newStatus: string) => {
+  const handleBulkStatusChange = useCallback(async (selected: FinancialAccountControl[], newStatusId: number) => {
     const ids = selected.map((r) => r.id);
     setError(null);
     try {
-      await setFinancialAccountStatusBulk(ids, newStatus);
-      setRows((prev) =>
-        prev.map((r) => (ids.includes(r.id) ? { ...r, status: newStatus as FinancialAccountControl['status'] } : r)),
-      );
+      await setFinancialAccountStatusBulk(ids, newStatusId);
+      setRows((prev) => prev.map((r) => (ids.includes(r.id) ? applyStatusId(r, newStatusId) : r)));
       void refreshStats();
     } catch (e) {
       setError(getErrorMessage(e));
@@ -385,7 +409,7 @@ export default function Consulta() {
   // (N ≤ M, ambos sem cancelado). A paginação (hasMore) segue usando `total` (com
   // cancelado) para carregar todas as linhas do grid.
   const loadedNonCancelled = useMemo(
-    () => rows.filter((r) => r.status !== 'cancelado').length,
+    () => rows.filter((r) => r.status_id !== STATUS_ID_CANCELADO).length,
     [rows],
   );
 
@@ -529,7 +553,7 @@ export default function Consulta() {
       amount: stats.pagoValue ?? null,
       success: true,
       cardId: 'pago',
-      onCardClick: () => handleCardFilter('pago', { status: 'pago' }),
+      onCardClick: () => handleCardFilter('pago', { statusId: STATUS_ID_PAGO }),
     },
     {
       icon: Clock,
@@ -539,7 +563,7 @@ export default function Consulta() {
       amount: stats.aVencerValue ?? null,
       muted: true,
       cardId: 'avencer',
-      onCardClick: () => handleCardFilter('avencer', { status: 'a vencer' }),
+      onCardClick: () => handleCardFilter('avencer', { statusId: STATUS_ID_A_VENCER }),
     },
     {
       icon: TrendingUp,
@@ -559,7 +583,7 @@ export default function Consulta() {
       amount: stats.vencidasValue ?? null,
       danger: vencidasCount > 0,
       cardId: 'vencidas',
-      onCardClick: () => handleCardFilter('vencidas', { status: 'vencido' }),
+      onCardClick: () => handleCardFilter('vencidas', { statusId: STATUS_ID_VENCIDO }),
     },
   ];
 
@@ -710,9 +734,9 @@ export default function Consulta() {
             <input
               id="consulta-supplier"
               name="consulta-supplier"
-              aria-label="Buscar por fornecedor, CNPJ, número do documento, valor, assunto, remetente ou e-mail do fornecedor"
+              aria-label="Buscar por fornecedor, CNPJ, número do documento, valor, assunto, remetente, e-mail do fornecedor, centro de custo, plano de contas, grupo ou subgrupo"
               className="input w-full pr-8"
-              placeholder="Fornecedor, CNPJ, Nº doc, valor, assunto, remetente ou e-mail…"
+              placeholder="Fornecedor, Nº doc, valor, assunto, centro de custo, plano de contas…"
               value={f.supplier}
               onChange={(e) => sf('supplier', e.target.value)}
               onKeyDown={(e) => {
@@ -742,10 +766,19 @@ export default function Consulta() {
               <option key={m}>{m}</option>
             ))}
           </select>
-          <select id="consulta-status" name="consulta-status" aria-label="Filtrar por situação" className="input w-32" value={f.status} onChange={(e) => sf('status', e.target.value)}>
+          <select
+            id="consulta-status"
+            name="consulta-status"
+            aria-label="Filtrar por situação"
+            className="input w-32"
+            value={f.statusId == null ? '' : String(f.statusId)}
+            onChange={(e) => sf('statusId', e.target.value ? Number(e.target.value) : undefined)}
+          >
             <option value="">Situação</option>
-            {['pendente', 'a vencer', 'vencido', 'prorrogado', 'baixado', 'protestado', 'cartório', 'pago', 'cancelado', 'falha'].map((s) => (
-              <option key={s}>{s}</option>
+            {STATUS_FILTER_OPTIONS.map((s) => (
+              <option key={s.id} value={s.id}>
+                {s.label}
+              </option>
             ))}
           </select>
           {/* Intervalo De/Até — busca GLOBAL por range de data na coluna escolhida no
@@ -795,7 +828,7 @@ export default function Consulta() {
             onRowClick={(r) => setSel(sel?.id === r.id ? null : r)}
             // Conta cancelada: linha inteira em vermelho mais saturado (status-error-solid/15)
             // — tom distinto do vermelho pálido do badge "vencido" (status-error-bg).
-            rowClassName={(r) => (r.status === 'cancelado' ? 'bg-status-error-solid/15' : undefined)}
+            rowClassName={(r) => (r.status_id === STATUS_ID_CANCELADO ? 'bg-status-error-solid/15' : undefined)}
             sortCol={sort.col}
             sortDir={sort.dir}
             onSort={handleSort}
@@ -866,7 +899,7 @@ export default function Consulta() {
                                   ['Competência', r.competence_date],
                                   ['Emissão', fmtDate(r.issue_date)],
                                   ['Vencimento', fmtDate(r.due_date)],
-                                  ['Situação', r.status],
+                                  ['Situação', r.status_dim?.status_name ?? '—'],
                                   ['Valor do documento', fmtMoney(r.amount)],
                                   ['Valor cobrado', fmtMoney(r.amount_charged)],
                                   ['Desconto / abatimentos', fmtMoney(r.discount)],

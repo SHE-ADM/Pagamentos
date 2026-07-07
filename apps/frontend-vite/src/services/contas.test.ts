@@ -38,7 +38,8 @@ describe('createConta', () => {
 
 describe('updateConta', () => {
   it('faz PATCH e desembrulha data', async () => {
-    mockFetch(true, { success: true, data: { id: 5, status: 'cancelado' } });
-    expect(await updateConta(5, { status: 'cancelado' })).toEqual({ id: 5, status: 'cancelado' });
+    // Situação por status_id (fonte única) — 9 = cancelado.
+    mockFetch(true, { success: true, data: { id: 5, status_id: 9 } });
+    expect(await updateConta(5, { status_id: 9 })).toEqual({ id: 5, status_id: 9 });
   });
 });

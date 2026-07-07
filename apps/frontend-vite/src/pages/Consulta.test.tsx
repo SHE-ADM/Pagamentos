@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, waitFor, within, fireEvent } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import type { FinancialAccountControl } from '@sheild/shared';
+import { STATUS_ID_PAGO, STATUS_ID_A_VENCER } from '@sheild/shared';
 
 // Mocka o serviço de dados — o teste cobre o layout/interação, não a rede.
 const getFinancialAccountControl = vi.fn();
@@ -132,7 +133,7 @@ describe('Consulta', () => {
     const user = userEvent.setup();
     render(<Consulta />);
 
-    const supplier = screen.getByPlaceholderText('Fornecedor, CNPJ, Nº doc, valor, assunto, remetente ou e-mail…');
+    const supplier = screen.getByPlaceholderText(/^Fornecedor/);
     await user.type(supplier, 'ACME');
     expect(supplier).toHaveValue('ACME');
 
@@ -144,7 +145,7 @@ describe('Consulta', () => {
     const user = userEvent.setup();
     render(<Consulta />);
 
-    const supplier = screen.getByPlaceholderText('Fornecedor, CNPJ, Nº doc, valor, assunto, remetente ou e-mail…');
+    const supplier = screen.getByPlaceholderText(/^Fornecedor/);
     // sem texto, o ícone de limpar não é renderizado
     expect(screen.queryByRole('button', { name: 'Limpar busca' })).not.toBeInTheDocument();
 
@@ -169,7 +170,7 @@ describe('Consulta', () => {
     // a soma é refeita com o filtro do card...
     await waitFor(() =>
       expect(getFinancialAccountTotalValue).toHaveBeenLastCalledWith(
-        expect.objectContaining({ status: 'a vencer' }),
+        expect.objectContaining({ statusId: STATUS_ID_A_VENCER }),
       ),
     );
     // ...e o card passa a refletir o valor filtrado (match exato — também no rodapé)
@@ -243,7 +244,7 @@ describe('Consulta', () => {
     await user.click(screen.getByText('Pagos'));
     await waitFor(() =>
       expect(getFinancialAccountControl).toHaveBeenLastCalledWith(
-        expect.objectContaining({ status: 'pago', month: null, year: null }),
+        expect.objectContaining({ statusId: STATUS_ID_PAGO, month: null, year: null }),
       ),
     );
 
@@ -252,7 +253,7 @@ describe('Consulta', () => {
     await user.click(within(months).getByRole('button', { name: 'Mês Janeiro' }));
     await waitFor(() =>
       expect(getFinancialAccountControl).toHaveBeenLastCalledWith(
-        expect.objectContaining({ status: 'pago', month: 0 }),
+        expect.objectContaining({ statusId: STATUS_ID_PAGO, month: 0 }),
       ),
     );
 
@@ -261,7 +262,7 @@ describe('Consulta', () => {
     await user.click(screen.getByText('Pagos'));
     await waitFor(() =>
       expect(getFinancialAccountControl).toHaveBeenLastCalledWith(
-        expect.objectContaining({ status: '', month: now.getMonth(), year: now.getFullYear() }),
+        expect.objectContaining({ statusId: undefined, month: now.getMonth(), year: now.getFullYear() }),
       ),
     );
   });
