@@ -174,13 +174,14 @@ allowlist `SORTABLE_COLUMNS`); CNPJ/CPF ordena por `cnpj`.
 principal `financial_account_control` (PK = **`id`**, não `sk_*`; fornecedor pela FK obrigatória
 `sk_supplier`). `GET /api/contas` (paginado + `search` por fornecedor/nº doc/assunto/remetente,
 JOIN `supplier`, exclui `cancelado` por padrão) · `GET/PATCH /api/contas/:id` · `POST /api/contas`.
-**Sem DELETE** (regra de preservação): "remoção" = `PATCH { status: 'cancelado' }`. Validação Zod
-em `@sheild/shared` — `financialAccountControlCreateSchema` (criação manual exige `sk_supplier` +
-`amount`>0; demais campos opcionais, o banco aplica DEFAULT/NULL; **`status` é OMITIDO do create** —
-a conta nasce no default `pendente` e a trigger assume `a vencer`/`vencido`, então o cliente NÃO
-cria conta já em estado fechado) e `financialAccountControlUpdateSchema` (partial — a baixa/
-cancelamento é feita depois via PATCH). `status`/`status_id`/`company_id`/`created_at`/`updated_at`
-são derivados (trigger) ou controlados — não entram no corpo de criação. Status: `201` · `409` (23505) · `404` · `422` ·
+**Sem DELETE** (regra de preservação): "remoção" = `PATCH { status_id: <id do cancelado = 9> }`.
+Validação Zod em `@sheild/shared` — `financialAccountControlCreateSchema` (criação manual exige
+`sk_supplier` + `amount`>0; demais campos opcionais, o banco aplica DEFAULT/NULL; **`status_id` é
+OMITIDO do create** — a conta nasce no DEFAULT 3 do banco (`a vencer`) e a trigger recalcula
+`a vencer`/`vencido` por vencimento, então o cliente NÃO cria conta já em estado fechado) e
+`financialAccountControlUpdateSchema` (partial — aceita `status_id`; a baixa/cancelamento é feita
+depois via PATCH). `status_id`/`company_id`/`created_at`/`updated_at` são derivados (trigger) ou
+controlados — só `status_id` entra no corpo de PATCH (situação), nunca no de criação. Status: `201` · `409` (23505) · `404` · `422` ·
 `400` id inválido. Frontend: **página `/contas`** (lançamento rápido — `pages/ContasNovaPage.tsx`
 com o card centralizado `mx-auto` + `organisms/ContaForm.tsx`) e **edição da conta em `/consulta`
 pelo botão "Editar conta" do painel de detalhe** (abre o modal `ContaForm` → `PATCH /api/contas/:id`).
@@ -273,7 +274,7 @@ devolve **403** fora do grupo. O gate de UI é só cosmético — a autorizaçã
 `POST /api/users` (criar usuário): os dois convivem — papel `role` para gestão de usuários, **grupo**
 para o hard delete. Constante `ADMIN_GROUP_ID = 1` espelhada no backend (`lib/auth.ts`) e no frontend
 (`AuthContext.tsx`). **Escopo (decisão travada):** só os 6 cadastros de Tabelas — `/fornecedores`
-segue **soft delete** e `/consulta` (contas) não tem delete (remoção = `PATCH status='cancelado'`).
+segue **soft delete** e `/consulta` (contas) não tem delete (remoção = `PATCH status_id=<cancelado>`).
 Testes: `lib/auth.test.ts` (`requireAdminGroup`: 401/403/500 + grupo 1 segue), `AuthContext.test.tsx`
 (gate por grupo), `CrudTablePage.test.tsx` (lixeira só p/ o grupo Administrador) + os 6 `route.test.ts`
 (mock de `requireAdminGroup`).
@@ -423,7 +424,7 @@ completo desenhado em `docs/design/permissoes-por-grupo.md`).
 com "Auto Confirm User"); operador comum **não** precisa de papel/`app_metadata` — só o usuário
 que for criar outros via API precisa de `app_metadata.role: "admin"`. RLS (migrations 056/057)
 não afeta o app: o CRUD escreve via Next API com **`service_role`** (ignora RLS); só a curadoria
-inline (`has_invoice`/`has_bank_slip`/`status` em `financial_account_control`, `reviewed_at` em
+inline (`has_invoice`/`has_bank_slip`/`status_id` em `financial_account_control`, `reviewed_at` em
 `email_control`) é escrita direto pelo papel `authenticated`, via grants por coluna preservados.
 
 **Grupos de usuário — permissões por grupo (FUNDAÇÃO + VÍNCULO aplicados; RESTO do RBAC DESENHADO,
@@ -924,8 +925,9 @@ semeados na 1ª carga e no `reset()` — prefs salvas prevalecem; ver seção do
 `getConsultaColumns`, `getEmailColumns`; é módulo de **definições**, não um hook,
 apesar do nome). `getConsultaColumns(onToggleFlag, onStatusChange)` é factory porque as
 colunas "NF" e "BOL" (curadoria) renderizam o atom `CheckToggle` (checkbox que escreve no banco) e a
-coluna "Situação" renderiza o `StatusSelectCell` (dropdown inline que altera o status) — ambos
-precisam dos callbacks da página. (A coluna "Ações"/`onEdit` foi removida — a edição da conta parte
+coluna "Situação" renderiza o `StatusSelectCell` (dropdown inline que altera a situação **por
+`status_id`**; opções `STATUS_OPTIONS` value=id, e o badge é exibido pelo **nome** resolvido via
+`STATUS_NAME_BY_ID`/embed `status_dim`) — ambos precisam dos callbacks da página. (A coluna "Ações"/`onEdit` foi removida — a edição da conta parte
 do botão "Editar conta" do painel de detalhe.) Os cabeçalhos são abreviados (`NF`/`BOL`) para poupar
 largura, mas o `aria-label` do checkbox continua descritivo (`Tem NF`/`Tem Boleto`). A coluna **"Fornecedor" deriva do JOIN com `supplier`** e exibe **apenas `trade_name`**
 (razão fantasia — todos os fornecedores têm `trade_name` preenchido; sem fallback para
@@ -958,8 +960,9 @@ sort/filter client-side, que não usamos — a ordenação é sempre server-side
 `extraction_source`) aparece **só** no grid (removida do detalhe e do CSV). O **card de detalhe** de
 `/consulta` continua mostrando **Centro de custo e Plano de contas SEPARADOS** (via `fmtCostCenter`/
 `fmtChartAccount`, inalterados) — a concatenação é exclusiva do grid.
-A coluna **"Situação" ordena alfabeticamente pelo texto** (`sortKey: 'status'`), **não** por
-`status_id` (o ciclo de vida não é linear). **`ColumnDef` ganhou `wrap?`** (quebra de linha em vez de
+A coluna **"Situação" ordena alfabeticamente pelo NOME** da dimensão (`sortKey: 'status'`, mapeado
+no serviço para `order=status_dim(status_name)`), **não** por `status_id` (o ciclo de vida não é
+linear — id ≠ ordem de negócio). **`ColumnDef` ganhou `wrap?`** (quebra de linha em vez de
 truncar — usado em Fornecedor/Plano de contas) e **`minSize?`** (largura mínima por
 tipo de dado, ~48–120px, respeitada no resize). `hideOn` (responsividade mobile/tablet) segue como o
 mecanismo de ocultação por breakpoint.
@@ -1802,6 +1805,19 @@ sempre. Teste: `tests/test_match_keyword.py` (`PaymentConfirmationTest`). Limpez
 (8 "Confirmação de Pagamento da fatura" + 2 "pagamento foi aprovado") + os `email_control`
 correspondentes → `ignorado`.
 
+**Assunto com "lembrete" → `ignorado` (não é conta a pagar — não regredir):** e-mail cujo ASSUNTO
+contém a palavra **`lembrete`** (substring, sem acento — `subject_is_reminder`) vira `ignorado`
+**sem baixar nem extrair**, no mesmo ponto do loop de `run_reader` (logo após
+`subject_is_payment_confirmation`), então vale **mesmo com keyword/anexo** (ex.: "Lembrete de
+Pagamento: vencimento 10/06/2026", de `boleto@smartwebservices.com.br`). Decisão do usuário: **o foco
+é a palavra `lembrete`** — um lembrete/aviso não é a cobrança em si; `vencimento` sozinho **NÃO**
+basta (pode ser um boleto real, ex.: "Boleto vencimento 10/07"). Distinto de
+`NOTIFICATION_PHRASE_TERMS` (nível FRACO — só `ignorado` sem anexo/conta) e de
+`subject_is_payment_confirmation` (pagamento JÁ feito). Substring pega o plural `lembretes`. Teste:
+`tests/test_match_keyword.py` (`ReminderSubjectTest`). Limpeza retroativa (2026-07-07): **hard
+delete de 5 contas** com "lembrete" no assunto (4 "Lembrete de Pagamento: vencimento" de
+`boleto@smartwebservices` + 1 "ENC: Lembrete Sua Fatura") + os `email_control` correspondentes → `ignorado`.
+
 Lista padrão em `KEYWORDS_DEFAULT`, **sobrescrita por `EMAIL_KEYWORDS` no `.env`** (fonte de
 verdade usada hoje). **NF-e "pura"** (`subject_is_pure_nfe`): assunto com `nota fiscal/nfe/
 nf-e/nfse/nfs-e` **por palavra inteira** (não casa "co**nfe**cções") e **sem** indício de
@@ -1814,6 +1830,11 @@ e-mails de aviso/confirmação **sem anexo e sem conta no corpo** (gatilho no lu
 `informativo, confirmado (o) pagamento, confirmação de/do pagamento, pagamento confirmado,
 pagamento processado, aviso de vencimento, título a vencer, lembrete de vencimento, títulos
 próximos do vencimento, comprovante de pix, protesto, protestado, cartório, comunicado`.
+**Nota:** qualquer assunto com a palavra `lembrete` já é ignorado **antes** deste ponto, no
+nível FORTE (`subject_is_reminder`, sem baixar/extrair — ver "Assunto com 'lembrete'"), então o
+termo `lembrete de vencimento` aqui é redundante; os demais termos de vencimento (`aviso de
+vencimento`/`título a vencer`/`títulos próximos do vencimento`, sem "lembrete") seguem valendo só
+neste nível FRACO (só `ignorado` na ausência de anexo/conta).
 Avisos sem termo generalizável (oferta de frete, "nova área do cliente", "taxa de
 agendamento") são marcados por **Message-ID** em `EXPLICIT_IGNORE_IDS`
 (`scripts/reprocess_ignored_emails.py`). **Não** há exclusão por boleto/fatura aqui — o
@@ -1940,8 +1961,8 @@ faturas SIEG em `ignorado`; o handler A1 (baixar o boleto real) segue como melho
   isso é implementado: `applyFinancialFilters` recebe `includeCancelled` (default **false** = exclui)
   — o **grid** (`getFinancialAccountControl`) passa `true`; o card **"Valor total"**
   (`getFinancialAccountTotalValue`) usa o default (exclui). O `getFinancialStats` mantém
-  `status=neq.cancelado` (KPIs gerais sem cancelado). Filtro explícito de situação (`eq.<status>`)
-  sobrescreve tudo nos dois caminhos. **Consequência aceita:** o rodapé do grid ("N de M") conta
+  `status_id=neq.<cancelado>` (KPIs gerais sem cancelado — por `STATUS_ID_CANCELADO`). Filtro
+  explícito de situação (`status_id=eq.<id>`) sobrescreve tudo nos dois caminhos. **Consequência aceita:** o rodapé do grid ("N de M") conta
   canceladas e o KPI "Total de registros" não — divergência **intencional** (cancelado é visível,
   mas fora dos totais). Linha cancelada é pintada de vermelho (`bg-status-error-solid/15`, via
   `DataGrid rowClassName`), tom distinto do badge "vencido".
@@ -2063,9 +2084,13 @@ local/agendada (ver flag `EMAIL_READER_ENABLED` acima e memória [[vercel-deploy
 ## Banco de dados (Supabase)
 
 Migrations em `supabase/migrations/`, aplicadas **manualmente no SQL Editor** em ordem
-numérica (`001` → `066`). Não há migration automática. (As `059`/`060`/`061`/`063`/`064`/`066` foram
-aplicadas **direto via Supabase MCP** nesta máquina — o arquivo numerado serve de histórico; **não
-reaplicar** no SQL Editor (todas idempotentes, mas evite re-run). A `066` amplia o CHECK de
+numérica (`001` → `069`). Não há migration automática. (As `059`/`060`/`061`/`063`/`064`/`066`/`067`/
+`068`/`069` foram aplicadas **direto via Supabase MCP** nesta máquina — o arquivo numerado serve de
+histórico; **não reaplicar** no SQL Editor (todas idempotentes, mas evite re-run). As **067/068/069**
+são a migração faseada de **`status_id` como fonte única** da situação (remoção do `status` texto —
+ver a nota da migração faseada em "Banco de dados"): **067** `status_id` NOT NULL DEFAULT 3; **068**
+trigger id-primária + `GRANT UPDATE(status_id) TO authenticated`; **069** trigger só-id + DROP do CHECK
+e da coluna `status`. A `066` amplia o CHECK de
 `financial_account_control.document_type` com **`cartório`** (pagamento de/em cartório) + backfill dos
 genéricos com contexto de cartório no assunto (id 400) — ver "Normalização de `document_type`"; ocupou
 o nº que o roadmap de RBAC estimava (066–068), que desloca para 067+ quando for implementado. A `065`
@@ -2148,7 +2173,7 @@ internet` ao CHECK de `document_type` e faz backfill — ver "Normalização de 
 | `email_processing_errors` | Log de falhas com `raw_payload` JSON |
 | `supplier` | Fornecedores. PK = `sk_supplier` (surrogate key snowflake auto-incremental — **migration 042**); `supplier_id` é **chave de negócio** (NOT NULL UNIQUE, só nesta tabela; = `sk_supplier` nos fornecedores criados pela extração, via trigger de espelho `trg_supplier_mirror_id`, podendo divergir em cargas externas). Auto-criados pelo trigger de resolução, mas **cadastro PRESERVADO** (curadoria manual de `email`/`email2`/`email3`/`email4`) — **nunca truncar** em limpezas (ver "Limpeza / reset de dados"). Reconhecimento por **e-mail** em `email`/`email2`/`email3`/`email4` (migrations 023/027/028) — ver "Auto-resolução de fornecedor". **Soft delete** via `deleted_at` (migration 045) — a baixa pelo CRUD da Next API marca `deleted_at` (nunca hard delete) e é bloqueada quando há contas vinculadas; ver "CRUD de fornecedores (Next API)". **Classificação default** `cost_center_id`/`chart_account_id` (SMALLINT NOT NULL DEFAULT 0 + FKs — migration 052): semeia o lançamento de novas contas e é atualizada pelo write-back do modal; ver "Classificação default do fornecedor — sync bidirecional" |
 | `company` | Empresa pagadora (**cadastro**, tem campo `email`). Auto-resolvida pelo trigger `resolve_company_id` a partir de `payer_cnpj`/`payer_name`. **Preservada em limpezas** (ver abaixo) |
-| `status` | **Dimensão** de situação (`status_id`, `status_name`, `status_short_name`, `has_opened`/`has_closed`/`has_invoiced`). 10 linhas = domínio de `financial_account_control.status`. A trigger resolve `financial_account_control.status_id` por `status_name` (migration 035). **Cadastro/configuração — preservar em limpezas** |
+| `status` | **Dimensão** de situação (`status_id`, `status_name`, `status_short_name`, `has_opened`/`has_closed`/`has_invoiced`). 10 linhas (ids 1..10) = **domínio de `financial_account_control.status_id`** (fonte única — a coluna `status` texto foi removida na 069) + alvo da FK `fk_fac_status`. O nome de exibição da conta vem do embed `status_dim:status(...)`. **Cadastro/configuração — preservar em limpezas** |
 | `user_group` | **Catálogo de grupos de usuário** (migration 063 — fundação de permissões por grupo). `group_id` IDENTITY ALWAYS PK, `group_name` VARCHAR(30) DEFAULT ''; **id 0 = sentinela "não informado"**. RLS read `authenticated`/write `service_role`. **Editado SÓ via Supabase** (sem CRUD no app); o usuário pretende acrescentar campos. A atribuição por usuário e o RBAC completo (`user_profile`/`permission`/`group_*`) estão **desenhados, não implementados** — ver "Grupos de usuário" na seção de papéis e `docs/design/permissoes-por-grupo.md`. **Cadastro/configuração — preservar em limpezas** |
 | `cobranca_envios_log` | Cobranças de vencidos **enviadas com sucesso** (migration 037). `document_id` (= TÍTULO no Firebird) **UNIQUE** = chave de deduplicação: `already_sent()` consulta aqui antes de enviar. Exibida em `/cobranca/envios`. Alvo de limpeza (dados de teste) |
 | `cobranca_erros_log` | **Falhas** da cobrança (migration 037), **sem UNIQUE** (reprocessável — o mesmo título pode falhar em execuções distintas). `error_type` ∈ (`email_ausente`, `email_invalido`, `smtp_falha`, `smtp_bloqueio`, `supabase_falha`, `firebird_falha`, `erro_inesperado`); `error_message` = motivo em linguagem leiga (exibido em `/cobranca/erros`), `error_detail` = traceback técnico. Alvo de limpeza |
@@ -2181,24 +2206,23 @@ negócio), `cnpj CHAR(14)`, `cpf CHAR(11)`, `legal_name`, `trade_name`, `email`/
 > texto internamente, traduzido no register). **FASE 3 (migration 069):** trigger simplificada (só id),
 > CHECK e coluna `status` texto **DROPADOS**, `status`/`accountStatusSchema` removidos do shared schema.
 > **Ordenação da coluna Situação** = `order=status_dim(status_name)` (nome, alfabético — decisão de
-> negócio; id ≠ ordem). ⚠️ O texto abaixo (herdado) descreve o estado PRÉ-migração — ao editá-lo,
-> lembrar que `status` texto **não existe mais**; a fonte é `status_id` + embed `status_dim`.
+> negócio; id ≠ ordem).
 
-`financial_account_control.status` é a **coluna única de situação/ciclo de vida** (migration
-**034** fundiu o antigo `due_status` aqui). Default `pendente`; domínio pt-BR de **10 valores**
-(migration **035** alinhou o CHECK à tabela de dimensão `status` — removeu `pago protesto`,
-`pago cartório`, `não pago`): `pendente, vencido, a vencer, prorrogado, baixado, protestado,
-cartório, pago, cancelado, falha`. A coluna **`status_id`** (smallint, FK `fk_fac_status` →
-`status.status_id`) é mantida em sincronia pela mesma trigger, que resolve
-`status_id = status.status_id WHERE status_name = status` (035). A trigger
-**`fn_set_status_from_due_date`** (`trg_fe_status_vencimento`, BEFORE INSERT/UPDATE) grava
-`'a vencer'`/`'vencido'` a partir de `due_date` **apenas quando o status está em aberto**
-(`NULL`/`pendente`/`a vencer`/`vencido`) — preserva `falha` (extração) e baixas/CRUD manual
-(`pago`/`baixado`/`cancelado`/`prorrogado`/…). Antes da 034 havia `due_status` separado e o
-grid mostrava `due_status` enquanto o filtro filtrava `status` (inconsistente); agora ambos
-usam `status`. `payment_method` aceita `boleto, pix, ted, cartão, depósito, duplicata,
+**`financial_account_control.status_id`** (`SMALLINT NOT NULL DEFAULT 3`, FK `fk_fac_status` →
+`status.status_id`) é a **coluna ÚNICA de situação/ciclo de vida** — a antiga coluna `status`
+(texto) foi **REMOVIDA** (migration **069**; ver a nota da migração faseada acima). Domínio = a
+dimensão `status` (ids 1..10): `1 pendente · 2 vencido · 3 a vencer · 4 prorrogado · 5 baixado ·
+6 protestado · 7 cartório · 8 pago · 9 cancelado · 10 falha`. O **nome de exibição** vem do embed
+`status_dim:status(status_name,status_short_name)` (não há mais coluna de texto na linha). A trigger
+**`fn_set_status_from_due_date`** (`trg_fe_status_vencimento`, BEFORE INSERT/UPDATE — id-primária
+desde a 068, simplificada só-id na 069) grava `status_id` **3 (a vencer) / 2 (vencido)** a partir de
+`due_date` × `extracted_at` **apenas quando EM ABERTO** (`status_id IN (1,2,3)`) — preserva os
+estados fechados (`falha`/`pago`/`baixado`/`cancelado`/`protestado`/`cartório`/`prorrogado`).
+Histórico: a **034** fundiu o antigo `due_status` na coluna `status` (texto); a **035** alinhou o
+domínio à dimensão `status`; as **067/068/069** migraram a fonte de verdade para `status_id` e
+dropraram o texto. `payment_method` aceita `boleto, pix, ted, cartão, depósito, duplicata,
 bancário, carteira, vale, crédito, débito, dinheiro, transferência, cheque, outro`;
-`extraction_source` ∈ (`email_body, pdf_text, pdf_vision, falha`).
+`extraction_source` ∈ (`email_body, pdf_text, pdf_vision, image_vision, falha`).
 
 **Schemas Zod (`packages/shared`) = fonte única de tipos.** **Zod 4** (upgrade Fase 5):
 e-mail usa a API top-level `z.email('…')` (não mais `z.string().email()`); demais APIs
@@ -2206,9 +2230,15 @@ e-mail usa a API top-level `z.email('…')` (não mais `z.string().email()`); de
 inalteradas. O `zodResolver` vem do `@hookform/resolvers@5` (Standard Schema, compatível
 com Zod 4). Os tipos TS são `z.infer` dos
 schemas (não há tipo escrito à mão para divergir); os `z.enum` espelham 1:1 os CHECK do
-banco — ao alterar um CHECK, **atualizar o enum correspondente**. `status` usa
-`ACCOUNT_STATUSES` (domínio completo de 10 valores — migration 035 removeu `pago protesto`, `pago cartório`, `não pago`) — a trigger grava `'a vencer'/'vencido'`
-e baixas/CRUD manual definem os demais (`pago`/`baixado`/`cancelado`/…).
+banco — ao alterar um CHECK, **atualizar o enum correspondente**. **Situação:** o schema tem
+`status_id` (`z.number().int()`, fonte única — não há mais campo `status` texto nem
+`accountStatusSchema`) + o embed de leitura `status_dim` (`status_name`/`status_short_name`). Os
+NOMES da situação seguem em `ACCOUNT_STATUSES`/`AccountStatus` (labels) e o mapa id↔nome em
+`STATUS_IDS`/`STATUS_NAME_BY_ID` (+ `STATUS_ID_PAGO`/`_CANCELADO`/`_A_VENCER`/`_VENCIDO`), todos em
+`@sheild/shared`. `financialAccountControlInputSchema` **inclui `status_id`** (entrada de escrita da
+situação — baixa/cancelamento via PATCH) e omite `status_dim` (leitura); `...CreateSchema` omite
+`status_id` (a conta nasce no DEFAULT 3 do banco + trigger por vencimento). A trigger grava
+`'a vencer'/'vencido'` (ids 3/2); baixas/CRUD manual definem os demais (`pago`/`baixado`/`cancelado`/…).
 O frontend consome os schemas de dados (`FinancialAccountControl`, `EmailControl`,
 `ProcessingError`) **apenas como `import type`** (sem `.parse()` em runtime — `services/supabase.ts`
 faz cast); só os schemas de **auth** rodam em runtime via `zodResolver`.
@@ -2257,9 +2287,12 @@ um check verde ao lado do badge de status (compartilhado entre usuários). **Exc
 (migration 033):** `financial_account_control` tem policy de UPDATE `TO authenticated` com
 **grant restrito às colunas** `has_invoice`/`has_bank_slip` (`GRANT UPDATE (has_invoice,
 has_bank_slip)`) — flags de curadoria "Tem NF ?"/"Tem Boleto" editadas como checkbox
-(`CheckToggle`) no grid de `/consulta` via `setFinancialAccountFlag` (update otimista). O
-frontend não pode alterar nenhuma outra coluna; o pipeline (`service_role`) escreve a tabela
-inteira.
+(`CheckToggle`) no grid de `/consulta` via `setFinancialAccountFlag` (update otimista). **Terceira
+coluna gravável pelo `authenticated` (migration 068):** `status_id` (`GRANT UPDATE (status_id)`) —
+a troca de **situação** em `/consulta` (`StatusSelectCell` inline + ação em lote) grava por
+`status_id`; a trigger `fn_set_status_from_due_date` (SECURITY DEFINER) faz o resto. O grant antigo
+de `status` (texto, migration 036) sumiu com a coluna (069). O frontend só altera essas três
+colunas (`has_invoice`/`has_bank_slip`/`status_id`); o pipeline (`service_role`) escreve a tabela inteira.
 
 ### Limpeza / reset de dados (SEMPRE preservar os cadastros)
 

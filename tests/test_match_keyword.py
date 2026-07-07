@@ -148,5 +148,30 @@ class PaymentConfirmationTest(unittest.TestCase):
             self.assertFalse(read_emails.subject_is_payment_confirmation(assunto), assunto)
 
 
+class ReminderSubjectTest(unittest.TestCase):
+    """Assunto com a palavra 'lembrete' e ignorado SEMPRE (antes de baixar/extrair), mesmo com
+    keyword/anexo — e so um lembrete/aviso, nao a conta a pagar (decisao do usuario). O foco e
+    'lembrete'; 'vencimento' sozinho pode ser um boleto real, entao NAO basta."""
+
+    def test_assunto_com_lembrete_e_ignorado(self):
+        for assunto in [
+            "Lembrete de vencimento",
+            "Lembrete de Pagamento: vencimento  10/06/2026",  # caso real (boleto@smartwebservices)
+            "LEMBRETE - Boleto 123",                          # com keyword 'boleto'
+            "ENC: lembrete da fatura 555",
+            "Lembretes pendentes",                            # plural
+        ]:
+            self.assertTrue(read_emails.subject_is_reminder(assunto), assunto)
+
+    def test_sem_lembrete_nao_casa(self):
+        # 'vencimento'/boleto sozinhos NAO casam (evita ignorar boleto real).
+        for assunto in [
+            "Boleto vencimento 10/07", "Aviso de vencimento",
+            "Título a vencer", "Fatura 18293 em aberto",
+            "", "Nota fiscal",
+        ]:
+            self.assertFalse(read_emails.subject_is_reminder(assunto), assunto)
+
+
 if __name__ == "__main__":
     unittest.main()
