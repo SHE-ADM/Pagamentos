@@ -1,5 +1,10 @@
 import { describe, it, expect } from 'vitest';
-import { parsePaginationTotal, parseBrlAmount, isCurrencyValueSearch } from './supabase';
+import {
+  parsePaginationTotal,
+  parseBrlAmount,
+  isCurrencyValueSearch,
+  applyFinancialFilters,
+} from './supabase';
 
 describe('parsePaginationTotal', () => {
   it('usa a contagem exata do Content-Range (count=exact)', () => {
@@ -96,5 +101,82 @@ describe('isCurrencyValueSearch', () => {
     expect(isCurrencyValueSearch('1999,99')).toBe(false); // número sem R$ → busca textual+valor
     expect(isCurrencyValueSearch('R$ abc')).toBe(false); // R$ sem número
     expect(isCurrencyValueSearch('ACME')).toBe(false);
+  });
+});
+
+describe('applyFinancialFilters — busca inclui classificação contábil', () => {
+  it('termo textual monta or com texto + fornecedor + classificação (centro/plano)', () => {
+    const params = new URLSearchParams();
+    applyFinancialFilters(params, { supplier: 'ICMS-ST' }, {
+      supplierIds: [10, 11],
+      costCenterIds: [3],
+      chartAccountIds: [33, 34],
+    });
+    const or = params.get('or') ?? '';
+    expect(or).toContain('invoice_number.ilike.');
+    expect(or).toContain('subject.ilike.');
+    expect(or).toContain('sender_email.ilike.');
+    expect(or).toContain('sk_supplier.in.(10,11)');
+    expect(or).toContain('cost_center_id.in.(3)');
+    expect(or).toContain('chart_account_id.in.(33,34)');
+  });
+
+  it('arrays vazios não geram cláusulas in.() inválidas', () => {
+    const params = new URLSearchParams();
+    applyFinancialFilters(params, { supplier: 'ACME' }, {
+      supplierIds: [],
+      costCenterIds: [],
+      chartAccountIds: [],
+    });
+    const or = params.get('or') ?? '';
+    expect(or).not.toContain('cost_center_id.in.');
+    expect(or).not.toContain('chart_account_id.in.');
+    expect(or).not.toContain('sk_supplier.in.');
+    expect(or).toContain('subject.ilike.');
+  });
+
+  it('sem IDs passados (default) usa só texto', () => {
+    const params = new URLSearchParams();
+    applyFinancialFilters(params, { supplier: 'ACME' });
+    const or = params.get('or') ?? '';
+    expect(or).toContain('invoice_number.ilike.');
+    expect(or).not.toContain('cost_center_id.in.');
+  });
+
+  it('busca por valor ("R$ …") ignora os IDs — só amount exato', () => {
+    const params = new URLSearchParams();
+    applyFinancialFilters(params, { supplier: 'R$ 167,15' }, {
+      supplierIds: [1],
+      costCenterIds: [3],
+      chartAccountIds: [33],
+    });
+    expect(params.get('amount')).toBe('eq.167.15');
+    expect(params.get('or')).toBeNull();
+  });
+});
+
+describe('applyFinancialFilters — situação por status_id (fonte única)', () => {
+  it('filtro explícito de situação vira status_id=eq.N', () => {
+    const params = new URLSearchParams();
+    applyFinancialFilters(params, { statusId: 8 }); // 8 = pago
+    expect(params.get('status_id')).toBe('eq.8');
+  });
+
+  it('sem filtro e sem includeCancelled → exclui cancelado por id (neq.9)', () => {
+    const params = new URLSearchParams();
+    applyFinancialFilters(params, {});
+    expect(params.get('status_id')).toBe('neq.9'); // 9 = cancelado
+  });
+
+  it('includeCancelled=true (grid) NÃO filtra situação quando não há filtro explícito', () => {
+    const params = new URLSearchParams();
+    applyFinancialFilters(params, {}, undefined, true);
+    expect(params.get('status_id')).toBeNull();
+  });
+
+  it('filtro explícito prevalece mesmo com includeCancelled', () => {
+    const params = new URLSearchParams();
+    applyFinancialFilters(params, { statusId: 9 }, undefined, true);
+    expect(params.get('status_id')).toBe('eq.9');
   });
 });

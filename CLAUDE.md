@@ -1330,7 +1330,7 @@ write-back TS próprio):
 | **DUIMP** ou **ICMS Importação** | 3 (Fiscal) | 11 (ICMS Importação a Recolher) | **Sim** |
 | **Transporte / transportadora / CT-e** | 4 (Logística) | 339 (Serviços de Transportadoras) | **Sim** |
 | **DAM / DUAM** | *(do plano `4.1.06`)* | *(do plano `4.1.06`)* | **Não** |
-| **GNRE de ICMS Substituição Tributária** | *(do plano `4.1.02`)* | *(do plano `4.1.02`)* | **Não** |
+| **GNRE de ICMS Substituição Tributária** (frase de ST **ou** remetente `@lebianco`) | *(do plano `4.1.02`)* | *(do plano `4.1.02`)* | **Não** |
 
 **Estas regras SOBREPÕEM a classificação herdada do fornecedor** (o `cost_center_id`/`chart_account_id`
 que `_finalize_supplier` injeta a partir do `supplier`): a regra roda DEPOIS e sobrescreve o payload.
@@ -1346,9 +1346,13 @@ payload, extra_text=None)`. **Regras RESOLVIDAS do plano de contas por código**
 reclassificado, a regra acompanha; se o código não existir, não força e mantém o default do fornecedor):
 **DAM / DUAM** → código `4.1.06` (`DAM_DUAM_CHART_CODE`; hoje "ISS a Recolher", cc=3/id=42, por
 `document_type`); **GNRE de ICMS Substituição Tributária** → código `4.1.02`
-(`GNRE_ICMS_ST_CHART_CODE`; hoje "ICMS-ST a Recolher", cc=3/id=33) — exige `document_type='gnre'` **E** a
-frase EXPLÍCITA de ST no texto (`_ICMS_ST_PHRASES`: `substituição tributária`/`subst.tribut`/`icms st`…;
-GNRE só com código de receita/protocolo **não** casa — decisão do usuário). **Detecção** dos demais por
+(`GNRE_ICMS_ST_CHART_CODE`; hoje "ICMS-ST a Recolher", cc=3/id=33) — exige `document_type='gnre'` **E**
+um de DOIS gatilhos: (a) frase EXPLÍCITA de ST no texto (`_ICMS_ST_PHRASES`: `substituição tributária`/
+`subst.tribut`/`icms st`…) **ou** (b) **remetente do domínio `@lebianco`** (`_is_lebianco_sender`/
+`LEBIANCO_DOMAIN = "lebianco.com.br"`, + subdomínios — o setor que envia as guias de ST; o
+`sender_email` do payload é passado por `resolve_forced_classification`/`_chart_code_for_document`).
+GNRE só com código de receita/protocolo, de outro remetente, **não** casa — decisão do usuário.
+**Detecção** dos demais por
 ASSUNTO + DESCRIÇÃO do documento (+ corpo no caminho de corpo, via `extra_text`), palavra inteira sem
 acento (`_has_word`/`_ns_body`): `irrf`, `duimp` e as frases `_ICMS_IMPORT_PHRASES` (`icms importacao`…;
 **nunca** casa "icms" sozinho — ICMS/GNRE normal não cai aqui); transporte reusa `_is_transport_context`
@@ -1906,6 +1910,20 @@ faturas SIEG em `ignorado`; o handler A1 (baixar o boleto real) segue como melho
   na tabela `supplier` (nome/CNPJ/CPF + 4 e-mails, via `findSupplierIdsByTerm`) e filtra
   `sk_supplier=in.(...)` — o `applyFinancialFilters` casa ainda `invoice_number`/`subject`/
   `sender_email`, que são colunas próprias da conta.
+- **Busca inclui a CLASSIFICAÇÃO CONTÁBIL (mesmo campo livre):** como
+  `financial_account_control` só guarda as FKs `cost_center_id`/`chart_account_id` (grupo/subgrupo
+  vêm por hierarquia a partir do plano), o termo resolve antes os ids nos cadastros e filtra por
+  `cost_center_id=in.(...)`/`chart_account_id=in.(...)` — mesmo padrão do fornecedor. Resolvers em
+  `services/supabase.ts` (espelham `findSupplierIdsByTerm`): `findCostCenterIdsByTerm` (casa
+  `cost_center_code`/`cost_center_description`) e `findChartAccountIdsByTerm` (casa `account_code`/
+  `account_description` do plano **OU** o grupo/subgrupo — resolve `chart_account_group_id`/
+  `chart_account_subgroup_id` primeiro, via as FKs diretas migration 058, e entra como `.in.(...)` no
+  `or` do plano). O helper `resolveSearchIds(term)` resolve fornecedor + centro + plano em **paralelo**
+  (`Promise.all`) e alimenta os 3 call sites (grid/valor total/contagem). Ambos os cadastros **excluem
+  o sentinela id 0** ("não informado" — `id=gt.0`). Busca por valor (`R$ …`) continua exata, pulando
+  os resolvers. `applyFinancialFilters` acrescenta as duas cláusulas ao `or(...)` só quando o array
+  não é vazio (evita `in.()` inválido). Testado em `services/supabase.test.ts` (composição pura do
+  `or`); o placeholder/`aria-label` do input de `/consulta` citam a classificação.
 - **Busca também por VALOR do documento + valores de `ilike` CITADOS (`services/supabase.ts`):**
   quando o termo da busca é um valor monetário (formato BR ou simples — `463,21`, `44.406,08`,
   `391`, `463.21`), `parseBrlAmount` o converte e adiciona `amount.eq.<valor>` ao `or(...)`
@@ -2147,6 +2165,23 @@ negócio), `cnpj CHAR(14)`, `cpf CHAR(11)`, `legal_name`, `trade_name`, `email`/
   como `DEFAULT` de `sk_supplier`; a PK `supplier_pkey` passa a ser `(sk_supplier)`; `supplier_id`
   vira `NOT NULL UNIQUE` (`uq_supplier_supplier_id`), gravado pelo trigger de espelho
   `trg_supplier_mirror_id` quando o INSERT não o informa.
+
+> **MIGRAÇÃO FASEADA — `status_id` como FONTE ÚNICA da situação (FASE 1+2 aplicadas; FASE 3
+> pendente):** o `status` (texto) está sendo **removido** em favor do `status_id` (FK → dimensão
+> `status`). **FASE 1 (migration 067, aplicada):** `status_id` vira `NOT NULL DEFAULT 3` ('a vencer');
+> todo o app **lê/filtra/ordena/KPI por `status_id`** + o embed `status_dim:status(status_name,
+> status_short_name)` (nome de exibição); constantes `STATUS_IDS`/`STATUS_ID_*`/`STATUS_NAME_BY_ID`
+> em `@sheild/shared` (id 1..10 = a ordem da dimensão). **FASE 2 (migration 068, deploy coordenado):**
+> a trigger `fn_set_status_from_due_date` fica **id-primária** (recalcula 3/2 por vencimento quando
+> aberto — ids 1/2/3 — e **deriva o texto do id** enquanto a coluna existir) + `GRANT UPDATE(status_id)
+> TO authenticated`; **escrita por `status_id`** — frontend (`setFinancialAccountStatus`/bulk +
+> `StatusSelectCell` por id), Next API (update aceita `status_id`, não `status`) e Python
+> (`register_financial._apply_status_id` traduz o texto interno → `status_id` num único ponto;
+> `'pendente'`→omite/DEFAULT 3, `'falha'`→10; `extract_pdf.py` intocado). **FASE 3 (migration 069,
+> pendente):** dropar o CHECK + a coluna `status` texto, simplificar a trigger (só id) e remover
+> `status` do shared schema. **Ordenação da coluna Situação** = `order=status_dim(status_name)` (nome,
+> alfabético — decisão de negócio; id ≠ ordem). O texto abaixo descreve o estado PRÉ-migração e será
+> reconciliado na FASE 3.
 
 `financial_account_control.status` é a **coluna única de situação/ciclo de vida** (migration
 **034** fundiu o antigo `due_status` aqui). Default `pendente`; domínio pt-BR de **10 valores**

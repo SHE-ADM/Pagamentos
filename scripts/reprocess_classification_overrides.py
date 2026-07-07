@@ -7,10 +7,12 @@ contabil FORCADA por tipo de documento (mesma logica da extracao de e-mail):
   Transporte/transportadora/cte -> cost_center_id=4, chart_account_id=339 (grava no supplier)
   DAM / DUAM                 -> classificacao do plano de contas 4.1.06   (NAO grava no supplier)
   GNRE ICMS Subst. Tributaria -> classificacao do plano de contas 4.1.02  (NAO grava no supplier)
+    (gatilho: frase de ST no texto OU remetente do dominio @lebianco)
 
-Deteccao por ASSUNTO + DESCRICAO do documento (via read_emails.resolve_forced_classification
-— fonte unica; DAM/DUAM e GNRE-ST resolvem a classificacao da tabela financial_chart_of_account
-pelos codigos 4.1.06 e 4.1.02). O write-back no supplier NUNCA ocorre para a OTIMOTEX (sk_supplier=1).
+Deteccao por ASSUNTO + DESCRICAO do documento + REMETENTE (via
+read_emails.resolve_forced_classification — fonte unica; DAM/DUAM e GNRE-ST resolvem a
+classificacao da tabela financial_chart_of_account pelos codigos 4.1.06 e 4.1.02). O write-back
+no supplier NUNCA ocorre para a OTIMOTEX (sk_supplier=1).
 
 Uso:
     py -3 scripts/reprocess_classification_overrides.py --dry-run   # so lista o que faria
@@ -68,14 +70,16 @@ def reclassify_accounts(ctrl, dry_run: bool) -> "tuple[int, dict]":
     """Reclassifica as contas cujo assunto/descricao casa uma regra. Retorna (contas
     alteradas, write-backs pendentes {sk_supplier: (cc, ca)})."""
     rows = _get_all(ctrl, "financial_account_control?select=id,document_type,subject,"
-                          "description,cost_center_id,chart_account_id,sk_supplier")
+                          "description,sender_email,cost_center_id,chart_account_id,sk_supplier")
     log.info(f"contas avaliadas: {len(rows)}")
 
     changed = 0
     writebacks: "dict[int, tuple[int, int]]" = {}
     for acc in rows:
+        # sender_email alimenta a regra GNRE @lebianco -> ICMS-ST (mesma logica da extracao).
         override = R.resolve_forced_classification(
-            ctrl, acc.get("document_type"), acc.get("subject"), acc.get("description"))
+            ctrl, acc.get("document_type"), acc.get("subject"), acc.get("description"),
+            sender_email=acc.get("sender_email"))
         if not override:
             continue
         cc, ca, write_back = override

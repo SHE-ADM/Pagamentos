@@ -11,6 +11,7 @@ import type {
   ChartAccountGroup,
   ChartAccountSubgroup,
 } from '@sheild/shared';
+import { STATUS_IDS } from '@sheild/shared';
 import StatusBadge from '../components/StatusBadge';
 import CheckToggle from '../components/atoms/CheckToggle';
 import StatusSelectCell, { type StatusOption } from '../components/atoms/StatusSelectCell';
@@ -18,21 +19,18 @@ import type { FinancialAccountFlag } from '../services/supabase';
 // Formatters de exibição: fonte única em src/lib/format.ts (compartilhada com Consulta.tsx/Emails.tsx).
 import { fmtDate, fmtDateTime, fmtMoney, fmtCnpj, fmtCpf, fmtChartAccountFull } from '../lib/format';
 
-// Opções do dropdown inline de status — ordem de ciclo de vida, definida aqui como
-// constante de módulo para evitar qualquer dependência de fetch ou timing de estado.
-// Os labels usam capitalização padrão; 'cartório' preserva o acento do valor no banco.
-export const STATUS_OPTIONS: readonly StatusOption[] = [
-  { value: 'pendente',    label: 'Pendente' },
-  { value: 'a vencer',   label: 'A Vencer' },
-  { value: 'vencido',    label: 'Vencido' },
-  { value: 'prorrogado', label: 'Prorrogado' },
-  { value: 'baixado',    label: 'Baixado' },
-  { value: 'protestado', label: 'Protestado' },
-  { value: 'cartório',   label: 'Cartório' },
-  { value: 'pago',       label: 'Pago' },
-  { value: 'cancelado',  label: 'Cancelado' },
-  { value: 'falha',      label: 'Falha' },
-];
+// Opções do dropdown inline de situação — value = status_id (fonte única), label =
+// nome capitalizado. Ordem de CICLO DE VIDA (a vencer → vencido → …), não a ordem do id
+// (a dimensão tem vencido=2 antes de a vencer=3); a ordem de negócio é mais previsível no
+// dropdown. Constante de módulo (sem dependência de fetch/timing). 'cartório' com acento.
+const STATUS_LIFECYCLE_ORDER = [
+  'pendente', 'a vencer', 'vencido', 'prorrogado', 'baixado',
+  'protestado', 'cartório', 'pago', 'cancelado', 'falha',
+] as const;
+export const STATUS_OPTIONS: readonly StatusOption[] = STATUS_LIFECYCLE_ORDER.map((name) => ({
+  value: STATUS_IDS[name],
+  label: name.charAt(0).toUpperCase() + name.slice(1),
+}));
 
 /** Callback acionado ao marcar/desmarcar um checkbox de flag na célula do grid. */
 export type ToggleFlag = (
@@ -41,8 +39,8 @@ export type ToggleFlag = (
   value: boolean,
 ) => void;
 
-/** Callback acionado ao alterar o status de uma conta no dropdown inline. */
-export type StatusChangeCallback = (rowId: number, newStatus: string) => Promise<void>;
+/** Callback acionado ao alterar a situação de uma conta no dropdown inline (por status_id). */
+export type StatusChangeCallback = (rowId: number, newStatusId: number) => Promise<void>;
 
 /** Metadata de uma coluna do grid — fonte única para cabeçalho, render e responsividade. */
 export interface ColumnDef<T> {
@@ -205,17 +203,16 @@ export function getConsultaColumns(
     header: 'Situação',
     size: 148,
     minSize: 120,
-    // Ordenação de "Situação" é ALFABÉTICA pelo nome (equivale a ORDER BY status_name na
-    // dimensão `status`). Decisão de negócio: o ciclo de vida não é estritamente linear —
-    // de "a vencer" pode-se ir direto para "cancelado", "falha" etc. —, então a ordem por
-    // `status_id` não representa uma sequência real e a alfabética é mais previsível.
-    // sortKey usa `status` (coluna de texto da financial_account_control); `status_name`
-    // só existe na dimensão `status` e não é uma coluna ordenável deste endpoint.
+    // Ordenação de "Situação" é ALFABÉTICA pelo nome. Decisão de negócio: o ciclo de vida
+    // não é estritamente linear — de "a vencer" pode-se ir direto para "cancelado"/"falha" —,
+    // então a ordem por `status_id` não representa uma sequência real e a alfabética é mais
+    // previsível. sortKey='status' é mapeado no serviço para `order=status_dim(status_name)`
+    // (a dimensão embutida), pois status_id é a fonte única (coluna texto em remoção).
     sortKey: 'status',
     render: (r) =>
       createElement(StatusSelectCell, {
         rowId: r.id,
-        value: r.status ?? 'pendente',
+        value: r.status_id,
         options: STATUS_OPTIONS,
         onSave: onStatusChange,
       }),

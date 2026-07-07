@@ -10,7 +10,20 @@
 // Authorization.
 
 import type { EmailControl, FinancialAccountControl, ProcessingError } from '@sheild/shared';
+import {
+  STATUS_ID_CANCELADO,
+  STATUS_ID_PAGO,
+  STATUS_ID_VENCIDO,
+  STATUS_ID_A_VENCER,
+  STATUS_NAME_BY_ID,
+} from '@sheild/shared';
 import { supabase } from '../lib/supabaseClient';
+
+// Situação é filtrada/ordenada por status_id (fonte única). Ordenar a coluna
+// "Situação" continua ALFABÉTICO pelo NOME (decisão de negócio — id ≠ ordem), via o
+// embed da dimensão: order=status_dim(status_name). Mapeia a chave de coluna do grid.
+const STATUS_SORT_KEY = 'status';
+const STATUS_DIM_ORDER = 'status_dim(status_name)';
 
 const BASE_URL = import.meta.env.VITE_SUPABASE_URL;
 const ANON_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY;
@@ -193,12 +206,16 @@ const SELECT_WITH_EMBEDS =
   // "Plano de contas" do grid concatena plano + grupo + subgrupo + centro de custo.
   'chart_account:financial_chart_of_account(account_code,account_description,' +
   'group:financial_chart_of_account_group(group_code,group_description),' +
-  'subgroup:financial_chart_of_account_subgroup(subgroup_code,subgroup_description))';
+  'subgroup:financial_chart_of_account_subgroup(subgroup_code,subgroup_description)),' +
+  // Dimensão `status` (via FK status_id) — fonte do NOME da situação para exibição
+  // (a coluna `status` texto está em remoção faseada; status_id é a fonte única).
+  'status_dim:status(status_name,status_short_name)';
 
 interface FinancialAccountControlFilters {
   supplier?: string;
   docType?: string;
-  status?: string;
+  // Situação filtrada por status_id (fonte única). undefined = sem filtro de situação.
+  statusId?: number;
   paymentMethod?: string;
   // Coluna de data do filtro de período: vencimento (default) ou emissão.
   dateField?: 'due_date' | 'issue_date';
@@ -303,22 +320,102 @@ async function findSupplierIdsByTerm(term: string): Promise<number[]> {
   return data.map((r) => r.sk_supplier);
 }
 
-function applyFinancialFilters(
+// GET genérico numa tabela de cadastro que casa `term` (ilike) em `code`/`description`
+// e devolve a coluna de id. Espelha findSupplierIdsByTerm para a classificação contábil.
+async function findIdsByTerm(
+  table: string,
+  idCol: string,
+  cols: string[],
+  term: string,
+  extra = '',
+): Promise<number[]> {
+  const url = new URL(`${BASE_URL}/rest/v1/${table}`);
+  const like = ilikeContains(term);
+  url.searchParams.set('select', idCol);
+  url.searchParams.set('or', `(${cols.map((c) => `${c}.ilike.${like}`).join(',')})`);
+  url.searchParams.set('limit', '1000');
+  const qs = extra ? `${url.toString()}&${extra}` : url.toString();
+  const res = await fetch(qs, { headers: await authHeaders() });
+  if (!res.ok) return [];
+  const data = (await res.json()) as Record<string, number>[];
+  return data.map((r) => r[idCol]);
+}
+
+// cost_center_id[] cujo código/descrição casa o termo. Exclui o sentinela id 0 ("não
+// informado") — buscar por classificação não deve trazer o balde de não classificados.
+async function findCostCenterIdsByTerm(term: string): Promise<number[]> {
+  return findIdsByTerm(
+    'financial_cost_center', 'cost_center_id',
+    ['cost_center_code', 'cost_center_description'], term, 'cost_center_id=gt.0',
+  );
+}
+
+// chart_account_id[] cujo PLANO (código/descrição), GRUPO ou SUBGRUPO casa o termo. Grupo e
+// subgrupo são resolvidos primeiro (FKs diretas do plano: chart_account_group_id migration
+// 058, chart_account_subgroup_id) e entram como `.in.(...)` no or do plano.
+async function findChartAccountIdsByTerm(term: string): Promise<number[]> {
+  const [groupIds, subgroupIds] = await Promise.all([
+    findIdsByTerm('financial_chart_of_account_group', 'chart_account_group_id',
+      ['group_code', 'group_description'], term),
+    findIdsByTerm('financial_chart_of_account_subgroup', 'chart_account_subgroup_id',
+      ['subgroup_code', 'subgroup_description'], term),
+  ]);
+  const url = new URL(`${BASE_URL}/rest/v1/financial_chart_of_account`);
+  const like = ilikeContains(term);
+  const clauses = [`account_code.ilike.${like}`, `account_description.ilike.${like}`];
+  if (groupIds.length) clauses.push(`chart_account_group_id.in.(${groupIds.join(',')})`);
+  if (subgroupIds.length) clauses.push(`chart_account_subgroup_id.in.(${subgroupIds.join(',')})`);
+  url.searchParams.set('select', 'chart_account_id');
+  url.searchParams.set('or', `(${clauses.join(',')})`);
+  url.searchParams.set('chart_account_id', 'gt.0');
+  url.searchParams.set('limit', '1000');
+  const res = await fetch(url.toString(), { headers: await authHeaders() });
+  if (!res.ok) return [];
+  const data = (await res.json()) as { chart_account_id: number }[];
+  return data.map((r) => r.chart_account_id);
+}
+
+// IDs de busca resolvidos em paralelo (fornecedor + classificação contábil) para o termo
+// livre de /consulta. Busca por valor ("R$ …") pula tudo. Alimenta applyFinancialFilters.
+interface SearchIds {
+  supplierIds: number[];
+  costCenterIds: number[];
+  chartAccountIds: number[];
+}
+async function resolveSearchIds(term: string | undefined): Promise<SearchIds> {
+  if (!term || isCurrencyValueSearch(term)) {
+    return { supplierIds: [], costCenterIds: [], chartAccountIds: [] };
+  }
+  const [supplierIds, costCenterIds, chartAccountIds] = await Promise.all([
+    findSupplierIdsByTerm(term),
+    findCostCenterIdsByTerm(term),
+    findChartAccountIdsByTerm(term),
+  ]);
+  return { supplierIds, costCenterIds, chartAccountIds };
+}
+
+const EMPTY_SEARCH_IDS: SearchIds = { supplierIds: [], costCenterIds: [], chartAccountIds: [] };
+
+// Exportado para teste unitário puro (sem fetch) — monta o or(...) do PostgREST.
+// ts-prune-ignore-next
+export function applyFinancialFilters(
   params: URLSearchParams,
-  { supplier, docType, status, paymentMethod, dateField, month, year, dateFrom, dateTo }: FinancialAccountControlFilters,
-  supplierIds: number[] = [],
+  { supplier, docType, statusId, paymentMethod, dateField, month, year, dateFrom, dateTo }: FinancialAccountControlFilters,
+  searchIds: SearchIds = EMPTY_SEARCH_IDS,
   // Só o GRID inclui canceladas; os KPIs (Valor total) mantêm a exclusão para não
   // somar cancelado (evita confusão). Default = excluir cancelado.
   includeCancelled = false,
 ): void {
-  // or= nas colunas próprias da conta (nº documento, assunto, remetente) mais os
-  // sk_supplier resolvidos pelo termo (nome/CNPJ/CPF/e-mail do cadastro supplier).
+  // or= nas colunas próprias da conta (nº documento, assunto, remetente, valor) mais os
+  // ids resolvidos pelo termo: sk_supplier (nome/CNPJ/CPF/e-mail do cadastro supplier),
+  // cost_center_id (centro de custo) e chart_account_id (plano de contas + grupo/subgrupo).
   if (supplier) {
     if (isCurrencyValueSearch(supplier)) {
       // "R$ ..." → busca EXATA pelo valor do documento, sem busca textual.
       params.set('amount', `eq.${parseBrlAmount(supplier)}`);
     } else {
       const like = ilikeContains(supplier);
+      const { supplierIds, costCenterIds, chartAccountIds } = searchIds;
       const clauses = [
         `invoice_number.ilike.${like}`,
         `subject.ilike.${like}`,
@@ -328,14 +425,16 @@ function applyFinancialFilters(
       const amount = parseBrlAmount(supplier);
       if (amount) clauses.push(`amount.eq.${amount}`);
       if (supplierIds.length) clauses.push(`sk_supplier.in.(${supplierIds.join(',')})`);
+      if (costCenterIds.length) clauses.push(`cost_center_id.in.(${costCenterIds.join(',')})`);
+      if (chartAccountIds.length) clauses.push(`chart_account_id.in.(${chartAccountIds.join(',')})`);
       params.set('or', `(${clauses.join(',')})`);
     }
   }
   if (docType) params.set('document_type', `eq.${docType}`);
-  // Situação: filtro explícito sobrescreve tudo. Sem filtro, o grid mostra TODAS
-  // (inclui cancelado — regra antiga removida); os KPIs mantêm `neq.cancelado`.
-  if (status) params.set('status', `eq.${status}`);
-  else if (!includeCancelled) params.set('status', 'neq.cancelado');
+  // Situação (status_id, fonte única): filtro explícito sobrescreve tudo. Sem filtro, o
+  // grid mostra TODAS (inclui cancelado); os KPIs mantêm neq.cancelado (por id).
+  if (statusId != null) params.set('status_id', `eq.${statusId}`);
+  else if (!includeCancelled) params.set('status_id', `neq.${STATUS_ID_CANCELADO}`);
   if (paymentMethod) params.set('payment_method', `eq.${paymentMethod}`);
   // Filtro de data na coluna escolhida (vencimento por padrão):
   //  1) Intervalo explícito dateFrom/dateTo (busca global por range OU card "7 dias")
@@ -357,7 +456,7 @@ function applyFinancialFilters(
 export async function getFinancialAccountControl({
   supplier,
   docType,
-  status,
+  statusId,
   paymentMethod,
   dateField,
   month,
@@ -376,17 +475,20 @@ export async function getFinancialAccountControl({
   // Embeds de classificação contábil (FKs cost_center_id / chart_account_id).
   url.searchParams.set('select', SELECT_WITH_EMBEDS);
   // Ordenação padrão = criação (created_at) descendente — mais recente no topo (igual ao /emails).
-  // Sort explícito do usuário sobrescreve.
-  url.searchParams.set('order', sortCol ? `${sortCol}.${sortDir ?? 'asc'}` : 'created_at.desc');
+  // Sort explícito do usuário sobrescreve. A coluna "Situação" ordena pelo NOME da
+  // dimensão (alfabético — decisão de negócio; id ≠ ordem), via order=status_dim(status_name).
+  const orderCol = sortCol === STATUS_SORT_KEY ? STATUS_DIM_ORDER : sortCol;
+  url.searchParams.set('order', orderCol ? `${orderCol}.${sortDir ?? 'asc'}` : 'created_at.desc');
   url.searchParams.set('limit', String(pageSize));
   url.searchParams.set('offset', String(offset));
-  // Busca "R$ ..." é por valor → não resolve fornecedor pelo termo.
-  const supplierIds = supplier && !isCurrencyValueSearch(supplier) ? await findSupplierIdsByTerm(supplier) : [];
+  // Busca "R$ ..." é por valor → não resolve ids pelo termo. Senão, resolve fornecedor +
+  // classificação contábil (centro de custo / plano de contas / grupo / subgrupo) em paralelo.
+  const searchIds = await resolveSearchIds(supplier);
   // Grid: inclui canceladas (includeCancelled=true). Os KPIs continuam excluindo.
   applyFinancialFilters(
     url.searchParams,
-    { supplier, docType, status, paymentMethod, dateField, month, year, dateFrom, dateTo },
-    supplierIds,
+    { supplier, docType, statusId, paymentMethod, dateField, month, year, dateFrom, dateTo },
+    searchIds,
     true,
   );
   const reqHeaders = await authHeaders({ Prefer: 'count=exact' });
@@ -418,27 +520,27 @@ export async function setFinancialAccountFlag(
   if (!res.ok) throw new Error(`Supabase ${res.status}: ${await res.text()}`);
 }
 
-// Permite ao usuário autenticado alterar a situação de uma conta em /consulta.
-// A migration 036 concede GRANT UPDATE (status) TO authenticated.
-// A trigger fn_set_status_from_due_date (SECURITY DEFINER) sincroniza status_id.
-export async function setFinancialAccountStatus(id: number, status: string): Promise<void> {
+// Permite ao usuário autenticado alterar a situação de uma conta em /consulta — grava
+// por status_id (fonte única). A migration 068 concede GRANT UPDATE (status_id) TO
+// authenticated; a trigger id-primária (SECURITY DEFINER) deriva o texto `status`.
+export async function setFinancialAccountStatus(id: number, statusId: number): Promise<void> {
   const url = new URL(`${BASE_URL}/rest/v1/financial_account_control`);
   url.searchParams.set('id', `eq.${id}`);
   const res = await fetch(url.toString(), {
     method: 'PATCH',
     headers: await authHeaders({ Prefer: 'return=minimal' }),
-    body: JSON.stringify({ status }),
+    body: JSON.stringify({ status_id: statusId }),
   });
   if (!res.ok) throw new Error(`Supabase ${res.status}: ${await res.text()}`);
 }
 
-export async function setFinancialAccountStatusBulk(ids: number[], status: string): Promise<void> {
+export async function setFinancialAccountStatusBulk(ids: number[], statusId: number): Promise<void> {
   const url = new URL(`${BASE_URL}/rest/v1/financial_account_control`);
   url.searchParams.set('id', `in.(${ids.join(',')})`);
   const res = await fetch(url.toString(), {
     method: 'PATCH',
     headers: await authHeaders({ Prefer: 'return=minimal' }),
-    body: JSON.stringify({ status }),
+    body: JSON.stringify({ status_id: statusId }),
   });
   if (!res.ok) throw new Error(`Supabase ${res.status}: ${await res.text()}`);
 }
@@ -452,9 +554,8 @@ export async function getFinancialAccountTotalValue(
   const url = new URL(`${BASE_URL}/rest/v1/financial_account_control`);
   url.searchParams.set('select', 'amount');
   url.searchParams.set('limit', '10000');
-  const supplierIds =
-    filters.supplier && !isCurrencyValueSearch(filters.supplier) ? await findSupplierIdsByTerm(filters.supplier) : [];
-  applyFinancialFilters(url.searchParams, filters, supplierIds);
+  const searchIds = await resolveSearchIds(filters.supplier);
+  applyFinancialFilters(url.searchParams, filters, searchIds);
   const res = await fetch(url.toString(), { headers: await authHeaders() });
   if (!res.ok) throw new Error(`Supabase ${res.status}: ${await res.text()}`);
   const data = (await res.json()) as { amount: number | null }[];
@@ -472,9 +573,8 @@ export async function getFinancialAccountCount(
   const url = new URL(`${BASE_URL}/rest/v1/financial_account_control`);
   url.searchParams.set('select', 'id');
   url.searchParams.set('limit', '1');
-  const supplierIds =
-    filters.supplier && !isCurrencyValueSearch(filters.supplier) ? await findSupplierIdsByTerm(filters.supplier) : [];
-  applyFinancialFilters(url.searchParams, filters, supplierIds);
+  const searchIds = await resolveSearchIds(filters.supplier);
+  applyFinancialFilters(url.searchParams, filters, searchIds);
   const res = await fetch(url.toString(), { headers: await authHeaders({ Prefer: 'count=exact' }) });
   if (!res.ok) throw new Error(`Supabase ${res.status}: ${await res.text()}`);
   const cr = res.headers.get('Content-Range');
@@ -590,21 +690,21 @@ export interface FinancialStats {
 export async function getFinancialStats(): Promise<FinancialStats> {
   // `neq.cancelado` espelha o padrão da listagem (applyFinancialFilters): contas
   // canceladas ficam fora dos KPIs a menos que o usuário filtre explicitamente.
-  const all = await query<Pick<FinancialAccountControl, 'amount' | 'status' | 'due_date'>[]>(
+  const all = await query<Pick<FinancialAccountControl, 'amount' | 'status_id' | 'due_date'>[]>(
     'financial_account_control',
-    { select: 'amount,status,due_date', status: 'neq.cancelado', limit: 1000 },
+    { select: 'amount,status_id,due_date', status_id: `neq.${STATUS_ID_CANCELADO}`, limit: 1000 },
   );
   const sum = (rows: typeof all) => rows.reduce((s, r) => s + (Number(r.amount) || 0), 0);
   const today = new Date();
   const todayStr = today.toISOString().slice(0, 10);
   const in7 = new Date(today.getTime() + 7 * 86400000).toISOString().slice(0, 10);
 
-  const pagoRows = all.filter((r) => r.status === 'pago');
-  const aVencerRows = all.filter((r) => r.status === 'a vencer');
+  const pagoRows = all.filter((r) => r.status_id === STATUS_ID_PAGO);
+  const aVencerRows = all.filter((r) => r.status_id === STATUS_ID_A_VENCER);
   const vencendoRows = aVencerRows.filter(
     (r) => r.due_date !== null && r.due_date >= todayStr && r.due_date <= in7,
   );
-  const vencidasRows = all.filter((r) => r.status === 'vencido');
+  const vencidasRows = all.filter((r) => r.status_id === STATUS_ID_VENCIDO);
 
   return {
     totalRecords: all.length,
@@ -674,10 +774,10 @@ function classifyPriority(text: string): PriorityKind | null {
   return null;
 }
 
-type MonthRow = Pick<FinancialAccountControl, 'id' | 'amount' | 'status' | 'due_date' | 'document_type' | 'description'> & {
+type MonthRow = Pick<FinancialAccountControl, 'id' | 'amount' | 'status_id' | 'due_date' | 'document_type' | 'description'> & {
   supplier?: { trade_name: string | null; legal_name: string | null } | null;
 };
-type YearRow = Pick<FinancialAccountControl, 'amount' | 'status' | 'due_date'>;
+type YearRow = Pick<FinancialAccountControl, 'amount' | 'status_id' | 'due_date'>;
 
 const num = (v: number | null | undefined): number => Number(v) || 0;
 const supplierName = (r: MonthRow): string => r.supplier?.trade_name ?? r.supplier?.legal_name ?? 'Sem fornecedor';
@@ -695,15 +795,15 @@ export async function getDashboardData(month: number, year: number, scope: Dashb
   // As duas leituras são independentes → Promise.all (antes eram sequenciais).
   const [monthRows, yearRows] = await Promise.all([
     query<MonthRow[]>('financial_account_control', {
-      select: 'id,amount,status,due_date,document_type,description,supplier(trade_name,legal_name)',
-      status: 'neq.cancelado',
+      select: 'id,amount,status_id,due_date,document_type,description,supplier(trade_name,legal_name)',
+      status_id: `neq.${STATUS_ID_CANCELADO}`,
       ...(scope === 'month' ? { and: `(due_date.gte.${first},due_date.lte.${last})` } : {}),
       limit: scope === 'month' ? 5000 : 20000,
     }),
     // Contas do ano inteiro (só os campos do gráfico) para as movimentações mês a mês.
     query<YearRow[]>('financial_account_control', {
-      select: 'amount,status,due_date',
-      status: 'neq.cancelado',
+      select: 'amount,status_id,due_date',
+      status_id: `neq.${STATUS_ID_CANCELADO}`,
       and: `(due_date.gte.${year}-01-01,due_date.lte.${year}-12-31)`,
       limit: 20000,
     }),
@@ -711,10 +811,10 @@ export async function getDashboardData(month: number, year: number, scope: Dashb
 
   // KPIs
   const sum = (rows: MonthRow[]): number => rows.reduce((s, r) => s + num(r.amount), 0);
-  const pagoRows = monthRows.filter((r) => r.status === 'pago');
-  const aVencerRows = monthRows.filter((r) => r.status === 'a vencer');
+  const pagoRows = monthRows.filter((r) => r.status_id === STATUS_ID_PAGO);
+  const aVencerRows = monthRows.filter((r) => r.status_id === STATUS_ID_A_VENCER);
   const vencendoRows = aVencerRows.filter((r) => r.due_date && r.due_date >= todayStr && r.due_date <= in7);
-  const vencidasRows = monthRows.filter((r) => r.status === 'vencido');
+  const vencidasRows = monthRows.filter((r) => r.status_id === STATUS_ID_VENCIDO);
   const kpis: DashboardKpis = {
     totalCount: monthRows.length, totalValue: sum(monthRows),
     pagoCount: pagoRows.length, pagoValue: sum(pagoRows),
@@ -726,7 +826,7 @@ export async function getDashboardData(month: number, year: number, scope: Dashb
   // Situação por status
   const statusMap = new Map<string, { count: number; value: number }>();
   for (const r of monthRows) {
-    const k = r.status ?? 'pendente';
+    const k = STATUS_NAME_BY_ID[r.status_id] ?? 'pendente';
     const cur = statusMap.get(k) ?? { count: 0, value: 0 };
     cur.count += 1; cur.value += num(r.amount);
     statusMap.set(k, cur);
@@ -755,18 +855,20 @@ export async function getDashboardData(month: number, year: number, scope: Dashb
     const m = Number(r.due_date.slice(5, 7)) - 1;
     if (m < 0 || m > 11) continue;
     buckets[m].aPagar += num(r.amount);
-    if (r.status === 'pago') buckets[m].pago += num(r.amount);
+    if (r.status_id === STATUS_ID_PAGO) buckets[m].pago += num(r.amount);
   }
 
   // Contas críticas / prioritárias: utilidades essenciais OU vencidas.
   const priorityAccounts: PriorityAccount[] = monthRows
     .map((r): PriorityAccount | null => {
       const kind = classifyPriority(`${supplierName(r)} ${r.description ?? ''} ${r.document_type ?? ''}`);
-      const isVencido = r.status === 'vencido';
+      const isVencido = r.status_id === STATUS_ID_VENCIDO;
       if (!kind && !isVencido) return null;
       return {
         id: r.id, kind: kind ?? 'outro', supplier: supplierName(r),
-        due: r.due_date, amount: r.amount, status: r.status ?? 'pendente',
+        due: r.due_date, amount: r.amount,
+        // PriorityAccount.status carrega o NOME (o Dashboard renderiza StatusBadge por nome).
+        status: STATUS_NAME_BY_ID[r.status_id] ?? 'pendente',
         critical: isVencido,
       };
     })

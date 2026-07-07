@@ -11,6 +11,7 @@
 import {
   financialAccountControlCreateSchema,
   financialAccountControlUpdateSchema,
+  STATUS_ID_CANCELADO,
   type FinancialAccountControl,
   type FinancialAccountControlCreate,
   type FinancialAccountControlUpdate,
@@ -34,7 +35,10 @@ const SELECT_WITH_SUPPLIER =
   'cost_center:financial_cost_center(cost_center_code,cost_center_description),' +
   'chart_account:financial_chart_of_account(account_code,account_description,' +
   'group:financial_chart_of_account_group(group_code,group_description),' +
-  'subgroup:financial_chart_of_account_subgroup(subgroup_code,subgroup_description))';
+  'subgroup:financial_chart_of_account_subgroup(subgroup_code,subgroup_description)),' +
+  // Dimensão `status` (via FK status_id) — nome da situação para exibição (status_id é a
+  // fonte única; a coluna `status` texto está em remoção faseada).
+  'status_dim:status(status_name,status_short_name)';
 const DEFAULT_LIMIT = 20;
 const MAX_LIMIT = 100;
 
@@ -95,7 +99,8 @@ const contaRepository = {
       .from(TABLE)
       .select(SELECT_WITH_SUPPLIER, { count: 'exact' })
       // Contas canceladas ficam fora da lista por padrão (mesmo critério de /consulta).
-      .neq('status', 'cancelado');
+      // Por status_id (fonte única) — a coluna `status` texto está em remoção faseada.
+      .neq('status_id', STATUS_ID_CANCELADO);
 
     if (params.search) {
       const term = sanitizeTerm(params.search);

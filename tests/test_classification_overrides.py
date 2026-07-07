@@ -251,6 +251,57 @@ class GnreIcmsStTest(unittest.TestCase):
         self.assertEqual(payload["chart_account_id"], 33)
         self.assertEqual(ctrl.writeback_calls, [])  # GNRE-ST nunca faz write-back
 
+    def test_gnre_de_remetente_lebianco_sem_frase_pega_4102(self):
+        # Gatilho adicional: GNRE de @lebianco (setor que envia ST) vira 4.1.02 mesmo SEM
+        # a frase de ST no texto. Vale para o dominio e subdominios.
+        ctrl = _FakeCtrl()
+        for email in ("rosangela@lebianco.com.br", "lidiane@lebianco.com.br",
+                      "marcio@lebianco.com.br", "qualquer@fin.lebianco.com.br"):
+            self.assertEqual(
+                R.resolve_forced_classification(ctrl, "gnre", "ENC: GUIA GNRE .",
+                                                sender_email=email),
+                (3, 33, False), email)
+
+    def test_gnre_de_outro_dominio_sem_frase_nao_forca(self):
+        # Remetente fora de @lebianco e sem frase de ST -> nao forca (comportamento antigo).
+        ctrl = _FakeCtrl()
+        self.assertIsNone(
+            R.resolve_forced_classification(ctrl, "gnre", "ENC: GUIA GNRE .",
+                                            sender_email="financeiro@fornecedor.com"))
+
+    def test_remetente_lebianco_so_vale_para_gnre(self):
+        # O gatilho de remetente so aplica a GNRE — outro document_type nao dispara 4.1.02.
+        ctrl = _FakeCtrl()
+        self.assertIsNone(
+            R.resolve_forced_classification(ctrl, "boleto", "PAGAMENTO XYZ",
+                                            sender_email="rosangela@lebianco.com.br"))
+
+    def test_gnre_importacao_de_lebianco_ainda_vai_para_importacao(self):
+        # Precedencia preservada: GNRE @lebianco COM sinal de ICMS Importacao -> 3/11 (regra
+        # fixa vence), nao 4.1.02.
+        ctrl = _FakeCtrl()
+        self.assertEqual(
+            R.resolve_forced_classification(ctrl, "gnre", "GNRE ICMS Importação",
+                                            sender_email="marcio@lebianco.com.br"),
+            (R.CC_FISCAL, R.CA_ICMS_IMPORT, True))
+
+    def test_apply_gnre_lebianco_forca_conta_sem_writeback(self):
+        ctrl = _FakeCtrl()
+        payload = {"document_type": "gnre", "subject": "ENC: GUIA GNRE",
+                   "sender_email": "rosangela@lebianco.com.br", "sk_supplier": 555}
+        R.apply_forced_classification(ctrl, payload)
+        self.assertEqual(payload["cost_center_id"], 3)
+        self.assertEqual(payload["chart_account_id"], 33)
+        self.assertEqual(ctrl.writeback_calls, [])  # GNRE-ST nunca faz write-back
+
+    def test_gnre_sem_lebianco_com_frase_st_continua_casando(self):
+        # Regressao: o gatilho de frase de ST continua valendo sem depender do remetente.
+        ctrl = _FakeCtrl()
+        self.assertEqual(
+            R.resolve_forced_classification(ctrl, "gnre", "GNRE ICMS-ST",
+                                            sender_email="terceiro@outro.com"),
+            (3, 33, False))
+
 
 class SupersedesSupplierDefaultTest(unittest.TestCase):
     """A regra por tipo de documento SOBREPOE a classificacao herdada do supplier

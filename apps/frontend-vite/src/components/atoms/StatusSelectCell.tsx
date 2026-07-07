@@ -1,18 +1,19 @@
 import { useState, useRef, useEffect } from 'react';
 import { Pencil } from 'lucide-react';
+import { STATUS_NAME_BY_ID } from '@sheild/shared';
 import StatusBadge from '../StatusBadge';
 import { cn } from '../../lib/cn';
 
 export interface StatusOption {
-  value: string;          // status_name no banco
-  label: string;          // status_short_name ou valor capitalizado
+  value: number;          // status_id (fonte única) na tabela financial_account_control
+  label: string;          // nome capitalizado para o dropdown
 }
 
 interface Props {
   rowId: number;
-  value: string;
+  value: number;          // status_id atual
   options: Readonly<StatusOption[]>;
-  onSave: (rowId: number, newStatus: string) => Promise<void>;
+  onSave: (rowId: number, newStatusId: number) => Promise<void>;
 }
 
 /**
@@ -50,7 +51,7 @@ export default function StatusSelectCell({ rowId, value, options, onSave }: Read
   };
 
   const handleChange = async (e: React.ChangeEvent<HTMLSelectElement>) => {
-    const next = e.target.value;
+    const next = Number(e.target.value);
     setEditing(false);
     if (next === current) return; // sem mudança — não chama a API
     const prev = current;
@@ -66,12 +67,14 @@ export default function StatusSelectCell({ rowId, value, options, onSave }: Read
   };
 
   const stopProp = (e: React.MouseEvent) => e.stopPropagation();
+  // Badge/aria usam o NOME da situação (StatusBadge é keyado pelo nome da dimensão).
+  const currentName = STATUS_NAME_BY_ID[current] ?? String(current);
 
   if (editing) {
     return (
       <select
         ref={selectRef}
-        defaultValue={current}
+        defaultValue={String(current)}
         onChange={handleChange}
         onBlur={() => setEditing(false)}
         onClick={stopProp}
@@ -97,14 +100,14 @@ export default function StatusSelectCell({ rowId, value, options, onSave }: Read
       disabled={saving}
       onClick={handleButtonClick}
       title="Clique para alterar a situação"
-      aria-label={`Situação: ${current}. Clique para alterar.`}
+      aria-label={`Situação: ${currentName}. Clique para alterar.`}
       className={cn(
         'group flex items-center gap-1.5 rounded-sm px-1 -mx-1',
         'transition-colors hover:bg-slate-100',
         saving ? 'cursor-wait opacity-60' : 'cursor-pointer',
       )}
     >
-      <StatusBadge value={current} />
+      <StatusBadge value={currentName} />
       {saving ? (
         <span
           aria-label="Salvando…"
