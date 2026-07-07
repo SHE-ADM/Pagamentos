@@ -89,6 +89,33 @@ def _normalize_body_barcode(raw: str | None) -> str | None:
         return digits if 44 <= len(digits) <= 48 else None
 
 
+def _apply_barcode_due_date(payload: dict) -> None:
+    """Rede de seguranca UNIVERSAL contra inversao dia/mes do vencimento: a data de vencimento
+    de um boleto e o FATOR DE VENCIMENTO do codigo de barras (deterministico), NAO a data lida —
+    que o Vision/OCR pode inverter (falha grave: id 435 gravou 07/08 no lugar de 08/07). Antes de
+    gravar QUALQUER conta com boleto FEBRABAN, sobrescreve o due_date pelo derivado do barcode se
+    divergir. Aplicado em register_financial (choke point unico de toda gravacao do pipeline
+    Python — PDF, corpo e reprocessos), alem da correcao em extract_pdf.build_record. Best-effort:
+    import lazy do extract_pdf; qualquer falha e ignorada (nao derruba a gravacao)."""
+    if not payload.get("barcode"):
+        return
+    try:
+        if str(EXTRACT_SCRIPT.parent) not in sys.path:
+            sys.path.insert(0, str(EXTRACT_SCRIPT.parent))
+        from extract_pdf import due_date_from_barcode
+        bc_due = due_date_from_barcode(
+            payload.get("barcode"), payload.get("issue_date") or payload.get("extracted_at"))
+    except Exception:
+        return
+    cur = str(payload.get("due_date") or "")[:10]
+    if not bc_due or cur == bc_due:
+        return
+    payload["due_date"] = bc_due
+    note = f"Vencimento corrigido pelo codigo de barras (fator FEBRABAN): {cur or '—'} -> {bc_due}"
+    payload["processing_notes"] = (
+        f'{payload["processing_notes"]} | {note}' if payload.get("processing_notes") else note)
+
+
 def _is_boleto_barcode(barcode: str | None) -> bool:
     """True quando o barcode e um BOLETO pagavel (nao chave NF-e/CT-e). Reusa a
     funcao canonica do extract_pdf (44 FEBRABAN moeda '9' banco != '000', ou 48
@@ -325,6 +352,7 @@ class SupabaseControl:
             return False
         try:
             payload = dict(payload)   # copia — nao muta o dict do chamador ao traduzir status
+            _apply_barcode_due_date(payload)  # rede de seguranca: vencimento pelo fator do barcode
             _apply_status_id(payload)
             data = json.dumps(payload).encode()
             req = urllib.request.Request(
@@ -582,7 +610,10 @@ class SupabaseControl:
         """Write-back da classificacao contabil no cadastro do fornecedor (PATCH supplier).
         Equivalente Python do TS setSupplierClassification. Best-effort: falha NAO derruba a
         gravacao da conta. O chamador (apply_forced_classification) ja garante a excecao da
-        OTIMOTEX (sk=1); aqui so validamos disponibilidade e sk."""
+        OTIMOTEX (sk=1); aqui so validamos disponibilidade e sk.
+        NOTA: fornecedor de FUNCIONARIO (trade_name com 'funcionario') e mantido em 0 pela
+        trigger trg_supplier_no_funcionario_classification (migration 070) — este write-back
+        vira no-op para eles (a despesa de funcionario varia por conta, sem default no cadastro)."""
         if not self._available or not sk_supplier:
             return False
         try:

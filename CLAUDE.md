@@ -385,6 +385,17 @@ e a classificação flui nos **dois sentidos**:
   busca o fornecedor completo (`getSupplier` → `GET /suppliers/:sk`, com embeds) para rotular os
   selects; a lista (`GET /suppliers`) traz só os ids. O write-back do modal de contas
   (`setSupplierClassification`) **permanece** como caminho paralelo (grava só quando ambos `> 0`).
+- **EXCEÇÃO — fornecedor de FUNCIONÁRIO NÃO carrega classificação default (migration 070 — não
+  regredir):** quando o `trade_name` do fornecedor contém "funcionário"/"Funcionário" (sem acento/
+  caixa, via `normalize_search LIKE '%funcionario%'`), `supplier.cost_center_id`/`chart_account_id`
+  são **mantidos em 0** — a classificação de despesa de funcionário (reembolso/adiantamento) varia
+  por conta, então um default no cadastro não faz sentido. Enforcement por **trigger**
+  `trg_supplier_no_funcionario_classification` (BEFORE INSERT/UPDATE em `supplier`, força cc/plano=0)
+  — fonte ÚNICA que cobre TODOS os caminhos de escrita: write-back do modal (`setSupplierClassification`),
+  write-back da extração (`update_supplier_classification`), edição pelo CRUD (`/fornecedores`) e UPDATE
+  direto (todos viram no-op para funcionário). A classificação por **conta**
+  (`financial_account_control`) NÃO é afetada — só o default do fornecedor. Backfill único zerou os
+  fornecedores de funcionário já classificados (ex.: "Josefa/Edvaldo/Tania (Funcionário)").
 
 **Usuários / autenticação (`apps/api-backend/lib/users.ts` + `app/api/users|auth/**`):** sobre
 o **Supabase Auth** — sem tabela própria, sem JWT customizado, sem bcrypt (regras de
@@ -1254,6 +1265,36 @@ ordem inversa). **Limpeza retroativa** aplicada em 2026-07-03: hard delete de 7 
 que coexistiam com o boleto do mesmo e-mail (ids 379/327/146/242/129/387/111; boletos
 380/328/147/243/130/388/112 preservados) — todos os pares tinham valor idêntico.
 
+### Vencimento AUTORITATIVO pelo fator do código de barras (não regredir)
+
+A data de vencimento de um boleto é **codificada pelo emissor no FATOR DE VENCIMENTO** do
+código de barras FEBRABAN (posições 6-9, `d[5:9]`) — é **determinística** e imune à **inversão
+dia/mês** que o Vision/OCR pode cometer ao ler a data IMPRESSA. Falha grave de origem (id 435):
+boleto OBER cujo Vision gravou `2026-08-07` (07/08) no lugar de `2026-07-08` (08/07). Por isso,
+sempre que houver boleto bancário com fator válido, o **vencimento derivado do barcode é a fonte
+de verdade** e sobrescreve o valor extraído.
+
+- **`due_date_from_barcode(barcode, ref_date)`** (`extract_pdf.py`): decodifica o fator só de
+  **boleto bancário** (44 dígitos, moeda `'9'`, banco ≠ `000`); retorna `None` para fator 0
+  (à vista), chave NF-e/CT-e ou arrecadação de 48. Trata o **reset da NT FEBRABAN** (o fator
+  chegou a 9999 em 21/02/2025 e voltou a 1000 em 22/02/2025) escolhendo, entre a **base antiga**
+  (`1997-10-07`) e a **nova** (`1000` = `2025-02-22`), a candidata mais próxima de `ref_date`
+  (emissão/extração). As duas ficam ~24 anos distantes, então a escolha é **inequívoca**
+  (`_FATOR_MAX_DELTA_DAYS = 730`: candidata a mais de 2 anos do ref é descartada).
+- **`apply_barcode_due_date(rec)`** (`extract_pdf.py`): override idempotente do `due_date`, com
+  `processing_notes`. Aplicado em `build_record_from_json`, `build_record_regex` e no dispatcher
+  `build_record` (após o barcode ser recuperado por regex/Vision).
+- **Rede de segurança UNIVERSAL** — `_apply_barcode_due_date(payload)` (`read_emails.py`) roda no
+  **choke point único** `register_financial` (antes de `_apply_status_id`), cobrindo TODOS os
+  caminhos de gravação do pipeline Python (PDF, corpo, reprocessos). Import lazy do `extract_pdf`,
+  best-effort (qualquer falha é ignorada — não derruba a gravação). Contas do **corpo** não têm
+  barcode → no-op.
+
+Testes: `tests/test_barcode_due_date.py` (fator real do id 435 → `2026-07-08`; desambiguação do
+reset; fator 0; não-boleto; correção de inversão; no-op quando já bate). **Deploy:** mudança só
+em Python — copiar `extract_pdf.py` **e** `read_emails.py` para produção (ver "Deploy manual do
+Email Reader"). A trigger de banco recalcula `a vencer`/`vencido` a partir do `due_date` corrigido.
+
 ### Dedup de conteúdo + reemissão (`financial_account_control`)
 
 Além do dedup por `message_id`, `find_financial_duplicate(payload)` evita gravar o
@@ -2098,9 +2139,12 @@ local/agendada (ver flag `EMAIL_READER_ENABLED` acima e memória [[vercel-deploy
 ## Banco de dados (Supabase)
 
 Migrations em `supabase/migrations/`, aplicadas **manualmente no SQL Editor** em ordem
-numérica (`001` → `069`). Não há migration automática. (As `059`/`060`/`061`/`063`/`064`/`066`/`067`/
-`068`/`069` foram aplicadas **direto via Supabase MCP** nesta máquina — o arquivo numerado serve de
-histórico; **não reaplicar** no SQL Editor (todas idempotentes, mas evite re-run). As **067/068/069**
+numérica (`001` → `070`). Não há migration automática. (As `059`/`060`/`061`/`063`/`064`/`066`/`067`/
+`068`/`069`/`070` foram aplicadas **direto via Supabase MCP** nesta máquina — o arquivo numerado serve
+de histórico; **não reaplicar** no SQL Editor (todas idempotentes, mas evite re-run). A **070** cria a
+trigger `trg_supplier_no_funcionario_classification` (fornecedor de FUNCIONÁRIO não carrega
+classificação default — força `supplier.cost_center_id`/`chart_account_id`=0; ver "Classificação
+default do fornecedor") + backfill. As **067/068/069**
 são a migração faseada de **`status_id` como fonte única** da situação (remoção do `status` texto —
 ver a nota da migração faseada em "Banco de dados"): **067** `status_id` NOT NULL DEFAULT 3; **068**
 trigger id-primária + `GRANT UPDATE(status_id) TO authenticated`; **069** trigger só-id + DROP do CHECK
