@@ -4,7 +4,7 @@ Projeto: pagamentos | Skill: pdf-contas-pagar | v1.0.0
 """
 
 import os, re, sys, json, argparse, logging, unicodedata, tempfile
-from datetime import datetime, timezone
+from datetime import datetime, timezone, date, timedelta
 from pathlib import Path
 
 import pdfplumber
@@ -461,6 +461,75 @@ def amount_from_barcode(barcode):
     return valor if 0 < valor < 5_000_000 else None
 
 
+# Fator de vencimento FEBRABAN (posicoes 6-9 do codigo de barras de boleto). E a data de
+# vencimento codificada pelo EMISSOR — DETERMINISTICA, imune a inversao dia/mes que o Vision/
+# OCR pode cometer ao ler a data IMPRESSA (falha grave: id 435 gravou 07/08 no lugar de 08/07).
+# Duas bases por causa do reset da NT FEBRABAN (o fator chegou a 9999 em 21/02/2025 e voltou a
+# 1000 em 22/02/2025). As duas candidatas ficam ~24 anos distantes, entao a escolha (mais proxima
+# da data de referencia = emissao/extracao) e inequivoca.
+_FATOR_BASE_ZERO  = date(1997, 10, 7)   # fator = dias desde aqui (fator 1000 = 03/07/2000)
+_FATOR_RESET_BASE = date(2025, 2, 22)   # reset: fator 1000 = 22/02/2025
+_FATOR_MAX_DELTA_DAYS = 730             # candidata deve estar a <= 2 anos do ref (rejeita a base errada)
+
+
+def _coerce_date(value) -> "date | None":
+    """Converte 'YYYY-MM-DD' / ISO-datetime em `date`, ou None."""
+    if not value:
+        return None
+    try:
+        return datetime.strptime(str(value)[:10], "%Y-%m-%d").date()
+    except (ValueError, TypeError):
+        return None
+
+
+def due_date_from_barcode(barcode, ref_date=None) -> "str | None":
+    """Vencimento ('YYYY-MM-DD') a partir do FATOR DE VENCIMENTO do boleto bancario FEBRABAN
+    (44 digitos, moeda '9'), ou None. Fonte AUTORITATIVA e deterministica — nao sofre inversao
+    dia/mes como a data impressa. Trata o reset FEBRABAN escolhendo, entre a base antiga e a
+    nova, a candidata mais proxima de `ref_date` (emissao/extracao; default hoje). None quando:
+    nao e boleto bancario, fator 0 (a vista/sem vencimento) ou nenhuma candidata plausivel
+    (a mais de `_FATOR_MAX_DELTA_DAYS` do ref)."""
+    if not barcode:
+        return None
+    d = re.sub(r"\D", "", str(barcode))
+    if len(d) != 44 or d[3] != "9" or d[:3] == "000":
+        return None  # nao e boleto bancario FEBRABAN (chave NF-e/CT-e ou arrecadacao de 48)
+    try:
+        fator = int(d[5:9])
+    except ValueError:
+        return None
+    if fator == 0:
+        return None  # boleto a vista / sem fator de vencimento
+    ref = _coerce_date(ref_date) or datetime.now(timezone.utc).date()
+    cands = [_FATOR_BASE_ZERO + timedelta(days=fator)]
+    if fator >= 1000:
+        cands.append(_FATOR_RESET_BASE + timedelta(days=fator - 1000))
+    plausible = [c for c in cands if abs((c - ref).days) <= _FATOR_MAX_DELTA_DAYS]
+    if not plausible:
+        return None
+    return min(plausible, key=lambda c: abs((c - ref).days)).isoformat()
+
+
+def apply_barcode_due_date(rec: dict) -> bool:
+    """A data de vencimento AUTORITATIVA de um boleto e o fator de vencimento do codigo de
+    barras (deterministico), NAO a data impressa — que o Vision/OCR pode inverter (dia/mes).
+    Quando ha boleto FEBRABAN com fator valido, deriva o vencimento do barcode e SOBRESCREVE o
+    due_date extraido se divergir. Retorna True se corrigiu. Usa emissao/extracao como referencia
+    para desambiguar o reset da base FEBRABAN. Idempotente (no-op se ja bate)."""
+    bc_due = due_date_from_barcode(rec.get("barcode"), rec.get("issue_date") or rec.get("extracted_at"))
+    if not bc_due:
+        return False
+    cur = str(rec.get("due_date") or "")[:10]
+    if cur == bc_due:
+        return False
+    note = f"Vencimento corrigido pelo código de barras (fator FEBRABAN): {cur or '—'} → {bc_due}"
+    rec["due_date"] = bc_due
+    rec["processing_notes"] = (
+        f'{rec["processing_notes"]} | {note}' if rec.get("processing_notes") else note
+    )
+    return True
+
+
 def is_boleto_barcode(barcode) -> bool:
     """True quando o codigo e um BOLETO pagavel (nao chave NF-e/CT-e).
 
@@ -883,6 +952,7 @@ def build_record_from_json(pdf_path, data: dict, source: str) -> dict:
         notes.append("CNPJ do beneficiario invalido")
     apply_pix_override(rec)
     apply_boleto_barcode_override(rec)
+    apply_barcode_due_date(rec)   # vencimento AUTORITATIVO = fator do barcode (corrige inversao dia/mes)
     ensure_due_date(rec, notes)
     # Emissao nao confiavel em guia de tributo: prefira nulo a uma data errada.
     if rec["document_type"] in TAX_DOC_TYPES and rec.get("issue_date"):
@@ -924,6 +994,7 @@ def build_record_regex(pdf_path, raw: str, source: str) -> dict:
         notes.append("Texto insuficiente — considerar Vision")
     apply_pix_override(rec)
     apply_boleto_barcode_override(rec)
+    apply_barcode_due_date(rec)   # vencimento AUTORITATIVO = fator do barcode (corrige inversao dia/mes)
     ensure_due_date(rec, notes)
     if not has_document_number(rec["invoice_number"]):
         rec["invoice_number"] = fallback_invoice_number(
@@ -971,6 +1042,9 @@ def build_record(pdf_path, raw, source):
         rec["barcode"] = normalize_barcode(ld)
     # Tier 1: valor ausente no texto mas presente no codigo de barras bancario.
     apply_barcode_amount(rec)
+    # Vencimento pelo fator do barcode recuperado aqui (regex/Vision) — idempotente com o
+    # builder; cobre o caso do LLM ter perdido o barcode que o regex/Vision recuperou.
+    apply_barcode_due_date(rec)
     # Boleto com PIX: barcode de boleto valido (recuperado aqui via regex/Vision)
     # define o pagamento como boleto, sobrepondo um payment_method='pix' do LLM.
     apply_boleto_barcode_override(rec)
