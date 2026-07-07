@@ -69,6 +69,7 @@ export const PAYMENT_METHODS = [
   'vale',
   'crédito',
   'débito',
+  'débito automático',
   'dinheiro',
   'transferência',
   'cheque',

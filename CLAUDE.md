@@ -1487,6 +1487,27 @@ termo `honorário(s)` no corpo ou recibo) é gravado com `document_type='honorá
 pagamento é forçado a `pix` tanto no corpo (`extract_from_email_body`) quanto no PDF
 (`build_financial_payload`).
 
+**Forma de pagamento DECLARADA no corpo → `payment_method` (não regredir):** quando o pagador
+escreve como pagou (ex.: "PAGAMENTO EM DINHEIRO", "pago depósito", "TED AGÊNCIA…", "Tipo de
+pagamento: Débito Automático"), a forma é capturada em vez de cair em `outro`. Caso de origem:
+id 442 (MANOS DOCES, R$ 182,49, "PAGAMENTO EM DINHEIRO") gravava `outro` → agora `dinheiro`.
+`_classify_body_payment_method(*texts)` (`read_emails.py`) casa por **palavra inteira sem acento**
+(`_has_word`/`_ns_body`) contra `_BODY_PAYMENT_METHOD_KEYWORDS` e devolve o valor do enum
+`PAYMENT_METHODS` (`dinheiro`/`depósito`/`débito automático`/`crédito`/`débito`/`cartão`/`ted`/
+`transferência`/`cheque`/`vale`/`duplicata`/`pix`/`boleto`) ou `None`. `débito automático` (débito
+direto em conta — "Tipo de pagamento: Débito Automático" das contas Sabesp; migration 071) vem
+**ANTES** do `débito` genérico (cartão) na lista, para casar o valor específico. **Precedência
+POR TEXTO** (chamado com
+`(body_text, subject)` → o **corpo vence o assunto**: id 325 corpo "TED AGÊNCIA…" vs assunto
+"PAGAMENTO PIX" → `ted`); dentro de um texto, a ordem da lista desempata (`crédito`/`débito`
+antes de `cartão`, p/ "cartão de crédito" → `crédito`). Aplicado em `extract_from_email_body`
+**só como preenchimento de lacuna**: roda quando `payment_method == 'outro'`, **abaixo** do
+`has_pix` (PIX) e do override de boleto por código de barras — que têm precedência e não são
+sobrescritos. Só no caminho do **corpo** (o do PDF usa o `payment_method` do extrator). Falso
+positivo de `crédito`/`débito` em texto não-financeiro (ex.: "cadastros de crédito" de alerta de
+protesto) é contido a montante pela regra `subject_is_ignorable_notification` (protesto/cartório
+viram `ignorado`, nunca chegam a virar conta). Teste: `tests/test_body_payment_method.py`.
+
 ### Auto-resolução de fornecedor
 
 **ASSUNTO como ÚLTIMO recurso para o nome do fornecedor (não regredir):** e-mail INTERNO de
@@ -2139,9 +2160,12 @@ local/agendada (ver flag `EMAIL_READER_ENABLED` acima e memória [[vercel-deploy
 ## Banco de dados (Supabase)
 
 Migrations em `supabase/migrations/`, aplicadas **manualmente no SQL Editor** em ordem
-numérica (`001` → `070`). Não há migration automática. (As `059`/`060`/`061`/`063`/`064`/`066`/`067`/
-`068`/`069`/`070` foram aplicadas **direto via Supabase MCP** nesta máquina — o arquivo numerado serve
-de histórico; **não reaplicar** no SQL Editor (todas idempotentes, mas evite re-run). A **070** cria a
+numérica (`001` → `071`). Não há migration automática. (As `059`/`060`/`061`/`063`/`064`/`066`/`067`/
+`068`/`069`/`070`/`071` foram aplicadas **direto via Supabase MCP** nesta máquina — o arquivo numerado serve
+de histórico; **não reaplicar** no SQL Editor (todas idempotentes, mas evite re-run). A **071** adiciona
+**`débito automático`** ao CHECK de `financial_account_control.payment_method` (débito direto em conta,
+distinto do `débito` cartão) + re-mapeia as contas Sabesp de água (171/189/190) `débito`→`débito
+automático` — ver "Forma de pagamento DECLARADA no corpo". A **070** cria a
 trigger `trg_supplier_no_funcionario_classification` (fornecedor de FUNCIONÁRIO não carrega
 classificação default — força `supplier.cost_center_id`/`chart_account_id`=0; ver "Classificação
 default do fornecedor") + backfill. As **067/068/069**
@@ -2279,8 +2303,10 @@ estados fechados (`falha`/`pago`/`baixado`/`cancelado`/`protestado`/`cartório`/
 Histórico: a **034** fundiu o antigo `due_status` na coluna `status` (texto); a **035** alinhou o
 domínio à dimensão `status`; as **067/068/069** migraram a fonte de verdade para `status_id` e
 dropraram o texto. `payment_method` aceita `boleto, pix, ted, cartão, depósito, duplicata,
-bancário, carteira, vale, crédito, débito, dinheiro, transferência, cheque, outro`;
-`extraction_source` ∈ (`email_body, pdf_text, pdf_vision, image_vision, falha`).
+bancário, carteira, vale, crédito, débito, débito automático, dinheiro, transferência, cheque,
+outro` (`débito automático` = débito direto em conta, distinto do `débito` cartão — migration 071;
+CHECK por valor EXATO, sem `lower()`); `extraction_source` ∈ (`email_body, pdf_text, pdf_vision,
+image_vision, falha`).
 
 **Schemas Zod (`packages/shared`) = fonte única de tipos.** **Zod 4** (upgrade Fase 5):
 e-mail usa a API top-level `z.email('…')` (não mais `z.string().email()`); demais APIs
