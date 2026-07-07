@@ -273,6 +273,9 @@ export const supplierService = {
  * contas — ver `contaService`). Caminho dedicado: `cost_center_id`/`chart_account_id`
  * NÃO fazem parte de `supplierUpdateSchema` (PATCH público de fornecedor), então a
  * atualização passa por aqui, fora do schema editável. Best-effort no chamador.
+ * NOTA: fornecedor de FUNCIONÁRIO (trade_name com "funcionário") é mantido em 0 pela
+ * trigger `trg_supplier_no_funcionario_classification` (migration 070) — este write-back
+ * vira no-op para eles (a despesa de funcionário varia por conta, sem default no cadastro).
  * @param sk Surrogate key do fornecedor.
  * @param costCenterId FK do centro de custo (> 0 — validado pelo chamador).
  * @param chartAccountId FK do plano de contas (> 0 — validado pelo chamador).
