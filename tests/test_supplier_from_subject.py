@@ -54,6 +54,42 @@ class SupplierNameFromSubjectTest(unittest.TestCase):
         self.assertEqual(R._supplier_name_from_subject("PAGAMENTO DARF"), "")
         self.assertEqual(R._supplier_name_from_subject("PAGAMENTO GNRE MG"), "")
 
+    def test_ancora_sigla_ltda_descarta_prefixo(self):
+        # Caso real da conta id 401: prefixo "FATURAMENTO --" + cauda de data;
+        # a sigla LTDA ancora o nome do fornecedor real.
+        self.assertEqual(
+            R._supplier_name_from_subject(
+                "ENC: FATURAMENTO -- MOVVI LOGISTICA LTDA 03/07/2026"),
+            "MOVVI LOGISTICA LTDA",
+        )
+
+    def test_ancora_sigla_sa_com_cauda_de_numero(self):
+        self.assertEqual(
+            R._supplier_name_from_subject("PAGAMENTO ACME COMERCIO S/A - 12345"),
+            "ACME COMERCIO S/A",
+        )
+
+    def test_ancora_sigla_sem_separador_remove_ruido(self):
+        self.assertEqual(
+            R._supplier_name_from_subject("FATURAMENTO ACME DISTRIBUIDORA LTDA"),
+            "ACME DISTRIBUIDORA LTDA",
+        )
+
+
+class SupplierNameByLegalSuffixTest(unittest.TestCase):
+    def test_sem_sigla_retorna_vazio(self):
+        self.assertEqual(R._supplier_name_by_legal_suffix("PAGAMENTO BOLETO HYOSUNG"), "")
+        self.assertEqual(R._supplier_name_by_legal_suffix(""), "")
+        self.assertEqual(R._supplier_name_by_legal_suffix(None), "")
+
+    def test_ultima_sigla_quando_ha_mais_de_uma(self):
+        # Prefixo "OTIMOTEX LTDA" (pagador) + fornecedor real ao final: fica com o ultimo.
+        self.assertEqual(
+            R._supplier_name_by_legal_suffix(
+                "OTIMOTEX LTDA -- MOVVI LOGISTICA LTDA"),
+            "MOVVI LOGISTICA LTDA",
+        )
+
 
 class IsNonSupplierTermTest(unittest.TestCase):
     def test_tipos_documento_e_pagamento(self):
@@ -71,8 +107,12 @@ class IsNonSupplierTermTest(unittest.TestCase):
 class _FakeCtrl:
     """SupabaseControl minimo: captura o p_name resolvido pela RPC."""
 
-    def __init__(self):
+    def __init__(self, own_cnpj=None):
         self.last_payload = None
+        self._own_cnpj = own_cnpj
+
+    def company_cnpj(self):
+        return self._own_cnpj
 
     def resolve_supplier(self, payload):
         self.last_payload = dict(payload)
@@ -147,6 +187,42 @@ class FinalizeSupplierSubjectFallbackTest(unittest.TestCase):
         # pagador entrou como fornecedor (nome ou CNPJ de 14 digitos)
         self.assertEqual(ctrl.last_payload.get("supplier_cnpj"), "47273917000123")
         self.assertEqual(ctrl.last_payload.get("supplier_name"), "TEXTIL E CONFECCOES OTIMOTEX")
+
+
+class FinalizePayerCnpjGuardTest(unittest.TestCase):
+    """Regressao conta id 401: e-mail de faturamento reencaminhado traz o bloco do
+    destinatario (OTIMOTEX) e a extracao capturava o CNPJ da PROPRIA pagadora como
+    fornecedor, gravando a conta sob a OTIMOTEX (sk=1). O favorecido real estava
+    nomeado no assunto ('MOVVI LOGISTICA LTDA')."""
+
+    OTIMOTEX_CNPJ = "47273917000123"
+
+    def test_cnpj_do_pagador_ignorado_usa_assunto_ltda(self):
+        ctrl = _FakeCtrl(own_cnpj=self.OTIMOTEX_CNPJ)
+        payload = {
+            "amount": "167.15",
+            "supplier_cnpj": self.OTIMOTEX_CNPJ,  # CNPJ da propria OTIMOTEX (pagador)
+            "subject": "ENC: FATURAMENTO -- MOVVI LOGISTICA LTDA 03/07/2026",
+            "sender_email": "rose@otimotex.com.br",
+        }
+        ok = R._finalize_supplier(ctrl, payload)
+        self.assertTrue(ok)
+        # o CNPJ do pagador foi descartado — nao entrou na RPC como fornecedor
+        self.assertIsNone(ctrl.last_payload.get("supplier_cnpj"))
+        # o nome ancorado na sigla LTDA do assunto foi usado
+        self.assertEqual(ctrl.last_payload.get("supplier_name"), "MOVVI LOGISTICA LTDA")
+
+    def test_cnpj_de_terceiro_e_preservado(self):
+        # CNPJ de fornecedor real (diferente do pagador) NAO e descartado.
+        ctrl = _FakeCtrl(own_cnpj=self.OTIMOTEX_CNPJ)
+        payload = {
+            "amount": "100.00",
+            "supplier_cnpj": "11703922000181",  # HYOSUNG (terceiro)
+            "subject": "PAGAMENTO BOLETO HYOSUNG",
+        }
+        ok = R._finalize_supplier(ctrl, payload)
+        self.assertTrue(ok)
+        self.assertEqual(ctrl.last_payload.get("supplier_cnpj"), "11703922000181")
 
 
 if __name__ == "__main__":
