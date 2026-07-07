@@ -640,7 +640,7 @@ export default function Emails() {
                                       <span className="font-mono font-medium text-zinc-600 whitespace-nowrap">
                                         {fmtMoney(a.amount)}
                                       </span>
-                                      <StatusBadge value={a.status} />
+                                      <StatusBadge value={a.status_dim?.status_name} />
                                     </div>
                                   ))}
                                 </div>

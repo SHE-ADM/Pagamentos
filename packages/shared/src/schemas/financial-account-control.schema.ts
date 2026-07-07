@@ -97,7 +97,9 @@ export const ACCOUNT_STATUSES = [
 export const documentTypeSchema = z.enum(DOCUMENT_TYPES);
 export const extractionSourceSchema = z.enum(EXTRACTION_SOURCES);
 export const paymentMethodSchema = z.enum(PAYMENT_METHODS);
-export const accountStatusSchema = z.enum(ACCOUNT_STATUSES);
+// ACCOUNT_STATUSES/AccountStatus (nomes) seguem para labels/mapa id↔nome; a situação da
+// conta é gravada/lida por status_id (fonte única — a coluna `status` texto foi removida
+// na FASE 3, migration 069). Não há mais `accountStatusSchema` (o campo texto não existe).
 
 // IDs da dimensão `status` (= financial_account_control.status_id). status_id é a
 // FONTE ÚNICA da situação; estes ids nomeados evitam magic number em filtros/KPIs
@@ -235,13 +237,10 @@ export const financialAccountControlSchema = z.object({
   other_additions: money.default(0),
   amount_charged: money.default(0),
 
-  // Situação/ciclo de vida. FONTE ÚNICA = status_id (FK → dimensão `status`), NOT NULL
-  // DEFAULT 3 ('a vencer') — migration 067. A coluna `status` (texto) está em remoção
-  // faseada (mantida por ora, sincronizada pela trigger); o NOME de exibição vem do
-  // embed status_dim, não desta coluna.
+  // Situação/ciclo de vida — FONTE ÚNICA: status_id (FK → dimensão `status`), NOT NULL
+  // DEFAULT 3 ('a vencer'). A antiga coluna `status` (texto) foi REMOVIDA (FASE 3,
+  // migration 069); o NOME de exibição vem do embed status_dim.
   status_id: z.number().int(),
-  // DEPRECATED (remoção faseada — FASE 3): texto redundante, ainda presente no banco.
-  status: accountStatusSchema.default('pendente'),
 
   // Flags de curadoria manual (checkbox em /consulta — migration 033).
   // NOT NULL DEFAULT FALSE no banco; editados pelo usuário, não pelo pipeline.
@@ -292,10 +291,8 @@ export const financialAccountControlSchema = z.object({
 export const financialAccountControlInputSchema = financialAccountControlSchema.omit({
   id: true,
   company_id: true,
-  // FASE 2: a escrita da situação é por `status_id` (a trigger id-primária deriva o texto).
-  // O `status` texto sai do input (nenhum escritor o envia); `status_id` PERMANECE (é a
-  // entrada de escrita da situação — ex.: baixa/cancelamento via PATCH).
-  status: true,
+  // A situação é escrita por `status_id` (a coluna `status` texto foi removida — FASE 3).
+  // `status_id` PERMANECE no input (entrada de escrita da situação — baixa/cancelamento via PATCH).
   created_at: true,
   updated_at: true,
   supplier: true,
