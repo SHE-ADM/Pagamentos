@@ -121,5 +121,32 @@ class IsIgnoredSenderTest(unittest.TestCase):
             self.assertFalse(read_emails.is_ignored_sender(addr), addr)
 
 
+class PaymentConfirmationTest(unittest.TestCase):
+    """Confirmacao/comprovante de pagamento (pagamento ja realizado) e ignorado sempre —
+    mesmo com keyword financeira no assunto (nao e conta a pagar)."""
+
+    def test_confirmacao_de_pagamento_e_ignorada(self):
+        for assunto in [
+            "Confirmação de Pagamento da fatura 18292",   # caso real (id 6)
+            "confirmacao do pagamento",
+            "Pagamento confirmado - boleto 123",          # com keyword 'boleto'
+            "Seu pagamento foi processado",
+            "Pagamento efetuado com sucesso",
+            "Comprovante de pagamento",
+            "Comprovante de PIX",
+        ]:
+            self.assertTrue(read_emails.subject_is_payment_confirmation(assunto), assunto)
+
+    def test_cobranca_normal_nao_e_confirmacao(self):
+        # Assuntos de conta a pagar NAO podem casar (evita ignorar boleto real).
+        for assunto in [
+            "Boleto a vencer 10/07", "Fatura 18293 em aberto",
+            "Pagamento do boleto - vencimento amanhã",   # infinitivo, nao 'confirmado/efetuado'
+            "Realizar pagamento da guia", "GNRE para pagamento",
+            "", "Nota fiscal",
+        ]:
+            self.assertFalse(read_emails.subject_is_payment_confirmation(assunto), assunto)
+
+
 if __name__ == "__main__":
     unittest.main()

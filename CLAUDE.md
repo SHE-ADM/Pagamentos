@@ -1457,6 +1457,28 @@ criar um fornecedor com nome "curto" (ex.: `HYOSUNG`) divergente de um cadastro 
 existente (`HYOSUNG SC`, CNPJ 11703922000181) — o operador funde os dois em `/fornecedores`
 quando forem o mesmo (não há merge automático, pois o boleto não trouxe CNPJ para provar).
 
+**SIGLA DE RAZÃO SOCIAL (LTDA) como âncora do nome no assunto (não regredir):** a razão social
+quase sempre TERMINA numa sigla societária (`LTDA`/`EIRELI`/`EPP`/`MEI`/`S.A.`), então ela é a
+âncora mais confiável para isolar o nome do fornecedor no assunto. `_supplier_name_by_legal_suffix`
+(usado com **preferência** dentro de `_supplier_name_from_subject`) pega o SEGMENTO do assunto que
+termina na sigla — descartando prefixos (`FATURAMENTO --`, `ENC:`, `PAGAMENTO`) e a cauda de
+data/número após a sigla. Ex.: `"ENC: FATURAMENTO -- MOVVI LOGISTICA LTDA 03/07/2026"` →
+`"MOVVI LOGISTICA LTDA"` (a heurística genérica devolvia `"FATURAMENTO -- MOVVI LOGISTICA LTDA"`,
+que não casava o cadastro pelo `normalize_search`). Fica com a **última** sigla quando há mais de
+uma (o pagador pode aparecer antes do fornecedor). Siglas `ME`/`SA` **isoladas** (sem separador)
+ficam de fora — ruidosas demais. Caso de origem: conta id 401 (fatura MOVVI que caíra sob OTIMOTEX).
+
+**O CNPJ DA PRÓPRIA EMPRESA PAGADORA (OTIMOTEX) NUNCA é o fornecedor (não regredir):** e-mails de
+faturamento reencaminhados trazem o **bloco do destinatário** no corpo (ex.: `TÊXTIL E CONF.OTIMOTEX
+/ CNPJ: 47273917/0001-23`), e a extração capturava esse CNPJ como se fosse do fornecedor — gravando
+a conta sob a OTIMOTEX (sk=1) mesmo com o favorecido real nomeado no assunto. `_finalize_supplier`
+descarta o `supplier_cnpj` extraído quando ele é igual ao CNPJ da empresa pagadora
+(`ctrl.company_cnpj()`, company_id=1) — assim a resolução segue pelo nome/assunto (âncora LTDA
+acima). É a **guarda que habilita** a âncora de assunto nesse caso (sem ela, o CNPJ do pagador
+venceria a resolução por CNPJ antes do fallback de assunto). **Não** afeta a regra de imposto nem o
+fallback de pagador, que gravam OTIMOTEX explicitamente quando NÃO há favorecido. Best-effort (se o
+ctrl não expõe `company_cnpj`, a guarda é pulada). Testes em `tests/test_supplier_from_subject.py`.
+
 **Um TIPO DE DOCUMENTO ou TIPO DE PAGAMENTO NUNCA vira fornecedor (não regredir):** o assunto
 "ENC: GUIA GNRE" reduzia a "GNRE" (um `document_type`) e virava fornecedor — errado.
 `_is_non_supplier_term` (set `_NON_SUPPLIER_TERMS`, espelha `DOCUMENT_TYPES`/acrônimos de tributo
@@ -1758,6 +1780,23 @@ de não-entrega frequentemente cita o corpo da cobrança original (com valor), e
 o pipeline criava uma conta a pagar **falsa** a partir do bounce. Match por local-part
 (case-insensitive, qualquer domínio); a lista é um `set` extensível. O registro `ignorado` é
 compartilhado com o filtro de assunto via `_register_ignored`.
+
+**Confirmação de pagamento → `ignorado` (não é conta a pagar — não regredir):** e-mail cujo
+ASSUNTO indica que o **pagamento JÁ foi realizado** (`subject_is_payment_confirmation`,
+`_PAYMENT_CONFIRMATION_RE`) vira `ignorado` **sem baixar nem extrair**, e o filtro roda **antes**
+do match de keyword no loop de `run_reader` (logo após `is_ignored_sender`), então vale **mesmo
+que o assunto case uma palavra-chave** (ex.: "Pagamento confirmado - boleto 123"). Motivo: uma
+confirmação/comprovante de pagamento é um **recibo**, não uma cobrança — antes o pipeline criava
+uma conta a pagar **falsa** (ex.: "Confirmação de Pagamento da fatura 18292"). O regex (assunto
+sem acento) casa `confirmação de/do pagamento`, `comprovante de pagamento/pix/transferência/
+depósito`, `confirmado (o) pagamento` e `pagamento (foi/já) confirmado/processado/efetuado/
+realizado/aprovado/recebido` — o **particípio no passado** evita casar "REALIZAR pagamento" /
+"pagamento A realizar" (que SÃO conta a pagar). Distinto de `NOTIFICATION_PHRASE_TERMS` (que só
+vira `ignorado` na ausência de anexo/conta): aqui o e-mail é ignorado **antes** de processar,
+sempre. Teste: `tests/test_match_keyword.py` (`PaymentConfirmationTest`). Limpeza retroativa
+(2026-07-06): **hard delete de 10 contas** de confirmação de pagamento em `financial_account_control`
+(8 "Confirmação de Pagamento da fatura" + 2 "pagamento foi aprovado") + os `email_control`
+correspondentes → `ignorado`.
 
 Lista padrão em `KEYWORDS_DEFAULT`, **sobrescrita por `EMAIL_KEYWORDS` no `.env`** (fonte de
 verdade usada hoje). **NF-e "pura"** (`subject_is_pure_nfe`): assunto com `nota fiscal/nfe/
@@ -2462,6 +2501,30 @@ lê os arquivos do disco.
 > máquina do scheduler: `py -3 -m pip install "pypdf~=6.13"` (ou
 > `pip install -r server/requirements.txt`). Sem `pypdf`, o `import extract_pdf` falha e a
 > extração para. Valide com o comando de import acima (que importa `read_emails` → `extract_pdf`).
+
+> **DEPLOY 2026-07-06 — cartório + classificação contábil forçada (FEITO e validado em produção):**
+> o `document_type` **cartório** e as regras de **classificação contábil FORÇADA por tipo de
+> documento** (IRRF/DUIMP/ICMS Importação/transporte/DAM-DUAM/GNRE-ST — ver "Classificação contábil
+> FORÇADA por tipo de documento") vivem no `read_emails.py` (+ o mapeamento cartório no
+> `extract_pdf.py`). Deploy = copiar os **2 arquivos** (tabela acima) **e** acrescentar
+> `cartório,cartorio,tabelionato` ao **`EMAIL_KEYWORDS` do `.env` de produção** (é item de `.env`,
+> como o bloco SMTP da cobrança — o `.env` **não** é versionado). **Nenhum passo de banco:** a
+> migration 066 está na mesma Supabase de dev/prod, já aplicada. **Estado:** aplicado e validado em
+> `C:\Sheild\API\Pagamentos` (read_emails/extract_pdf novos · `pypdf 6.13.0` · `EMAIL_KEYWORDS` com
+> 61 termos incluindo cartório · tarefa "Pagamentos - Email Reader" **Ready** · dry-run com
+> IMAP+Supabase OK). **Produção roda Python 3.14.5** (o `py -3` resolve p/ 3.14; o `run_reader.ps1`
+> tenta `py -3.12` primeiro e cai p/ `-3` — funciona, mas manter um **3.12** instalado como fallback
+> estável é desejável). Validação ampliada (esperado `True True True`):
+> `py -3 -c "import sys; sys.path.insert(0,'skills/email-reader/scripts'); import read_emails as R; print(hasattr(R,'apply_forced_classification'), hasattr(R,'resolve_forced_classification'), 'cartorio' in R.KEYWORDS_DEFAULT)"`
+
+> **DEPLOY 2026-07-06 (posterior) — ignorar confirmação de pagamento (PENDENTE de re-cópia p/ prod):**
+> a regra `subject_is_payment_confirmation` (ver "Confirmação de pagamento → `ignorado`") foi
+> acrescentada ao `read_emails.py` **depois** do deploy acima, então a produção precisa de uma
+> **RE-CÓPIA do `read_emails.py`** para recebê-la (`extract_pdf.py` **não** muda nesta; sem `.env`
+> nem banco extra). A **limpeza retroativa** (hard delete de 10 contas de confirmação + `email_control`
+> → `ignorado`) já valeu para dev **e** prod (mesma Supabase), então só falta o arquivo. Validação
+> (esperado `True`): `py -3 -c "import sys; sys.path.insert(0,'skills/email-reader/scripts'); import
+> read_emails as R; print(hasattr(R,'subject_is_payment_confirmation'))"`
 
 ### Deploy manual da Cobrança de vencidos (envios) em produção (caso específico — não regredir)
 

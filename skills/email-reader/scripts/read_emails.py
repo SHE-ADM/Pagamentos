@@ -772,6 +772,25 @@ _SUBJECT_PAYMENT_PREFIX_RE = re.compile(
 _SUBJECT_DOCNUM_TAIL_RE = re.compile(
     r"[ \t]*[-–—]?[ \t]*(?:n[º°o.]?\s*)?\d[\d.\-/_]*\s*$", re.IGNORECASE)
 
+# Siglas de razao social brasileira. Servem de ANCORA para achar o nome do
+# fornecedor no assunto quando a extracao nao trouxe nome/CNPJ/CPF: a razao social
+# quase sempre TERMINA numa dessas formas (o usuario pediu LTDA explicitamente; as
+# demais sao formas societarias comuns). Casam como palavra inteira, sem acento/caixa.
+# 'ME'/'SA' isolados (sem separador) ficam de fora — ruidosos demais.
+_LEGAL_SUFFIX_RE = re.compile(
+    r"\b(?:ltda|eireli|epp|mei)\b\.?"   # LTDA / EIRELI / EPP / MEI (+ ponto opcional)
+    r"|\bs\s*[./]\s*a\b\.?",            # S/A, S.A, S.A. (formas com separador)
+    re.IGNORECASE)
+# Separadores que quebram o assunto em segmentos — o nome esta no segmento da sigla
+# (o prefixo "FATURAMENTO --" / "ENC:" fica em outro segmento). Hifen SIMPLES nao
+# separa (nomes usam hifen); virgula tambem nao (pode compor razao social).
+_SUBJECT_SEGMENT_SPLIT_RE = re.compile(r"\s*(?:-{2,}|[–—|:])\s*")
+# Ruido de assunto de faturamento/cobranca removido do inicio do nome quando ele
+# NAO foi isolado por um separador ("FATURAMENTO ACME LTDA" -> "ACME LTDA").
+_SUBJECT_NOISE_PREFIX_RE = re.compile(
+    r"^(?:\s*(?:faturamento|faturas|financeiro|cobran[cç]a)\b[ \t.:\-/]*)+",
+    re.IGNORECASE)
+
 
 def _norm_term(s: str | None) -> str:
     """Normaliza (NFD strip de acentos + lowercase) para comparar termos."""
@@ -839,6 +858,35 @@ def _is_tax_document(document_type: str | None) -> bool:
     return _norm_term(document_type) in _TAX_DOCUMENT_TYPES
 
 
+def _supplier_name_by_legal_suffix(subject: str | None) -> str:
+    """Deriva o nome do fornecedor do ASSUNTO ancorando na SIGLA de razao social
+    (LTDA/EIRELI/EPP/MEI/S.A.). A sigla — LTDA em especial — quase sempre faz parte
+    do nome do fornecedor, entao serve de ancora confiavel quando a extracao nao
+    trouxe nome/CNPJ/CPF do favorecido. Toma o SEGMENTO do assunto que termina na
+    sigla, descartando prefixos ("FATURAMENTO --", "ENC:", "PAGAMENTO") e a cauda de
+    data/numero apos a sigla. Ex.:
+      "ENC: FATURAMENTO -- MOVVI LOGISTICA LTDA 03/07/2026" -> "MOVVI LOGISTICA LTDA"
+      "PAGAMENTO ACME COMERCIO S/A - 12345"                 -> "ACME COMERCIO S/A"
+    Retorna '' quando nao ha sigla ou o nome resultante e curto/invalido."""
+    if not subject:
+        return ""
+    s = " ".join(str(subject).split())
+    m = None
+    for m in _LEGAL_SUFFIX_RE.finditer(s):
+        pass  # fica com a ULTIMA ocorrencia da sigla no assunto
+    if m is None:
+        return ""
+    head = s[:m.end()]                                   # descarta data/numero apos a sigla
+    segment = _SUBJECT_SEGMENT_SPLIT_RE.split(head)[-1]  # nome esta no ultimo segmento
+    segment = _SUBJECT_FWD_PREFIX_RE.sub("", segment)    # ENC:/RE: no mesmo segmento
+    segment = _SUBJECT_PAYMENT_PREFIX_RE.sub("", segment)  # PAGAMENTO/BOLETO/FATURA inicial
+    segment = _SUBJECT_NOISE_PREFIX_RE.sub("", segment)  # FATURAMENTO/FINANCEIRO inicial
+    segment = segment.strip(" -–—:.\t")
+    if len(segment) < 4 or not re.search(r"[A-Za-zÀ-ÿ]", segment):
+        return ""
+    return segment
+
+
 def _supplier_name_from_subject(subject: str | None) -> str:
     """Deriva um nome de fornecedor/favorecido do ASSUNTO (ultimo recurso).
 
@@ -848,10 +896,18 @@ def _supplier_name_from_subject(subject: str | None) -> str:
     nome/CNPJ/CPF do fornecedor. Ex.:
       "PAGAMENTO BOLETO HYOSUNG 181063-3"        -> "HYOSUNG"
       "ENC: PAGAMENTO PIX SORTEIO BLUSAS - JOAO" -> "SORTEIO BLUSAS - JOAO"
+      "FATURAMENTO -- MOVVI LOGISTICA LTDA"      -> "MOVVI LOGISTICA LTDA" (ancora LTDA)
       "ENC: GUIA GNRE"                           -> ""  (tipo de documento)
     """
     if not subject:
         return ""
+    # Preferencia: ancorar na SIGLA de razao social (LTDA/EIRELI/S.A./...), que quase
+    # sempre nomeia o fornecedor real — nome mais limpo/assertivo que a heuristica
+    # generica ("FATURAMENTO -- MOVVI LOGISTICA LTDA" -> "MOVVI LOGISTICA LTDA",
+    # descartando o prefixo "FATURAMENTO --").
+    by_suffix = _supplier_name_by_legal_suffix(subject)
+    if by_suffix and not _is_non_supplier_term(by_suffix):
+        return by_suffix
     s = " ".join(str(subject).split())  # colapsa espacos e quebras de linha
     # remove prefixos de encaminhamento repetidos (ENC: RES: RE: FWD:)
     prev = None
@@ -968,6 +1024,28 @@ def subject_is_ignorable_notification(subject: str) -> bool:
     if any(_has_word(s, t) for t in NOTIFICATION_WORD_TERMS):
         return True
     return any(_strip_accents_lower(t) in s for t in NOTIFICATION_PHRASE_TERMS)
+
+
+# Confirmacao/comprovante de PAGAMENTO — o pagamento JA foi realizado, logo o e-mail NAO
+# e conta a pagar e deve ser IGNORADO sempre (mesmo com keyword no assunto). Regex sobre o
+# assunto sem acento. Diferente de NOTIFICATION_PHRASE_TERMS (que so vira 'ignorado' na
+# ausencia de anexo/conta): aqui o e-mail e ignorado ANTES de baixar/extrair. O conector
+# opcional (foi/ja) cobre "pagamento FOI processado"; o participio no PASSADO
+# (confirmado/efetuado/…) evita casar "REALIZAR pagamento"/"pagamento A realizar" (conta a
+# pagar). "confirmacao de/do pagamento" e "comprovante de pagamento/pix" sao inequivocos.
+_PAYMENT_CONFIRMATION_RE = re.compile(
+    r"confirmac[ao]{2} (de|do) pagamento"
+    r"|comprovante (de )?(pagamento|pix|transferencia|deposito)"
+    r"|confirmado o? ?pagamento"
+    r"|pagamento (foi |ja |ja foi )?(confirmado|processado|efetuado|realizado|aprovado|recebido)"
+)
+
+
+def subject_is_payment_confirmation(subject: str) -> bool:
+    """True se o assunto e de uma CONFIRMACAO/COMPROVANTE de pagamento (pagamento JA
+    realizado). Esses e-mails NUNCA sao conta a pagar — devem ser ignorados sempre, mesmo
+    com keyword financeira no assunto. Comparacao sem acento."""
+    return bool(_PAYMENT_CONFIRMATION_RE.search(_strip_accents_lower(subject)))
 
 
 # Remetentes de SISTEMA (NDR/bounce/aviso de servidor) — nunca sao conta a pagar.
@@ -1182,6 +1260,21 @@ def _finalize_supplier(ctrl: "SupabaseControl", payload: dict) -> bool:
     # robustez: um TIPO de documento/pagamento extraido como "fornecedor" e descartado.
     if _is_non_supplier_term(payload.get("supplier_name")):
         payload.pop("supplier_name", None)
+    # O CNPJ da PROPRIA empresa pagadora (OTIMOTEX) NAO e o fornecedor. E-mails de
+    # faturamento reencaminhados trazem o bloco do destinatario ("TEXTIL E CONF.OTIMOTEX
+    # / CNPJ: 47273917/0001-23") e a extracao capturava esse CNPJ como se fosse do
+    # fornecedor, gravando a conta sob a OTIMOTEX (sk=1) — quando o favorecido real esta
+    # nomeado no assunto (ex.: "MOVVI LOGISTICA LTDA"). Descarta o CNPJ do pagador para
+    # que a resolucao siga pelo nome/assunto (a sigla LTDA no assunto costuma nomear o
+    # fornecedor real). Nao afeta a regra de imposto nem o fallback de pagador, que
+    # gravam OTIMOTEX explicitamente quando NAO ha favorecido.
+    own_cnpj = ctrl.company_cnpj() if hasattr(ctrl, "company_cnpj") else None
+    if own_cnpj:
+        extracted_cnpj = re.sub(r"\D", "", str(payload.get("supplier_cnpj") or ""))
+        if extracted_cnpj and extracted_cnpj == own_cnpj:
+            payload.pop("supplier_cnpj", None)
+            log.info("    [FORNECEDOR] CNPJ do pagador (OTIMOTEX) ignorado como "
+                     "fornecedor — segue pelo nome/assunto")
     has_real_supplier = any(str(payload.get(k) or "").strip()
                             for k in ("supplier_name", "supplier_cnpj", "supplier_cpf"))
     # Regra de IMPOSTO: guia de tributo (darf/das/gnre/gare/dare/iss/...) SEM favorecido
@@ -3450,6 +3543,16 @@ def run_reader(days: int = 0, all_: bool = False,
                     _register_ignored(ctrl, msg_id, subject, sender_name, sender_email,
                                       received_at, f"Remetente de sistema ignorado ({sender_email})")
                 log.info(f"  [IGN remetente] {subject[:55]}")
+                skipped_kw += 1
+                continue
+
+            # Confirmacao/comprovante de PAGAMENTO (pagamento ja realizado) → 'ignorado'
+            # sem baixar/extrair, MESMO com keyword no assunto: nao e conta a pagar.
+            if subject_is_payment_confirmation(subject):
+                if not dry_run:
+                    _register_ignored(ctrl, msg_id, subject, sender_name, sender_email,
+                                      received_at, "Confirmação de pagamento — pagamento já realizado (não é conta a pagar)")
+                log.info(f"  [IGN confirmação pgto] {subject[:55]}")
                 skipped_kw += 1
                 continue
 
