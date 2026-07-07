@@ -1072,6 +1072,20 @@ def subject_is_payment_confirmation(subject: str) -> bool:
     return bool(_PAYMENT_CONFIRMATION_RE.search(_strip_accents_lower(subject)))
 
 
+# LEMBRETE — e-mail cujo ASSUNTO traz a palavra "lembrete" e um AVISO/lembrete, nao a cobranca em
+# si. Decisao do usuario: existindo "lembrete" no assunto, ignorar SEMPRE (antes de baixar/extrair,
+# mesmo com keyword/anexo). O foco e a palavra "lembrete": "vencimento" sozinho pode ser um boleto
+# REAL ("Boleto vencimento 10/07"), entao NAO entra na condicao. Cobre "Lembrete de vencimento" e o
+# caso real "Lembrete de Pagamento: vencimento DD/MM" (boleto@smartwebservices). Substring (sem
+# acento) — pega o plural "lembretes"; "lembrete" nao e substring de outra palavra comum.
+
+
+def subject_is_reminder(subject: str) -> bool:
+    """True se o assunto contem a palavra 'lembrete' — e um lembrete/aviso, nao conta a pagar;
+    ignorado SEMPRE (decisao do usuario)."""
+    return "lembrete" in _strip_accents_lower(subject)
+
+
 # Remetentes de SISTEMA (NDR/bounce/aviso de servidor) — nunca sao conta a pagar.
 # Match pelo local-part (antes do @), case-insensitive, em QUALQUER dominio.
 IGNORED_SENDER_LOCALPARTS = {"postmaster"}
@@ -3595,6 +3609,16 @@ def run_reader(days: int = 0, all_: bool = False,
                     _register_ignored(ctrl, msg_id, subject, sender_name, sender_email,
                                       received_at, "Confirmação de pagamento — pagamento já realizado (não é conta a pagar)")
                 log.info(f"  [IGN confirmação pgto] {subject[:55]}")
+                skipped_kw += 1
+                continue
+
+            # Assunto com "lembrete" → 'ignorado' sem baixar/extrair, MESMO com keyword/anexo:
+            # e so um lembrete/aviso, nao a conta a pagar (decisao do usuario).
+            if subject_is_reminder(subject):
+                if not dry_run:
+                    _register_ignored(ctrl, msg_id, subject, sender_name, sender_email,
+                                      received_at, "Lembrete/aviso — não é conta a pagar")
+                log.info(f"  [IGN lembrete] {subject[:55]}")
                 skipped_kw += 1
                 continue
 
