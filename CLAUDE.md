@@ -1626,6 +1626,20 @@ passa por `upload_attachment` dentro de `extract_and_store_accounts`, anexo ou l
   contém `bank_slip` (`bill`/`branchid` vêm da query da URL). Reprodução server-side dá HTTP 500
   (exige sessão/JS do navegador). **Adiado até entrar uma fatura SIEG em aberto** para validar o
   download de verdade (as atuais estão "Pago"). Detalhes na memória `link-boleto-pipeline`.
+- **SSW (transportadoras — `sswsistemas.com.br`) → preferir o link de FATURA, descartar o DACTE
+  (`_ssw_doc_kind`/`_SSW_LINK_RE` em `extract_pdf_links` — não regredir):** o e-mail "Sua fatura
+  Nº… está disponível" traz VÁRIOS links `ssw.inf.br/cgi-local/ssw1188?id=<hex>`, e o **1º byte do
+  `id` (hex→ASCII)** indica o tipo: **`F` = Fatura** (traz o **boleto** no rodapé — âncora "AQUI"/
+  número da fatura) · **`D`/`E`/`X` = DACTE/CT-e** (documento **fiscal**, sem boleto — âncora
+  "Download do arquivo"). Sem tratamento, o `extract_pdf_links` casava o DACTE (a âncora "Download"
+  bate a heurística `download`) e **ignorava a fatura** (âncora "AQUI"/número não casa
+  boleto/fatura/.pdf) → baixava o DACTE (sem linha digitável) e, sendo transportadora, a conta caía
+  em **`ignorado`** (regra CT-e/transporte sem boleto). Correção: `_ssw_doc_kind` classifica o link
+  pelo id; `extract_pdf_links` **prioriza a fatura (`F`)** (posição 0) e **descarta os DACTE
+  (`D`/`E`/`X`)** — no HTML e no texto puro. Caso de origem: conta da fatura 596597 (Arlete
+  Transportes, R$ 1.505,37) que virou `ignorado`; reprocessada (`reprocess_message.py`) → boleto
+  extraído (cc 4 / plano 339, transporte). Testes: `tests/test_link_extraction.py`
+  (`SswLinkSelectionTest`).
 - **Portal BRASPRESS** (`download_pdf_from_url` + `_braspress_download_url`): caso que o scan
   genérico não cobre, pois o link do PDF é montado por JS. O link do e-mail
   (`/protocoloweb?protocolo=CHAVE`) abre uma página cujo botão chama `faturaPDF(chave)`, que
