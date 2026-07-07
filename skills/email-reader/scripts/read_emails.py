@@ -2438,6 +2438,36 @@ _LINK_HREF_RE = re.compile(
     re.IGNORECASE | re.DOTALL,
 )
 _LINK_IN_TEXT_RE = re.compile(r"https?://[^\s\"'<>]{15,}")
+
+# SSW (sistema de transportadoras — sswsistemas.com.br). O e-mail "Sua fatura Nº... está
+# disponível" traz VÁRIOS links ssw.inf.br/cgi-local/ssw1188?id=<hex>, e o 1º BYTE do `id`
+# (hex→ASCII) indica o tipo do documento: 'F' = Fatura (traz o BOLETO no rodapé) · 'D'/'E'/'X'
+# = DACTE/CT-e (documento FISCAL, sem boleto). A âncora da fatura é genérica ("AQUI"/número) e
+# não casa as heurísticas de boleto/fatura/download; já a do DACTE é "Download do arquivo"
+# (casa 'download'). Sem tratamento, extract_pdf_links baixava o DACTE (sem linha digitável) e a
+# conta caía em 'ignorado' (regra CT-e/transporte sem boleto). Preferimos a FATURA e descartamos
+# os DACTE. Ver "Boleto por link (sem anexo)" no CLAUDE.md.
+_SSW_LINK_RE = re.compile(r"ssw\.inf\.br/cgi-local/ssw1188\?id=([0-9a-fA-F]{2,})", re.IGNORECASE)
+
+
+def _ssw_doc_kind(url: str) -> "str | None":
+    """Classifica um link SSW ssw1188?id=<hex> pelo 1º byte decodificado do id:
+    'fatura' (id começa com 'F' — traz o boleto), 'dacte' ('D'/'E'/'X' — CT-e/DACTE fiscal,
+    sem boleto). None se não for link SSW ou o tipo for desconhecido (deixa a heurística
+    normal decidir). Função pura."""
+    m = _SSW_LINK_RE.search(url or "")
+    if not m:
+        return None
+    try:
+        first = bytes.fromhex(m.group(1)[:2]).decode("ascii", "ignore").upper()
+    except ValueError:
+        return None
+    if first == "F":
+        return "fatura"
+    if first in ("D", "E", "X"):
+        return "dacte"
+    return None
+
 _MAX_PDF_LINK_BYTES = 50 * 1024 * 1024  # 50 MB
 _LINK_UA = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -2458,20 +2488,30 @@ def extract_pdf_links(text: str, html: str) -> list[str]:
         return []
 
     candidates, seen = [], set()
+    ssw_faturas: list[str] = []  # links SSW de FATURA (id=F) — têm PRIORIDADE (trazem o boleto)
 
-    def _add(url: str):
+    def _add(url: str, *, front: bool = False):
         # Desescapa entidades HTML (&amp; → &) — links de boleto vêm escapados no
         # HTML e quebrariam os parâmetros (ex.: SIEG/Vindi ?b=…&m=…&t=…).
         u = html_unescape(url.strip()).rstrip(".,;)>\"'")
         # Ignora links que a Locaweb entende como suspeitos (redirect/ofuscados).
         if u and u not in seen and u.startswith("http") and not _is_suspicious_link(u):
             seen.add(u)
-            candidates.append(u)
+            (ssw_faturas if front else candidates).append(u)
 
     for m in _LINK_HREF_RE.finditer(html or ""):
         url         = m.group(1).strip()
         anchor_text = re.sub(r"<[^>]+>", "", m.group(2)).strip()
         if not url.startswith("http"):
+            continue
+        # SSW: o link de FATURA (id=F) traz o boleto; o de DACTE (id=D/E/X) é fiscal, sem
+        # boleto. Preferimos a fatura (prioridade máxima) e DESCARTAMOS os DACTE — senão o
+        # pipeline baixava o DACTE e a conta caía em 'ignorado' (regra CT-e/transporte).
+        ssw_kind = _ssw_doc_kind(url)
+        if ssw_kind == "fatura":
+            _add(url, front=True)
+            continue
+        if ssw_kind == "dacte":
             continue
         url_path = url.lower().split("?")[0]
         if (_LINK_TEXT_RE.search(anchor_text)
@@ -2480,11 +2520,17 @@ def extract_pdf_links(text: str, html: str) -> list[str]:
             _add(url)
 
     for url in _LINK_IN_TEXT_RE.findall(text or ""):
+        if _ssw_doc_kind(url) == "dacte":
+            continue  # nunca seguir o DACTE do SSW pelo texto puro
+        if _ssw_doc_kind(url) == "fatura":
+            _add(url, front=True)
+            continue
         url_path = url.lower().split("?")[0]
         if url_path.endswith(".pdf") or _LINK_URL_RE.search(url):
             _add(url)
 
-    return candidates[:10]
+    # Faturas SSW primeiro (trazem o boleto), depois as demais candidatas.
+    return (ssw_faturas + candidates)[:10]
 
 
 # ── Guarda anti-SSRF do download por link ───────────────────────────────────

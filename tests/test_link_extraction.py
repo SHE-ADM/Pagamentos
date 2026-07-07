@@ -93,6 +93,42 @@ class ExtractPdfLinksTest(unittest.TestCase):
         self.assertEqual(read_emails.extract_pdf_links(text, ""), [])
 
 
+class SswLinkSelectionTest(unittest.TestCase):
+    """SSW (transportadoras): o e-mail 'Sua fatura Nº... está disponível' traz o link de
+    FATURA (id=F, com o BOLETO no rodapé — âncora 'AQUI'/número) e vários de DACTE (id=D/E/X,
+    CT-e fiscal, sem boleto — âncora 'Download do arquivo'). O pipeline DEVE preferir a fatura
+    e descartar os DACTE (caso real da conta 596597 — Arlete — que caía em 'ignorado')."""
+
+    F = "https://ssw.inf.br/cgi-local/ssw1188?id=46303030353936353937333630354F4E52545845564F"
+    D = "https://ssw.inf.br/cgi-local/ssw1188?id=44303030363238373430333630354F4E52545845564F"
+    E = "https://ssw.inf.br/cgi-local/ssw1188?id=45303030363238373430333630354F4E52545845564F"
+    X = "https://ssw.inf.br/cgi-local/ssw1188?id=58303030363238373430333630354F4E52545845564F"
+
+    def test_ssw_doc_kind(self):
+        self.assertEqual(read_emails._ssw_doc_kind(self.F), "fatura")  # 46 = 'F'
+        for u in (self.D, self.E, self.X):                             # 44/45/58 = D/E/X
+            self.assertEqual(read_emails._ssw_doc_kind(u), "dacte", u)
+        self.assertIsNone(read_emails._ssw_doc_kind("https://outro.com/x?id=46AA"))
+        self.assertIsNone(read_emails._ssw_doc_kind(""))
+
+    def test_prefere_fatura_e_descarta_dacte(self):
+        # DACTE aparecem ANTES no HTML e a âncora 'Download do arquivo' casaria 'download';
+        # ainda assim, só a fatura (id=F) deve sair — e em primeiro.
+        html = (
+            f'<a href="{self.D}">Download do arquivo</a>'
+            f'<a href="{self.E}">Download do arquivo</a>'
+            f'<a href="{self.X}">Download do arquivo</a>'
+            f'<a href="{self.F}">AQUI</a>'
+            f'<a href="{self.F}">0596597</a>'
+        )
+        links = read_emails.extract_pdf_links("", html)
+        self.assertEqual(links, [self.F])  # só a fatura, uma vez, e primeiro
+
+    def test_dacte_no_texto_puro_nao_e_seguido(self):
+        self.assertEqual(read_emails.extract_pdf_links(f"Baixe: {self.D}", ""), [])
+        self.assertEqual(read_emails.extract_pdf_links(f"Fatura: {self.F}", ""), [self.F])
+
+
 class SuspiciousBodyWarningTest(unittest.TestCase):
     def test_aviso_acessar_link_e_suspeito(self):
         self.assertTrue(read_emails._body_has_suspicious_warning(
