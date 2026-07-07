@@ -2166,22 +2166,23 @@ negócio), `cnpj CHAR(14)`, `cpf CHAR(11)`, `legal_name`, `trade_name`, `email`/
   vira `NOT NULL UNIQUE` (`uq_supplier_supplier_id`), gravado pelo trigger de espelho
   `trg_supplier_mirror_id` quando o INSERT não o informa.
 
-> **MIGRAÇÃO FASEADA — `status_id` como FONTE ÚNICA da situação (FASE 1+2 aplicadas; FASE 3
-> pendente):** o `status` (texto) está sendo **removido** em favor do `status_id` (FK → dimensão
-> `status`). **FASE 1 (migration 067, aplicada):** `status_id` vira `NOT NULL DEFAULT 3` ('a vencer');
-> todo o app **lê/filtra/ordena/KPI por `status_id`** + o embed `status_dim:status(status_name,
-> status_short_name)` (nome de exibição); constantes `STATUS_IDS`/`STATUS_ID_*`/`STATUS_NAME_BY_ID`
-> em `@sheild/shared` (id 1..10 = a ordem da dimensão). **FASE 2 (migration 068, deploy coordenado):**
-> a trigger `fn_set_status_from_due_date` fica **id-primária** (recalcula 3/2 por vencimento quando
-> aberto — ids 1/2/3 — e **deriva o texto do id** enquanto a coluna existir) + `GRANT UPDATE(status_id)
-> TO authenticated`; **escrita por `status_id`** — frontend (`setFinancialAccountStatus`/bulk +
-> `StatusSelectCell` por id), Next API (update aceita `status_id`, não `status`) e Python
-> (`register_financial._apply_status_id` traduz o texto interno → `status_id` num único ponto;
-> `'pendente'`→omite/DEFAULT 3, `'falha'`→10; `extract_pdf.py` intocado). **FASE 3 (migration 069,
-> pendente):** dropar o CHECK + a coluna `status` texto, simplificar a trigger (só id) e remover
-> `status` do shared schema. **Ordenação da coluna Situação** = `order=status_dim(status_name)` (nome,
-> alfabético — decisão de negócio; id ≠ ordem). O texto abaixo descreve o estado PRÉ-migração e será
-> reconciliado na FASE 3.
+> **`status_id` é a FONTE ÚNICA da situação — a coluna `status` (texto) foi REMOVIDA (migração
+> faseada concluída, FASE 1→3).** A situação de `financial_account_control` é lida/escrita SÓ por
+> `status_id` (FK → dimensão `status`); o NOME de exibição vem do embed
+> `status_dim:status(status_name,status_short_name)`. Constantes `STATUS_IDS`/`STATUS_ID_*`/
+> `STATUS_NAME_BY_ID` em `@sheild/shared` (id 1..10 = a ordem da dimensão).
+> **FASE 1 (migration 067):** `status_id` `NOT NULL DEFAULT 3` ('a vencer'); leitura/filtro/ordenação/
+> KPI por `status_id` + embed. **FASE 2 (migration 068):** trigger `fn_set_status_from_due_date`
+> **id-primária** (recalcula 3/2 por vencimento quando aberto — ids 1/2/3) + `GRANT UPDATE(status_id)
+> TO authenticated`; escrita por `status_id` — frontend (`setFinancialAccountStatus`/bulk +
+> `StatusSelectCell` por id), Next API (update aceita `status_id`) e Python
+> (`register_financial._apply_status_id` traduz o texto interno → `status_id` num único ponto na
+> gravação; `'pendente'`→omite/DEFAULT 3, `'falha'`→10; `extract_pdf.py` intocado — ainda rotula por
+> texto internamente, traduzido no register). **FASE 3 (migration 069):** trigger simplificada (só id),
+> CHECK e coluna `status` texto **DROPADOS**, `status`/`accountStatusSchema` removidos do shared schema.
+> **Ordenação da coluna Situação** = `order=status_dim(status_name)` (nome, alfabético — decisão de
+> negócio; id ≠ ordem). ⚠️ O texto abaixo (herdado) descreve o estado PRÉ-migração — ao editá-lo,
+> lembrar que `status` texto **não existe mais**; a fonte é `status_id` + embed `status_dim`.
 
 `financial_account_control.status` é a **coluna única de situação/ciclo de vida** (migration
 **034** fundiu o antigo `due_status` aqui). Default `pendente`; domínio pt-BR de **10 valores**
