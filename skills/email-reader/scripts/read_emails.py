@@ -1598,6 +1598,53 @@ def _classify_body_doc_type(body_text: str) -> str:
     return "outro"
 
 
+# Forma de pagamento DECLARADA no corpo do e-mail. Regra de negocio: o pagador escreve
+# como pagou (ex.: "PAGAMENTO EM DINHEIRO", "pago deposito", "pagamento via pix"). Termos
+# sem acento (casados por _ns_body) e por PALAVRA inteira (_has_word). O valor a gravar e
+# o do enum PAYMENT_METHODS (com acento). Ordem = precedencia: credito/debito ANTES de
+# cartao (para "cartao de credito" cair em 'crédito', nao 'cartão'); dinheiro primeiro
+# (caso do usuario). PIX e boleto tem tratamento proprio antes (has_pix / codigo de
+# barras) — aqui servem so de fallback se aquele ramo nao tiver resolvido.
+_BODY_PAYMENT_METHOD_KEYWORDS: list[tuple[str, list[str]]] = [
+    ("dinheiro",          ["dinheiro", "especie"]),
+    ("pix",               ["pix"]),
+    ("depósito",          ["deposito"]),
+    # 'débito automático' ANTES de 'débito' (mais específico): "Débito Automático" casa aqui,
+    # não no 'débito' genérico (cartão-débito). Ambos são valores próprios do enum.
+    ("débito automático", ["debito automatico", "debito em conta"]),
+    ("crédito",           ["cartao de credito", "credito"]),
+    ("débito",            ["cartao de debito", "debito"]),
+    ("cartão",            ["cartao"]),
+    ("ted",               ["ted"]),
+    ("transferência",     ["transferencia"]),
+    ("cheque",            ["cheque"]),
+    ("vale",              ["vale", "vale refeicao", "vale transporte", "vale alimentacao"]),
+    ("boleto",            ["boleto"]),
+    ("duplicata",         ["duplicata"]),
+]
+
+
+def _classify_body_payment_method(*texts: str | None) -> str | None:
+    """Detecta a FORMA DE PAGAMENTO declarada no corpo/assunto (ex.: 'PAGAMENTO EM
+    DINHEIRO' -> 'dinheiro', 'pago deposito' -> 'depósito'), casando por PALAVRA inteira
+    sem acento. Retorna o valor do enum PAYMENT_METHODS (com acento) ou None se nada
+    casar. Usado para preencher payment_method quando o ramo principal deixaria 'outro'.
+
+    Precedência POR TEXTO (não por lista): cada texto é avaliado na ordem recebida e o
+    primeiro que casar vence — chamando com (body, subject), o CORPO tem precedência sobre
+    o ASSUNTO (caso id 325: corpo 'TED AGÊNCIA...' vs assunto 'PAGAMENTO PIX' → 'ted').
+    Dentro de um mesmo texto, a ordem de _BODY_PAYMENT_METHOD_KEYWORDS desempata
+    (crédito/débito antes de cartão)."""
+    for t in texts:
+        if not t:
+            continue
+        norm = _ns_body(t)
+        for method, terms in _BODY_PAYMENT_METHOD_KEYWORDS:
+            if any(_has_word(norm, term) for term in terms):
+                return method
+    return None
+
+
 # Contas de concessionaria — classificadas por FRASE do assunto/corpo (regra de
 # negocio). Tem PRECEDENCIA sobre boleto/fatura/PIX: o assunto "PAGAMENTO CONTA DE
 # AGUA" define o tipo mesmo que o corpo pareca uma fatura. Termos sem acento (casados
@@ -2112,7 +2159,10 @@ def extract_from_email_body(body_text: str, received_at: str, message_id: str,
                        fallback = sender_email (so quando nao ha rotulo nem CNPJ/CPF)
       - supplier_cnpj/cpf: extraidos do corpo (CNPJ por padrao; CPF so rotulado)
       - barcode     : linha digitavel / codigo de barras (boleto 47 / arrecadacao 48)
-      - payment_method: 'pix' no corpo → 'pix'; caso contrario → 'outro'
+      - payment_method: 'pix' no corpo → 'pix'; boleto (barcode) → 'boleto'; senao a
+                       FORMA DECLARADA no corpo/assunto (dinheiro/depósito/cheque/cartão/
+                       crédito/débito/ted/transferência/duplicata — _classify_body_payment_method);
+                       nada casando → 'outro'
       - document_type: 'PIX' quando PIX; senao keywords de tributo; fallback 'outro'
       - invoice_number fallback: PIX -> 'PIX_' + valor BR ('PIX_R$ 10.999,99');
         demais tipos -> '{document_type}_{ddmmyy}' quando nao encontrado
@@ -2232,6 +2282,13 @@ def extract_from_email_body(body_text: str, received_at: str, message_id: str,
         payment_method = "boleto"
         if (document_type or "outro").lower() in ("pix", "outro", ""):
             document_type = "boleto"
+
+    # Forma de pagamento DECLARADA no corpo (dinheiro/depósito/cheque/cartão/…): preenche
+    # quando os ramos acima deixaram 'outro' — pix e boleto já foram resolvidos e têm
+    # precedência (não sobrescreve). Corpo tem precedência sobre o assunto. Caso de origem:
+    # id 442 "PAGAMENTO EM DINHEIRO" gravava 'outro' → agora 'dinheiro'.
+    if payment_method == "outro":
+        payment_method = _classify_body_payment_method(body_text, subject) or "outro"
 
     # Boleto de TRANSPORTE → document_type='cte' (regra 4). Mesma regra do caminho de
     # PDF; roda depois do override de boleto (o boleto ja foi identificado acima).
