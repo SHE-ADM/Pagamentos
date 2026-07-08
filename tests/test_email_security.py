@@ -48,6 +48,21 @@ class HeaderInjectionTest(unittest.TestCase):
         # Endereço válido passa intacto.
         self.assertEqual(email_sender._safe_address("rep@x.com"), "rep@x.com")
 
+    def test_from_com_crlf_e_sanitizado(self):
+        # from_name/from_addr (env / company do Supabase) com CRLF não podem injetar header
+        # no From — S4-4. O header montado não contém \r/\n.
+        msg = email_sender._build_message(
+            {"from_name": "Otimotex\r\nBcc: evil@e.com", "from_addr": "fin@otimotex.com.br\r\nX: y"},
+            subject="COBRANCA",
+            html_body="<p>x</p>",
+            actual_to="cliente@x.com",
+            actual_cc=None,
+        )
+        from_header = msg["From"]
+        self.assertNotIn("\r", from_header)
+        self.assertNotIn("\n", from_header)
+        self.assertIn("Otimotex", from_header)
+
 
 if __name__ == "__main__":
     unittest.main()

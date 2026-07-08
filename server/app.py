@@ -25,6 +25,7 @@ import os
 import sys
 import time
 import threading
+import ipaddress
 from pathlib import Path
 
 from flask import Flask, request, jsonify
@@ -53,6 +54,33 @@ MAX_DAYS = 365
 # localhost). Quando definido no .env, os endpoints de DISPARO (POST) exigem o header
 # X-Trigger-Token correspondente. Vazio (default) = só a checagem de Content-Type vale.
 _TRIGGER_TOKEN = os.environ.get("FLASK_TRIGGER_TOKEN", "").strip()
+
+# Host de bind (default loopback). Só é exposto além de 127.0.0.1 se explicitamente
+# configurado — e, nesse caso, o token de disparo passa a ser OBRIGATÓRIO (ver S4-2).
+_BIND_HOST = os.environ.get("FLASK_BIND_HOST", "127.0.0.1").strip() or "127.0.0.1"
+
+
+def _is_loopback_bind(host: str) -> bool:
+    """True se o bind é apenas loopback (127.0.0.0/8, ::1) ou 'localhost'."""
+    h = (host or "").strip().lower()
+    if h in ("", "localhost"):
+        return True
+    try:
+        return ipaddress.ip_address(h).is_loopback
+    except ValueError:
+        return False
+
+
+def _require_trigger_token_if_exposed(host: str, token: "str | None" = None) -> None:
+    """S4-2: fora de loopback, FLASK_TRIGGER_TOKEN é OBRIGATÓRIO — o bind deixa de ser a
+    barreira e os endpoints de disparo (leitura de e-mail / cobrança, com service_role no
+    processo) ficariam abertos a qualquer origem que alcance a porta. Falha no BOOT (não
+    sobe o servidor exposto sem token). Loopback segue sem token (padrão da estação única)."""
+    tok = _TRIGGER_TOKEN if token is None else token
+    if not _is_loopback_bind(host) and not tok:
+        raise RuntimeError(
+            f"FLASK_BIND_HOST não-loopback ({host!r}) exige FLASK_TRIGGER_TOKEN no .env — "
+            "recusando subir com os endpoints de disparo abertos.")
 
 app = Flask(__name__)
 
@@ -310,5 +338,7 @@ def read_emails_progress():
 
 
 if __name__ == "__main__":
+    # S4-2: fora de loopback, exige FLASK_TRIGGER_TOKEN (falha no boot se ausente).
+    _require_trigger_token_if_exposed(_BIND_HOST)
     # threaded=True: a extração de PDF pode ser demorada; evita travar a sonda.
-    app.run(host="127.0.0.1", port=8000, threaded=True)
+    app.run(host=_BIND_HOST, port=8000, threaded=True)

@@ -100,7 +100,9 @@ def _build_message(
 ) -> MIMEMultipart:
     msg = MIMEMultipart("related")
     msg["Subject"] = _strip_crlf(subject)
-    msg["From"] = f"{smtp['from_name']} <{smtp['from_addr']}>"
+    # S4-4: from_name/from_addr vêm de env / company (Supabase) — sanitiza CR/LF para
+    # barrar header injection no From (mesma proteção já aplicada ao Subject/To/Cc).
+    msg["From"] = f"{_strip_crlf(smtp['from_name'])} <{_strip_crlf(smtp['from_addr'])}>"
     msg["To"] = actual_to
     if actual_cc:
         msg["Cc"] = actual_cc

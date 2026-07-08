@@ -7,7 +7,7 @@ Nunca reprocessa um e-mail já registrado, independente de onde o script rodar.
 """
 
 import os, sys, re, time, socket, imaplib, email, argparse, logging, csv, json, tempfile, faulthandler, unicodedata, ipaddress
-import urllib.request, urllib.error, urllib.parse, http.cookiejar
+import urllib.request, urllib.error, urllib.parse, http.cookiejar, http.client
 from html import unescape as html_unescape
 from email.header import decode_header
 from email.utils import parseaddr, parsedate_to_datetime
@@ -2630,24 +2630,48 @@ _ALLOWED_SCHEMES = ("http", "https")
 _ALLOWED_PORTS = {80, 443}
 
 
-def _host_is_safe(host: str) -> bool:
-    """False se o host resolve para QUALQUER IP interno (privado/loopback/link-local/
-    reservado/multicast/unspecified) — barra SSRF para metadata cloud e rede interna."""
+def _safe_host_ips(host: str) -> "list[str]":
+    """Resolve `host` e devolve os IPs SE todos forem externos; [] se a resolução falhar OU
+    qualquer IP for interno (privado/loopback/link-local/reservado/multicast/unspecified).
+    Base compartilhada por _host_is_safe (compat) e pelo pin de IP (anti-DNS-rebinding): o
+    download conecta ao IP JÁ validado aqui, sem re-resolver o nome no socket."""
     if not host:
-        return False
+        return []
     try:
         infos = socket.getaddrinfo(host, None)
     except (socket.gaierror, UnicodeError, OSError):
-        return False
+        return []
+    ips: "list[str]" = []
     for info in infos:
         try:
             ip = ipaddress.ip_address(info[4][0])
         except ValueError:
-            return False
+            return []
+        # S4-3: normaliza IPv6 IPv4-mapeado (ex.: ::ffff:169.254.169.254) para o IPv4
+        # embutido ANTES das checagens — em runtimes < 3.13 as flags is_private/is_link_local
+        # podem não delegar ao IPv4 mapeado. Defesa em profundidade (produção roda 3.14).
+        # getattr: só IPv6Address tem `ipv4_mapped`; IPv4Address não → None (sem AttributeError).
+        mapped = getattr(ip, "ipv4_mapped", None)
+        if mapped is not None:
+            ip = mapped
         if (ip.is_private or ip.is_loopback or ip.is_link_local
                 or ip.is_reserved or ip.is_multicast or ip.is_unspecified):
-            return False
-    return True
+            return []
+        ips.append(str(ip))
+    return ips
+
+
+def _host_is_safe(host: str) -> bool:
+    """False se o host resolve para QUALQUER IP interno — barra SSRF para metadata cloud e
+    rede interna. Wrapper de _safe_host_ips (mantido para compat de chamadas/testes)."""
+    return bool(_safe_host_ips(host))
+
+
+def _pin_ip_for_host(host: str) -> "str | None":
+    """IP EXTERNO validado para FIXAR no socket (fecha a janela de DNS rebinding entre a
+    validação e o connect). None quando o host não resolve ou resolve para algum IP interno."""
+    ips = _safe_host_ips(host)
+    return ips[0] if ips else None
 
 
 def _is_safe_download_url(url: str) -> bool:
@@ -2679,9 +2703,80 @@ class _SafeRedirectHandler(urllib.request.HTTPRedirectHandler):
         return super().redirect_request(req, fp, code, msg, headers, newurl)
 
 
+class _PinnedHTTPConnection(http.client.HTTPConnection):
+    """HTTPConnection que conecta a um IP JÁ VALIDADO e FIXADO, preservando o Host original
+    no request. O socket não re-resolve o nome → fecha a janela de DNS rebinding (S4-1)."""
+
+    def __init__(self, *args, pinned_ip: "str | None" = None, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._pinned_ip = pinned_ip
+
+    def connect(self):  # noqa: D102
+        target = self._pinned_ip or self.host
+        self.sock = self._create_connection((target, self.port), self.timeout, self.source_address)
+        self.sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+        if self._tunnel_host:
+            self._tunnel()
+
+
+class _PinnedHTTPSConnection(http.client.HTTPSConnection):
+    """Como _PinnedHTTPConnection, com TLS: o SNI / validação de certificado usa o HOSTNAME
+    ORIGINAL (self.host), não o IP fixado — pin sem quebrar a verificação de certificado."""
+
+    def __init__(self, *args, pinned_ip: "str | None" = None, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._pinned_ip = pinned_ip
+
+    def connect(self):  # noqa: D102
+        target = self._pinned_ip or self.host
+        self.sock = self._create_connection((target, self.port), self.timeout, self.source_address)
+        self.sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+        if self._tunnel_host:
+            self._tunnel()
+            server_hostname = self._tunnel_host
+        else:
+            server_hostname = self.host
+        self.sock = self._context.wrap_socket(self.sock, server_hostname=server_hostname)
+
+
+def _pinned_conn_factory(conn_cls, url: str):
+    """Fábrica de conexão que RESOLVE + VALIDA o host uma vez e FIXA o IP externo. Levanta
+    URLError se o destino resolve para IP interno (ou não resolve) — cobre também cada
+    redirect, pois o salto reentra pelo handler com a nova URL."""
+    host = urllib.parse.urlsplit(url).hostname
+    pinned = _pin_ip_for_host(host or "")
+    if pinned is None:
+        raise urllib.error.URLError("destino resolve para IP interno ou não resolve (SSRF)")
+
+    def _make(chost, **kwargs):
+        return conn_cls(chost, pinned_ip=pinned, **kwargs)
+
+    return _make
+
+
+class _PinnedHTTPHandler(urllib.request.HTTPHandler):
+    """Substitui o HTTPHandler default no opener: fixa o IP validado no connect (S4-1)."""
+
+    def http_open(self, req):  # noqa: D102
+        return self.do_open(_pinned_conn_factory(_PinnedHTTPConnection, req.full_url), req)
+
+
+class _PinnedHTTPSHandler(urllib.request.HTTPSHandler):
+    """Substitui o HTTPSHandler default: fixa o IP e mantém o context/SNI (verificação de
+    certificado preservada) — o server_hostname continua sendo o hostname original."""
+
+    def https_open(self, req):  # noqa: D102
+        return self.do_open(
+            _pinned_conn_factory(_PinnedHTTPSConnection, req.full_url), req,
+            context=self._context, check_hostname=self._check_hostname)
+
+
 def _build_safe_opener(*handlers: "urllib.request.BaseHandler") -> "urllib.request.OpenerDirector":
-    """Opener com o _SafeRedirectHandler (revalida redirects) + handlers extras (ex.: cookies)."""
-    return urllib.request.build_opener(_SafeRedirectHandler(), *handlers)
+    """Opener com: pin de IP anti-rebinding (_Pinned*Handler substituem os HTTP/HTTPS
+    handlers default por serem subclasses deles) + revalidação de CADA redirect
+    (_SafeRedirectHandler) + handlers extras (ex.: cookies para BRASPRESS)."""
+    return urllib.request.build_opener(
+        _SafeRedirectHandler(), _PinnedHTTPHandler(), _PinnedHTTPSHandler(), *handlers)
 
 
 def _fetch_url(url: str, timeout: int = 30,
