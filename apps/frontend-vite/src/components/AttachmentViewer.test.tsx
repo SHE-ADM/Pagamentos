@@ -20,12 +20,15 @@ describe('AttachmentViewer', () => {
     await waitFor(() => expect(container.querySelector('iframe')).not.toBeNull());
     const iframe = container.querySelector('iframe');
     expect(iframe?.getAttribute('src')).toBe('https://sb/sign/boleto.pdf?token=x');
-    // S5-1: o PDF hostil é confinado por sandbox — sem allow-scripts (JS não roda) nem
-    // allow-top-navigation (não redireciona o app). Trava a regressão do achado.
+    // S5-1 (corrigido): o PDFium do Chrome EXIGE allow-scripts para renderizar (sem ele,
+    // ícone de documento quebrado). A proteção que resta é o cross-origin do Storage +
+    // a AUSÊNCIA de allow-top-navigation/allow-forms/allow-modals (não redireciona o app).
     const sandbox = iframe?.getAttribute('sandbox') ?? '';
+    expect(sandbox).toContain('allow-scripts');
     expect(sandbox).toContain('allow-same-origin');
-    expect(sandbox).not.toContain('allow-scripts');
     expect(sandbox).not.toContain('allow-top-navigation');
+    expect(sandbox).not.toContain('allow-forms');
+    expect(sandbox).not.toContain('allow-modals');
   });
 
   it('chama onClose ao clicar no botão fechar', async () => {
