@@ -35,22 +35,24 @@ export type CreateUserInput = z.infer<typeof createUserSchema>;
 export type ForgotPasswordInput = z.infer<typeof forgotPasswordSchema>;
 export type ResetPasswordInput = z.infer<typeof resetPasswordSchema>;
 
-// Troca de senha obrigatória no 1º acesso. A marca POSITIVA `password_changed`
-// (em user_metadata) só é gravada quando o próprio usuário define sua senha. A
-// ausência da marca = senha ainda é a temporária do admin → força a troca. Esse
-// desenho cobre QUALQUER caminho de criação (Supabase Dashboard ou API): um usuário
-// novo nunca tem a marca. Usuários já existentes recebem a marca por backfill, para
-// não serem forçados. (user_metadata é client-writable — o próprio fluxo de troca
-// grava a marca; adequado ao modelo de sessão confiável deste app interno.)
+// Troca de senha obrigatória no 1º acesso. A marca POSITIVA `password_changed` vive em
+// `app_metadata` — campo SERVER-CONTROLLED (só gravável via Admin API/service_role, o
+// usuário NÃO consegue forjá-lo, ao contrário de `user_metadata`). Ela só é gravada
+// quando o próprio usuário define sua senha (endpoint POST /api/users/me/password-changed,
+// requireAuth). A ausência da marca = senha ainda é a temporária do admin → força a troca.
+// Cobre QUALQUER caminho de criação (Dashboard ou API): um usuário novo nunca tem a marca.
+// A obrigatoriedade NÃO depende mais de campo client-writable (achado S1-1).
+// BACKFILL: usuários já existentes precisam de app_metadata.password_changed=true (via Admin
+// API / SQL em auth.users.raw_app_meta_data), senão são forçados a trocar uma vez.
 export const PASSWORD_CHANGED_META_KEY = 'password_changed';
 
 /**
  * Decide se o usuário deve ser forçado a trocar a senha (1º acesso). Recebe o
- * `user_metadata` do Supabase. True quando a marca `password_changed` NÃO é `true`
- * (ausente ou false) — senha ainda é a temporária definida pelo admin.
+ * `app_metadata` do Supabase (server-controlled). True quando a marca `password_changed`
+ * NÃO é `true` (ausente ou false) — senha ainda é a temporária definida pelo admin.
  */
 export function mustChangePassword(
-  userMetadata: Record<string, unknown> | null | undefined,
+  appMetadata: Record<string, unknown> | null | undefined,
 ): boolean {
-  return userMetadata?.[PASSWORD_CHANGED_META_KEY] !== true;
+  return appMetadata?.[PASSWORD_CHANGED_META_KEY] !== true;
 }

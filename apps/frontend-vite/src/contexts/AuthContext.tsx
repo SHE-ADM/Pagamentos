@@ -54,6 +54,10 @@ const isInvalidSessionStatus = (status?: number): boolean =>
   status === 401 || status === 403;
 
 // Minutos de inatividade até o logout automático (configurável via env).
+// SEGURANÇA (S1-4): este teto é um controle de UX/conveniência, NÃO uma fronteira de
+// autorização — é imposto só no cliente e o access_token segue válido no servidor até a
+// expiração real do Supabase (apagar o marcador `pag:last-activity` "esquece" o teto). O
+// reforço real seria encurtar a expiração do JWT / revogar o refresh token no logout.
 const IDLE_MINUTES = Number(import.meta.env.VITE_SESSION_IDLE_MINUTES) || 10;
 const IDLE_TIMEOUT_MS = IDLE_MINUTES * 60_000;
 

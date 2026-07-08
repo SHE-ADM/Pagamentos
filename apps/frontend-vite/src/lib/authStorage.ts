@@ -9,6 +9,12 @@
 //   - desmarcado → token em sessionStorage → reabrir o app sempre exige login
 //
 // O teto de inatividade de 10 min (useIdleLogout) continua valendo em ambos os casos.
+//
+// SEGURANÇA (S1-2): o access_token fica em web-storage (local/session) — exfiltrável por
+// XSS POR DESIGN do supabase-js. Hoje o risco é CONTIDO (sem vetor de XSS reproduzível —
+// ver S5; React escapa, sem HTML cru) e mitigado pela CSP (S5) + expiração da sessão. Não
+// é uma fronteira contra o próprio usuário (é o browser dele). Migrar a sessão para cookie
+// HttpOnly fecharia a exposição a XSS, mas muda a arquitetura de auth — fora deste escopo.
 
 const REMEMBER_KEY = 'pag:remember';
 

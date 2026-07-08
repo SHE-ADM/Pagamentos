@@ -5,7 +5,7 @@
 
 import type { AuthError, User } from '@supabase/supabase-js';
 import type { ZodError } from 'zod';
-import { createUserSchema, loginSchema } from '@sheild/shared/schemas';
+import { createUserSchema, loginSchema, PASSWORD_CHANGED_META_KEY } from '@sheild/shared/schemas';
 import { getSupabaseAdmin } from './supabase-admin';
 import { getAnonClient } from './auth';
 
@@ -66,6 +66,14 @@ const userRepository = {
   signIn(credentials: { email: string; password: string }) {
     return getAnonClient().auth.signInWithPassword(credentials);
   },
+
+  // Marca `password_changed` em APP_METADATA (server-controlled) via Admin API. O
+  // updateUserById MESCLA as chaves de app_metadata (preserva role/group_id existentes).
+  markPasswordChanged(userId: string) {
+    return getSupabaseAdmin().auth.admin.updateUserById(userId, {
+      app_metadata: { [PASSWORD_CHANGED_META_KEY]: true },
+    });
+  },
 };
 
 export const userService = {
@@ -116,5 +124,17 @@ export const userService = {
   getProfile(user: User): UserProfile {
     const name = typeof user.user_metadata?.name === 'string' ? user.user_metadata.name : null;
     return { id: user.id, name, email: user.email ?? null, created_at: user.created_at ?? null };
+  },
+
+  /**
+   * Marca `app_metadata.password_changed = true` para o usuário — chamado APÓS ele
+   * definir a própria senha (POST /api/users/me/password-changed, requireAuth). A
+   * obrigatoriedade da troca passa a depender de um campo SERVER-CONTROLLED, não de
+   * `user_metadata` (client-writable). Ver achado S1-1.
+   * @throws {UserServiceError} 500 em falha da Admin API.
+   */
+  async markPasswordChanged(userId: string): Promise<void> {
+    const { error } = await userRepository.markPasswordChanged(userId);
+    if (error) throw new UserServiceError(error.message, 500);
   },
 };
