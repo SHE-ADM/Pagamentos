@@ -12,6 +12,9 @@ const PROTECTED_PAGES = [
   { path: '/consulta', name: 'Consulta' },
   { path: '/emails', name: 'Emails' },
   { path: '/erros', name: 'Erros' },
+  // Dashboard incluído (achado A3-8): é o único ponto que avalia color-contrast em
+  // render real — sem ele as violações de contraste do Dashboard não eram escaneadas.
+  { path: '/dashboard', name: 'Dashboard' },
 ];
 
 test.describe('Acessibilidade WCAG AA — páginas protegidas (navegador real)', () => {

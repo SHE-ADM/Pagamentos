@@ -39,8 +39,12 @@ const editableAccountFields = {
     .trim()
     .min(1, 'Descrição é obrigatória')
     .max(MAX_DESCRIPTION, `Descrição deve ter no máximo ${MAX_DESCRIPTION} caracteres`),
-  bank_id: z.number().int().min(0, 'Banco é obrigatório'),
-  payment_type_id: z.number().int().min(0, 'Tipo de pagamento é obrigatório'),
+  // bank_id/payment_type_id aceitam 0 = "não informado"/Caixa (o form oferece a opção
+  // neutra NONE_BANK e normaliza vazio→0). Logo `.min(0)` só barra negativos e a mensagem
+  // NÃO afirma obrigatoriedade — diferente de status_id, que É obrigatório (.min(1)).
+  // Ver achado A1-4.
+  bank_id: z.number().int().min(0, 'Banco inválido'),
+  payment_type_id: z.number().int().min(0, 'Tipo de pagamento inválido'),
   status_id: z.number().int().min(1, 'Situação é obrigatória'),
   currency_code: z.string().trim().max(MAX_CURRENCY, `Moeda deve ter no máximo ${MAX_CURRENCY} caracteres`).optional(),
   balance_amount: money.min(0, 'Saldo não pode ser negativo').optional(),

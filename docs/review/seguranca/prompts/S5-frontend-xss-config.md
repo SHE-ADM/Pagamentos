@@ -1,50 +1,61 @@
-# S5 — Frontend: CSV/formula injection na exportação
+# S5 — Frontend: sandbox do iframe de PDF + header CSP
 
-> Base: `docs/review/seguranca/RELATORIO-SEGURANCA.md` §5. Único achado MÉDIO acionável do frontend.
+> Gerado pela auditoria de segurança de 2026-07-08. Aplicar na branch `Features`.
+> Origem: `docs/review/seguranca/RELATORIO-SEGURANCA.md` §5. XSS não reproduzível hoje — isto é hardening.
 
 ```xml
 <objetivo>
-  Neutralizar a injeção de fórmula no CSV exportado de /consulta (conteúdo de e-mail hostil que sai do
-  navegador para o Excel/Sheets), sem alterar o conteúdo legítimo nem o resto do export. Documentar o gap
-  de defesa-em-profundidade da feature flag de IMAP.
+  Confinar o PDF anexado (conteúdo de e-mail hostil) com sandbox no iframe e adicionar um header CSP restritivo,
+  reduzindo o impacto de qualquer XSS futuro e de conteúdo ativo em PDF.
 </objetivo>
 
 <read_first>
-  - apps/frontend-vite/src/pages/Consulta.tsx (exportCsv:99-111 e a montagem das linhas)
-  - apps/frontend-vite/src/lib/featureFlags.ts
-  - CLAUDE.md (memória vercel-deploy — Flask local-only)
+  - apps/frontend-vite/src/components/AttachmentViewer.tsx:105 (<iframe src={url}>)
+  - apps/frontend-vite/vercel.json (sem bloco headers hoje)
+  - apps/frontend-vite/index.html
+  - apps/frontend-vite/src/lib/authStorage.ts (token em web-storage — motivação da CSP)
+  - apps/frontend-vite/src/services/supabase.ts:28-29 (origem Supabase p/ connect-src)
 </read_first>
 
 <achados>
-  - MÉDIO M1: CSV/formula injection — exportCsv (Consulta.tsx:99-111) escapa aspas e remove \r\n mas NÃO neutraliza
-    células iniciando com `= + - @` (ou \t/\r). Colunas com conteúdo do remetente: email_body_excerpt, description,
-    processing_notes, invoice_number. Vetor: corpo iniciando com `=HYPERLINK(...)` / `=cmd|'/c calc'!A1`.
-  - INFO N2: featureFlags.EMAIL_READER_ENABLED é defesa só de UI; o endpoint Flask segue alcançável (impacto nulo hoje, Flask local-only).
+  - [MÉDIO] S5-1 — AttachmentViewer.tsx:105: iframe do PDF sem sandbox. PDF hostil pode disparar navegação de
+    topo (phishing) e popups. Origem é Supabase Storage (SOP protege o token), mas o conteúdo ativo não é confinado.
+  - [BAIXO] S5-2 — vercel.json/index.html sem Content-Security-Policy. Qualquer XSS futuro exfiltra o token de
+    web-storage sem barreira; frame-src/frame-ancestors sem restrição.
+  - [INFO] VITE_IMAP_USER no bundle (Emails.tsx:318) — e-mail, não credencial.
 </achados>
 
 <correcao>
-  1. Em exportCsv, ao montar cada célula, sanitizar fórmula ANTES de envolver em aspas:
-     - `const cell = /^[=+\-@\t\r]/.test(String(v ?? '').trimStart()) ? "'" + v : v;` e então aplicar o escaping de aspas atual.
-     - Aplicar a TODAS as colunas de texto livre (no mínimo as 4 citadas), idealmente a todas as células string.
-  2. Teste (Vitest): exportCsv com uma linha cujo description = `=HYPERLINK("http://x")` → a célula no CSV começa com `'`
-     (prefixo) e o conteúdo legítimo (ex.: `Nota 123`) permanece intacto. Cobrir também `+`, `-`, `@`.
-  3. N2 (documentação, sem código): registrar no CLAUDE.md (seção featureFlags) que esconder o botão NÃO é controle de
-     acesso — se o Flask for exposto numa VM, os endpoints de disparo precisam de auth própria (ver S4 M-1).
+  1. S5-1: adicionar `sandbox="allow-same-origin allow-popups"` ao iframe (SEM allow-scripts nem
+     allow-top-navigation), e opcionalmente `referrerPolicy="no-referrer"`. Testar que o PDF ainda renderiza
+     inline (o visualizador nativo do Chrome funciona sob esse sandbox).
+  2. S5-2: adicionar bloco `headers` no vercel.json aplicando CSP à SPA, ex.:
+     default-src 'self';
+     connect-src 'self' https://<project>.supabase.co https://*.vercel.app;
+     img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'; script-src 'self';
+     frame-src https://*.supabase.co; frame-ancestors 'none'; object-src 'none'; base-uri 'self'.
+     Ajustar connect-src/frame-src aos domínios reais (Supabase + data-api). Validar que a app carrega, autentica,
+     lê dados e abre o PDF sob a CSP (relaxar pontualmente se algum recurso legítimo quebrar — sem cair para
+     'unsafe-eval'/wildcard).
+  3. INFO S5-2/VITE_IMAP_USER: opcional — servir o e-mail da caixa via resposta autenticada em vez de VITE_.
 </correcao>
 
 <restricoes>
-  - NÃO alterar o conteúdo legítimo das células (só prefixar quando iniciar com caractere de fórmula).
-  - NÃO introduzir dependência nova; manter o export client-side. NÃO mexer no resto do CSV (cabeçalho, separador, BOM se houver).
+  - NÃO usar 'unsafe-eval' nem 'unsafe-inline' em script-src. 'unsafe-inline' em style-src é tolerável (Tailwind
+    injeta estilos); preferir sem, se a app funcionar.
+  - Não quebrar o carregamento de fontes/assets nem o proxy /data-api.
+  - Manter o csvCell (proteção de fórmula) e o padrão de render de texto (React escapa) — já OK, não regredir.
 </restricoes>
 
 <validacao>
   - npm run lint && npm run typecheck && npm test
-  - npm run prune
-  - Vetor: abrir o CSV exportado de um registro com description começando por `=` e confirmar que o Excel NÃO avalia a fórmula.
+  - Manual (dev + preview Vercel): abrir um anexo PDF (renderiza sob sandbox); navegar por /consulta, /emails,
+    /erros, login/logout — todos funcionam sob a CSP; conferir no DevTools que não há violação de CSP no console.
+  - No CI: `cd apps/frontend-vite && npm run test:e2e -- protected` (não rodar no sandbox do agente).
 </validacao>
 
 <criterio_de_aceite>
-  - Células iniciando com = + - @ \t \r saem prefixadas com `'` no CSV; conteúdo normal inalterado (teste cobre ambos).
-  - Gate verde; nota de defesa-em-profundidade da flag documentada.
+  iframe do PDF confinado por sandbox (sem scripts/top-navigation). Header CSP restritivo ativo no deploy Vercel
+  sem quebrar a aplicação. Sem regressão de XSS (render de texto + csvCell intactos). Gate verde.
 </criterio_de_aceite>
 ```

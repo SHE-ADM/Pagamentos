@@ -64,6 +64,17 @@ describe('python-bridge', () => {
     expect((err as PythonBridgeError).status).toBe(502);
   });
 
+  it('S3-1: timeout do fetch (AbortSignal.timeout) vira PythonBridgeError 504', async () => {
+    // AbortSignal.timeout dispara um DOMException name='TimeoutError' quando estoura.
+    const timeout = new Error('timed out');
+    timeout.name = 'TimeoutError';
+    fetchMock.mockRejectedValue(timeout);
+
+    const err = await triggerReader().catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(PythonBridgeError);
+    expect((err as PythonBridgeError).status).toBe(504);
+  });
+
   it('probePythonHealth retorna true/false conforme a disponibilidade', async () => {
     fetchMock.mockResolvedValue({ ok: true });
     expect(await probePythonHealth()).toBe(true);

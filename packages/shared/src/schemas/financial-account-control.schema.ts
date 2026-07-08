@@ -302,6 +302,32 @@ export const financialAccountControlInputSchema = financialAccountControlSchema.
   status_dim: true,
 });
 
+// ── Edição MANUAL (base do CRUD — POST/PATCH /api/contas) ────────────────────
+// S3-2 (auditoria de segurança): o CRUD manual só expõe os campos do formulário
+// (ContaForm) + situação/flags de curadoria. Colunas de PIPELINE/AUDITORIA
+// (gmail_message_id, source_file, extraction_source, extracted_at, processing_notes,
+// email_body_excerpt, sender_email, subject, payer_cnpj/payer_name, nosso_numero e os
+// componentes de boleto) NÃO são graváveis pela API manual — protege a trilha de
+// auditoria/dedup. O pipeline Python grava via service_role (REST direto), fora
+// destes schemas; o Zod default (strip) descarta silenciosamente campos extras.
+const financialAccountControlManualEditSchema = financialAccountControlInputSchema.pick({
+  sk_supplier: true,
+  cost_center_id: true,
+  chart_account_id: true,
+  invoice_number: true,
+  issue_date: true,
+  due_date: true,
+  amount: true,
+  document_type: true,
+  payment_method: true,
+  barcode: true,
+  description: true,
+  additional_info: true,
+  status_id: true,
+  has_invoice: true,
+  has_bank_slip: true,
+});
+
 // ── Criação manual (CRUD — POST /api/contas) ─────────────────────────────────
 // O pipeline de extração pode gravar uma conta sem valor (vira erro 'sem_valor',
 // não cria conta — ver read_emails). Já a criação manual via API EXIGE fornecedor
@@ -311,7 +337,7 @@ export const financialAccountControlInputSchema = financialAccountControlSchema.
 // trigger fn_set_status_from_due_date assume 'a vencer'/'vencido' por vencimento — o
 // cliente não pode criar uma conta já em estado fechado (pago/cancelado/baixado). A
 // baixa/edição de situação é feita depois via PATCH (financialAccountControlUpdateSchema).
-export const financialAccountControlCreateSchema = financialAccountControlInputSchema
+export const financialAccountControlCreateSchema = financialAccountControlManualEditSchema
   .omit({ status_id: true })
   .partial()
   .extend({
@@ -321,8 +347,8 @@ export const financialAccountControlCreateSchema = financialAccountControlInputS
 
 // ── Atualização parcial (PATCH /api/contas/:id) ──────────────────────────────
 // Todos os campos opcionais; permite alterar a situação por status_id (ex.: cancelar =
-// status_id do 'cancelado'). A trigger id-primária deriva o texto `status` (compat).
-export const financialAccountControlUpdateSchema = financialAccountControlInputSchema.partial();
+// status_id do 'cancelado'). Restrita aos campos de edição manual (S3-2).
+export const financialAccountControlUpdateSchema = financialAccountControlManualEditSchema.partial();
 
 export type FinancialAccountControl = z.infer<typeof financialAccountControlSchema>;
 export type FinancialAccountControlInput = z.infer<typeof financialAccountControlInputSchema>;

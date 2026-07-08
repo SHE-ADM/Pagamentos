@@ -46,15 +46,16 @@ describe('ProtectedRoute', () => {
     expect(screen.getByText('TELA LOGIN')).toBeInTheDocument();
   });
 
-  it('força a troca de senha quando falta a marca password_changed (1º acesso)', () => {
-    mockAuth = { user: { user_metadata: { name: 'Novo' } }, loading: false };
+  it('força a troca de senha quando falta a marca password_changed em app_metadata (1º acesso)', () => {
+    // Marca em user_metadata (client-writable) NÃO conta — a fonte é app_metadata (S1-1).
+    mockAuth = { user: { app_metadata: {}, user_metadata: { password_changed: true } }, loading: false };
     renderAt();
     expect(screen.getByText('TELA TROCA')).toBeInTheDocument();
     expect(screen.queryByText('CONTEUDO PROTEGIDO')).not.toBeInTheDocument();
   });
 
-  it('libera o conteúdo quando password_changed = true', () => {
-    mockAuth = { user: { user_metadata: { password_changed: true } }, loading: false };
+  it('libera o conteúdo quando app_metadata.password_changed = true', () => {
+    mockAuth = { user: { app_metadata: { password_changed: true } }, loading: false };
     renderAt();
     expect(screen.getByText('CONTEUDO PROTEGIDO')).toBeInTheDocument();
   });

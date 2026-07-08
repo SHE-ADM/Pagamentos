@@ -33,9 +33,10 @@ const PRIORITY_ICON: Record<PriorityKind, LucideIcon> = {
 };
 
 export default function Dashboard() {
-  const now = new Date();
-  const [month, setMonth] = useState(now.getMonth());
-  const [year, setYear] = useState(now.getFullYear());
+  // Estado inicial via inicializador LAZY — não chamar new Date() no corpo do render
+  // (impureza; §5 / React Compiler). Ver achado A2-2.
+  const [month, setMonth] = useState(() => new Date().getMonth());
+  const [year, setYear] = useState(() => new Date().getFullYear());
   const [scope, setScope] = useState<DashboardScope>('month');
   const [data, setData] = useState<DashboardData | null>(null);
   const [loading, setLoading] = useState(false);
@@ -114,7 +115,7 @@ export default function Dashboard() {
                 key={y}
                 onClick={() => setYear(y)}
                 aria-pressed={y === year}
-                className={`text-xs font-medium px-2.5 py-1 rounded-md border transition-colors ${y === year ? 'bg-brand border-brand text-white' : 'bg-white border-slate-200 text-slate-600 hover:bg-slate-50'}`}
+                className={`text-xs font-medium px-2.5 py-1 rounded-md border transition-colors ${y === year ? 'bg-brand-dark border-brand-dark text-white' : 'bg-white border-slate-200 text-slate-600 hover:bg-slate-50'}`}
               >
                 {y}
               </button>
@@ -126,7 +127,16 @@ export default function Dashboard() {
         </div>
       </div>
 
-      <div className="flex-1 overflow-y-auto px-6 py-3">
+      {/* Região rolável precisa de acesso por teclado (WCAG 2.1.1): diferente de
+          /consulta e /emails (cujos grids têm botões/checkboxes focáveis), o corpo do
+          Dashboard só tem cards/gráficos não-focáveis — tabIndex=0 + região nomeada
+          deixam o usuário de teclado focar e rolar (axe: scrollable-region-focusable). */}
+      <div
+        className="flex-1 overflow-y-auto px-6 py-3"
+        tabIndex={0}
+        role="region"
+        aria-label="Indicadores e gráficos"
+      >
         {error && (
           <Alert variant="error" className="mb-4">
             <strong>Erro:</strong> {error}
@@ -222,7 +232,7 @@ function MonthlyFlow({ data }: { data: DashboardData | null }) {
               <div className="w-[42%] max-w-4 bg-brand rounded-t-sm transition-all" style={{ height: `${(d.aPagar / max) * 100}%` }} title={`A pagar: ${fmtMoney(d.aPagar)}`} />
               <div className="w-[42%] max-w-4 bg-slate-300 rounded-t-sm transition-all" style={{ height: `${(d.pago / max) * 100}%` }} title={`Pago: ${fmtMoney(d.pago)}`} />
             </div>
-            <span className="text-[10px] text-slate-500">{MONTHS[d.month]}</span>
+            <span className="text-xs text-slate-500">{MONTHS[d.month]}</span>
           </div>
         ))}
       </div>
@@ -260,7 +270,7 @@ function StatusDonut({ data }: { data: DashboardData | null }) {
             <span className="h-2.5 w-2.5 rounded-xs shrink-0" style={{ background: statusColor(s.status) }} />
             <span className="text-slate-700 capitalize flex-1 truncate">{s.status}</span>
             <span className="font-mono text-slate-900 font-semibold">{s.count}</span>
-            <span className="text-slate-400 w-9 text-right">{Math.round((s.count / total) * 100)}%</span>
+            <span className="text-slate-600 w-9 text-right">{Math.round((s.count / total) * 100)}%</span>
           </div>
         ))}
         {!segs.length && <span className="text-xs text-slate-500">Sem contas no período.</span>}
@@ -277,7 +287,7 @@ function SupplierRanking({ data }: { data: DashboardData | null }) {
     <div>
       {rows.map((r, i) => (
         <div key={r.name} className="flex items-center gap-2.5 py-2">
-          <span className={`shrink-0 h-5.5 w-5.5 rounded-full text-xs font-bold flex items-center justify-center ${i < 3 ? 'bg-brand text-white' : 'bg-slate-200 text-slate-600'}`}>{i + 1}</span>
+          <span className={`shrink-0 h-5.5 w-5.5 rounded-full text-xs font-bold flex items-center justify-center ${i < 3 ? 'bg-brand-dark text-white' : 'bg-slate-200 text-slate-600'}`}>{i + 1}</span>
           <div className="flex-1 min-w-0">
             <div className="flex justify-between gap-2 mb-1">
               <span className="text-sm font-medium text-slate-700 truncate">{r.name}</span>
@@ -310,7 +320,9 @@ function PriorityList({ data }: { data: DashboardData | null }) {
             </span>
             <div className="flex-1 min-w-0">
               <div className="text-sm font-medium text-slate-700 truncate">{r.supplier}</div>
-              <div className="text-xs text-slate-500">vence {fmtDate(r.due)}</div>
+              {/* slate-600 (não slate-500): nas linhas críticas o card é bg-status-error-bg
+                  (vermelho-claro) e slate-500 dá 4,35:1 (reprova AA); slate-600 dá ~7:1. */}
+              <div className="text-xs text-slate-600">vence {fmtDate(r.due)}</div>
             </div>
             <span className={`font-mono text-sm font-semibold whitespace-nowrap ${err ? 'text-status-error-fg' : 'text-slate-900'}`}>{fmtMoney(r.amount)}</span>
             <StatusBadge value={r.status} />

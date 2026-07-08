@@ -7,14 +7,26 @@ guard bloqueia scheme não-http, porta interna e host que resolve para IP intern
 salvamento é contido em PDF_INBOX.
 """
 
+import socket
 import sys
 import unittest
+from unittest import mock
 from pathlib import Path
 
 _SCRIPTS_DIR = Path(__file__).resolve().parents[1] / "skills" / "email-reader" / "scripts"
 sys.path.insert(0, str(_SCRIPTS_DIR))
 
 import read_emails  # noqa: E402
+
+
+def _gai(*ips):
+    """Fabrica um retorno de socket.getaddrinfo (family, type, proto, canonname, sockaddr)."""
+    out = []
+    for ip in ips:
+        sockaddr = (ip, 0, 0, 0) if ":" in ip else (ip, 0)
+        fam = socket.AF_INET6 if ":" in ip else socket.AF_INET
+        out.append((fam, socket.SOCK_STREAM, 6, "", sockaddr))
+    return out
 
 
 class SafeDownloadUrlTest(unittest.TestCase):
@@ -46,6 +58,52 @@ class SafeDownloadUrlTest(unittest.TestCase):
         with self.assertRaises(read_emails.urllib.error.HTTPError):
             h.redirect_request(req=None, fp=None, code=302, msg="Found", headers={},
                                newurl="http://169.254.169.254/")
+
+
+class IpPinningTest(unittest.TestCase):
+    """S4-1/S4-3: pin do IP validado (fecha o DNS rebinding) + IPv6 IPv4-mapeado."""
+
+    def test_pin_retorna_ip_externo(self):
+        with mock.patch.object(read_emails.socket, "getaddrinfo", return_value=_gai("93.184.216.34")):
+            self.assertEqual(read_emails._pin_ip_for_host("example.com"), "93.184.216.34")
+
+    def test_pin_bloqueia_host_interno(self):
+        with mock.patch.object(read_emails.socket, "getaddrinfo", return_value=_gai("127.0.0.1")):
+            self.assertIsNone(read_emails._pin_ip_for_host("rebind.evil"))
+
+    def test_ipv4_mapeado_interno_bloqueado(self):
+        # ::ffff:169.254.169.254 (metadata cloud via IPv6 mapeado) deve ser barrado (S4-3).
+        with mock.patch.object(read_emails.socket, "getaddrinfo",
+                               return_value=_gai("::ffff:169.254.169.254")):
+            self.assertFalse(read_emails._host_is_safe("mapped.evil"))
+            self.assertIsNone(read_emails._pin_ip_for_host("mapped.evil"))
+
+    def test_conexao_usa_ip_fixado_sem_reresolver(self):
+        # A conexão conecta ao IP FIXADO (validado), não ao hostname — um rebinding (2ª
+        # resolução para IP interno) não é usado, pois o socket não re-resolve o nome.
+        conn = read_emails._PinnedHTTPConnection("example.com", pinned_ip="93.184.216.34")
+        with mock.patch.object(conn, "_create_connection", return_value=mock.MagicMock()) as cc:
+            conn.connect()
+        self.assertEqual(cc.call_args.args[0], ("93.184.216.34", conn.port))
+
+    def test_factory_bloqueia_quando_resolve_interno(self):
+        # Se o host resolve para IP interno no momento do pin, a fábrica levanta (bloqueia)
+        # ANTES de qualquer connect — cobre o download e cada redirect.
+        with mock.patch.object(read_emails.socket, "getaddrinfo", return_value=_gai("10.0.0.9")):
+            with self.assertRaises(read_emails.urllib.error.URLError):
+                read_emails._pinned_conn_factory(
+                    read_emails._PinnedHTTPConnection, "http://rebind.evil/boleto.pdf")
+
+    def test_opener_seguro_instala_handlers_de_pin(self):
+        # O opener de download instala os handlers de pin (substituem os HTTP/HTTPS default)
+        # — garante que o pin de IP está no caminho real, não só nas funções soltas.
+        opener = read_emails._build_safe_opener()
+        classes = {type(h) for h in opener.handlers}
+        self.assertIn(read_emails._PinnedHTTPHandler, classes)
+        self.assertIn(read_emails._PinnedHTTPSHandler, classes)
+        # Entradas de dispatch do urllib (chamadas por reflexão via <scheme>_open).
+        self.assertTrue(callable(read_emails._PinnedHTTPHandler.http_open))
+        self.assertTrue(callable(read_emails._PinnedHTTPSHandler.https_open))
 
 
 class InboxContainmentTest(unittest.TestCase):

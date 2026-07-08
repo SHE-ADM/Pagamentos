@@ -84,6 +84,27 @@ describe('contaService.create', () => {
     expect(fromMock).not.toHaveBeenCalled();
   });
 
+  it('S3-2: descarta colunas de pipeline/auditoria enviadas no corpo do create', async () => {
+    resultQueue.push({ data: { id: 11, sk_supplier: 1, amount: 100 }, error: null });
+    await contaService.create({
+      sk_supplier: 1,
+      amount: 100,
+      // Campos de pipeline/auditoria que o CRUD manual NÃO deve gravar:
+      gmail_message_id: 'forjado',
+      extraction_source: 'pdf_text',
+      processing_notes: 'injetado',
+      sender_email: 'atacante@x.com',
+      subject: 'forjado',
+      payer_cnpj: '00000000000191',
+      nosso_numero: '999',
+    });
+    const insertArg = builders[0].insert.mock.calls[0][0] as Record<string, unknown>;
+    for (const k of ['gmail_message_id', 'extraction_source', 'processing_notes', 'sender_email', 'subject', 'payer_cnpj', 'nosso_numero']) {
+      expect(insertArg).not.toHaveProperty(k);
+    }
+    expect(insertArg).toMatchObject({ sk_supplier: 1, amount: 100 });
+  });
+
   it('422 com amount <= 0', async () => {
     await expect(contaService.create({ sk_supplier: 1, amount: 0 })).rejects.toMatchObject({ status: 422 });
   });
@@ -139,5 +160,21 @@ describe('contaService.update', () => {
   it('422 com document_type fora do enum', async () => {
     await expect(contaService.update(5, { document_type: 'xxx' })).rejects.toMatchObject({ status: 422 });
     expect(fromMock).not.toHaveBeenCalled();
+  });
+
+  it('S3-2: descarta colunas de pipeline/auditoria enviadas no corpo do PATCH', async () => {
+    resultQueue.push({ data: { id: 5, amount: 200 }, error: null });
+    await contaService.update(5, {
+      amount: 200,
+      gmail_message_id: 'forjado',
+      extracted_at: '2026-01-01',
+      email_body_excerpt: 'injetado',
+      processing_notes: 'injetado',
+    });
+    const updateArg = builders[0].update.mock.calls[0][0] as Record<string, unknown>;
+    for (const k of ['gmail_message_id', 'extracted_at', 'email_body_excerpt', 'processing_notes']) {
+      expect(updateArg).not.toHaveProperty(k);
+    }
+    expect(updateArg).toMatchObject({ amount: 200 });
   });
 });

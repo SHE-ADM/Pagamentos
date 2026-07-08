@@ -82,7 +82,11 @@ export default function Layout({ children }: Readonly<{ children: ReactNode }>) 
           </button>
         </div>
 
-        <nav className="flex-1 px-2 py-3 space-y-0.5">
+        {/* min-h-0 + overflow-y-auto: com muitos itens, o nav rola DENTRO da sidebar
+            (superfície escura) em vez de transbordar sobre o <main> branco — senão os
+            últimos itens e o rodapé caem no fundo claro e o texto slate-400 reprova AA
+            (2,57:1). Mantém todo o texto sobre bg-sidebar (~7:1). */}
+        <nav className="flex-1 min-h-0 overflow-y-auto px-2 py-3 space-y-0.5">
           {/* Grupo 1 — Recebimentos */}
           <p className="px-3 pt-1 pb-1.5 text-xs font-bold tracking-widest text-slate-400 uppercase">
             Recebimentos
@@ -167,6 +171,7 @@ export default function Layout({ children }: Readonly<{ children: ReactNode }>) 
                 onClick={signOut}
                 className="flex items-center gap-1 text-xs text-slate-400 hover:text-red-400 transition-colors"
                 title="Sair"
+                aria-label="Sair"
               >
                 <LogOut size={14} />
               </button>

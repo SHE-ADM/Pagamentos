@@ -18,7 +18,14 @@ describe('AttachmentViewer', () => {
     const { container } = render(<AttachmentViewer sourceFile="boleto X.pdf" onClose={vi.fn()} />);
 
     await waitFor(() => expect(container.querySelector('iframe')).not.toBeNull());
-    expect(container.querySelector('iframe')?.getAttribute('src')).toBe('https://sb/sign/boleto.pdf?token=x');
+    const iframe = container.querySelector('iframe');
+    expect(iframe?.getAttribute('src')).toBe('https://sb/sign/boleto.pdf?token=x');
+    // S5-1: o PDF hostil é confinado por sandbox — sem allow-scripts (JS não roda) nem
+    // allow-top-navigation (não redireciona o app). Trava a regressão do achado.
+    const sandbox = iframe?.getAttribute('sandbox') ?? '';
+    expect(sandbox).toContain('allow-same-origin');
+    expect(sandbox).not.toContain('allow-scripts');
+    expect(sandbox).not.toContain('allow-top-navigation');
   });
 
   it('chama onClose ao clicar no botão fechar', async () => {

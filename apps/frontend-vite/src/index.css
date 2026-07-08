@@ -4,7 +4,6 @@
   --color-brand: #1d9e75;
   --color-brand-dark: #0f6e56;
   --color-brand-light: #e1f5ee;
-  --color-brand-glow: rgba(29, 158, 117, 0.15);
 
   --color-sidebar: #0f1623;
   --color-sidebar-hover: #1a2333;
@@ -50,19 +49,16 @@
   --color-ink-muted: #94a3b8;
 
   --color-auth-navy: #5b5fa8;
-  --color-auth-teal: #57bfb6;
 
   --color-loginGreen-ink: #0c1e14;
   --color-loginGreen-inkMid: #2a3d30;
   --color-loginGreen-inkMuted: #4a6b55;
   --color-loginGreen-inkFaint: #558a6d;
   --color-loginGreen-placeholder: #437355;
-  --color-loginGreen-surface: #e6f5ec;
   --color-loginGreen-field: #eef9f3;
   --color-loginGreen-fieldFocus: #e4f6ec;
   --color-loginGreen-socialBg: #f4fcf7;
   --color-loginGreen-border: #94d0ae;
-  --color-loginGreen-borderLight: #c6e8d3;
   --color-loginGreen-borderField: #b8dfc8;
   --color-loginGreen-borderFocus: #2d8a52;
   --color-loginGreen-accent: #1e7a40;
@@ -73,11 +69,6 @@
     135deg,
     #5b5fa8 0%,
     #57bfb6 100%
-  );
-  --background-image-gradient-login-green: linear-gradient(
-    180deg,
-    #e6f5ec 0%,
-    #ffffff 100%
   );
 
   --font-sans: Inter, system-ui, sans-serif;
@@ -126,8 +117,11 @@
            hover:bg-slate-50 transition-all duration-150 active:scale-95 cursor-pointer;
 }
 
+/* Sólido brand-dark (#0f6e56 = 6,3:1 com branco) em vez do gradiente from-brand→to-brand-dark:
+   a metade clara (from-brand #1d9e75) reprovava AA com texto branco (3,4:1). Só tokens, sem hex.
+   Ver achado A3-2. */
 @utility btn-primary {
-  @apply bg-linear-to-br from-brand to-brand-dark text-white border-brand
+  @apply bg-brand-dark text-white border-brand-dark
            shadow-xs hover:shadow-md hover:shadow-brand/25 active:scale-95;
 }
 

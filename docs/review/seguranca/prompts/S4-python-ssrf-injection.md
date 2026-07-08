@@ -1,67 +1,64 @@
-# S4 — Pipeline Python: SSRF, injeção de e-mail, CSRF do Flask
+# S4 — Pipeline Python: SSRF (rebinding), CSRF do Flask, header From
 
-> Base: `docs/review/seguranca/RELATORIO-SEGURANCA.md` §4. Os 2 CRÍTICOS e 3 ALTOS vivem aqui.
+> Gerado pela auditoria de segurança de 2026-07-08. Aplicar na branch `Features`.
+> Origem: `docs/review/seguranca/RELATORIO-SEGURANCA.md` §4. As defesas SSRF/CRLF/CSRF existentes estão OK — não regredir.
 
 ```xml
 <objetivo>
-  Fechar o SSRF do download de boleto por link (incl. redirects e cookies), escapar o HTML do
-  e-mail de cobrança e validar Cc/Subject contra CRLF, e endurecer os endpoints de disparo do Flask —
-  sem quebrar o download legítimo (BRASPRESS, página HTML intermediária) nem o pressuposto de rede LAN.
+  Fechar o SSRF residual por DNS rebinding (fixar o IP validado), tornar o token de disparo do Flask
+  obrigatório fora de loopback, normalizar IPv6 mapeado e sanitizar o header From da cobrança.
 </objetivo>
 
 <read_first>
-  - CLAUDE.md ("Boleto por link", "Robustez da leitura", "Pipeline de cobrança de vencidos")
-  - skills/email-reader/scripts/read_emails.py (_fetch_url, download_pdf_from_url, _braspress_download_url, _is_suspicious_link, extract_pdf_links, save_attachments, safe_filename)
-  - skills/cobranca-vencidos/scripts/template.py, email_sender.py, run.py, send_core.py, db_firebird.py, failure_notify.py (padrão html.escape correto)
-  - server/app.py (endpoints /api/emails/read*, /api/cobranca/resend/*)
-  - tests/test_link_extraction.py
+  - skills/email-reader/scripts/read_emails.py:2633-2668 (_host_is_safe, _is_safe_download_url),
+    :2671-2684 (_SafeRedirectHandler, _build_safe_opener), :2696-2701 (_fetch_url)
+  - server/app.py:55,60-77,242-314 (FLASK_TRIGGER_TOKEN, _reject_trigger_request, app.run bind)
+  - skills/cobranca-vencidos/scripts/email_sender.py:81-95 (_strip_crlf/_safe_address), :103 (_build_message From)
+  - tests/test_ssrf_guard.py, tests/test_flask_csrf_guard.py, tests/test_email_security.py (não regredir)
 </read_first>
 
 <achados>
-  - CRÍTICO C-1: SSRF — _fetch_url/download_pdf_from_url fazem GET sem allowlist de host/scheme/IP. read_emails.py:1543/1584/1602/1644. Alvos internos: 169.254.169.254 (metadata), localhost/127.0.0.1, IP privado, portas internas.
-  - CRÍTICO C-2: redirect seguido sem revalidar destino + cookiejar compartilhado vaza cookie entre domínios. read_emails.py:1551-1559/1599/1644.
-  - ALTO A-1: HTML injection no e-mail de cobrança — template.py:15/18 interpola customer_name/document_id (Firebird) sem html.escape.
-  - ALTO A-2: CRLF em Cc — cc_email (db_firebird.py:88) nunca validado; email_sender.py:89/108.
-  - ALTO A-3: CRLF em Subject — email_sender.py:85 (PK.EP_NO).
-  - MÉDIO M-1: endpoints de disparo do Flask sem auth/Content-Type check → CSRF; server/app.py:171/213/234.
-  - MÉDIO M-2: path traversal mitigado por ordem de ops (sem resolve()+contenção) — read_emails.py:635/1409/1574.
-  - BAIXO B-1: download sem deadline global (cap 50MB). BAIXO B-2: texto livre sem truncagem antes do INSERT.
+  - [MÉDIO] S4-1 — _host_is_safe (read_emails.py:2639-2650): valida IPs de getaddrinfo, mas urllib re-resolve o
+    nome ao conectar (TOCTOU/DNS rebinding). IP validado não é fixado no socket.
+  - [MÉDIO] S4-2 — server/app.py:55: FLASK_TRIGGER_TOKEN opcional (default vazio). Única barreira é o bind
+    127.0.0.1; disparo de leitura/cobrança fica aberto a qualquer origem local (ou se exposto em 0.0.0.0).
+  - [BAIXO] S4-3 — read_emails.py:2642-2649: IPv6 IPv4-mapeado pode furar em Python <3.13 (prod é 3.14 → mitigado).
+  - [BAIXO] S4-4 — email_sender.py:103: from_name no From sem _strip_crlf.
+  - [INFO] _is_internal_email citado na doc não existe (bloqueio via RPC/migration 046) — ajustar CLAUDE.md.
 </achados>
 
 <correcao>
-  1. SSRF (C-1 + C-2) — criar um guard `_is_safe_download_url(url)` e um redirect-handler:
-     - Rejeitar scheme != http/https; resolver o host (socket.getaddrinfo) e rejeitar se QUALQUER IP for
-       `ipaddress.ip_address(ip).is_private/.is_loopback/.is_link_local/.is_reserved/.is_multicast`; rejeitar IP-literal; porta ∉ {80,443,None}.
-     - Aplicar o guard ao URL inicial E a cada redirect: instalar um `urllib.request.HTTPRedirectHandler` subclasse que revalida `newurl` (levanta se inseguro) e limita redirects (ex.: 5).
-     - Cookiejar: NÃO reusar o mesmo jar entre hosts de domínios distintos — escopar por host de origem (ou desabilitar cookies fora do fluxo BRASPRESS, que é o único que precisa de sessão).
-     - Manter os caminhos legítimos (BRASPRESS, página HTML 1-nível) funcionando — eles batem em hosts públicos, que passam no guard.
-     - (Recomendado) flag de ambiente `LINK_DOWNLOAD_ENABLED` (default true em dev) para desligar o download-por-link em produção sem mexer no código.
-  2. A-1 — `from html import escape`; aplicar escape em customer_name/document_id (e nos campos formatados) em template.py (espelhar failure_notify.py).
-  3. A-2/A-3 — em run.py/send_core.py, validar cc_email com validate_email (ou rejeitar \r/\n) ANTES de montar a mensagem;
-     normalizar subject (`subject.replace('\r',' ').replace('\n',' ')`) em email_sender.py antes do header. Linha sem Cc válido segue (Cc vazio), não derruba o envio do To.
-  4. M-1 — nos endpoints de disparo do Flask: exigir header de token compartilhado (env, ex. FLASK_TRIGGER_TOKEN) e
-     validar `Content-Type: application/json` (rejeitar com 415 se ausente — quebra o CSRF simples). Manter bind 127.0.0.1.
-  5. M-2 — após montar dest_path, validar `PDF_INBOX.resolve() in dest_path.resolve().parents` (rejeitar fora da pasta).
-  6. B-1/B-2 — reduzir o cap de download para ~10MB + deadline total; truncar os campos de texto livre antes do INSERT (defesa em profundidade).
-  7. Testes (pytest): _is_safe_download_url bloqueia 127.0.0.1/169.254.169.254/IP privado/porta interna/scheme file; redirect para alvo interno é barrado; template.py escapa HTML; cc/subject com CRLF são rejeitados/normalizados; dest_path fora de PDF_INBOX é rejeitado.
+  1. S4-1: pinning de IP. Resolver o host uma vez (getaddrinfo), validar com _host_is_safe, e conectar ao IP
+     fixado preservando o header Host — via um custom opener/HTTPConnection que usa o IP resolvido, ou
+     reutilizando a resolução validada no _SafeRedirectHandler. Revalidar o IP a cada redirect (já feito) E
+     fixá-lo. Manter todas as demais checagens (scheme/porta/suspeito) intactas.
+  2. S4-2: em server/app.py, exigir FLASK_TRIGGER_TOKEN quando o bind NÃO for 127.0.0.1/localhost — falhar no
+     boot (raise) se o token estiver vazio nesse caso. Manter o bind loopback como default. Documentar o
+     pressuposto no CLAUDE.md e no scheduler.
+  3. S4-3: normalizar `if ip.ipv4_mapped: ip = ip.ipv4_mapped` antes das checagens em _host_is_safe (defesa em
+     profundidade, independe da versão do Python).
+  4. S4-4: aplicar _strip_crlf em from_name (e from_addr) na composição do From em _build_message.
+  5. INFO: corrigir a menção a _is_internal_email no CLAUDE.md para "bloqueio na RPC resolve_supplier_for_account
+     (migration 046)".
 </correcao>
 
 <restricoes>
-  - NÃO quebrar BRASPRESS nem o scan de página HTML intermediária (hosts públicos legítimos passam no guard).
-  - NÃO regredir as 8 proteções de robustez (timeouts/retry/in-process). NÃO alterar o pressuposto de rede LAN (manter bind localhost); a auth do Flask é defesa adicional, não substitui o bind.
-  - NÃO transcrever segredo; o token do Flask vem do .env.
+  - NÃO enfraquecer nenhuma defesa existente: _is_safe_download_url, _SafeRedirectHandler, contenção em
+    PDF_INBOX, _is_suspicious_link, guarda CSRF _reject_trigger_request, bind loopback.
+  - NÃO quebrar os caminhos legítimos (BRASPRESS, página HTML intermediária) — hosts públicos devem passar.
+  - Manter os testes existentes (test_ssrf_guard, test_flask_csrf_guard, test_email_security) verdes.
 </restricoes>
 
 <validacao>
-  - py -3 -m pytest tests/ -q
-  - py -3 -m vulture server/ skills/ scripts/ --min-confidence 60
-  - py -3 skills\cobranca-vencidos\scripts\run.py --dry-run (valida imports + Firebird, sem enviar)
-  - Vetor (descrever, NÃO executar contra alvo real): e-mail de teste com link http://169.254.169.254/ e http://127.0.0.1:8000/ → download recusado e logado.
+  - py -3 -m pytest tests/ -q  (incluir novos casos: rebinding simulado com IP interno na 2ª resolução deve ser
+    bloqueado; from_name com CRLF é limpo).
+  - Teste de vetor (NÃO contra produção): URL de host que resolve interno na 2ª chamada → download bloqueado.
+    Subir o Flask com bind 0.0.0.0 sem token → boot falha.
+  - py -3 skills\cobranca-vencidos\scripts\run.py --dry-run  (From sanitizado; envio não regride).
 </validacao>
 
 <criterio_de_aceite>
-  - Download recusa IP privado/loopback/link-local/metadata, scheme não-http e porta interna, inclusive após redirect; cookie não cruza domínio.
-  - E-mail de cobrança escapa HTML; Cc/Subject sem CRLF. Endpoints do Flask exigem token + JSON.
-  - BRASPRESS/HTML legítimos seguem funcionando; pytest verde com os testes novos.
+  Download de boleto imune a DNS rebinding (IP fixado). Flask recusa subir sem token fora de loopback. IPv6
+  mapeado normalizado. From da cobrança sanitizado. pytest verde; defesas existentes intactas.
 </criterio_de_aceite>
 ```

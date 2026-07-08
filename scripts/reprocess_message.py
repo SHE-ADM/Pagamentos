@@ -24,7 +24,7 @@ Pré-requisitos: .env na raiz (IMAP_* + ANTHROPIC_API_KEY + SUPABASE_*). A extra
 imagem/PDF faz chamada real ao Claude (consome crédito) e grava na Supabase configurada.
 """
 
-import os, sys, json, argparse, logging, urllib.request, urllib.parse, imaplib, email
+import os, sys, json, argparse, logging, urllib.request, urllib.parse, email
 from pathlib import Path
 from dotenv import load_dotenv
 
@@ -113,9 +113,9 @@ def main():
     kw_env = os.getenv("EMAIL_KEYWORDS", "")
     keywords = [k.strip() for k in kw_env.split(",")] if kw_env else R.KEYWORDS_DEFAULT
 
-    mail = imaplib.IMAP4_SSL(os.getenv("IMAP_HOST"), int(os.getenv("IMAP_PORT", 993)))
-    mail.login(os.getenv("IMAP_USER"), os.getenv("IMAP_PASS"))
-    mail.select(os.getenv("IMAP_MAILBOX", "INBOX"))
+    # A4-1: conexão pelo helper canônico (timeout de socket + login + select) — um
+    # fetch que estanca não congela o reprocessamento manual.
+    mail = R._connect_imap()
     try:
         uid = _find_uid(mail, mid)
         if not uid:

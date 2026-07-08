@@ -13,7 +13,7 @@ Uso:
     py -3 scripts/reprocess_link_emails.py             # baixa, extrai e grava
 """
 
-import os, sys, json, argparse, logging, urllib.request, imaplib, email
+import sys, json, argparse, logging, urllib.request, email
 from pathlib import Path
 from dotenv import load_dotenv
 
@@ -147,9 +147,9 @@ def main():
     rows = fetch_falha_rows(ctrl)
     log.info(f"E-mails status=falha a inspecionar: {len(rows)}")
 
-    mail = imaplib.IMAP4_SSL(os.getenv("IMAP_HOST"), int(os.getenv("IMAP_PORT", 993)))
-    mail.login(os.getenv("IMAP_USER"), os.getenv("IMAP_PASS"))
-    mail.select(os.getenv("IMAP_MAILBOX", "INBOX"))
+    # A4-1: conexão pelo helper canônico (timeout de socket + login + select) — um
+    # fetch que estanca não congela o reprocessamento manual.
+    mail = R._connect_imap()
 
     tally = {"sem_link": 0, "resolvido": 0, "link_sem_pdf": 0, "imap_ausente": 0, "extracao_zero": 0}
     try:

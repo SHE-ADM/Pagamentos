@@ -712,7 +712,7 @@ export default function Consulta() {
                 key={y}
                 onClick={() => applyPeriod({ year: y, month: f.month ?? nowRef.month, dateFrom: '', dateTo: '' })}
                 aria-pressed={f.year === y}
-                className={`text-xs font-medium px-2.5 py-1 rounded-md border transition-colors ${f.year === y ? 'bg-brand border-brand text-white' : 'bg-white border-slate-200 text-slate-600 hover:bg-slate-50'}`}
+                className={`text-xs font-medium px-2.5 py-1 rounded-md border transition-colors ${f.year === y ? 'bg-brand-dark border-brand-dark text-white' : 'bg-white border-slate-200 text-slate-600 hover:bg-slate-50'}`}
               >
                 {y}
               </button>
@@ -723,7 +723,7 @@ export default function Consulta() {
             onClick={() => applyPeriod({ month: null, year: null, dateFrom: '', dateTo: '' })}
             aria-label="Todas as datas"
             aria-pressed={f.month === null}
-            className={`text-xs font-medium px-2.5 py-1 rounded-md border transition-colors ${f.month === null ? 'bg-brand border-brand text-white' : 'bg-white border-slate-200 text-slate-600 hover:bg-slate-50'}`}
+            className={`text-xs font-medium px-2.5 py-1 rounded-md border transition-colors ${f.month === null ? 'bg-brand-dark border-brand-dark text-white' : 'bg-white border-slate-200 text-slate-600 hover:bg-slate-50'}`}
           >
             Todas
           </button>

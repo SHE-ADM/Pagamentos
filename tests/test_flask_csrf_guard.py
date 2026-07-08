@@ -48,5 +48,21 @@ class FlaskTriggerGuardTest(unittest.TestCase):
         self.assertNotIn(r2.status_code, (415, 401))
 
 
+class BindTokenRequirementTest(unittest.TestCase):
+    """S4-2: fora de loopback, FLASK_TRIGGER_TOKEN é obrigatório (falha no boot)."""
+
+    def test_loopback_nao_exige_token(self):
+        for host in ("127.0.0.1", "localhost", "::1", "127.0.0.5"):
+            flask_app._require_trigger_token_if_exposed(host, token="")  # não levanta
+
+    def test_exposto_sem_token_falha_no_boot(self):
+        for host in ("0.0.0.0", "192.168.0.10"):
+            with self.assertRaises(RuntimeError):
+                flask_app._require_trigger_token_if_exposed(host, token="")
+
+    def test_exposto_com_token_sobe(self):
+        flask_app._require_trigger_token_if_exposed("0.0.0.0", token="segredo-de-disparo")  # ok
+
+
 if __name__ == "__main__":
     unittest.main()

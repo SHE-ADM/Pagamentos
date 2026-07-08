@@ -32,10 +32,12 @@ Object.defineProperty(globalThis, 'matchMedia', {
 // seja, virtualização desligada nos testes que não a definem).
 class ResizeObserverStub {
   constructor(private readonly cb: ResizeObserverCallback) {}
-  observe(): void {
+  observe(target: Element): void {
     const width = (globalThis as { __roWidth?: number }).__roWidth ?? 1280;
     const height = (globalThis as { __roHeight?: number }).__roHeight;
-    const entry = { contentRect: { width, height } } as ResizeObserverEntry;
+    // `target` entra na entry — o @tanstack/react-virtual resolve a linha observada
+    // por entry.target (indexFromElement) ao medir alturas dinâmicas.
+    const entry = { target, contentRect: { width, height } } as ResizeObserverEntry;
     this.cb([entry], this);
   }
   unobserve(): void {

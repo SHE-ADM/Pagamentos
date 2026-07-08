@@ -93,7 +93,7 @@ export default function AttachmentViewer({ sourceFile, onClose }: Readonly<Attac
     if (state === 'notfound') {
       return (
         <div className="flex h-full flex-col items-center justify-center gap-3 text-center">
-          <div className="flex h-14 w-14 items-center justify-center rounded-full bg-amber-50 text-amber-600">
+          <div className="flex h-14 w-14 items-center justify-center rounded-full bg-status-warning-bg text-status-warning-fg">
             <FileWarning size={26} />
           </div>
           <p className="max-w-xs text-sm text-slate-500">
@@ -102,7 +102,19 @@ export default function AttachmentViewer({ sourceFile, onClose }: Readonly<Attac
         </div>
       );
     }
-    return <iframe src={url ?? ''} title={sourceFile} className="h-full w-full border-0" />;
+    // S5-1: sandbox confina o PDF (conteúdo de e-mail hostil). SEM allow-scripts (JS do PDF
+    // não roda) e SEM allow-top-navigation (não redireciona o app p/ phishing). allow-same-origin
+    // mantém a origem do Storage p/ o visualizador nativo carregar; allow-popups preserva o
+    // "abrir" do viewer. referrerPolicy no-referrer evita vazar a signed URL no Referer.
+    return (
+      <iframe
+        src={url ?? ''}
+        title={sourceFile}
+        sandbox="allow-same-origin allow-popups"
+        referrerPolicy="no-referrer"
+        className="h-full w-full border-0"
+      />
+    );
   }
 
   return (

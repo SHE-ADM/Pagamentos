@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
-import { render, screen } from '@testing-library/react';
+import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import DataGrid from './DataGrid';
 import type { ColumnDef } from '../../hooks/useGridColumns';
@@ -219,6 +219,105 @@ describe('DataGrid', () => {
       );
       await userEvent.click(screen.getByRole('checkbox', { name: 'Selecionar todas as linhas' }));
       expect(screen.getByRole('button', { name: 'Reenviar (2)' })).toBeInTheDocument();
+    });
+
+    it('bulk status: Aplicar envia linhas + situação e trava o duplo clique (applyingBulk)', async () => {
+      // Promise controlada — mantém o PATCH "em voo" para provar a trava do botão.
+      let resolveBulk!: () => void;
+      const onBulkStatusChange = vi.fn().mockImplementation(
+        () => new Promise<void>((resolve) => { resolveBulk = resolve; }),
+      );
+      render(
+        <DataGrid
+          {...baseProps}
+          gridId="bulk-grid"
+          enableColumnManagement
+          enableSelection
+          bulkStatusOptions={[{ value: 8, label: 'pago' }]}
+          onBulkStatusChange={onBulkStatusChange}
+        />,
+      );
+      await userEvent.click(screen.getByRole('checkbox', { name: 'Selecionar todas as linhas' }));
+
+      // Sem situação escolhida, Aplicar fica desabilitado.
+      const apply = screen.getByRole('button', { name: 'Aplicar' });
+      expect(apply).toBeDisabled();
+
+      await userEvent.selectOptions(
+        screen.getByRole('combobox', { name: 'Selecionar nova situação' }),
+        '8',
+      );
+      await userEvent.click(apply);
+      expect(onBulkStatusChange).toHaveBeenCalledWith(ROWS, 8);
+
+      // Enquanto o await está em voo, o botão trava — o 2º clique não dispara outro PATCH.
+      expect(apply).toBeDisabled();
+      await userEvent.click(apply);
+      expect(onBulkStatusChange).toHaveBeenCalledTimes(1);
+
+      // Ao concluir, a seleção é limpa (a barra de "N selecionadas" some).
+      resolveBulk();
+      await waitFor(() => expect(screen.queryByText(/2 selecionadas/)).not.toBeInTheDocument());
+    });
+  });
+
+  describe('scroll infinito (onLoadMore)', () => {
+    const virtProps = {
+      gridId: 'loadmore-grid',
+      enableColumnManagement: true,
+      enableRowVirtualization: true,
+      maxBodyHeight: '78vh',
+    } as const;
+
+    // Liga a virtualização como no teste de auto-recuperação: altura via stub do
+    // ResizeObserver + layout real simulado (jsdom devolve 0) + rAF síncrono (o
+    // virtualizer agenda a medição via requestAnimationFrame). O virtual-core mede o
+    // viewport por offsetWidth/offsetHeight (getRect) — os getters também são mockados.
+    const enableVirtualLayout = (): void => {
+      setContainerHeight(800);
+      vi.stubGlobal('requestAnimationFrame', (cb: FrameRequestCallback) => {
+        cb(0);
+        return 1;
+      });
+      vi.stubGlobal('cancelAnimationFrame', vi.fn());
+      vi.spyOn(HTMLElement.prototype, 'offsetHeight', 'get').mockReturnValue(800);
+      vi.spyOn(HTMLElement.prototype, 'offsetWidth', 'get').mockReturnValue(1280);
+      vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockReturnValue({
+        width: 1280,
+        height: 800,
+        top: 0,
+        left: 0,
+        right: 1280,
+        bottom: 800,
+        x: 0,
+        y: 0,
+        toJSON: () => ({}),
+      });
+    };
+
+    it('não dispara onLoadMore enquanto loadingMore; dispara UMA vez ao liberar (idempotência)', async () => {
+      enableVirtualLayout();
+      const onLoadMore = vi.fn();
+      // Página anterior ainda carregando → o gatilho de fim-de-lista fica mudo.
+      const { rerender } = render(
+        <DataGrid {...baseProps} {...virtProps} hasMore loadingMore onLoadMore={onLoadMore} />,
+      );
+      expect(onLoadMore).not.toHaveBeenCalled();
+
+      // Carregamento concluiu (loadingMore=false) → pede a próxima página UMA vez.
+      rerender(<DataGrid {...baseProps} {...virtProps} hasMore loadingMore={false} onLoadMore={onLoadMore} />);
+      await waitFor(() => expect(onLoadMore).toHaveBeenCalledTimes(1));
+
+      // Re-render com o mesmo estado não redispara (deps do efeito estáveis).
+      rerender(<DataGrid {...baseProps} {...virtProps} hasMore loadingMore={false} onLoadMore={onLoadMore} />);
+      expect(onLoadMore).toHaveBeenCalledTimes(1);
+    });
+
+    it('não dispara onLoadMore quando não há mais páginas (hasMore=false)', () => {
+      enableVirtualLayout();
+      const onLoadMore = vi.fn();
+      render(<DataGrid {...baseProps} {...virtProps} hasMore={false} onLoadMore={onLoadMore} />);
+      expect(onLoadMore).not.toHaveBeenCalled();
     });
   });
 });

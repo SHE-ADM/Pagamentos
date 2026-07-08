@@ -54,13 +54,21 @@ describe('chartAccountGroupService', () => {
 
   it('remove 409 quando há subgrupos vinculados', async () => {
     resultQueue.push({ data: { chart_account_group_id: 5 }, error: null }); // findById
-    resultQueue.push({ count: 4, error: null }); // countReferences
+    resultQueue.push({ count: 4, error: null }); // countReferences (subgrupo, 1ª tabela)
+    await expect(chartAccountGroupService.remove(5)).rejects.toMatchObject({ status: 409 });
+  });
+
+  it('remove 409 quando há plano de contas vinculado (FK direta 058)', async () => {
+    resultQueue.push({ data: { chart_account_group_id: 5 }, error: null }); // findById
+    resultQueue.push({ count: 0, error: null }); // countReferences (subgrupo) → sem vínculo
+    resultQueue.push({ count: 2, error: null }); // countReferences (financial_chart_of_account) → em uso
     await expect(chartAccountGroupService.remove(5)).rejects.toMatchObject({ status: 409 });
   });
 
   it('remove exclui quando não há referências', async () => {
     resultQueue.push({ data: { chart_account_group_id: 5 }, error: null }); // findById
-    resultQueue.push({ count: 0, error: null }); // countReferences
+    resultQueue.push({ count: 0, error: null }); // countReferences (subgrupo)
+    resultQueue.push({ count: 0, error: null }); // countReferences (financial_chart_of_account)
     resultQueue.push({ error: null }); // delete
     expect(await chartAccountGroupService.remove(5)).toEqual({ chart_account_group_id: 5 });
   });

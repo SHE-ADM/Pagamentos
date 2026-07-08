@@ -1,0 +1,13 @@
+# Configuração de ferramentas Python do projeto.
+# (Somente [tool.vulture] — não é um manifesto de empacotamento; sem [build-system]/[project].)
+
+[tool.vulture]
+# Falsos positivos de código chamado por REFLEXÃO — o vulture é estático e não enxerga a
+# chamada, marcando o método como "não usado":
+#   _PinnedHTTPHandler.http_open / _PinnedHTTPSHandler.https_open
+#     (skills/email-reader/scripts/read_emails.py) são despachados pelo urllib
+#     (OpenerDirector chama <scheme>_open por nome) no download de boleto com pin de IP
+#     anti-SSRF/DNS-rebinding (S4-1). Mesma natureza das rotas Flask decoradas
+#     (@app.get/@app.post), que seguem VISÍVEIS por decisão do projeto (documentadas no
+#     CLAUDE.md como FPs a ignorar) — não são suprimidas aqui de propósito.
+ignore_names = ["http_open", "https_open"]

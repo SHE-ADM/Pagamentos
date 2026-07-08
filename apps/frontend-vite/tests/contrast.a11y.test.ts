@@ -75,6 +75,17 @@ describe('Contraste WCAG AA — paleta status (badges/banners)', () => {
   });
 });
 
+describe('Contraste WCAG AA — botões brand sólidos (regressão A3-1)', () => {
+  // Texto branco em botão deve assentar sobre brand-dark (AA), NUNCA sobre brand sólido
+  // (só ~3,4:1). Trava a regressão do achado A3-1 (Dashboard/Consulta seletores + btn-primary).
+  it('branco / brand-dark (botão) cumpre AA de texto normal (≥4.5:1)', () => {
+    expect(ratio(WHITE, c('brand-dark'))).toBeGreaterThanOrEqual(4.5);
+  });
+  it('branco / brand sólido REPROVA AA — não usar como fundo de texto branco (<4.5:1)', () => {
+    expect(ratio(WHITE, c('brand'))).toBeLessThan(4.5);
+  });
+});
+
 describe('Contraste WCAG AA — cores gráficas do donut (Dashboard)', () => {
   // Preenchimento de segmento + swatch da legenda sobre card branco: objeto gráfico
   // (1.4.11) exige ≥3:1. Garante que prorrogado/baixado (sem par bg) cumpram o mínimo.

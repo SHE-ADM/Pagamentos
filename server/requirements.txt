@@ -8,7 +8,9 @@
 flask~=3.1
 python-dotenv~=1.2
 
-# Extração de PDF (texto nativo) + descriptografia de boletos com senha / split de carnê
+# Extração de PDF: pdfplumber (texto nativo) + pypdf (descriptografia de boletos
+# com senha / split de carnê). Pillow é TRANSITIVO de pdfplumber (sem import direto
+# no projeto) — pin explícito mantido só para paridade de versão dev/prod.
 pdfplumber~=0.11.9
 Pillow~=12.2
 pypdf~=6.13

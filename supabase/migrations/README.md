@@ -42,7 +42,9 @@ As migrations `001 → 061` são aplicadas **manualmente no SQL Editor do Supaba
    - `053` — `ADD CONSTRAINT fk_financial_account_status` (sem bloco `DO`/`IF NOT EXISTS`).
    - `039` — `DISABLE/ENABLE TRIGGER trg_fe_supplier_id`: quebra se reaplicada **após** a
      `041` (que dropa esse trigger). Só re-run isolado é afetado.
-   - A migration `055` é **idempotente** (só `COMMENT ON`): pode ser reaplicada sem erro.
+   - A migration `055` era idempotente (só `COMMENT ON`), **mas apenas até a `069`**: a
+     `069` dropou a coluna `status` (texto) e o `COMMENT ON` dela passa a abortar
+     ("column status does not exist"). **Não reaplicar a `055` após a `069`** (A5-1).
 
 2. **Pré-requisito de bootstrap (banco vazio NÃO se reconstrói só com estas migrations).**
    As migrations dependem de objetos **pré-existentes** nunca criados por elas:

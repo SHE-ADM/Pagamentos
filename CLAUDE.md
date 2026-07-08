@@ -602,17 +602,37 @@ Alvo: **WCAG 2.1 Nível AA** em todas as telas. Regras práticas:
 - **Camada de acessibilidade em NAVEGADOR REAL** (Playwright + `@axe-core/playwright`) — cobre o
   que o jsdom não vê: contraste sob render efetivo, ordem de foco e autofill. Config em
   `playwright.config.ts`, specs em `e2e/*.a11y.e2e.ts` (`public-auth` = login/forgot/reset sem
-  login; `protected` = `/consulta`/`/emails`/`/erros` atrás de `A11Y_TEST_EMAIL`/`A11Y_TEST_PASSWORD`,
-  pulado sem credencial), helper `e2e/axe.ts` (tags AA). Scripts `test:e2e`/`test:e2e:headed`. Os
+  login; `protected` = `/consulta`/`/emails`/`/erros`/**`/dashboard`** atrás de `A11Y_TEST_EMAIL`/
+  `A11Y_TEST_PASSWORD`, pulado sem credencial — o Dashboard entrou no scan pelo achado A3-8),
+  helper `e2e/axe.ts` (tags AA). O reporter do `axe.ts` emite, por nó, o **`failureSummary`**
+  (para color-contrast: `foreground`/`background`/`ratio`/esperado) **+ o HTML do elemento**, além
+  do seletor — a falha fica depurável só pelo **log do CI** (essencial, já que o navegador não
+  roda no sandbox do agente). Scripts `test:e2e`/`test:e2e:headed`. Os
   specs **não** rodam no `npm test` (runner separado, fora do `tsconfig`/ESLint — `e2e/` está nos
   `ignores`). Ver `e2e/README.md`. O **workflow `.github/workflows/a11y.yml`** roda a camada a cada
-  PR/push na `Features` (runner `ubuntu-latest`, Chromium provisionado) — **operacional e verde**,
-  com os 4 secrets cadastrados (`VITE_SUPABASE_URL`/`ANON_KEY` + `A11Y_TEST_EMAIL`/`PASSWORD`, este
-  último um usuário de teste só-leitura no Supabase). **Não rodar `npm run test:e2e` no sandbox do
+  PR/push na `Features` (runner `ubuntu-latest`, Chromium provisionado), com os 4 secrets cadastrados
+  (`VITE_SUPABASE_URL`/`ANON_KEY` + `A11Y_TEST_EMAIL`/`PASSWORD`, este último um usuário de teste
+  só-leitura no Supabase). **Não rodar `npm run test:e2e` no sandbox do
   agente** — o renderer do Chromium crasha ao montar a SPA completa (limite de recursos do ambiente,
   não do código); validar na máquina do usuário ou no CI. A camada já **pegou e corrigiu 45 violações
   de contraste** nas páginas protegidas (sidebar/cabeçalhos/grid/toolbar) que os guardas por token e o
   jsdom não viam — ver "Guia de cores — grid de dados".
+- **Achados de a11y do navegador corrigidos em 2026-07-08 (não regredir):** a suíte esteve
+  **vermelha ~5 dias** por causas que só o axe em navegador via:
+  - **Sidebar transbordava sobre o `<main>` branco.** O `<nav>` era `flex-1` **sem overflow**; com
+    todos os itens (19 links + 5 grupos) o conteúdo excedia o viewport e os últimos itens + o rodapé
+    (avatar/e-mail/versão) caíam sobre o fundo BRANCO do `<main>`, onde `text-slate-400` dá 2,57:1.
+    Fix (`Layout.tsx`): `nav` = **`flex-1 min-h-0 overflow-y-auto`** — rola DENTRO da sidebar escura
+    (`bg-sidebar`, ~7:1). **Não** remover o `min-h-0`/`overflow-y-auto`.
+  - **Corpo do Dashboard = região rolável sem acesso por teclado** (`scrollable-region-focusable`,
+    WCAG 2.1.1). Ao conter a sidebar, o layout de altura passou a constringir o corpo, que agora ROLA
+    de fato; diferente de `/consulta`/`/emails` (grids com botões/checkboxes focáveis DENTRO da
+    região), o Dashboard só tem cards/gráficos não-focáveis. Fix (`Dashboard.tsx`): o container
+    `overflow-y-auto` ganhou **`tabIndex={0}` + `role="region"` + `aria-label`**.
+  - **Contraste do Dashboard sobre fundo claro:** legenda do donut `text-slate-400`→**`slate-600`**
+    (2,57:1 sobre card branco) e a linha "vence …" da lista de prioridades `text-slate-500`→
+    **`slate-600`** (4,35:1 sobre `bg-status-error-bg` #fef2f2 nas linhas críticas). Regra geral em
+    fundo CLARO: secundário mínimo `slate-600` quando puder cair sobre tinta (não `slate-400/500`).
 
 ---
 
@@ -707,17 +727,26 @@ Supabase (PostgreSQL)  ── financial_account_control (dados extraídos)
 > via proxy `/api` para a leitura de e-mails. A Next API (`:3000`) é camada de dados
 > independente (CRUD futuro) e expõe a mesma ponte ao Flask; não intercepta o caminho
 > atual do frontend.
+>
+> **Ponte com timeout (`lib/python-bridge.ts`, S3-1 — não regredir):** `triggerReader`/
+> `probePythonHealth` passam `AbortSignal.timeout(...)` no `fetch` ao Flask — um Flask travado
+> (IMAP pendurado) **não** pendura o handler Next junto. Teto de **300s** na leitura
+> (`PYTHON_BRIDGE_TIMEOUT_MS`, a leitura síncrona real leva minutos) e **5s** no health; o timeout
+> vira `PythonBridgeError(504)` (indisponível segue `502`). Teste em `lib/python-bridge.test.ts`.
 
 ## Comandos
 
 > **Specs/templates de prompts (`docs/prompts/`)** — fonte dos prompts copy-paste para o
 > Claude Code (padrão prompt-first). CRUDs/auth: `api-supplier-crud-spec.md`,
 > `api-contas-crud-spec.md`, `api-users-auth-spec.md`. Qualidade/produção:
-> `code-review-producao-spec.md` (review completo em 2 fases — diagnóstico read-only →
-> prompts XML de correção por área; gate lint+typecheck+test+prune+vulture) e
+> `code-review-producao-spec.md` (review completo em 2 fases — **Phase 1: modo normal**
+> read-only, diagnóstico cross-layer; **Phase 2: plan mode**, prompts XML de correção por área;
+> gate lint+typecheck+test+prune+vulture; usa `claude-opus-4-8` p/ análise multi-arquivo) e
 > `auditoria-seguranca-spec.md` (auditoria de segurança: AuthN/Z, RLS por coluna, IDOR/mass
-> assignment, SSRF no download de boleto, XSS, segredos/deps). Os dois últimos escrevem só em
-> `docs/review/` — rodar o de review antes do de segurança (compartilham `read_first`).
+> assignment, SSRF no download de boleto, XSS, segredos/deps; **Phase 1: modo normal**,
+> **Phase 2: plan mode**). Os dois últimos escrevem só em `docs/review/` — rodar o de review
+> antes do de segurança (compartilham `read_first`). Modelos: `claude-sonnet-4-6` para tarefas
+> isoladas; `claude-opus-4-8` para análise cross-layer com muitos arquivos.
 
 Dependências dos apps: `npm install` na **raiz** (workspaces — lockfile único).
 
@@ -1202,6 +1231,11 @@ Proteções aprendidas "na dor" — manter:
   deixa a conexão IMAP aberta. Os scripts manuais `reprocess_link_emails`/`reprocess_body_emails`
   seguem o mesmo padrão (logout em `finally`) e usam `_rfc822_from_fetch` (não `md[0][1]` direto).
   Teste: `tests/test_run_reader_logout.py`. **Nunca** voltar o `logout()` para fora do `finally`.
+- **Reprocessadores abrem IMAP pelo helper canônico (A4-1 — não regredir):** os 3 scripts de
+  reprocessamento manual (`reprocess_body_emails.py`, `reprocess_link_emails.py`,
+  `reprocess_message.py`) conectam por **`R._connect_imap()`** (timeout de socket + login + select),
+  não por `imaplib.IMAP4_SSL(...)` cru — um `fetch` que estanca não congela o reprocessamento.
+  (`reprocess_ignored_emails.py` já usava.) **Nunca** reintroduzir `IMAP4_SSL` cru nesses scripts.
 - **Claude API com timeout** (`extract_pdf.py`, `CLAUDE_API_TIMEOUT_SECONDS`, env
   `CLAUDE_API_TIMEOUT` default 90s): mesma classe de falha do IMAP. Sem `timeout` explícito o
   SDK Anthropic usa ~10 min/request; num run síncrono que processa muitos PDFs, **um request
@@ -1609,9 +1643,11 @@ por e-mail, passo email/2/3/4") sem reabrir o problema da 046, porque o **bloque
 — o e-mail NUNCA vira nome ANTES da busca; é passado à RPC como chave própria e **só vira nome no
 auto-insert (último recurso) quando NÃO é encontrado** em nenhum fornecedor. Isso impede recriar o
 "shadow supplier" nomeado pelo e-mail (que venceria o Passo 3). **Domínios internos não viram
-fornecedor** (`migration 046`): `_is_internal_email` (`%@otimotex.com.br`/`%@lebianco.com.br`)
+fornecedor** (`migration 046`): `_is_internal_email` — **função SQL da RPC (migration 046),
+NÃO uma função Python** — (`%@otimotex.com.br`/`%@lebianco.com.br`)
 bloqueia esses e-mails tanto no `_add_supplier_email` quanto no Passo 4 e no auto-insert do
-`resolve_supplier_id`. A precedência **anexo → corpo**
+`resolve_supplier_id` (todos SQL). O lado Python não tem esse helper; o bloqueio de remetente
+interno é imposto no banco pela RPC. A precedência **anexo → corpo**
 do nome é garantida antes, no pipeline Python (o corpo só alimenta o resolver quando o anexo não
 gera conta). Função `normalize_search()` é SECURITY DEFINER. `financial_account_control`
 referencia o fornecedor **apenas pela FK `sk_supplier`** (surrogate key snowflake, NOT NULL —
@@ -1980,6 +2016,11 @@ faturas SIEG em `ignorado`; o handler A1 (baixar o boleto real) segue como melho
   suspende/retoma o logout por inatividade) — assim traz e-mails novos **sem abrir `/emails`**.
   O **label permanece "Atualizar"** (só ganha spinner + disabled enquanto processa); a guarda
   `readingRef` evita disparos concorrentes. Não há reconexão ao job aqui (escopo do `/emails`).
+- **TanStack Query v5 — rollout PENDENTE para `Consulta.tsx` e `Emails.tsx`:** o padrão já está
+  aplicado em `SuppliersPage` (`staleTime: 60_000`, `gcTime: 300_000`, `refetchOnWindowFocus:
+  false`). As duas páginas de maior volume ainda usam `useEffect`+`fetch` direto; migrar seguindo
+  o mesmo padrão de `SuppliersPage` quando houver oportunidade. **Não** adicionar `useMemo`/
+  `useCallback`/`React.memo` manualmente — o React Compiler cuida da memoização.
 - **Disparo de leitura IMAP é OCULTO em produção (`src/lib/featureFlags.ts` → `EMAIL_READER_ENABLED`):**
   os 3 botões que acionam o Flask — `/emails` **"Buscar novos"** + **"Busca Geral"** e `/consulta`
   **"Atualizar"** — só renderizam quando a flag está ligada. A flag é `import.meta.env.PROD ? false :
@@ -2169,9 +2210,21 @@ local/agendada (ver flag `EMAIL_READER_ENABLED` acima e memória [[vercel-deploy
 ## Banco de dados (Supabase)
 
 Migrations em `supabase/migrations/`, aplicadas **manualmente no SQL Editor** em ordem
-numérica (`001` → `071`). Não há migration automática. (As `059`/`060`/`061`/`063`/`064`/`066`/`067`/
-`068`/`069`/`070`/`071` foram aplicadas **direto via Supabase MCP** nesta máquina — o arquivo numerado serve
-de histórico; **não reaplicar** no SQL Editor (todas idempotentes, mas evite re-run). A **071** adiciona
+numérica (`001` → `073`). **Próxima migration = `074`** (verificar sempre antes de criar nova).
+Não há migration automática. (As `059`/`060`/`061`/`063`/`064`/`066`/`067`/
+`068`/`069`/`070`/`071`/**`072`**/**`073`** foram aplicadas **direto via Supabase MCP** nesta máquina — o
+arquivo numerado serve
+de histórico; **não reaplicar** no SQL Editor (todas idempotentes, mas evite re-run). A **073**
+(higiene da auditoria de segurança 2026-07-08, idempotente): (1) **A5-2** — seed do grupo 1
+"Administrador" em `user_group` (a 065 faz `UPDATE user_profile SET group_id=1`, mas a 063 só semeava
+o sentinela 0 — em aplicação LIMPA a FK abortaria); (2) **S2-2** — policy **RESTRICTIVE**
+`attachments_no_delete_authenticated` em `storage.objects`, bloqueio EXPLÍCITO de DELETE por
+`authenticated` no bucket `attachments` (antes só o default-deny da RLS protegia; `service_role`
+ignora RLS). A **072** (segurança **S2-1**, BLOQUEADOR de go-live — não regredir): `REVOKE EXECUTE`
+de PUBLIC/anon/authenticated nas 6 RPCs `SECURITY DEFINER` de fornecedor (`resolve_supplier_id`,
+`resolve_supplier_for_account`, `resolve_company_id`, `_enrich_supplier`, `_enrich_supplier_name`,
+`_add_supplier_email`) + `GRANT` a `service_role` — fecha o vetor de escrita em `supplier` via
+`/rest/v1/rpc` com a anon key (`SECURITY DEFINER` ignora RLS); verificado por `anon`→`42501`. A **071** adiciona
 **`débito automático`** ao CHECK de `financial_account_control.payment_method` (débito direto em conta,
 distinto do `débito` cartão) + re-mapeia as contas Sabesp de água (171/189/190) `débito`→`débito
 automático` — ver "Forma de pagamento DECLARADA no corpo". A **070** cria a
@@ -2363,11 +2416,20 @@ caminho paralelo de gravação.
 
 **Schema base vs. criação manual:** `amount` é `nullable` no schema base (o pipeline pode
 gravar sem valor → vira erro `sem_valor`, não cria conta). A criação manual via `POST /api/contas`
-usa `financialAccountControlCreateSchema`
-(`= ...InputSchema.omit({ status: true }).partial().extend({ sk_supplier, amount: money.positive() })`),
-que **exige valor > 0** e **omite `status`** (a conta nasce `pendente`; o cliente não pode criá-la já
-em estado fechado — `pago`/`cancelado`/`baixado`). Não relaxar o `.positive()` nesse schema (lançar
-conta de R$ 0 não é válido) nem reintroduzir `status` no create.
+usa `financialAccountControlCreateSchema` e a edição via `PATCH` usa
+`financialAccountControlUpdateSchema`, **ambos derivados de `financialAccountControlManualEditSchema`**
+(S3-2, auditoria de segurança — não regredir): um **`.pick()`** SÓ dos campos do formulário
+(`sk_supplier`, `cost_center_id`, `chart_account_id`, `invoice_number`, `issue_date`, `due_date`,
+`amount`, `document_type`, `payment_method`, `barcode`, `description`, `additional_info`, `status_id`,
+`has_invoice`, `has_bank_slip`). As colunas de **PIPELINE/AUDITORIA** (`gmail_message_id`,
+`source_file`, `extraction_source`, `extracted_at`, `processing_notes`, `email_body_excerpt`,
+`sender_email`, `subject`, `payer_cnpj`/`payer_name`, `nosso_numero`, componentes de boleto) **NÃO são
+graváveis** por POST/PATCH manual — o Zod (strip) as descarta; protege a trilha de auditoria/dedup. O
+pipeline Python grava a tabela inteira via `service_role`, fora destes schemas. O create ainda **exige
+`amount` > 0** e **omite `status_id`** (a conta nasce no DEFAULT 3 do banco; o cliente não cria conta
+já em estado fechado). Não relaxar o `.positive()`, não reintroduzir campos de pipeline no
+`.pick()`, nem trocar a base por `InputSchema` cru. Testes em `lib/contas.test.ts` travam o strip no
+create e no PATCH.
 
 RLS habilitado em todas as tabelas. Policies de leitura são `TO authenticated`
 (migrations 015/018/019); escrita em `financial_account_control` é `TO service_role`
@@ -2413,9 +2475,11 @@ reprocessamento o `resolve_supplier_id` reutiliza os fornecedores existentes (ca
 CNPJ/CPF/e-mail/nome) sem duplicar. A `company` e o `supplier` preservados continuam
 resolvendo `company_id`/`sk_supplier` das novas contas.
 
-> **Storage:** `DELETE` direto em `storage.objects` é bloqueado (`protect_delete`). Esvaziar
-> o bucket via **Storage API** (`POST object/list/attachments` → `DELETE object/attachments`
-> com `{prefixes:[…]}`), usando `SUPABASE_SERVICE_KEY` do `.env` da raiz.
+> **Storage:** `DELETE` por `authenticated` em objetos do bucket `attachments` é bloqueado
+> pela policy RESTRICTIVE `attachments_no_delete_authenticated` (migration 073 — S2-2; antes
+> só o default-deny da RLS protegia, sem policy explícita). Esvaziar o bucket via **Storage
+> API** com `SUPABASE_SERVICE_KEY` (o `service_role` ignora RLS): `POST object/list/attachments`
+> → `DELETE object/attachments` com `{prefixes:[…]}`, do `.env` da raiz.
 
 ## Pipeline de cobrança de vencidos (skill `cobranca-vencidos`)
 

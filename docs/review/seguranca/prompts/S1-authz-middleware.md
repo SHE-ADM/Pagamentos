@@ -1,59 +1,62 @@
-# S1 — AuthZ / middleware (criação de usuário + defesa em profundidade)
+# S1 — AuthN/Z (troca de senha, sessão, matcher)
 
-> Base: `docs/review/seguranca/RELATORIO-SEGURANCA.md` §1. Branch `Features`, raiz do monorepo.
+> Gerado pela auditoria de segurança de 2026-07-08. Aplicar na branch `Features`.
+> Origem: `docs/review/seguranca/RELATORIO-SEGURANCA.md` §1.
 
 ```xml
 <objetivo>
-  Fechar o escalonamento de privilégio na criação de usuários (A-1) e alinhar a defesa em
-  profundidade das rotas de ação, sem quebrar o login público nem o fluxo de auth documentado.
+  Tornar a "troca obrigatória de senha" imposta pelo servidor (hoje só client-side, via user_metadata
+  gravável pelo cliente), ancorar o matcher do middleware e reduzir o risco do token de longa duração.
 </objetivo>
 
 <read_first>
-  - CLAUDE.md (Autenticação; "Usuários / autenticação"); .claude/rules/auth-specs.md (SEM AUTO-REGISTRO)
-  - apps/api-backend/middleware.ts
-  - apps/api-backend/lib/auth.ts (requireAuth/getAuthenticatedUser)
-  - apps/api-backend/lib/users.ts (register/createAuthUser)
-  - apps/api-backend/app/api/users/route.ts, app/api/users/me/route.ts, app/api/auth/login/route.ts
-  - apps/api-backend/app/api/emails/read/route.ts
+  - apps/frontend-vite/src/components/organisms/ChangePasswordForm.tsx:38-41
+  - packages/shared/src/schemas/auth.schema.ts:52-55 (mustChangePassword / PASSWORD_CHANGED_META_KEY)
+  - apps/frontend-vite/src/components/ProtectedRoute.tsx:20
+  - apps/api-backend/lib/auth.ts (requireAuth/requireAdmin), lib/users.ts (auth.admin.updateUserById)
+  - apps/api-backend/middleware.ts:19
+  - apps/frontend-vite/src/hooks/useIdleLogout.ts:18-26, contexts/AuthContext.tsx:57,86-93
+  - apps/frontend-vite/src/lib/supabaseClient.ts:21-27, lib/authStorage.ts:33-48
 </read_first>
 
 <achados>
-  - ALTO  A-1: POST /api/users sem checagem REAL de admin — qualquer sessão cria contas via auth.admin.createUser (service_role). Vetor: Bearer válido de usuário comum. app/api/users/route.ts:9-24 + lib/users.ts:79-91. Agravado pela exposição pública (vercel.json /data-api).
-  - MÉDIO M-1: toda sessão = poder total no CRUD; segregação de papéis ausente e NÃO documentada. lib/auth.ts:37-65, middleware.ts:11-20.
-  - BAIXO B-1: POST /api/emails/read sem requireAuth no handler (só middleware). app/api/emails/read/route.ts.
+  - [MÉDIO] S1-1 — troca de senha só imposta em ProtectedRoute (React), lendo user_metadata.password_changed
+    (client-writable); nenhuma rota da Next API verifica. Burlável marcando a flag sem trocar a senha, ou
+    usando o access_token direto contra a API.
+  - [MÉDIO] S1-2 — access_token em localStorage quando "Lembrar-me" (exposto a XSS futuro). Contido hoje (S5
+    confirma sem XSS), mas eleva o impacto de qualquer XSS a takeover.
+  - [BAIXO] S1-3 — middleware.ts:19 matcher '/api/((?!health|auth/login).*)' sem âncora de segmento.
+  - [BAIXO] S1-4 — teto de inatividade (10 min) só client-side; apagar pag:last-activity "esquece" o teto.
 </achados>
 
 <correcao>
-  1. A-1 — adicionar checagem de papel admin em POST /api/users:
-     - Em lib/auth.ts, criar `requireAdmin(req)` que reusa getAuthenticatedUser e verifica um claim de papel
-       (`user.app_metadata?.role === 'admin'` OU `user.user_metadata?.is_admin === true` — escolher o que o
-       admin grava no Supabase Dashboard ao criar o usuário; documentar a escolha). Retorna 403 (envelope fail) se não-admin.
-     - Em app/api/users/route.ts (POST), chamar requireAdmin ANTES de userService.register. Manter 201/409/422.
-     - NÃO mudar POST /api/auth/login (público) nem GET /api/users/me.
-  2. M-1 — decisão explícita: como esta é ferramenta single-org, documentar em CLAUDE.md ("Auth das rotas Next")
-     que toda sessão autenticada é confiável para o CRUD, MAS a criação de usuário é admin-only (item 1). Se o
-     cliente quiser papéis no CRUD, abrir tarefa separada — não é escopo desta correção mínima.
-  3. B-1 — adicionar `const denied = await requireAuth(req); if (denied) return denied;` no início do POST de
-     app/api/emails/read/route.ts (consistência com as outras rotas).
-  4. Testes: app/api/users/route.test.ts — caso 403 (sessão não-admin) e 201 (admin). Mockar getAuthenticatedUser
-     retornando user com/sem o claim. Atualizar o teste existente que assumia "admin-only = só estar logado".
+  1. S1-1: mover a marca de "senha trocada" para app_metadata (server-controlled). Fluxo mínimo: após o
+     updateUser de senha no ChangePasswordForm, chamar um endpoint novo (ex.: POST /api/users/me/password-changed,
+     requireAuth) que usa auth.admin.updateUserById para setar app_metadata.password_changed=true; o gate
+     (ProtectedRoute + qualquer checagem futura no backend) passa a ler app_metadata. Manter o fluxo de UX.
+     Nunca confiar em user_metadata para autorização. (Se o custo for alto, no mínimo documentar explicitamente
+     que a troca é "higiene de 1º acesso" e NÃO uma barreira de segurança, alinhando o CLAUDE.md ao real.)
+  2. S1-3: ancorar o matcher — '/api/(?!health$|auth/login$).*' (mesma mudança do code review A1-5; fazer uma vez).
+  3. S1-4 + S1-2: encurtar a expiração do JWT do Supabase (config do projeto) e/ou revogar refresh token no
+     signOut; documentar que o cap de 10 min é UX. Complementa a CSP do S5.
 </correcao>
 
 <restricoes>
-  - NÃO chamar supabase.auth.signUp no frontend (regra SEM AUTO-REGISTRO). NÃO expor service_role.
-  - NÃO quebrar o matcher /api/((?!health|auth/login).*) — health e login seguem públicos.
-  - Token sempre validado com a chave ANON (lib/auth.ts), nunca service_role.
+  - Não introduzir auto-registro (signUp) — cadastro segue admin-only.
+  - Não quebrar o fluxo "Lembrar-me" nem o logout por inatividade existentes.
+  - Não trocar a arquitetura de sessão para cookie HttpOnly sem decisão explícita (fora deste escopo).
 </restricoes>
 
 <validacao>
   - npm run lint && npm run typecheck && npm test
-  - npm run prune
-  - Vetor (descrever no PR, NÃO executar contra prod): curl -X POST .../api/users com Bearer de usuário comum → 403; com admin → 201.
+  - Teste de vetor (NÃO contra produção): com um usuário de teste, marcar user_metadata.password_changed via
+    updateUser SEM trocar a senha → confirmar que, após a correção, o gate ainda força a troca (a fonte é
+    app_metadata). Chamar /api/* com o access_token de um usuário que não trocou a senha → comportamento esperado.
+  - Verificar que /api/health e /api/auth/login seguem públicos após ancorar o matcher.
 </validacao>
 
 <criterio_de_aceite>
-  - POST /api/users retorna 403 para sessão não-admin e 201 só para admin (teste cobre ambos).
-  - /api/emails/read exige requireAuth no handler.
-  - Gate verde; decisão de papéis documentada no CLAUDE.md.
+  A obrigatoriedade da troca de senha não depende de campo client-writable (ou a doc deixa claro que é só UX).
+  Matcher casa rota exata. Documentação do teto de inatividade coerente com a implementação. Gate verde.
 </criterio_de_aceite>
 ```

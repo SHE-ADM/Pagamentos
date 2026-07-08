@@ -15,9 +15,10 @@ export default function ProtectedRoute({ children }: { children: ReactNode }) {
 
   if (!user) return <Navigate to="/auth/login" replace />;
 
-  // Troca de senha obrigatória no 1º acesso: enquanto a senha for a temporária do
-  // admin (sem a marca password_changed), nenhuma rota protegida é acessível.
-  if (mustChangePassword(user.user_metadata)) {
+  // Troca de senha obrigatória no 1º acesso: enquanto a senha for a temporária do admin
+  // (sem a marca password_changed em app_metadata — SERVER-CONTROLLED, S1-1), nenhuma
+  // rota protegida é acessível.
+  if (mustChangePassword(user.app_metadata)) {
     return <Navigate to="/auth/change-password" replace />;
   }
 

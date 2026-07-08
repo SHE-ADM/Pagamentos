@@ -1,60 +1,64 @@
 # Prompt de correção — Cobertura de testes (fechar o gate / provar o app)
 
-> Rodar na raiz do monorepo `pagamentos`, branch `Features`. Base: `docs/review/RELATORIO-CODE-REVIEW.md`.
-> Escopo: adicionar/estender testes que PROVAM o comportamento após as correções 01–06. Todo componente novo/alterado tem teste.
+> Gerado pela revisão pré-produção de 2026-07-08. Aplicar na branch `Features`.
+> Origem: `docs/review/RELATORIO-CODE-REVIEW.md` §7. Contratos de rota já 100% cobertos — fechar lacunas.
 
 ```xml
 <objetivo>
-  Garantir que cada correção das Fases 01–06 tenha teste que prove o comportamento esperado e que o app fique
-  à prova de regressão: contrato dos CRUDs, interação principal de cada Form e do DataGrid, e as proteções do pipeline Python.
+  Cobrir as duas ações-chave do /consulta sem teste (loadMore idempotente e alteração de situação em lote),
+  o teste a11y ausente do Dashboard, o teste funcional ausente do ResetPasswordForm e das páginas
+  Erros/CobrancaErros, e a dedup por message_id no pytest.
 </objetivo>
 
 <read_first>
-  - CLAUDE.md (Regra 2 — todo componente tem teste; suítes Vitest api/frontend, pytest, a11y)
-  - apps/api-backend/app/api/**/route.test.ts (padrão co-locado; ex.: app/api/emails/read/route.test.ts cobre 422/200/502)
-  - apps/frontend-vite/src/components/organisms/*.test.tsx (DataGrid.test.tsx, *Form.test.tsx) e *.a11y.test.tsx
-  - tests/test_status_for_result.py, test_rfc822_fetch.py, test_run_exit_code.py, test_dup_by_supplier_id.py, test_doc_type_utilities.py
+  - apps/frontend-vite/src/components/organisms/DataGrid.tsx (onLoadMore/hasMore; bulkStatusOptions/onBulkStatusChange; applyingBulk :852-864)
+  - apps/frontend-vite/src/components/organisms/DataGrid.test.tsx (o que já cobre)
+  - apps/frontend-vite/src/pages/Consulta.tsx (loadMore :280 + loadingMoreRef; handleBulkStatusChange :359)
+  - apps/frontend-vite/src/pages/Consulta.test.tsx
+  - apps/frontend-vite/src/pages/Dashboard.tsx + Dashboard.test.tsx (falta .a11y.test.tsx)
+  - apps/frontend-vite/src/components/organisms/ResetPasswordForm.tsx + ResetPasswordForm.a11y.test.tsx
+  - apps/frontend-vite/src/components/organisms/LoginForm.test.tsx (modelo de teste funcional de form de auth)
+  - apps/frontend-vite/src/pages/Erros.tsx / pages/cobranca/CobrancaErros.tsx
+  - skills/email-reader/scripts/read_emails.py (is_processed :248) + tests/test_body_duplicate.py (padrão FakeCtrl)
 </read_first>
 
 <achados>
-  - Lacunas a fechar conforme cada prompt 01–06 introduzir/alterar comportamento (status no create, cap de lookup,
-    busca robusta, getEmailStats, formatters extraídos, fechamento IMAP em erro, remoção de dead code).
+  - [MÉDIO] A7-1 — DataGrid.test.tsx + Consulta.test.tsx: loadMore (scroll infinito) e bulk status em lote sem teste.
+  - [BAIXO] A7-2 — Dashboard.tsx sem *.a11y.test.tsx (única page de dados sem axe).
+  - [BAIXO] A7-3 — ResetPasswordForm.tsx só tem a11y, sem teste funcional.
+  - [BAIXO] A7-4 — Erros.tsx e cobranca/CobrancaErros.tsx só têm a11y, sem teste de página.
+  - [BAIXO] A7-5 — is_processed (dedup por message_id) sem pytest.
 </achados>
 
 <mudancas_exigidas>
-  1. Vitest api-backend — para CADA CRUD (suppliers, contas, cost-centers, banks, financial-accounts, chart-accounts,
-     chart-account-groups, chart-account-subgroups, users/auth), casos co-locados em app/api/**/route.test.ts:
-     201 (create), 200 (get/list/patch), 400 (id inválido), 401 (sem token), 404, 409 (UNIQUE 23505 e FK/em-uso), 422 (Zod).
-     Nível service para: 409 de FK/em-uso, código único (validado na app, sem UNIQUE no banco).
-     Específicos das correções: POST /api/contas com `status` no corpo NÃO cria conta fechada; lookup de banks/groups/subgroups
-     retorna > 100 itens; busca com termo malformado retorna vazio (não 500).
-  2. Vitest frontend — render + interação principal de cada *Form (ContaForm cascata centro→plano reset; SupplierForm;
-     CostCenterForm; BankForm; FinancialAccountForm; ChartAccountForm; ChartAccountGroupForm; ChartAccountSubgroupForm)
-     e do DataGrid (seleção, bulk status, loadMore idempotente). Se os formatters forem extraídos para src/lib, teste unitário do módulo.
-  3. pytest — completar/confirmar: status_for_result (cadeia completa), dedup (message_id + sk_supplier), _rfc822_from_fetch
-     (FETCH intercalado), exit code da cobrança (DADO não reprova / OPERACIONAL reprova), classificação de doc_type
-     (utilities/honorários/NF-e pura). Novo: fechamento do IMAP em caminho de erro do run_reader (mock).
-  4. a11y — *.a11y.test.tsx para toda página/forma nova ou alterada sem cobertura (axe AA, tags wcag2a/2aa/21a/21aa).
+  1. A7-1: no DataGrid.test.tsx, adicionar (a) teste de loadMore — disparar o gatilho de "carregar mais" duas
+     vezes rapidamente e asseverar que onLoadMore é chamado UMA vez enquanto loading (idempotência via guarda);
+     (b) teste de bulk status — selecionar linhas, escolher uma situação e clicar Aplicar → onBulkStatusChange
+     recebe os ids selecionados + o status; e que applyingBulk trava o duplo Aplicar. No Consulta.test.tsx,
+     cobrir handleBulkStatusChange chamando setFinancialAccountStatusBulk (mock) com id=in.(…) + update otimista.
+  2. A7-2: criar Dashboard.a11y.test.tsx (mockando getDashboardData) com expect(await axe(container)).toHaveNoViolations().
+  3. A7-3: criar ResetPasswordForm.test.tsx (render + submit da nova senha + validação de confirmação divergente
+     + updateUser/signOut mockados), espelhando LoginForm.test.tsx.
+  4. A7-4: criar Erros.test.tsx e CobrancaErros.test.tsx cobrindo render + a interação principal (filtro/seleção
+     para reprocesso), com os serviços mockados.
+  5. A7-5: adicionar caso pytest para is_processed — FakeCtrl retornando existência por message_id → o e-mail é
+     pulado (dedup), e ausência → é processado. Reusar o padrão de test_body_duplicate.py.
 </mudancas_exigidas>
 
 <restricoes>
-  - NÃO baixar cobertura existente; só adicionar/estender. Mocks de serviço seguem o padrão das páginas já testadas.
-  - NÃO rodar npm run test:e2e neste ambiente (renderer do Chromium crasha na SPA — validar no CI / máquina do usuário).
-  - portal-next testa via server rendering (renderToStaticMarkup), não jsdom.
+  - Não alterar código de produção para "facilitar" teste além do estritamente necessário (o alvo é cobertura).
+  - Manter os testes de portal-next por server rendering (renderToStaticMarkup) — não migrar aqui.
+  - Não rodar test:e2e no sandbox do agente (renderer crasha) — os novos testes a11y são jsdom (jest-axe).
 </restricoes>
 
 <validacao>
-  - npm run lint
-  - npm run typecheck
-  - npm test
-  - npm run prune
-  - py -3 -m pytest tests/ -q
-  - py -3 -m vulture server/ skills/ scripts/ --min-confidence 60
+  - npm test  (todos os workspaces verdes; novos testes passam)
+  - py -3 -m pytest tests/ -q  (novo caso de is_processed passa)
+  - npm run lint && npm run typecheck  (sem regressão)
 </validacao>
 
 <criterio_de_aceite>
-  - Gate verde (0 erro / 0 warning) com os testes novos.
-  - Cada correção 01–06 tem ao menos um teste que prova o comportamento esperado.
-  - Nenhuma regressão de cobertura; toda forma/página nova tem render + interação + a11y.
+  loadMore idempotente e bulk status cobertos em DataGrid e Consulta; Dashboard com a11y; ResetPasswordForm e
+  as páginas Erros/CobrancaErros com teste funcional; is_processed com pytest. Suíte 100% verde.
 </criterio_de_aceite>
 ```
