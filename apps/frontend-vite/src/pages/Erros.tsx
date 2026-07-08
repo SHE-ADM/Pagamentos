@@ -5,10 +5,9 @@ import type { ProcessingError } from '@sheild/shared';
 import { getProcessingErrors, getProcessingErrorStats, type ProcessingErrorStats } from '../services/supabase';
 import { getErrorMessage } from '../lib/getErrorMessage';
 import { cn } from '../lib/cn';
+import { fmtDateTime } from '../lib/format';
 import StatusBadge from '../components/StatusBadge';
 import Alert from '../components/atoms/Alert';
-
-const fmtDt = (d: string | null): string => (d ? new Date(d).toLocaleString('pt-BR') : '—');
 
 // erro_api primeiro — falha de API (crédito/auth/limite) é o erro mais crítico.
 const ERROR_TYPES = [
@@ -217,7 +216,7 @@ export default function Erros() {
                     className={rowClass(r, sel?.id)}
                     onClick={() => setSel(sel?.id === r.id ? null : r)}
                   >
-                    <td className="table-cell text-xs whitespace-nowrap font-mono">{fmtDt(r.logged_at)}</td>
+                    <td className="table-cell text-xs whitespace-nowrap font-mono">{fmtDateTime(r.logged_at)}</td>
                     <td className="table-cell">
                       <StatusBadge value={r.error_type} />
                     </td>
@@ -263,16 +262,16 @@ export default function Erros() {
         {sel && (
           <div className="card p-4">
             <p className="text-xs font-semibold text-gray-500 mb-3 uppercase tracking-wide">
-              Detalhes · {fmtDt(sel.logged_at)}
+              Detalhes · {fmtDateTime(sel.logged_at)}
             </p>
             <dl className="grid grid-cols-2 gap-x-8 gap-y-2 mb-4">
               {(
                 [
                   ['Tipo de erro', sel.error_type],
-                  ['Data/hora', fmtDt(sel.logged_at)],
+                  ['Data/hora', fmtDateTime(sel.logged_at)],
                   ['Remetente', sel.sender_name ? `${sel.sender_name} <${sel.sender_email}>` : sel.sender_email],
                   ['Assunto', sel.subject],
-                  ['Recebido em', fmtDt(sel.received_at)],
+                  ['Recebido em', fmtDateTime(sel.received_at)],
                   ['Arquivo', sel.source_file],
                   ['Message-ID', sel.gmail_message_id],
                   ['Mensagem', sel.error_message],

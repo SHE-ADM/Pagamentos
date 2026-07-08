@@ -11,6 +11,7 @@ const getFinancialAccountTotalValue = vi.fn();
 const getFinancialAccountCount = vi.fn();
 const setFinancialAccountFlag = vi.fn();
 const setFinancialAccountStatus = vi.fn();
+const setFinancialAccountStatusBulk = vi.fn();
 
 vi.mock('../services/supabase', () => ({
   getFinancialAccountControl: (...args: unknown[]) => getFinancialAccountControl(...args),
@@ -19,6 +20,7 @@ vi.mock('../services/supabase', () => ({
   getFinancialAccountCount: (...args: unknown[]) => getFinancialAccountCount(...args),
   setFinancialAccountFlag: (...args: unknown[]) => setFinancialAccountFlag(...args),
   setFinancialAccountStatus: (...args: unknown[]) => setFinancialAccountStatus(...args),
+  setFinancialAccountStatusBulk: (...args: unknown[]) => setFinancialAccountStatusBulk(...args),
 }));
 
 // Mocka o leitor IMAP — o teste cobre o disparo pelo botão "Atualizar", não a rede.
@@ -74,6 +76,7 @@ describe('Consulta', () => {
     getFinancialAccountCount.mockResolvedValue(0);
     setFinancialAccountFlag.mockReset().mockResolvedValue(undefined);
     setFinancialAccountStatus.mockReset().mockResolvedValue(undefined);
+    setFinancialAccountStatusBulk.mockReset().mockResolvedValue(undefined);
     startEmailRead.mockReset().mockResolvedValue({ started: true, alreadyRunning: false });
     getEmailReadProgress.mockReset().mockResolvedValue({
       running: false,
@@ -233,6 +236,35 @@ describe('Consulta', () => {
       expect(getFinancialAccountControl).toHaveBeenLastCalledWith(
         expect.objectContaining({ dateFrom: '2026-03-01', dateTo: '2026-03-31', month: null, year: null }),
       ),
+    );
+  });
+
+  it('alteração de situação em lote: aplica "pago" nas selecionadas e atualiza as linhas otimisticamente', async () => {
+    const user = userEvent.setup();
+    getFinancialAccountControl.mockResolvedValue({
+      data: [makeRow(), makeRow({ id: 2, invoice_number: '67890' })],
+      total: 2,
+    });
+    render(<Consulta />);
+    await screen.findByText('12345');
+
+    // Seleciona as duas linhas e escolhe a nova situação na barra de seleção.
+    await user.click(screen.getByRole('checkbox', { name: 'Selecionar todas as linhas' }));
+    await user.selectOptions(
+      screen.getByRole('combobox', { name: 'Selecionar nova situação' }),
+      String(STATUS_ID_PAGO),
+    );
+    await user.click(screen.getByRole('button', { name: 'Aplicar' }));
+
+    // Uma única requisição em lote com os ids selecionados + o status_id.
+    await waitFor(() =>
+      expect(setFinancialAccountStatusBulk).toHaveBeenCalledWith([1, 2], STATUS_ID_PAGO),
+    );
+    expect(setFinancialAccountStatusBulk).toHaveBeenCalledTimes(1);
+
+    // Update otimista: as duas linhas exibem "pago" sem refetch do grid.
+    await waitFor(() =>
+      expect(screen.getAllByRole('button', { name: /Situação: pago/ })).toHaveLength(2),
     );
   });
 
