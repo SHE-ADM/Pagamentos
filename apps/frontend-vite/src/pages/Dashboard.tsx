@@ -261,7 +261,7 @@ function StatusDonut({ data }: { data: DashboardData | null }) {
             <span className="h-2.5 w-2.5 rounded-xs shrink-0" style={{ background: statusColor(s.status) }} />
             <span className="text-slate-700 capitalize flex-1 truncate">{s.status}</span>
             <span className="font-mono text-slate-900 font-semibold">{s.count}</span>
-            <span className="text-slate-400 w-9 text-right">{Math.round((s.count / total) * 100)}%</span>
+            <span className="text-slate-600 w-9 text-right">{Math.round((s.count / total) * 100)}%</span>
           </div>
         ))}
         {!segs.length && <span className="text-xs text-slate-500">Sem contas no período.</span>}
@@ -311,7 +311,9 @@ function PriorityList({ data }: { data: DashboardData | null }) {
             </span>
             <div className="flex-1 min-w-0">
               <div className="text-sm font-medium text-slate-700 truncate">{r.supplier}</div>
-              <div className="text-xs text-slate-500">vence {fmtDate(r.due)}</div>
+              {/* slate-600 (não slate-500): nas linhas críticas o card é bg-status-error-bg
+                  (vermelho-claro) e slate-500 dá 4,35:1 (reprova AA); slate-600 dá ~7:1. */}
+              <div className="text-xs text-slate-600">vence {fmtDate(r.due)}</div>
             </div>
             <span className={`font-mono text-sm font-semibold whitespace-nowrap ${err ? 'text-status-error-fg' : 'text-slate-900'}`}>{fmtMoney(r.amount)}</span>
             <StatusBadge value={r.status} />
