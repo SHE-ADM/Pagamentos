@@ -873,7 +873,8 @@ apps/frontend-vite/src/components/
 │   ├── GradientPillButton.tsx # (gradient) botão pill com bg-gradient-auth
 │   ├── CheckToggle.tsx        # checkbox de curadoria (NF/Boleto) — escreve no banco
 │   ├── SelectCheckbox.tsx     # checkbox de SELEÇÃO de linha (rowSelection) + indeterminate
-│   └── LabeledSelect.tsx      # (tabelas) <select> rotulado (htmlFor/id + erro) — lookups dos forms de cadastro
+│   ├── LabeledSelect.tsx      # (tabelas) <select> rotulado (htmlFor/id + erro) — lookups dos forms de cadastro
+│   └── StatusSelectCell.tsx   # (consulta) dropdown inline de situação no grid — altera status_id (STATUS_OPTIONS)
 ├── molecules/
 │   ├── SocialLinksBar.tsx     # (v2) círculos Otimotex/Lebianco/WhatsApp
 │   ├── AuthHeroHeader.tsx     # (gradient) header decorativo com círculos sobrepostos
@@ -887,7 +888,9 @@ apps/frontend-vite/src/components/
 ├── organisms/
 │   ├── LoginForm.tsx          # (v2) estado + validação + supabase.auth.signInWithPassword
 │   ├── ForgotPasswordForm.tsx # (gradient) resetPasswordForEmail + mensagem genérica
-│   ├── ResetPasswordForm.tsx  # (gradient) updateUser + signOut + redirect
+│   ├── ResetPasswordForm.tsx  # (gradient) updateUser + signOut + redirect (fluxo "esqueci a senha")
+│   ├── ChangePasswordForm.tsx # (auth) troca obrigatória no 1º acesso — updateUser + marca password_changed (sem deslogar)
+│   ├── ResendErrosAction.tsx  # (cobrança) barra de seleção "Reenviar e-mails (N)" + confirmação inline + poll de progresso
 │   ├── ContaForm.tsx          # (contas) form criar/editar conta — supplier/centro/plano + cascata
 │   ├── SupplierForm.tsx       # (fornecedores) form criar/editar fornecedor — inclui classificação default (centro/plano em cascata)
 │   ├── CostCenterForm.tsx     # (tabelas) form criar/editar centro de custo — código + descrição
@@ -918,7 +921,7 @@ apps/frontend-vite/src/components/
 | **Recebimentos** | E-mails (`/emails`) · Log de erros (`/erros`) |
 | **Envios** | E-mails (`/cobranca/envios`) · Log de erros (`/cobranca/erros`) — logs da cobrança automática de vencidos |
 | **Contas** | Gestão de contas (`/consulta`) · Cadastro de contas (`/contas`) · Cadastro de fornecedores (`/fornecedores`) |
-| **Tabelas** | Centro de custos (`/tabelas/centros-de-custo`) · Bancos (`/tabelas/bancos`) · Contas (`/tabelas/contas`) · Plano de contas (`/tabelas/plano-de-contas`) · Grupos de plano de contas (`/tabelas/grupos-plano-de-contas`) · Sub grupos de plano de contas (`/tabelas/subgrupos-plano-de-contas`) — CRUDs dos cadastros contábeis |
+| **Tabelas** | Bancos (`/tabelas/bancos`) · Centro de custos (`/tabelas/centros-de-custo`) · Contas (`/tabelas/contas`) · Plano de contas (`/tabelas/plano-de-contas`) · Grupos de plano de contas (`/tabelas/grupos-plano-de-contas`) · Sub grupos de plano de contas (`/tabelas/subgrupos-plano-de-contas`) — CRUDs dos cadastros contábeis (ordem conforme `Layout.tsx`) |
 | **Análise** | Dashboard (`/dashboard`) |
 
 > "Gestão de contas" aponta para `/consulta` (só o rótulo difere da rota). Ao promover um
@@ -1002,7 +1005,7 @@ mandatória 6.
 
 ### Guia de cores — paleta `loginGreen` (`@theme` em `apps/frontend-vite/src/index.css`)
 
-Telas de auth usam **exclusivamente** estes tokens:
+Telas de auth usam **essencialmente** estes tokens:
 
 | Token | Hex | Uso |
 |---|---|---|
@@ -1013,6 +1016,7 @@ Telas de auth usam **exclusivamente** estes tokens:
 | `loginGreen-placeholder` | `#437355` | placeholder (`placeholder:text-loginGreen-placeholder`) — AA ≥4.5:1 sobre o campo |
 | `loginGreen-field` | `#eef9f3` | fundo dos campos |
 | `loginGreen-fieldFocus` | `#e4f6ec` | fundo em foco |
+| `loginGreen-surface` | `#e6f5ec` | definido no `@theme` mas **sem uso atual** — candidato a remoção |
 | `loginGreen-socialBg` | `#f4fcf7` | fundo dos círculos sociais |
 | `loginGreen-border` | `#94D0AE` | borda principal (frame externo) |
 | `loginGreen-borderLight` | `#c6e8d3` | borda secundária |
@@ -1845,8 +1849,8 @@ espelha o webmail inteiro (o app substitui abrir a caixa). O filtro de keyword d
 
 **Matching de keyword (`match_keyword`, `tests/test_match_keyword.py`)** — comparação
 **sem acento** (NFD + lowercase). Dois modos:
-- **Acrônimos de tributo/câmbio** (`WORD_KEYWORDS`: `darf, das, dae, dam, duam, gps, gru,
-  gnre, gare, ipva, iptu, iss, itbi, cambio`) casam por **palavra inteira** (`\b…\b`) —
+- **Acrônimos de tributo/câmbio** (`WORD_KEYWORDS`: `darf, das, dae, dare, dam, duam, gps,
+  gru, gnre, gare, ipva, iptu, iss, itbi, cambio`) casam por **palavra inteira** (`\b…\b`) —
   evita falso positivo de substring (`das` em "ca**das**tro"/"executa**das**", `iss` em
   "em**iss**ão", `gru` em "**gru**po", `cambio` em "inter**câmbio**").
 - **Demais termos** (frases e siglas distintivas: `boleto, nota fiscal, nf-e, conhecimento
@@ -2707,8 +2711,10 @@ executa `skills\cobranca-vencidos\scripts\run.py` (`run_cobranca.ps1` `$SCRIPT`)
 - **7 scripts INTERDEPENDENTES — copiar só um quebra.** `run.py` (batch) **e** `resend.py`
   (reenvio) dependem de **`send_core.py`** (`from send_core import send_and_log, validate_email`
   — dependência **nova** do `run.py`); `send_core.py` → `email_sender`/`supabase_log`/`template`.
-  Copiar `run.py`/`resend.py` sem `send_core.py` → `ImportError`. **Na dúvida, copie o conjunto
-  inteiro**: `db_firebird.py`, `email_sender.py`, `resend.py`, `run.py`, `send_core.py`,
+  Copiar `run.py`/`resend.py` sem `send_core.py` → `ImportError`. **`run.py` também importa
+  `failure_notify.py`** (`from failure_notify import ...` — notificação ao CC), então ele entra
+  no conjunto. **Na dúvida, copie o conjunto inteiro** (8 arquivos): `db_firebird.py`,
+  `email_sender.py`, `failure_notify.py`, `resend.py`, `run.py`, `send_core.py`,
   `supabase_log.py`, `template.py`.
 - **Pré-requisitos da máquina (diferente do reader):** driver Firebird **`fdb`** (fallback
   `firebirdsql`) instalado; `.env` com **`FB_HOST/FB_PORT/FB_DATABASE/FB_USER/FB_PASSWORD/
