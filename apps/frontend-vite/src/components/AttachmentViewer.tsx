@@ -102,19 +102,20 @@ export default function AttachmentViewer({ sourceFile, onClose }: Readonly<Attac
         </div>
       );
     }
-    // S5-1: sandbox confina o PDF (conteúdo de e-mail hostil), mas o visualizador de PDF
-    // do Chrome (PDFium) EXIGE `allow-scripts` para renderizar — sem ele o iframe mostra o
-    // ícone de "documento quebrado" (regressão que impedia ver o boleto). `allow-same-origin`
-    // é necessário para o viewer acessar o recurso do Storage. A proteção real que resta:
-    // a signed URL aponta para a origem SUPABASE (cross-origin ao app), então mesmo um
-    // "PDF" que seja HTML+JS roda ISOLADO na origem do Storage — não acessa DOM/token do app;
-    // e SEM `allow-top-navigation`/`allow-forms`/`allow-modals` não redireciona a janela do
-    // app p/ phishing. referrerPolicy no-referrer evita vazar a signed URL no Referer.
+    // SEM `sandbox` (intencional — NÃO reintroduzir): o visualizador de PDF do Chrome
+    // (MimeHandlerView/PDFium) NÃO renderiza em iframe sandboxed de forma confiável, nem
+    // mesmo com `allow-scripts allow-same-origin` (verificado em produção: mostrava o ícone
+    // de "documento quebrado", só o download funcionava). O S5-1 introduziu o sandbox e
+    // quebrou a visualização do boleto; revertido ao comportamento pré-S5. A defesa que
+    // permanece: a signed URL é da origem SUPABASE (cross-origin ao app), então o conteúdo é
+    // isolado pela política de mesma-origem — não acessa DOM/token/localStorage do app.
+    // `referrerPolicy="no-referrer"` evita vazar a signed URL no header Referer. (Trade-off
+    // aceito: sem sandbox, um "PDF" que fosse HTML+JS poderia navegar a janela top; mitigado
+    // por o bucket receber só anexos do nosso próprio pipeline, servidos como application/pdf.)
     return (
       <iframe
         src={url ?? ''}
         title={sourceFile}
-        sandbox="allow-scripts allow-same-origin"
         referrerPolicy="no-referrer"
         className="h-full w-full border-0"
       />
