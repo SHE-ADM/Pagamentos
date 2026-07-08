@@ -127,7 +127,16 @@ export default function Dashboard() {
         </div>
       </div>
 
-      <div className="flex-1 overflow-y-auto px-6 py-3">
+      {/* Região rolável precisa de acesso por teclado (WCAG 2.1.1): diferente de
+          /consulta e /emails (cujos grids têm botões/checkboxes focáveis), o corpo do
+          Dashboard só tem cards/gráficos não-focáveis — tabIndex=0 + região nomeada
+          deixam o usuário de teclado focar e rolar (axe: scrollable-region-focusable). */}
+      <div
+        className="flex-1 overflow-y-auto px-6 py-3"
+        tabIndex={0}
+        role="region"
+        aria-label="Indicadores e gráficos"
+      >
         {error && (
           <Alert variant="error" className="mb-4">
             <strong>Erro:</strong> {error}
