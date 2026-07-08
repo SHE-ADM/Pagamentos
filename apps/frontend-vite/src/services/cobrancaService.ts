@@ -90,8 +90,14 @@ export async function fetchErrosLog(filter: ErrosFilter): Promise<PaginatedResul
   };
   if (errorType?.trim()) params['error_type'] = `eq.${errorType.trim()}`;
   if (search?.trim()) params['or'] = `(customer_name.ilike.*${search.trim()}*,document_id.ilike.*${search.trim()}*)`;
-  if (dateFrom) params['occurred_at'] = `gte.${dateFrom}`;
-  if (dateTo)   params['occurred_at'] = params['occurred_at'] ? `gte.${dateFrom},lte.${dateTo}T23:59:59` : `lte.${dateTo}T23:59:59`;
+  // Intervalo de datas via `and` (mesmo padrão de fetchEnviosLog) — cada condição carrega o
+  // nome da coluna. Um único param `occurred_at` com vírgula (gte.X,lte.Y) é sintaxe PostgREST
+  // INVÁLIDA (a vírgula fecharia o valor do gte). "Ocorrido em" é TIMESTAMPTZ: limite superior
+  // até o fim do dia (T23:59:59). Coexiste com o `or` da busca (AND entre params de topo).
+  const conds: string[] = [];
+  if (dateFrom) conds.push(`occurred_at.gte.${dateFrom}`);
+  if (dateTo)   conds.push(`occurred_at.lte.${dateTo}T23:59:59`);
+  if (conds.length) params['and'] = `(${conds.join(',')})`;
   return get<CobrancaErroLog>(token, 'cobranca_erros_log', params);
 }
 

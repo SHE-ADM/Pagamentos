@@ -15,6 +15,9 @@ export async function middleware(req: NextRequest): Promise<Response> {
 }
 
 // Aplica a todas as rotas /api/*, menos /api/health e /api/auth/login (públicas).
+// O lookahead é ancorado por fim de segmento (`$`) para casar a ROTA EXATA — sem a
+// âncora, `/api/health-detail` ou `/api/auth/login-audit` ficariam públicas por prefixo
+// (achado A1-5). Ancorado, qualquer rota nova é protegida por padrão (fail-closed).
 export const config = {
-  matcher: ['/api/((?!health|auth/login).*)'],
+  matcher: ['/api/((?!health$|auth/login$).*)'],
 };

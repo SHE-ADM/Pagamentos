@@ -33,9 +33,10 @@ const PRIORITY_ICON: Record<PriorityKind, LucideIcon> = {
 };
 
 export default function Dashboard() {
-  const now = new Date();
-  const [month, setMonth] = useState(now.getMonth());
-  const [year, setYear] = useState(now.getFullYear());
+  // Estado inicial via inicializador LAZY — não chamar new Date() no corpo do render
+  // (impureza; §5 / React Compiler). Ver achado A2-2.
+  const [month, setMonth] = useState(() => new Date().getMonth());
+  const [year, setYear] = useState(() => new Date().getFullYear());
   const [scope, setScope] = useState<DashboardScope>('month');
   const [data, setData] = useState<DashboardData | null>(null);
   const [loading, setLoading] = useState(false);
@@ -114,7 +115,7 @@ export default function Dashboard() {
                 key={y}
                 onClick={() => setYear(y)}
                 aria-pressed={y === year}
-                className={`text-xs font-medium px-2.5 py-1 rounded-md border transition-colors ${y === year ? 'bg-brand border-brand text-white' : 'bg-white border-slate-200 text-slate-600 hover:bg-slate-50'}`}
+                className={`text-xs font-medium px-2.5 py-1 rounded-md border transition-colors ${y === year ? 'bg-brand-dark border-brand-dark text-white' : 'bg-white border-slate-200 text-slate-600 hover:bg-slate-50'}`}
               >
                 {y}
               </button>
@@ -222,7 +223,7 @@ function MonthlyFlow({ data }: { data: DashboardData | null }) {
               <div className="w-[42%] max-w-4 bg-brand rounded-t-sm transition-all" style={{ height: `${(d.aPagar / max) * 100}%` }} title={`A pagar: ${fmtMoney(d.aPagar)}`} />
               <div className="w-[42%] max-w-4 bg-slate-300 rounded-t-sm transition-all" style={{ height: `${(d.pago / max) * 100}%` }} title={`Pago: ${fmtMoney(d.pago)}`} />
             </div>
-            <span className="text-[10px] text-slate-500">{MONTHS[d.month]}</span>
+            <span className="text-xs text-slate-500">{MONTHS[d.month]}</span>
           </div>
         ))}
       </div>
@@ -277,7 +278,7 @@ function SupplierRanking({ data }: { data: DashboardData | null }) {
     <div>
       {rows.map((r, i) => (
         <div key={r.name} className="flex items-center gap-2.5 py-2">
-          <span className={`shrink-0 h-5.5 w-5.5 rounded-full text-xs font-bold flex items-center justify-center ${i < 3 ? 'bg-brand text-white' : 'bg-slate-200 text-slate-600'}`}>{i + 1}</span>
+          <span className={`shrink-0 h-5.5 w-5.5 rounded-full text-xs font-bold flex items-center justify-center ${i < 3 ? 'bg-brand-dark text-white' : 'bg-slate-200 text-slate-600'}`}>{i + 1}</span>
           <div className="flex-1 min-w-0">
             <div className="flex justify-between gap-2 mb-1">
               <span className="text-sm font-medium text-slate-700 truncate">{r.name}</span>

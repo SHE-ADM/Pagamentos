@@ -112,27 +112,30 @@ export default function Erros() {
         )}
 
         <div className="grid grid-cols-6 gap-3 mb-5">
+          {/* Cores por token semântico status-* (não cor default do Tailwind — regra 1),
+              alinhadas ao StatusBadge: erros = error-fg (vermelho), sem valor/fornecedor =
+              warning-fg (âmbar). Ver achado A3-3. */}
           {[
-            { label: 'Total de erros', value: stats.total, icon: XCircle, cls: 'text-red-500' },
-            { label: 'Erro de API', value: stats.counts.erro_api ?? 0, icon: XCircle, cls: 'text-red-600' },
-            { label: 'Sem valor', value: stats.counts.sem_valor ?? 0, icon: AlertTriangle, cls: 'text-amber-600' },
+            { label: 'Total de erros', value: stats.total, icon: XCircle, cls: 'text-status-error-fg' },
+            { label: 'Erro de API', value: stats.counts.erro_api ?? 0, icon: XCircle, cls: 'text-status-error-fg' },
+            { label: 'Sem valor', value: stats.counts.sem_valor ?? 0, icon: AlertTriangle, cls: 'text-status-warning-fg' },
             {
               label: 'Sem fornecedor',
               value: stats.counts.sem_fornecedor ?? 0,
               icon: AlertTriangle,
-              cls: 'text-orange-600',
+              cls: 'text-status-warning-fg',
             },
             {
               label: 'Extração falhou',
               value: stats.counts.extracao_falhou ?? 0,
               icon: XCircle,
-              cls: 'text-red-500',
+              cls: 'text-status-error-fg',
             },
             {
               label: 'DB / processo',
               value: (stats.counts.db_erro ?? 0) + (stats.counts.processamento_erro ?? 0),
               icon: Info,
-              cls: 'text-purple-500',
+              cls: 'text-status-error-fg',
             },
           ].map(({ label, value, icon: Icon, cls }) => (
             <div key={label} className="metric-card">

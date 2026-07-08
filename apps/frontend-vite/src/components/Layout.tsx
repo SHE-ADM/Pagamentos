@@ -167,6 +167,7 @@ export default function Layout({ children }: Readonly<{ children: ReactNode }>) 
                 onClick={signOut}
                 className="flex items-center gap-1 text-xs text-slate-400 hover:text-red-400 transition-colors"
                 title="Sair"
+                aria-label="Sair"
               >
                 <LogOut size={14} />
               </button>

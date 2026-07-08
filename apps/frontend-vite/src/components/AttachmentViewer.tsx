@@ -93,7 +93,7 @@ export default function AttachmentViewer({ sourceFile, onClose }: Readonly<Attac
     if (state === 'notfound') {
       return (
         <div className="flex h-full flex-col items-center justify-center gap-3 text-center">
-          <div className="flex h-14 w-14 items-center justify-center rounded-full bg-amber-50 text-amber-600">
+          <div className="flex h-14 w-14 items-center justify-center rounded-full bg-status-warning-bg text-status-warning-fg">
             <FileWarning size={26} />
           </div>
           <p className="max-w-xs text-sm text-slate-500">

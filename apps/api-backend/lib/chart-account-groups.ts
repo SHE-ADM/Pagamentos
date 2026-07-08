@@ -17,7 +17,11 @@ import { resolveSort, type SortOrder } from './sort';
 
 const TABLE = 'financial_chart_of_account_group';
 const SORTABLE_COLUMNS = ['group_code', 'group_description', 'group_type'] as const;
-const REFERENCING_TABLES = ['financial_chart_of_account_subgroup'] as const;
+// O grupo é referenciado por DUAS tabelas via `chart_account_group_id`: o subgrupo
+// (hierarquia clássica) e o plano de contas DIRETAMENTE (FK `fk_fin_coa_group`,
+// migration 058). Ambas precisam bloquear o hard delete (→ 409), senão o Postgres
+// rejeita com 23503 e o contrato quebra em 500. Ver achado A1-1.
+const REFERENCING_TABLES = ['financial_chart_of_account_subgroup', 'financial_chart_of_account'] as const;
 const REF_COLUMN = 'chart_account_group_id';
 const SENTINEL_ID = 0;
 const DEFAULT_LIMIT = 20;

@@ -77,6 +77,23 @@ function duplicateMessage(detail: string): string {
   return 'Registro já cadastrado';
 }
 
+// Mapeia erro de escrita para status/mensagem CURADOS (sem vazar detalhe do Postgres).
+// 23505 (UNIQUE) → 409; 23503 (FK) → 422 identificando o campo pela constraint/detalhe
+// (sk_supplier / cost_center_id / chart_account_id / status_id). Espelha o padrão de
+// financial-accounts.ts. Ver achado A1-3.
+function mapWriteError(error: { code?: string; message: string; details?: string }): ContaServiceError {
+  if (error.code === '23505') return new ContaServiceError(duplicateMessage(error.details ?? error.message), 409);
+  if (error.code === '23503') {
+    const detail = `${error.details ?? ''} ${error.message}`;
+    if (/supplier/i.test(detail)) return new ContaServiceError('Fornecedor informado não existe', 422);
+    if (/cost_center/i.test(detail)) return new ContaServiceError('Centro de custo informado não existe', 422);
+    if (/chart_account/i.test(detail)) return new ContaServiceError('Plano de contas informado não existe', 422);
+    if (/status/i.test(detail)) return new ContaServiceError('Situação informada não existe', 422);
+    return new ContaServiceError('Fornecedor, centro de custo, plano de contas ou situação informado não existe', 422);
+  }
+  return new ContaServiceError(error.message, 422);
+}
+
 // Sanitiza o termo de busca para o filtro `or` do PostgREST (chars de controle da sintaxe).
 function sanitizeTerm(term: string): string {
   return term.replace(/[%,()]/g, ' ').trim();
@@ -189,10 +206,7 @@ export const contaService = {
     if (!parsed.success) throw new ContaServiceError(formatZodError(parsed.error), 422);
 
     const { data, error } = await contaRepository.create(parsed.data);
-    if (error) {
-      if (error.code === '23505') throw new ContaServiceError(duplicateMessage(error.details ?? error.message), 409);
-      throw new ContaServiceError(error.message, 422);
-    }
+    if (error) throw mapWriteError(error);
     const conta = data as unknown as FinancialAccountControl;
     await writeBackSupplierClassification(conta);
     return conta;
@@ -208,10 +222,7 @@ export const contaService = {
     if (!parsed.success) throw new ContaServiceError(formatZodError(parsed.error), 422);
 
     const { data, error } = await contaRepository.update(id, parsed.data);
-    if (error) {
-      if (error.code === '23505') throw new ContaServiceError(duplicateMessage(error.details ?? error.message), 409);
-      throw new ContaServiceError(error.message, 422);
-    }
+    if (error) throw mapWriteError(error);
     if (!data) throw new ContaServiceError('Conta não encontrada', 404);
     const conta = data as unknown as FinancialAccountControl;
     await writeBackSupplierClassification(conta);

@@ -1,7 +1,7 @@
 import type { NextRequest } from 'next/server';
-import { ok, fail } from '@/lib/response';
+import { ok, failFromError } from '@/lib/response';
 import { requireAdmin } from '@/lib/auth';
-import { userService, UserServiceError } from '@/lib/users';
+import { userService } from '@/lib/users';
 
 // POST /api/users — cadastro ADMIN-ONLY: exige sessão com papel admin (app_metadata.role),
 // não apenas estar logado. Sem auto-registro — a criação é operação de admin (auth-specs.md).
@@ -22,7 +22,8 @@ export async function POST(req: NextRequest) {
     const data = await userService.register(body ?? {});
     return ok(data, undefined, 201);
   } catch (e) {
-    if (e instanceof UserServiceError) return fail(e.message, e.status);
-    return fail(e instanceof Error ? e.message : 'Erro inesperado', 500);
+    // failFromError ecoa a mensagem curada de UserServiceError (4xx) e mascara
+    // qualquer 5xx inesperado (config/SDK) como genérico — §3 M-2 (não vazar detalhe).
+    return failFromError(e, 'users');
   }
 }

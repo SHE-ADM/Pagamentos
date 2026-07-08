@@ -10,7 +10,10 @@ import { getSupabaseAdmin } from './supabase-admin';
 
 // Grupo cuja associação libera operações restritas (hard delete dos cadastros).
 // Fonte de verdade do vínculo usuário → grupo: public.user_profile (migration 065).
-export const ADMIN_GROUP_ID = 1;
+// `const` local (sem export): usado só neste módulo (requireAdminGroup). O frontend
+// mantém a MESMA constante de forma independente (AuthContext.tsx) — é espelhamento de
+// VALOR, não import cross-package. Ver achado A6-2.
+const ADMIN_GROUP_ID = 1;
 
 let anonClient: SupabaseClient | null = null;
 
