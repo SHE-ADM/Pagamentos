@@ -491,6 +491,11 @@ tipo(escopo): mensagem em português ou inglês
 
 Escopo = área afetada: `login`, `email-reader`, `consulta`, `scheduler`, `migrations`, etc.
 
+**Nomenclatura de Pull Request:** se o usuário informar o nome do PR, usar exatamente esse.
+**Quando o usuário NÃO informar o nome (ou disser "pr seu nome"), o Claude escolhe** um
+título descritivo do escopo (não genérico, não a numeração `#N`) e abre o PR direto — **não
+perguntar**. PRs seguem de `Features` → `main` (ver "GIT STRATEGY" do workspace).
+
 ### 5 — Lint limpo e análise estática
 
 - **`npm run lint` na raiz deve passar com 0 erros e 0 warnings** em todos os workspaces
