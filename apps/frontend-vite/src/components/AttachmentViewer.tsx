@@ -102,15 +102,19 @@ export default function AttachmentViewer({ sourceFile, onClose }: Readonly<Attac
         </div>
       );
     }
-    // S5-1: sandbox confina o PDF (conteúdo de e-mail hostil). SEM allow-scripts (JS do PDF
-    // não roda) e SEM allow-top-navigation (não redireciona o app p/ phishing). allow-same-origin
-    // mantém a origem do Storage p/ o visualizador nativo carregar; allow-popups preserva o
-    // "abrir" do viewer. referrerPolicy no-referrer evita vazar a signed URL no Referer.
+    // S5-1: sandbox confina o PDF (conteúdo de e-mail hostil), mas o visualizador de PDF
+    // do Chrome (PDFium) EXIGE `allow-scripts` para renderizar — sem ele o iframe mostra o
+    // ícone de "documento quebrado" (regressão que impedia ver o boleto). `allow-same-origin`
+    // é necessário para o viewer acessar o recurso do Storage. A proteção real que resta:
+    // a signed URL aponta para a origem SUPABASE (cross-origin ao app), então mesmo um
+    // "PDF" que seja HTML+JS roda ISOLADO na origem do Storage — não acessa DOM/token do app;
+    // e SEM `allow-top-navigation`/`allow-forms`/`allow-modals` não redireciona a janela do
+    // app p/ phishing. referrerPolicy no-referrer evita vazar a signed URL no Referer.
     return (
       <iframe
         src={url ?? ''}
         title={sourceFile}
-        sandbox="allow-same-origin allow-popups"
+        sandbox="allow-scripts allow-same-origin"
         referrerPolicy="no-referrer"
         className="h-full w-full border-0"
       />
