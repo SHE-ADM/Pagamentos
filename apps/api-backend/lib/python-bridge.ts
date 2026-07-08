@@ -6,6 +6,14 @@
 
 const PYTHON_SERVICE_URL = process.env.PYTHON_SERVICE_URL ?? 'http://127.0.0.1:8000';
 
+// S3-1: um Flask travado (IMAP pendurado) não pode pendurar o handler Next junto —
+// o fetch é abortado no teto e vira 504. A leitura síncrona LEGÍTIMA demora minutos
+// (IMAP + extração), então o teto é generoso e configurável; o probe de health, curto.
+const BRIDGE_TIMEOUT_MS = Number(process.env.PYTHON_BRIDGE_TIMEOUT_MS ?? 300_000);
+const HEALTH_TIMEOUT_MS = 5_000;
+
+const isTimeoutError = (e: unknown): boolean => e instanceof Error && e.name === 'TimeoutError';
+
 // Resumo retornado por run_reader() (skills/email-reader/scripts/read_emails.py).
 // Tipo público (retorno de triggerReader) — consumido via inferência.
 // ts-prune-ignore-next
@@ -50,8 +58,12 @@ export async function triggerReader({ days = 0, markSeen = false }: TriggerReade
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ days, mark_seen: markSeen }),
+      signal: AbortSignal.timeout(BRIDGE_TIMEOUT_MS),
     });
-  } catch {
+  } catch (e) {
+    if (isTimeoutError(e)) {
+      throw new PythonBridgeError('Serviço Python não respondeu dentro do tempo limite.', 504);
+    }
     throw new PythonBridgeError('Serviço Python indisponível. Inicie o backend: python server/app.py', 502);
   }
 
@@ -64,7 +76,10 @@ export async function triggerReader({ days = 0, markSeen = false }: TriggerReade
 
 export async function probePythonHealth(): Promise<boolean> {
   try {
-    const res = await fetch(`${PYTHON_SERVICE_URL}/api/health`, { method: 'GET' });
+    const res = await fetch(`${PYTHON_SERVICE_URL}/api/health`, {
+      method: 'GET',
+      signal: AbortSignal.timeout(HEALTH_TIMEOUT_MS),
+    });
     return res.ok;
   } catch {
     return false;

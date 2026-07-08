@@ -1,5 +1,10 @@
 -- 055_doc_idempotency_guards.sql
--- Migration de DOCUMENTAÇÃO (idempotente, re-executável): NÃO altera dados nem schema.
+-- Migration de DOCUMENTAÇÃO (idempotente ATÉ A 069 — ver nota abaixo): NÃO altera dados nem schema.
+--
+-- >>> NOTA (A5-1, review 2026-07-08): a 069 DROPOU a coluna `status` (texto) de
+-- >>> financial_account_control — o COMMENT ON dessa coluna (item 2 abaixo) passa a
+-- >>> abortar ("column status does not exist"). NÃO REAPLICAR esta migration após a 069.
+-- >>> Falha segura (não corrompe dado), mas a re-execução deixou de ser possível.
 -- Registra no próprio banco, via COMMENT ON, dois fatos que estavam só no código/relatório
 -- de revisão, para que um DBA que leia o schema não precise inferir o comportamento:
 --   1. O ON DELETE EFETIVO das FKs de classificação contábil (comentário "RESTRICT" nas
