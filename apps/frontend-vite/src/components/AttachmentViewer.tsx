@@ -102,7 +102,19 @@ export default function AttachmentViewer({ sourceFile, onClose }: Readonly<Attac
         </div>
       );
     }
-    return <iframe src={url ?? ''} title={sourceFile} className="h-full w-full border-0" />;
+    // S5-1: sandbox confina o PDF (conteúdo de e-mail hostil). SEM allow-scripts (JS do PDF
+    // não roda) e SEM allow-top-navigation (não redireciona o app p/ phishing). allow-same-origin
+    // mantém a origem do Storage p/ o visualizador nativo carregar; allow-popups preserva o
+    // "abrir" do viewer. referrerPolicy no-referrer evita vazar a signed URL no Referer.
+    return (
+      <iframe
+        src={url ?? ''}
+        title={sourceFile}
+        sandbox="allow-same-origin allow-popups"
+        referrerPolicy="no-referrer"
+        className="h-full w-full border-0"
+      />
+    );
   }
 
   return (
