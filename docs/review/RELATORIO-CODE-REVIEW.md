@@ -1,483 +1,326 @@
-# Relatório de Code Review — Gate de Produção (`pagamentos`)
+# RELATÓRIO DE CODE REVIEW — pré-produção (`pagamentos`)
 
-> **Fase 1 — Diagnóstico.** Sessão read-only: nenhum arquivo de produção foi alterado.
-> Branch `Features`. Data: 2026-06-26. Modelo: claude-opus-4-8 (1M).
-> Fonte de verdade das convenções: `CLAUDE.md`. Decisões já documentadas não são bug.
-> Todas as afirmações citam `arquivo:linha` verificado por leitura real.
+> Data: 2026-07-08 · Branch: `Features` · Modelo: claude-opus-4-8 (1M) · Migrations no repo: 001→071
+> Spec seguida: `docs/prompts/code-review-producao-spec.md` (ajustada pelo orquestrador para 001→071;
+> migration nova exigida pela Fase 2 numera a partir de **072**).
+> Sessão READ-ONLY no código de produção — só este relatório + `docs/review/prompts/*` foram escritos.
 
 ---
 
 ## 0. Sumário executivo
 
-**Veredito de produção: PASSA (com ressalvas de qualidade/escala).**
+**Veredito de produção: PASSA COM RESSALVAS.** O gate está **100% verde** (lint, typecheck, test,
+prune, pytest, vulture) e **não há nenhum achado BLOCKER ou CRÍTICO**. Nenhum defeito de code review
+impede o go-live por si só. Há **1 achado ALTO** (contraste AA reprovado em botões `text-white`/`bg-brand`)
+e **6 MÉDIO** recomendados antes ou logo após o go-live; o restante é BAIXO (higiene/consistência).
 
-O **gate automatizado está 100% verde**: `lint`, `typecheck`, `test` (Vitest + pytest),
-`prune` e `vulture` passam sem erro. **Nenhum achado BLOCKER ou CRÍTICO** em nenhuma das
-cinco camadas. O único achado do `vulture` é uma variável morta cosmética
-(`SUPPLIER_INPUT_FIELDS`). Os demais achados são melhorias de **escala, desperdício de
-requisições, dívida de manutenção e robustez operacional** — nenhum impede o deploy, mas
-vários valem corrigir cedo para o app ficar "à prova de falhas".
+> ⚠️ O **bloqueador de produção real** estava no BLOCO B (segurança): o achado **[ALTO] S2** (RPCs
+> `SECURITY DEFINER` de fornecedor com `EXECUTE` para PUBLIC) exigia a **migration 072** antes do go-live.
+> **FECHADO na Fase 2 (2026-07-08)** — 072 aplicada e vetor verificado; o veredito de segurança virou
+> **PASSA**. Ver `docs/review/seguranca/RELATORIO-SEGURANCA.md`.
 
-### Contagem por severidade
+### Status de aplicação (Fase 2 — 2026-07-08, branch `Features`)
 
-| Severidade | Total |
+| Achado(s) | Commit |
+|---|---|
+| A1-1..5, A2-1/A2-2, A3-1..8 | `466aa35` (delete 409 FK 058, failFromError, 23503, matcher, contraste brand-dark, tokens status-*, órfãos, aria-label, e2e Dashboard) |
+| A6-1/A6-3/A6-4 + A7-1 | `5dc1e24` (formatadores em lib/format, Pillow, testes loadMore/bulk) — A6-2 já em `466aa35` |
+| A4-1 (IMAP dos reprocessadores) | `52f6c67` |
+| A5-1 (doc 055) + A5-2 (seed grupo 1 — migration **073** aplicada) | `52f6c67` |
+| **Pendentes (BAIXO, cobertura de teste)** | A7-2 (a11y Dashboard), A7-3 (ResetPasswordForm funcional), A7-4 (Erros/CobrancaErros), A7-5 (pytest is_processed) — prompt `07-test-coverage.md` |
+
+### Contagem por severidade (code review)
+
+| Severidade | Qtde |
 |---|---|
 | BLOCKER | 0 |
 | CRÍTICO | 0 |
 | ALTO | 1 |
-| MÉDIO | 16 |
-| BAIXO | 14 |
+| MÉDIO | 6 |
+| BAIXO | 20 |
 
-### Área × severidade
+### Achados por área
 
-| Área | BLOCKER | CRÍTICO | ALTO | MÉDIO | BAIXO |
-|---|---|---|---|---|---|
-| 1. Validações / cross-cutting | 0 | 0 | 0 | 0 | 2 |
-| 2. Next API (CRUDs + infra) | 0 | 0 | 0 | 5 | 4 |
-| 3. Frontend (Vite) | 0 | 0 | 0 | 6 | 3 |
-| 4. Pipeline Python | 0 | 0 | 0 | 2 | 2 |
-| 5. SQL / migrations | 0 | 0 | 1 | 3 | 3 |
-| **Total** | **0** | **0** | **1** | **16** | **14** |
+| Área | ALTO | MÉDIO | BAIXO | Prompt Fase 2 |
+|---|---|---|---|---|
+| Next API CRUDs | 0 | 2 | 3 | `01-next-api-cruds.md` |
+| Frontend grid/forms | 0 | 0 | 2 | `02-frontend-grid-forms.md` |
+| Design / a11y | 1 | 2 | 5 | `03-frontend-design-a11y.md` |
+| Pipeline Python | 0 | 0 | 1 | `04-python-pipeline.md` |
+| SQL / migrations | 0 | 0 | 2 | `05-sql-migrations.md` |
+| Código morto / deps | 0 | 1 | 3 | `06-dead-code-deps.md` |
+| Cobertura de testes | 0 | 1 | 4 | `07-test-coverage.md` |
 
 ---
 
-## 1. Resultado das validações
+## 1. Resultado das validações (saída real)
 
-Executados na raiz do monorepo. Saída real resumida; logs completos no scratchpad da sessão.
+Todos os comandos rodados na raiz em 2026-07-08. **Gate 100% verde.**
 
-| Comando | Exit | Resultado |
+| Comando | Resultado | Observação |
 |---|---|---|
-| `npm run lint` | **0** | Limpo nos 4 workspaces (frontend-vite, api-backend, portal-next, @sheild/shared). 0 erro / 0 warning. |
-| `npm run typecheck` | **0** | `tsc --noEmit` limpo nos 4 workspaces. |
-| `npm test` | **0** | Vitest: **493 testes** — api-backend 200 (34 arquivos) · frontend-vite 291 (90) · portal-next 2 (1). Todos passam. |
-| `py -3 -m pytest tests/ -q` | **0** | **214 testes** passam em 6,47s. |
-| `npm run prune` | **0** | ts-prune limpo nos 3 apps (0 órfãos). |
-| `py -3 -m vulture server/ skills/ scripts/ --min-confidence 60` | **0** | 7 rotas Flask (falsos positivos conhecidos) **+ 1 achado real**: `SUPPLIER_INPUT_FIELDS` morto. |
+| `npm run lint` | **exit 0 — 0 erro / 0 warning** | 4 workspaces (api-backend, frontend-vite, portal-next, @sheild/shared) sem saída de erro |
+| `npm run typecheck` | **exit 0 — 0 erro** | `tsc --noEmit` limpo nos 4 workspaces |
+| `npm test` | **exit 0 — 591 testes** | api-backend 235 (35 files) · frontend-vite 354 (98 files) · portal-next 2 (1 file) — 0 falha |
+| `npm run prune` | **1 linha** | `apps/api-backend/lib/auth.ts:13 - ADMIN_GROUP_ID (used in module)` — export órfão (ver §6 / achado A6-2) |
+| `py -3 -m pytest tests/ -q` | **exit 0 — 423 passed** (14.84s) | 0 falha |
+| `py -3 -m vulture server/ skills/ scripts/ --min-confidence 60` | **7 linhas** | Todas rotas Flask `@app.get/@app.post` — **falsos positivos conhecidos** (ver §8) |
+| `py -3 skills\cobranca-vencidos\scripts\run.py --dry-run` | **exit 0** | 58 títulos: enviados=52 · pulados=0 · erros=6 (sem e-mail/inválido=6 · operacionais=0). Erros de DADO não reprovam — exit code correto |
 
-**Saída do `vulture` (única não-FP em destaque):**
-
-```
-server\app.py:111,140,171,200,213,234,264   -> 7 rotas Flask (FALSO POSITIVO — decoradores @app.get/@app.post)
-skills\email-reader\scripts\read_emails.py:784: unused variable 'SUPPLIER_INPUT_FIELDS' (60% confidence)   <-- REAL
-```
-
-**Conclusão da seção:** o gate definido no spec (lint + typecheck + test + prune + vulture
-todos limpos) está atendido, à exceção de **uma** variável morta trivial — ver §6.1.
-Esse achado **não** reprova o gate (vulture sai 0), mas a política `no-dead-code` pede a
-remoção.
+Nenhuma falha ou warning entra no gate. A única linha do `prune` é tratada como achado **BAIXO** (A6-2),
+não como falha de gate (é ruído "used in module", não erro).
 
 ---
 
 ## 2. Auditoria dos CRUDs (Next API)
 
-Revisados `apps/api-backend/lib/*.ts`, `app/api/**/route.ts`, `middleware.ts`, `lib/auth.ts`,
-`lib/response.ts`, `lib/supabase-admin.ts` e os schemas Zod de `packages/shared`. Camadas
-Repository → Service → Route, envelope `{success,...}`, status codes, dual-mode, delete,
-write-back e isolamento de `service_role` foram conferidos contra os testes co-locados.
+Legenda: **OK** = conforme; **ACHADO** = defeito (com id e severidade).
 
-### suppliers — OK
-`201` no create (`lib/suppliers.ts`/`route.ts:47`); `400` para sk não-positivo
-(`[sk]/route.ts:13-17`); `23505`→`409` distinguindo CNPJ/CPF (`:188/209`); `404` (`:168/213`);
-Zod→`422` (`:183/204`). **Soft delete** com bloqueio por contas vinculadas → `409` antes de
-marcar `deleted_at` (`:226-238`) — preserva o fornecedor, conforme CLAUDE.md.
-- **BAIXO** `lib/suppliers.ts:206` — no update, o mapeamento `23505`→`409` ocorre antes do
-  check `!data`→`404`. Combinação inalcançável (uma linha inexistente não gera UNIQUE);
-  apenas ordenação teórica, sem janela de corrupção.
+| Recurso | Contrato REST | Camadas | Zod↔CHECK | Mass-assign | Dual-mode | Delete/409 | Write-back | Race |
+|---|---|---|---|---|---|---|---|---|
+| suppliers | OK | OK | OK | OK | — | OK (soft+409) | OK | OK (doc) |
+| contas | OK | OK | OK (pós-069/071) | OK | — | OK (sem DELETE) | OK | OK |
+| cost-centers | OK | OK | OK | OK | OK | OK (hard+409+sent.0) | — | OK (doc) |
+| banks | OK | OK | OK | OK | OK | OK | — | OK (doc) |
+| financial-accounts | OK | OK | **ACHADO A1-4** | OK | OK | OK | — | OK |
+| chart-accounts | OK | OK | OK | OK | OK | OK | — | OK (doc) |
+| chart-account-groups | OK | OK | OK | OK | OK | **ACHADO A1-1** | — | OK (doc) |
+| chart-account-subgroups | OK | OK | OK | OK | OK | OK | — | OK (doc) |
+| users/auth | **ACHADO A1-2** | OK | OK | OK | — | — | — | — |
 
-### contas — 1 MÉDIO
-`201` no create (`route.ts:45`); `400` id inválido (`[id]/route.ts:13-16`); **sem DELETE**
-("remoção" = `PATCH status='cancelado'`, conforme regra de preservação). `23505`→`409`,
-`404`, Zod→`422`. **Write-back** (`lib/contas.ts:125-133`) exatamente conforme spec: só quando
-`sk && cc && ca` (sentinela 0 pula), em `try/catch` best-effort que loga e **não** derruba a
-resposta, e só no caminho do service (a extração Python não chama `contaService`). Coberto por
-`contas.test.ts:87-116`.
-- **MÉDIO** `lib/contas.ts:174` (via `financial-account-control.schema.ts:238`) — o
-  `financialAccountControlCreateSchema` **deixa `status` definível no create**. Um
-  `POST /api/contas { sk_supplier, amount, status: 'pago' }` cria a conta já em estado fechado
-  (`pago`/`cancelado`/`baixado`), curto-circuitando o ciclo `pendente`/trigger
-  (`fn_set_status_from_due_date` só sobrescreve quando o status está em aberto). Não é crash
-  nem falha de segurança, mas fura o ciclo de vida na borda do contrato. **Recomendação:** omitir
-  `status` do schema de criação (como `status_id` já é omitido) se o lançamento manual deve
-  sempre nascer `pendente`.
-- **BAIXO** Chaves derivadas (`id`, `created_at`, `status_id`) enviadas no corpo são
-  **descartadas** pelo Zod (sem `.strict()`), não rejeitadas — nunca chegam ao banco.
-  Aceitável (rejeição efetiva por stripping).
+### Achados
 
-### cost-centers — OK
-Dual-mode correto (`route.ts:55`): `?page`→CRUD (`lib/cost-centers`), sem page→lookup
-(`lib/lookups`, intocado). `201` (`:71`). **Sentinela id 0 protegido** em todo caminho
-(`[id]/route.ts:15` + guards `:151/180/202`). **Hard delete** com as **3 FKs** verificadas
-(`lib/cost-centers.ts:26` — `financial_account_control`, `financial_chart_of_account`,
-`supplier`) → `409`; código único na app → `409` (`:231`). Confere com CLAUDE.md.
+**[MÉDIO] A1-1 — Delete de grupo do plano de contas não cobre a FK direta 058 → retorna 500 em vez de 409.**
+`apps/api-backend/lib/chart-account-groups.ts:20` (loop em `:169-175`). `REFERENCING_TABLES` só lista
+`financial_chart_of_account_subgroup`, mas a migration `058_chart_account_group_fk.sql:15-17` criou a FK
+direta `financial_chart_of_account.chart_account_group_id → financial_chart_of_account_group`
+(`ON DELETE NO ACTION`). Um grupo referenciado *diretamente* por um plano de contas passa na checagem da
+app, cai no `.delete()`, o Postgres rejeita com 23503 e `remove()` lança `...(error.message, 500)` →
+`failFromError` mascara para **500 "Erro interno"**. O banco protege o dado (não vira órfão), mas o
+contrato quebra: deveria ser **409 "Grupo em uso"**. **Correção:** incluir `'financial_chart_of_account'`
+em `REFERENCING_TABLES` (a coluna de FK `chart_account_group_id` já é o `REF_COLUMN`).
 
-### banks — 1 MÉDIO
-`201` (`route.ts:62`); `400` sentinela/parse; FK-em-uso (`financial_account`)→`409` (`:168`);
-código único→`409` (`:180`); `404`.
-- **MÉDIO** `lib/banks.ts:104` — no modo **lookup**, a rota pede `list({ limit: 1000 })`
-  (`route.ts:11/35`), mas o service **clampa `MAX_LIMIT = 100`**. O `<select>` de bancos
-  retorna no máximo 100 linhas (página 1), divergindo do contrato documentado de "lista
-  completa". Invisível hoje (cadastro pequeno), mas trunca silenciosamente se ultrapassar 100.
-  Os lookups que passam por `lib/lookups.ts` (cost-centers, chart-accounts) clampam em 1000 e
-  **não** sofrem disso.
-- **BAIXO** (documentado) `lib/banks.ts:131-135` — create grava `max(bank_id)+1` (PK não
-  identity); corrida concorrente teórica, mitigada por `23505`→`409`. Aceita no comentário
-  `:5` por baixíssima concorrência.
+**[MÉDIO] A1-2 — `POST /api/users` reintroduz `fail(e.message, 500)` (antipadrão proibido).**
+`apps/api-backend/app/api/users/route.ts:26`: `return fail(e instanceof Error ? e.message : 'Erro inesperado', 500)`.
+Contraria `CLAUDE.md:469-473` (§3 M-2: "Não reintroduzir `fail(e.message, 500)`"). Erros não-`UserServiceError`
+(ex.: `getSupabaseAdmin()` sem env configurada, erro interno do SDK Auth) vazam `e.message` cru. Exposição
+limitada porque a rota é `requireAdmin`. **Correção:** `catch (e) { return failFromError(e, 'users'); }`
+(remove o import agora inútil de `UserServiceError`). *Cross-ref: também visto em segurança S3 (INFO).*
 
-### financial-accounts — OK
-Sem sentinela, sem FK reversa → hard delete livre com `404` quando ausente (`:142-148`),
-conforme exceção documentada. `201` (`route.ts:47`). Violação de FK (`bank_id`/`status_id`,
-`23503`)→`422` com mensagem por campo (`:61-68`) — correto (FK fornecida pelo cliente, não erro
-de servidor). Sem modo lookup (correto — nada seleciona este cadastro).
+**[BAIXO] A1-3 — `contas.ts` não mapeia 23503 (FK) → retorna 422 com mensagem crua do Postgres.**
+`apps/api-backend/lib/contas.ts:191-195` e `:210-215`: só 23505 é mapeado (→409); qualquer outro erro vira
+`ContaServiceError(error.message, 422)`. Uma violação de FK (23503) em `sk_supplier`/`cost_center_id`/
+`chart_account_id`/`status_id` (ex.: PATCH `status_id=999`) retorna 422 com o nome de constraint/tabela do
+Postgres, que `failFromError` ecoa (<500). Inconsistente com `financial-accounts.ts:67-75` e
+`chart-account-subgroups.ts:69-72` (têm `mapWriteError`). **Correção:** adicionar `mapWriteError` 23503→422
+com mensagem curada.
 
-### chart-accounts — OK
-Dual-mode correto e **cascata intocada**: o caminho sem `page` vai para `chartAccountLookup.list`
-(`lib/lookups.ts:78-96`), preservando filtro `costCenterId` + `is_postable` + array vazio sem
-centro; `?page` vai para o CRUD. `201` (`:69`). Hard delete bloqueado pelas duas FKs
-(`financial_account_control`, `supplier`)→`409`; sentinela→`409`/`404`.
+**[BAIXO] A1-4 — `financial-account.schema.ts` usa `.min(0)` com mensagem "é obrigatório".**
+`packages/shared/src/schemas/financial-account.schema.ts:42-43`: `bank_id`/`payment_type_id` são
+`z.number().int().min(0, '… é obrigatório')`. Com `.min(0)`, o valor 0 (sentinela "não informado") passa
+na validação, então a mensagem "obrigatório" nunca dispara — divergente do padrão `.min(1)` documentado
+(`CLAUDE.md:338-340`) e usado no `status_id` do mesmo bloco. **Correção:** decidir — se obrigatório usar
+`.min(1)`; se opcional, ajustar/remover o texto de obrigatoriedade.
 
-### chart-account-groups — 1 MÉDIO
-- **MÉDIO** `lib/chart-account-groups.ts:101` — mesmo cap de 100 do `banks`: lookup pede
-  `{ limit: 1000 }` (`route.ts:10/34`) mas o service clampa `MAX_LIMIT = 100`. O `<select>` de
-  grupos (no form de subgrupo) trunca em 100.
-- OK no resto — dual-mode, `201`, delete bloqueado por subgrupos→`409` (`:159`), código
-  único→`409`.
-
-### chart-account-subgroups — 1 MÉDIO
-- **MÉDIO** `lib/chart-account-subgroups.ts:116` — mesmo cap de 100: lookup `{ limit: 1000 }`
-  vs clamp `MAX_LIMIT = 100`. O `<select>` de subgrupos (no form de plano de contas) trunca em 100.
-- OK no resto — FK `chart_account_group_id` obrigatória (`23503`→`422`), delete bloqueado por
-  `financial_chart_of_account`→`409`.
-
-### users / auth — OK
-`POST /api/users` sem `requireAuth` local mas **coberto pelo matcher** (admin-only, sem
-auto-registro): Zod→`422`, e-mail duplicado→`409`, `data.user` ausente→`500`; nunca devolve
-`password_hash`. `POST /api/auth/login` é a exceção pública documentada, usa o cliente **anon**
-(`lib/users.ts:67`), `401` genérico em credencial inválida (sem vazar campo). `GET /api/users/me`
-valida token e `401` defensivo.
-- **BAIXO** `lib/users.ts:90` — a resposta ecoa `name` do request, não do registro persistido.
-  Inócuo (idênticos na criação).
-
-### Infra / middleware — 1 MÉDIO
-- **OK matcher** `middleware.ts:19` — `'/api/((?!health|auth/login).*)'` deixa públicos apenas
-  `/api/health` e `/api/auth/login`; todo CRUD/lookup é gateado, com `requireAuth` redundante
-  por handler (defesa em profundidade).
-- **OK isolamento de service_role** — `getSupabaseAdmin()` (`supabase-admin.ts:14`) só é
-  importado por módulos server `lib/*`; nunca alcançável em caminho público (login/me usam só o
-  cliente anon). A chave service_role nunca é serializada em nenhum envelope.
-- **OK mapeamento de erro de auth** — `requireAuth` (`auth.ts:54-65`): token ausente/inválido→
-  `401`, falha de rede na validação→`500`. `getUser` usa a chave anon (`auth.ts:38`).
-- **MÉDIO** Leituras Supabase falhas devolvem `500` em todos os services (ex.: `contas.ts:153`,
-  `suppliers.ts:154`). Correto para falha de infra real, **mas** os filtros de busca interpolam
-  o termo do usuário direto na string `or()` do PostgREST (`contas.ts:79/100`, `suppliers.ts:81`,
-  `cost-centers.ts:73`…). `sanitizeTerm` remove `% , ( )` (cobre os metacaracteres de `or`), então
-  **não é vetor de injeção**; ainda assim, um termo com token tipo-operador remanescente pode gerar
-  filtro malformado → erro PostgREST → `500` em vez de resultado vazio limpo. Baixa probabilidade;
-  robustez, não segurança.
-- **OK parsing de corpo** — todo POST/PATCH envolve `req.json()` em try/catch com default `{}`
-  (depois Zod → `422`); corpo malformado nunca vira `500` não tratado.
+**[BAIXO] A1-5 — Matcher do middleware sem âncora de segmento (latente).**
+`apps/api-backend/middleware.ts:19`: `'/api/((?!health|auth/login).*)'`. O lookahead casa por prefixo — uma
+rota futura como `/api/health-detail` ou `/api/auth/login-audit` ficaria pública sem intenção. Hoje sem
+impacto (só existem `/api/health` e `/api/auth/login`). **Correção:** ancorar por fim de segmento
+(`'/api/(?!health$|auth/login$).*'`). *Cross-ref: também reportado em segurança S1-2.*
 
 ---
 
-## 3. Frontend — qualidade e desperdício (`apps/frontend-vite`)
+## 3. Frontend — qualidade e desperdício
 
-Revisados serviços, hooks, contexts, `DataGrid`, forms, molecules e páginas. As decisões
-documentadas (React Compiler transform, `void load()`, debounce form-vs-applied, virtualização
-spacer-row, auto-heal do `scrollRect`, `__select__` fora das prefs, flag `EMAIL_READER_ENABLED`)
-foram verificadas como **corretas** e não reportadas como bug.
+Confirmações OK (sem achado): **embeds nos dois caminhos de leitura** (`SELECT_WITH_EMBEDS` em
+`services/supabase.ts:202-212` e `SELECT_WITH_SUPPLIER` em `api-backend/lib/contas.ts:33-41` mesclado
+in-place por `Consulta.tsx:377-380`) trazem grupo/subgrupo aninhados — a célula "Plano de contas" não
+fica parcial após salvar; **cascata centro→plano CONTROLADA** (`CostCenterSelect.tsx:44-46`,
+`ChartAccountSelect.tsx:47-49` espelham `value` no render; `prefillNonce` removido — regressão não voltou);
+**`__select__` não vaza para prefs**; **measureElement + auto-recuperação de scrollRect** presentes;
+**debounce 350ms + `loadingMoreRef` + `applyingBulk`** contra duplo-fire; **React Compiler** sem memo manual;
+**helpers de formato = fonte única** em `lib/format.ts`.
 
-### Requisições / Performance
-- **MÉDIO** `services/supabase.ts:168-189` (`getEmailStats`) — dispara **7 requisições** REST
-  paralelas (1 total + 6 por status) só para contar; como `/emails` faz
-  `Promise.all([getEmailControl, getEmailStats])` a cada `load` (mudança de filtro + a cada 5
-  ticks do poll de leitura), são **8 requests por refresh**. Um único `select=status` contado no
-  cliente (como `getProcessingErrorStats` já faz em `:431`) resolveria em 1 request. N+1 evitável.
-- **MÉDIO** `services/supabase.ts:598,606` (`getDashboardData`) — duas leituras independentes
-  (`monthRows`, `yearRows`) em `await` sequencial; `Promise.all` cortaria a latência do Dashboard
-  pela metade.
-- **MÉDIO** `services/supabase.ts:493-499` (`getFinancialStats`) e `getEmailStats` — usam
-  `limit: 1000/2000` para "contar" no cliente; se a base crescer além do teto, os KPIs
-  subnotificam **silenciosamente**. Fragilidade de escala (o `count=exact` por header já usado nas
-  listagens seria mais correto).
-- **BAIXO** `pages/Emails.tsx:136-144` — o effect de `getInvoiceNumbersByMessageIds` depende de
-  `[rows]`; toda atualização da tabela refaz o lote (até 1000 ids em chunks de 50). Durante a
-  leitura IMAP (grid recarregado a cada ~7,5s) repete o lote inteiro. Tem guarda `active` contra
-  resposta obsoleta, mas sem cache por id. Maior fonte de requests repetidos da página.
-- **OK** Debounce form-vs-applied corretamente cabeado (`Consulta.tsx:257-264`,
-  `Emails.tsx:126-130`, `SuppliersPage.tsx:62-69`, `CrudTablePage.tsx:91-98`, com guarda
-  `if (form === aplicado) return` + cleanup). Guarda de `loadMore` concorrente presente
-  (`Consulta.tsx:206-208`, `DataGrid.tsx:636-639` via `loadingMoreRef`/`loadingMore`).
+### Achados
 
-### Código morto / redundância
-- **MÉDIO** Formatters **duplicados** entre `pages/Consulta.tsx:40-56` e
-  `hooks/useGridColumns.ts:47-71`: `fmtDate`, `fmtMoney`, `fmtCnpj`, `fmtCostCenter`,
-  `fmtChartAccount` têm cópias idênticas (o próprio `useGridColumns.ts:45-46` admite "cópia de
-  Consulta.tsx"); `fmtDateTime` duplica o `fmt` de `Emails.tsx:18-27`. Risco de drift — extrair
-  para `src/lib`.
-- **OK** `__select__` injetado na ordem/fixação efetivas mas nunca gravado nas prefs
-  (`DataGrid.tsx:151-158,789`). `prefillNonce` (`ContaForm.tsx`) é necessário (os selects
-  inicializam `selected` uma vez; o remonte por `key` reflete o pré-preenchimento).
+**[BAIXO] A2-1 — Filtro de intervalo de datas malformado em `cobrancaService.ts` (latente).**
+`apps/frontend-vite/src/services/cobrancaService.ts:93-94`: `params['occurred_at'] = 'gte.${dateFrom},lte.${dateTo}...'`
+— a vírgula vira parte do valor do operador `gte` (sintaxe PostgREST inválida → 400/resultado errado). Hoje
+**inalcançável** (`CobrancaErros.tsx:65-70` nunca envia `dateFrom`/`dateTo`). Defeito latente: quebra se um
+filtro de período for ligado. **Correção:** usar `and=(occurred_at.gte.X,occurred_at.lte.Y)` como em
+`fetchEnviosLog` (`:74-79`).
 
-### React Compiler
-- **MÉDIO** `useMemo` manuais redundantes com o transform ativo (`vite.config.ts:18`):
-  `Consulta.tsx:349-352` (colunas), `Emails.tsx:322` (colunas), vários em `DataGrid.tsx:322-389`.
-  Não causam bug (corretos), mas são a memoização manual que a base pede para remover.
-  **Ressalva:** alguns alimentam `useReactTable` (lib em que o compiler dá "bail out" seguro,
-  `DataGrid.tsx:393`) e podem ser defensivos — remover só com teste, diferenciando os próximos do
-  TanStack.
-- **OK** Impureza isolada fora do render: `next7DaysRange()` (`Consulta.tsx:73-78`) e `todayISO()`
-  (`ContaForm.tsx:50-55`) são funções de módulo, não chamadas no escopo de render. Sem
-  set-state-in-effect indevido.
+**[BAIXO] A2-2 — `new Date()` no corpo de render (impuro) em `Dashboard.tsx`.**
+`apps/frontend-vite/src/pages/Dashboard.tsx:36`: `const now = new Date()` no render, contrariando o padrão do
+próprio projeto (`Consulta.tsx:164-219` usa `useState(() => …)` lazy) e o §5. Sem bug funcional (só alimenta
+estado inicial). **Correção:** `useState(() => new Date().getMonth())` / `getFullYear()`.
 
-### Tailwind v4
-- **BAIXO** (aceito) `pages/Dashboard.tsx:27-28` — `prorrogado: '#7c3aed'` e `baixado: '#0e7490'`
-  são hex hardcoded num mapa semântico de status (donut). As demais entradas usam
-  `var(--color-status-*)`; estas duas não têm token equivalente no `@theme` e o arquivo declara a
-  exceção no cabeçalho. Única cor semântica fora de token — dívida (criar `status-*` para
-  prorrogado/baixado), não bloqueia.
-- **OK** Sem concatenação de classe quebrando o JIT (`CARD_TONE`, ternários de `Consulta.tsx` usam
-  strings literais completas). `style` inline só onde não há classe (largura de barra, offsets
-  sticky, spacers).
-
-### DataGrid
-- **OK** `measureElement` em todas as linhas reais incl. detalhe (`DataGrid.tsx:718,726-732`);
-  spacers sem `ref` (correto). `gridId` consistente (`consulta`/`emails`),
-  `STORAGE_VERSION='v3'` com `purgeOldVersions(['v1','v2'])` (`useGridPreferences.ts:22-30`).
-  Auto-heal do `scrollRect` presente e guardado contra altura 0 (`DataGrid.tsx:598-631`).
-- **BAIXO** `DataGrid.tsx:636-639` — o effect de scroll infinito dispara por **índice de item
-  virtual** (que inclui `second`/`detail`), não por índice de linha de dado; em lista curta com
-  detalhe aberto pode alcançar o "fim" um item antes. Guarda `loadingMore`+`hasMore` cobre o
-  disparo duplo — robusto, apenas anotado.
-
-### Acessibilidade
-- **OK** Todos os controles de filtro têm `id`+`name`+`aria-label` (`Consulta.tsx:597-656`,
-  `Emails.tsx:499-541`, `SuppliersPage.tsx:155-163`, `CrudTablePage.tsx:182-191`); botões só-ícone
-  com `aria-label`; react-select com `inputId`+`aria-label`+`aria-invalid`; `<dialog>` nativo com
-  `aria-label`+`onCancel`.
-- **MÉDIO (verificar em navegador)** `pages/Consulta.tsx:564,587` — cards usam `text-slate-500`
-  (~4,7:1 sobre branco) para número/label; passa AA por pouco (números são `text-lg`/`text-xl` →
-  AA grande ≥3:1; label `text-xs` ≈ limite). É o par de menor margem da página. jsdom não avalia
-  contraste — quem trava isso é `tests/contrast-usage.a11y.test.ts` + a camada `e2e/`. Sem achado
-  novo além do que esses guards cobrem; **rodar a camada Playwright na máquina/CI** para confirmar.
+> Os KPIs de `Erros.tsx` com cor default do Tailwind foram consolidados no achado **A3-3** (design/a11y).
 
 ---
 
 ## 4. Pipeline Python — robustez (não-regressão)
 
-### As 8 proteções do CLAUDE.md — todas íntegras
-| # | Proteção | Verificado em |
-|---|---|---|
-| a | Extração **IN-PROCESS** (`extract_pdf.extract_to_csv`) — **zero `subprocess`** (grep confirmou; só comentários/nome de teste) | `read_emails.py:1689-1692`, `extract_pdf.py:937` |
-| b | IMAP socket timeout | `read_emails.py:2244` (const `:2225`) |
-| c | IMAP connect/search retry+backoff (transitório repete, erro de protocolo não) | `read_emails.py:2261-2297` → 502 em `app.py:228` |
-| d | Claude API timeout nos **3** clientes `anthropic.Anthropic` | `extract_pdf.py:462,590,614` (const `:45`) |
-| e | `_rfc822_from_fetch` robusto — sem `data[0][1]` direto | `read_emails.py:2058-2071` (usado `:2083,2398`) |
-| f | Dedup por `message_id` (`ignore-duplicates`) | `read_emails.py:201,494,2410` |
-| g | Dedup por `sk_supplier` + `_finalize_supplier` **antes** do INSERT | `read_emails.py:885-898,1825,1840` |
-| h | Bloqueio de e-mail de domínio interno | guarda **SQL** (RPC `resolve_supplier_id`, migration 046) — o Python cumpre não transformando `sender_email` em nome antes da busca (`read_emails.py:1319-1328`) |
+**As 8 proteções não-regressão do CLAUDE.md estão presentes e corretas** (confirmação com arquivo:linha):
 
-`status_for_result` (cadeia de prioridade, `read_emails.py:2011-2055`), prioridade
-**anexo→link→corpo** (`:2119/2123/2163`) e classificação de doc_type (utilities/honorários/NF-e
-pura) estão corretos e batem com os testes. Cobrança: `compute_exit_code` separa DADO de
-OPERACIONAL (`run.py:81-93`); `main()` **retorna** o código (`:346`, `sys.exit(main())` em
-`:354`); reuso de `SmtpSession` com `finally` (`run.py:248-270`); catch de queda usa
-`(SMTPServerDisconnected, ConnectionError, TimeoutError)`, **não** `OSError`
-(`email_sender.py:174-179`); Cc não enviado se o To falhar (`:102-110`). Todos **OK**.
+| Proteção | Local |
+|---|---|
+| (a) Extração IN-PROCESS (sem subprocess de extract_pdf.py) | `read_emails.py:2862` `run_extraction`→`extract_pdf.extract_to_csv`; nenhum `subprocess.run([...extract_pdf.py])` no repo |
+| (b) IMAP com timeout | `read_emails.py:3530,3549` (`IMAP_TIMEOUT_SECONDS`) |
+| (c) IMAP retry/backoff + logout em try/finally | `_connect_and_search:3566-3604` + `run_reader` finally `3785-3790` |
+| (d) Claude API timeout (3 instâncias) | `extract_pdf.py:595,742,765` |
+| (e) `_rfc822_from_fetch` | `read_emails.py:3349-3362` (usado em `3374`, `3706`) |
+| (f) Dedup por message_id | `register:296` (`Prefer: ignore-duplicates`) + `is_processed:248` |
+| (g) Dedup de conteúdo por sk_supplier | `find_financial_duplicate:446-534` (`if not sk_supplier: return None`) |
+| (h) `_finalize_supplier` antes do INSERT + bloqueio de domínio interno | `_finalize_supplier:1311` (chamado em `3052`/`3179`); bloqueio interno na RPC do banco (mig 046) |
+
+`status_for_result` (`3324-3346`), exit code da cobrança (`compute_exit_code:84-93` — dado não reprova,
+operacional reprova; `main()` retorna o código), `SmtpSession` reusada com catch `(SMTPServerDisconnected,
+ConnectionError, TimeoutError)` (nunca `OSError`) e fonte única `run_reader()` — **todos corretos**. Os
+`except Exception` amplos revisados são best-effort documentados (não engolem falha da gravação principal).
+
+### Achado
+
+**[BAIXO] A4-1 — 3 scripts de reprocessamento abrem IMAP sem timeout/retry.**
+`scripts/reprocess_body_emails.py:146`, `scripts/reprocess_link_emails.py:150`, `scripts/reprocess_message.py:116`
+usam `imaplib.IMAP4_SSL(host, port)` cru, divergindo do helper canônico `read_emails._connect_imap()` (que
+`reprocess_ignored_emails.py:133` e `backfill_received_at.py:104` já reusam). Um `fetch` que estanca trava o
+reprocessamento manual. Mitigado por serem ferramentas de operador (não o pipeline agendado). **Correção:**
+trocar as 3 aberturas cruas por `mail = R._connect_imap()`.
+
+> Nota de doc (não-achado): a proteção (h) cita `_is_internal_email`, função que **não existe** em Python — o
+> bloqueio de e-mail interno é imposto na RPC `resolve_supplier_for_account` (mig 046). Ajuste documental
+> tratado no bloco de segurança S4 (INFO).
+
+---
+
+## 5. SQL / migrations
+
+Confirmações OK: **RLS sem default-deny acidental** (o buraco pré-049 foi fechado em `049`); **GRANTs por
+coluna** exatos (`financial_account_control` gravável por `authenticated` só em `has_invoice`/`has_bank_slip`/
+`status_id`; `email_control` só `reviewed_at`); **CHECK ↔ z.enum alinhados 1:1** no estado atual
+(`document_type` 31 valores/`066`, `payment_method` 16/`071` com `débito automático`, `extraction_source`
+5/`061` com `image_vision`, `status_id` 1..10/`035`); **FKs + sentinela id 0** consistentes; **funções
+`SECURITY DEFINER` com `search_path` fixado**; **triggers de status/supplier** sem efeito colateral.
 
 ### Achados
-- **MÉDIO** `read_emails.py:2366-2457` — `mail.logout()` (`:2457`) **não** está em `finally`. Se
-  uma exceção não-`ApiUnavailableError` escapar do loop principal, a conexão IMAP não é fechada
-  explicitamente. Mitigantes: `process_message` engole suas exceções (`:2205`),
-  `ApiUnavailableError` faz `break`, socket tem timeout. Risco real baixo; ficaria mais robusto
-  com `try/finally` (como já feito em `reprocess_ignored_emails.py:137-141`). Não é regressão.
-- **MÉDIO (configuração, não código)** `email_sender.py:57` (`_load_smtp_config`) — prioriza
-  `SMTP_*` sobre `IMAP_*` corretamente; o risco é o `.env` de **produção**
-  (`C:\Sheild\API\Pagamentos\.env`) precisar receber as 4 linhas `SMTP_*` do relay transacional
-  manualmente — sem elas, cai no fallback IMAP `email-ssl.com.br` com o gargalo `451`. O código
-  está correto.
-- **BAIXO** Scripts manuais de reprocess ainda usam `md[0][1]` direto
-  (`reprocess_link_emails.py:117`, `reprocess_body_emails.py:59`) — ferramentas offline fora do
-  pipeline servido; mesma classe que `_rfc822_from_fetch` resolve, risco baixo.
-- **BAIXO** `except` silenciosos sem log são **cosméticos e por design** (reconfigure de
-  stdout, decode de parte MIME defeituosa, callback de progresso, `close()` de SMTP). Toda falha
-  de **gravação** loga e/ou registra em `email_processing_errors`. Nenhum `except: pass` sobre
-  fluxo crítico. Loops todos limitados (links cortados em 10, download em 50 MB, reenvio em
-  `MAX_IDS=500`). Um e-mail/título ruim não derruba o lote
-  (`read_emails.py:2205-2208`, `run.py:160`).
+
+**[BAIXO] A5-1 — Afirmação de idempotência da migration 055 ficou desatualizada pós-069.**
+`055_doc_idempotency_guards.sql:31` faz `COMMENT ON COLUMN financial_account_control.status`, mas a
+`069_drop_status_text.sql:48-49` dropou a coluna `status`. Reaplicar a 055 após a 069 aborta ("column status
+does not exist"), contradizendo a própria 055 e o `README.md` que a declaram "idempotente/re-executável".
+Falha segura (não corrompe dado), mas a doc está estale. **Correção (sem migration):** atualizar o cabeçalho
+da 055 e a nota do README para "idempotente **até a 069**; após o drop da coluna `status`, não reaplicar".
+
+**[BAIXO] A5-2 — Seed do `group_id = 1` exigido pela 065 não é versionado.**
+`065_create_user_profile.sql:80-86` faz `UPDATE user_profile SET group_id = 1` (FK → `user_group`), mas a
+`063_create_user_group.sql:34-36` só semeia o sentinela id 0. O grupo 1 ("Administrador") é criado fora do
+versionamento (`GENERATED ALWAYS AS IDENTITY`). Em aplicação limpa e em ordem, se o grupo 1 ainda não existir,
+o UPDATE viola a FK e a 065 aborta. **Correção (migration 072 ou na própria 065):**
+`INSERT INTO user_group (group_id, group_name) OVERRIDING SYSTEM VALUE VALUES (1,'Administrador') ON CONFLICT DO NOTHING;`
+antes da Seção 5.
+
+> INFO (não-achado): `trg_supplier_mirror_id` (042) é a única trigger sem `SECURITY DEFINER`/`search_path` —
+> benigno (só `NEW.supplier_id := NEW.sk_supplier`, sem acesso a objeto por nome). `normalize_search()` não é
+> versionada (bootstrap manual) — tratado em segurança S2 (INFO).
 
 ---
 
-## 5. SQL / migrations (`supabase/migrations/001→054`)
+## 6. Código morto, redundância e dependências
 
-### RLS por tabela
-Todas as tabelas com RLS habilitado têm **ao menos uma policy** — nenhum default-deny
-remanescente (os dois casos históricos, `supplier` e os cadastros de classificação, foram
-fechados em 029 e 049). Leituras `TO authenticated`, escritas `TO service_role`.
+### Achados
 
-| Tabela | Policies | Leitura | Escrita | Status |
-|---|---|---|---|---|
-| `email_control` | select (015/019) + update `reviewed_at` (030) | authenticated | service_role + col `reviewed_at` | OK |
-| `email_processing_errors` | service_role full + authenticated read (012) | authenticated | service_role | OK |
-| `financial_account_control` | select (018) + update flags (033) + update `status` (036) | authenticated | service_role + cols `has_invoice/has_bank_slip/status` | OK (ver RLS-1) |
-| `supplier` | `authenticated_select` (029) | authenticated | service_role (SECURITY DEFINER) | OK |
-| `status` (dimensão) | authenticated read (036) | authenticated | service_role | OK |
-| `cobranca_envios_log` / `cobranca_erros_log` | service_role full + authenticated read (037) | authenticated | service_role | OK |
-| `financial_cost_center` / `financial_chart_of_account` | authenticated read (049) | authenticated | service_role | OK |
-| `storage.objects` (`attachments`) | authenticated read (021) | authenticated | service_role | OK |
+**[MÉDIO] A6-1 — Formatadores duplicados em `cobrancaColumns.ts` (viola "fonte única em lib/format.ts").**
+`apps/frontend-vite/src/pages/cobranca/cobrancaColumns.ts:12,18,29`: `fmtDate` (`:12-16`), `fmtDateTime`
+(`:18-27`, idêntico byte-a-byte a `format.ts:12-21`) e `fmtCurrency` (`:29-30`, idêntico a `fmtMoney`
+`format.ts:24-25`). O cabeçalho de `format.ts:2-4` alerta esse risco de drift. **Correção:** importar
+`fmtDate`/`fmtDateTime`/`fmtMoney` de `../../lib/format` e eliminar as cópias.
 
-- **MÉDIO (RLS-1)** `036:19` — além das 3 colunas documentadas (`reviewed_at`,
-  `has_invoice`/`has_bank_slip`), o papel `authenticated` recebe `GRANT UPDATE (status)` em
-  `financial_account_control` (alinhado à edição inline de situação no grid). **Não é vazamento**
-  (restrito por coluna + RLS), mas o CLAUDE.md cita 3 colunas — atualizar a doc para **3 colunas
-  de curadoria + a coluna `status`**.
-- **BAIXO (RLS-2)** As policies de UPDATE usam `USING (true) WITH CHECK (true)`; a contenção real
-  é o `REVOKE UPDATE; GRANT UPDATE (col)`. Correto hoje; só registrar a dependência.
-- **Verificação recomendada:** `company`, `financial_account` e os cadastros de Tabelas são
-  **pré-existentes** (sem `CREATE TABLE`/`ENABLE RLS` nas migrations). Confirmar no banco que não
-  estão em RLS default-deny silencioso (mesma classe dos bugs pré-029/pré-049). O frontend lê via
-  `/data-api` (service_role), então a ausência de policy não quebra o fluxo atual.
+**[BAIXO] A6-2 — `ADMIN_GROUP_ID` export órfão (único hit do ts-prune).**
+`apps/api-backend/lib/auth.ts:13`: `export const ADMIN_GROUP_ID = 1` só é usado no próprio módulo (`:121`); o
+frontend tem cópia independente em `AuthContext.tsx:22` (não importa cross-package). **Correção:** remover o
+`export` (vira `const` local) → zera o ts-prune. O espelhamento documentado é de valor, não de import.
 
-### CHECK ↔ z.enum — todos 1:1
-| Domínio | CHECK | z.enum | Resultado |
-|---|---|---|---|
-| `document_type` | 043 (28 valores, `lower()`) | `DOCUMENT_TYPES` (28) | **1:1 OK** |
-| `extraction_source` | 018 (4) | `EXTRACTION_SOURCES` (4) | **1:1 OK** |
-| `payment_method` | 018 (15) | `PAYMENT_METHODS` (15) | **1:1 OK** |
-| `financial_account_control.status` | 035 (10) | `ACCOUNT_STATUSES` (10) | **1:1 OK** |
-| `email_control.status` | 031 (6) | `EMAIL_CONTROL_STATUSES` (6) | **1:1 OK** |
+**[BAIXO] A6-3 — `fmtDt` local redundante em `Erros.tsx`.**
+`apps/frontend-vite/src/pages/Erros.tsx:11`: formatador de data/hora local redundante com `fmtDateTime` de
+`lib/format.ts`. **Correção:** usar `fmtDateTime`.
 
-`error_type` (012 / `cobranca_erros_log` 037) é `TEXT` livre sem CHECK — `z.string()`
-deliberado, sem domínio a cruzar.
+**[BAIXO] A6-4 — `Pillow` sem import direto + comentário enganoso em `requirements.txt`.**
+`server/requirements.txt:13`: `Pillow~=12.2` não tem `import PIL` em nenhum `.py` (a imagem é montada por
+base64 puro); entra como transitivo de `pdfplumber`. O comentário atribui a ele a descriptografia/split de
+carnê, que é trabalho do `pypdf`. **Correção:** remover o pin explícito (confiar no transitivo) ou corrigir o
+comentário mantendo o pin.
 
-### FKs / sentinela
-Todas as FKs corretas; sentinela id 0 coberto por `DEFAULT 0 NOT NULL` nas 4 FKs de
-classificação (047/048/052), com a linha id 0 existindo nos cadastros.
-- **BAIXO (FK-1)** `047:18` — comentário diz "ON DELETE RESTRICT" mas o DDL não declara
-  `ON DELETE` (fica `NO ACTION`). Efeito de bloquear delete de cadastro em uso é **equivalente**
-  (sem deferição configurada) + o backend bloqueia com 409. Só divergência comentário↔DDL.
-
-### Triggers
-`fn_set_status_from_due_date` (034/035) só sobrescreve `status` quando em aberto — **preserva
-baixas manuais** (`pago`/`cancelado`/`baixado`). Trigger de espelho `trg_supplier_mirror_id` (042)
-só grava `supplier_id := sk_supplier` quando NULL. Trigger de resolução antigo
-(`trg_fe_resolve_supplier`) corretamente **dropado** em 041. Todos **OK**.
-- **MÉDIO (TRG-1)** `039:32,47` — o backfill faz `DISABLE/ENABLE TRIGGER trg_fe_supplier_id`; se a
-  039 for **re-executada** isoladamente após a 041 (que dropa esse trigger), falha com "trigger
-  does not exist". Sem impacto na ordem normal 001→054 (uma vez); só em re-run pontual.
-
-### Ordem / idempotência
-Numeração **001→054 contígua**, sem gaps nem duplicatas; dependências respeitam a ordem
-ascendente.
-- **ALTO (ORD-1)** Várias migrations **falham se reaplicadas** (sem `IF NOT EXISTS` no ponto
-  crítico): `050:25`, `051:28-58` (`ADD GENERATED ALWAYS AS IDENTITY`), `042:64` (`ADD PRIMARY
-  KEY`), `053:11-13` (`ADD CONSTRAINT fk_financial_account_status` sem bloco `DO`, diferente de
-  035:65-75 que protege). **Falha de forma segura** (erro, não corrupção) e só importa em **re-run
-  acidental** no SQL Editor — o modelo documentado é "aplicar uma vez, em ordem". Marcado ALTO
-  para não esconder o risco operacional; **mitigação:** garantir aplicação estritamente
-  uma-vez-por-migration.
-- **MÉDIO (ORD-2)** As migrations **não bootstrapam um banco vazio**: dependem de objetos
-  pré-existentes nunca criados nelas (`supplier`, `company`, `status`, `financial_account`,
-  `financial_bank`, `financial_cost_center`, `financial_chart_of_account(_group/_subgroup)`, e a
-  função `normalize_search()` usada já em 007:49). Num ambiente novo, aplicar 001→054 do zero
-  falha. Coerente com CLAUDE.md (ambiente compartilhado), mas exige dump dos cadastros +
-  `normalize_search` antes da 001.
-- **BAIXO (ORD-3)** `034:31` referencia estados (`não pago`/`pago protesto`/`pago cartório`) que
-  só somem na 035 — comentário/comparação desatualizada, sem falha.
+Confirmações OK: CVA variants todas consumidas; deps frontend/api/python todas com uso real (exceto Pillow);
+**sem lógica CRUD duplicada entre Flask e Next** (o Flask só expõe ações de pipeline, o CRUD vive na Next API).
 
 ---
 
-## 6. Código morto, redundância e dependências (cross-cutting)
+## 7. Cobertura de testes
 
-### 6.1 `SUPPLIER_INPUT_FIELDS` — BAIXO (remover)
-`skills/email-reader/scripts/read_emails.py:784` define
-`SUPPLIER_INPUT_FIELDS = ("supplier_name", "supplier_cnpj", "supplier_cpf")`. Grep no repo
-inteiro retorna **só essa linha** — zero referências. Resíduo das colunas denormalizadas que
-`_finalize_supplier` removeu (migrations 040/041/042); as tuplas irmãs (`FINANCIAL_VALUE_FIELDS`,
-`SKIP_ACCOUNT_TYPES`) **são** usadas. Classificação: **remover** (política `no-dead-code`).
-Único achado real do `vulture`.
+Contratos de rota **100% cobertos**: os 21 `route.ts` têm `route.test.ts` co-locado (201/200/400/401/404/409/422);
+service-level de 409 (FK/em-uso + código único) coberto nos `lib/*.test.ts`; pytest cobre `status_for_result`,
+`_rfc822_from_fetch`, `compute_exit_code`, dedup de conteúdo e classificação forçada/doc_type.
 
-### 6.2 Dependências não usadas
-- **BAIXO** `server/requirements.txt:13` — **`pypdf~=6.13`** não é importado em nenhum `.py`
-  (só comentário + `SKILL.md`) e **não** é transitivo de `pdfplumber` (que requer
-  `pdfminer.six`, `Pillow`, `pypdfium2`). Candidato a remoção — **confirmar com o usuário** (pode
-  estar reservado para merge de PDF planejado).
-- **INFO/manter** `Pillow~=12.2` — não importado diretamente, mas é **transitivo de
-  `pdfplumber`**; o pin explícito `~=` é intencional (evitar divergência dev/prod). **Manter.**
-- **OK** Todas as deps de runtime JS/TS (frontend-vite, api-backend, portal-next, shared)
-  resolvem para imports reais. Nenhuma dep faltando (todo import tem declaração ou transitivo).
+### Achados (lacunas reais)
 
-### 6.3 Build-time (esperado — não sinalizar)
-ESLint (`typescript-eslint`, `eslint-plugin-react-hooks/refresh`, `eslint-config-next` — carve-out
-9/10), React Compiler (`@rolldown/plugin-babel`, `@babel/core`, `babel-plugin-react-compiler`),
-Tailwind v4 (`@tailwindcss/postcss`), teste/a11y (`vitest`, `jsdom`, `@testing-library/*`,
-`jest-axe`, `@playwright/test`, `@axe-core/playwright`), tipos (`@types/*`), `ts-prune`,
-`concurrently`. Usados pelo build/lint/test mesmo sem `import` em src.
+**[MÉDIO] A7-1 — `bulk status` e `loadMore` do DataGrid/Consulta sem teste.**
+`DataGrid.test.tsx` cobre render/sort/rowClick/detalhe/virtualização/seleção+export, mas **não** o scroll
+infinito (`onLoadMore`/`hasMore`) nem a barra de status em lote (`bulkStatusOptions`/`onBulkStatusChange`). Em
+`Consulta.tsx`, nem `loadMore` (`:280`, guarda `loadingMoreRef`) nem `handleBulkStatusChange` (`:359` →
+`setFinancialAccountStatusBulk`) são exercitados. São as duas ações-chave do `/consulta` (volume + ação em
+massa). **Correção:** testar loadMore idempotente (guarda contra duplo-fire) e bulk status (PATCH `id=in.(…)`
++ update otimista).
 
-### 6.4 Duplicação de lógica — OK
-O split Python (extração) × Next TS (CRUD) é **intencional** (CLAUDE.md). Os domínios de enum
-(document_type, payment_method, status, strip de CNPJ/CPF) aparecem em Zod + CHECK SQL +
-constantes Python, mas é **espelhamento de contrato documentado e mantido** ("alterar o CHECK →
-atualizar o enum"), não drift acidental. A única duplicação de drift-risk **dentro de uma camada**
-são os formatters frontend (§3, MÉDIO).
+**[BAIXO] A7-2 — `Dashboard.tsx` sem `*.a11y.test.tsx`** (única page de dados sem teste axe; viola regra 6).
 
-### 6.5 Arquivos órfãos — OK
-Spot-check limpo: os 5 `scripts/*.py` são entry-points de manutenção documentados; `lib/*.ts`
-backam rotas reais; `e2e/*.ts` cabeados ao `@axe-core/playwright`; `types/tanstack-table.d.ts` é
-augmentation ambiente. Nenhum arquivo não-importado/não-rodado encontrado.
+**[BAIXO] A7-3 — `ResetPasswordForm.tsx` só tem a11y, sem teste funcional** (submit/validação/`updateUser`+`signOut`
+não exercitados; assimétrico com Login/Forgot/ChangePassword).
 
----
+**[BAIXO] A7-4 — `Erros.tsx` e `cobranca/CobrancaErros.tsx` só têm a11y, sem teste de página** (interação de
+reprocessar/filtrar não testada; mitigado parcialmente pelo teste do organism `ResendErrosAction`).
 
-## 7. Plano de ataque priorizado
-
-Ordenado por severidade. Esforço: **S** (pontual) · **M** (médio) · **L** (amplo).
-A coluna "Prompt XML" indica a área da Fase 2 a que o item pertence.
-
-| # | Sev | Item | Arquivo | Esforço | Prompt XML |
-|---|---|---|---|---|---|
-| 1 | ALTO | Migrations não re-executáveis — confirmar aplicação uma-vez ou guardar com `IF NOT EXISTS`/`DO` | `050/051/042/053` | M | `fix-sql` |
-| 2 | MÉDIO | `status` definível no `POST /api/contas` — omitir do create schema | `financial-account-control.schema.ts:238`, `lib/contas.ts:174` | S | `fix-api` |
-| 3 | MÉDIO | Lookup cap de 100 (banks/groups/subgroups) — alinhar limite do lookup | `lib/banks.ts:104`, `chart-account-groups.ts:101`, `chart-account-subgroups.ts:116` | S | `fix-api` |
-| 4 | MÉDIO | `getEmailStats` 8 requests/refresh → 1 query contada no cliente | `services/supabase.ts:168` | M | `fix-frontend` |
-| 5 | MÉDIO | `getDashboardData` awaits sequenciais → `Promise.all` | `services/supabase.ts:598,606` | S | `fix-frontend` |
-| 6 | MÉDIO | KPIs com `limit:1000/2000` — usar `count=exact` (escala) | `services/supabase.ts:493,168` | M | `fix-frontend` |
-| 7 | MÉDIO | Formatters duplicados Consulta↔useGridColumns → extrair p/ `src/lib` | `Consulta.tsx:40`, `useGridColumns.ts:47` | M | `fix-frontend` |
-| 8 | MÉDIO | `useMemo` manuais redundantes (React Compiler) — remover com teste | `Consulta.tsx:349`, `Emails.tsx:322`, `DataGrid.tsx:322` | M | `fix-frontend` |
-| 9 | MÉDIO | `mail.logout()` fora de `finally` em `run_reader` | `read_emails.py:2457` | S | `fix-python` |
-| 10 | MÉDIO | `.env` SMTP transacional em produção (config, não código) | `C:\Sheild\API\Pagamentos\.env` | S | (operacional) |
-| 11 | MÉDIO | RLS-1: documentar `status` como 4ª coluna gravável | doc CLAUDE.md + `036:19` | S | `fix-sql`/docs |
-| 12 | MÉDIO | TRG-1: 039 não idempotente após 041 | `039:32,47` | S | `fix-sql` |
-| 13 | MÉDIO | ORD-2: bootstrap de banco vazio depende de cadastros pré-existentes | migrations | M | `fix-sql`/docs |
-| 14 | MÉDIO | Contraste dos cards `/consulta` — validar na camada Playwright | `Consulta.tsx:564` | S | `fix-frontend` |
-| 15 | MÉDIO | `500` em filtro de busca malformado (robustez, não injeção) | `lib/contas.ts:79`, etc. | S | `fix-api` |
-| 16 | BAIXO | Remover `SUPPLIER_INPUT_FIELDS` morto | `read_emails.py:784` | S | `fix-python` |
-| 17 | BAIXO | `pypdf` dep não usada — confirmar e remover | `server/requirements.txt:13` | S | `fix-python` |
-| 18 | BAIXO | Tokens `status-*` para `prorrogado`/`baixado` (Dashboard hex) | `Dashboard.tsx:27` | S | `fix-frontend` |
-| 19 | BAIXO | FK-1, ORD-3, RLS-2, Zod-strip, name-echo, loadMore-index, data[0][1]-reprocess | vários | S | conforme área |
-
-**Sequência recomendada:** começar pelos MÉDIO de API (#2, #3 — pontuais, alto valor de
-contrato) e frontend de requisições (#4, #5 — ganho de performance imediato), depois a higiene
-(#16, #17), e tratar os itens de SQL (#1, #11–#13) como **revisão/documentação operacional** já
-que não há corrupção no fluxo normal.
+**[BAIXO] A7-5 — dedup por `message_id` (`is_processed`, `read_emails.py:248`) sem pytest** (dedup de conteúdo
+está bem coberta; falta o guarda de existência por message_id, stubável no padrão `FakeCtrl`).
 
 ---
 
 ## 8. Falsos positivos esperados (NÃO corrigir)
 
-- **vulture — 7 rotas Flask** (`server/app.py:111,140,171,200,213,234,264`): decoradas
-  `@app.get`/`@app.post`, chamadas pelo Flask, não "unused".
-- **ts-prune no `packages/shared`**: barrel de biblioteca; toda export pública pareceria órfã.
-  Cobertura real vem do `prune` dos apps consumidores (CLAUDE.md). Exports com
-  `ts-prune-ignore-next` (`getSupabaseAdmin`, `ApiResponse`, `ReaderSummary`,
-  `parsePaginationTotal`…) são intencionais.
-- **React Compiler "bail out" no `useReactTable`** (`DataGrid.tsx:393`): incompatível por design;
-  o disable `react-hooks/incompatible-library` é correto.
-- **`Pillow` "não importada"**: transitiva de `pdfplumber`, pin intencional — manter.
-- **Espelhamento enum Zod ↔ CHECK SQL ↔ constante Python**: contrato mantido de propósito, não
-  duplicação acidental.
-- **Decisões documentadas**: extração in-process, `manualChunks` como função, carve-out ESLint
-  9/10, dual-mode dos lookups, `cancelado` no grid mas fora dos KPIs, `__select__` fora das prefs,
-  `prefillNonce`, flag `EMAIL_READER_ENABLED`, `bank_id = max+1`, soft-vs-hard delete por recurso,
-  hex de `prorrogado`/`baixado` sem token (exceção declarada no arquivo).
+- **vulture — 7 rotas Flask** (`server/app.py` `health`, `cobranca_resend_*`, `read_emails_*`): funções
+  decoradas `@app.get`/`@app.post`; o vulture não enxerga o registro via decorator.
+- **ts-prune — `packages/shared`**: barrel sem prune por design (reportaria toda export pública como órfã).
+- **Race no "código único" app-level** (cost-centers/banks/…): TOCTOU documentado como aceitável
+  (`CLAUDE.md:219`, cadastros de baixíssima concorrência).
+- **Soft vs hard delete / contas sem DELETE**: escopo documentado (`CLAUDE.md:276-277`).
+- **`status_id` sem enum/range no schema**: proposital — é FK à dimensão `status`; valor inválido barrado pela FK.
+- **`void load()` em effects de fetch-on-change** e **bail-out do React Compiler no `useReactTable`**: padrões
+  aceitos no CLAUDE.md (§5 e §"React Compiler").
+- **`manualChunks` como função no Vite 8**, **carve-out ESLint 9/10**: decisões documentadas.
+- **`style={{}}` inline com valores dinâmicos** (larguras %, `conic-gradient` do donut): sem equivalente de
+  classe estática.
+- **`normalize_search`/`resolve_company_id` "sem definer"**: superado por redefinições posteriores (`010`).
 
 ---
 
-*Fim da Fase 1 (diagnóstico). Nenhum arquivo de produção foi alterado nesta sessão.*
+## Plano de ataque priorizado (Fase 2)
+
+| # | Sev | Achado | Esforço | Prompt |
+|---|---|---|---|---|
+| 1 | ALTO | A3-1 contraste `text-white`/`bg-brand` (Dashboard/Consulta) + guard | S | `03-frontend-design-a11y.md` |
+| 2 | MÉDIO | A1-1 delete de grupo 409 (FK 058) | S | `01-next-api-cruds.md` |
+| 3 | MÉDIO | A1-2 `users/route.ts` → `failFromError` | S | `01-next-api-cruds.md` |
+| 4 | MÉDIO | A3-2 gradiente `btn-primary` contraste | S | `03-frontend-design-a11y.md` |
+| 5 | MÉDIO | A3-3 KPIs de `Erros.tsx` → tokens `status-*` | S | `03-frontend-design-a11y.md` |
+| 6 | MÉDIO | A6-1 formatadores duplicados `cobrancaColumns.ts` | S | `06-dead-code-deps.md` |
+| 7 | MÉDIO | A7-1 testes loadMore + bulk status | M | `07-test-coverage.md` |
+| 8 | BAIXO | A1-3/A1-4/A1-5 (23503 map, `.min`, matcher) | S | `01-next-api-cruds.md` |
+| 9 | BAIXO | A2-1/A2-2 (filtro data, `new Date()`) | S | `02-frontend-grid-forms.md` |
+| 10 | BAIXO | A3-4..8 (tokens órfãos, `text-[10px]`, aria-label, e2e Dashboard) | S | `03-frontend-design-a11y.md` |
+| 11 | BAIXO | A4-1 IMAP nos reprocessadores | S | `04-python-pipeline.md` |
+| 12 | BAIXO | A5-1/A5-2 (idempotência 055, seed grupo 1) | S | `05-sql-migrations.md` |
+| 13 | BAIXO | A6-2/A6-3/A6-4 (export, fmtDt, Pillow) | S | `06-dead-code-deps.md` |
+| 14 | BAIXO | A7-2..5 (a11y Dashboard, testes ResetPassword/Erros/is_processed) | M | `07-test-coverage.md` |
+
+Nenhuma migration nova é obrigatória para o code review (A5-2 é a única candidata; se criada, numerar **072**
+— mas coordene com a migration 072 de segurança para não colidir a numeração).

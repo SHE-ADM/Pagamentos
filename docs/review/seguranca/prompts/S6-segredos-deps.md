@@ -1,52 +1,53 @@
 # S6 — Segredos e dependências
 
-> Base: `docs/review/seguranca/RELATORIO-SEGURANCA.md` §6. Segredos OK; deps com bumps a acompanhar.
+> Gerado pela auditoria de segurança de 2026-07-08. Aplicar na branch `Features`.
+> Origem: `docs/review/seguranca/RELATORIO-SEGURANCA.md` §6. Nenhum segredo versionado — só higiene de deps.
 
 ```xml
 <objetivo>
-  Manter a higiene de segredos (já OK) e tratar as dependências com aviso de segurança/desatualização,
-  sem aplicar upgrade breaking (next@9) e mantendo o pin `~=` do Python.
+  Resolver a vulnerabilidade moderada de postcss (build-time, via next) por atualização de dependência e
+  registrar a higiene de deps Python. Nenhuma ação de rotação de segredo se aplica (nada versionado).
 </objetivo>
 
 <read_first>
-  - .gitignore
-  - package.json (raiz) + apps/*/package.json (next, postcss)
+  - package.json (raiz) + apps/api-backend/package.json + apps/portal-next/package.json (dep next)
+  - package-lock.json (árvore: next → postcss)
   - server/requirements.txt
+  - .gitignore (confirmado cobrindo .env/data/logs/backups) — não alterar
 </read_first>
 
 <achados>
-  - INFO (npm audit --omit=dev): 2 moderate — postcss <8.5.10 (XSS no CSS stringify) BUNDLADO pelo next, e next dependendo dele.
-    Vetor de build de CSS, não runtime do app. `npm audit fix --force` instala next@9 (breaking) — NÃO aplicar.
-  - INFO (pip outdated): cryptography 48→49, urllib3 2.6.3→2.7.0, requests 2.32.5→2.34.2, certifi, anthropic, pdfplumber, pypdfium2.
-  - OK: nenhum .env versionado/no histórico; .gitignore cobre .env/data/logs; só a anon key (pública) no bundle.
+  - [MÉDIO] S6-1 — postcss <8.5.10 (GHSA-qx2v-qp2m-jg93), 2 vulns moderadas, transitivo de next (api-backend,
+    portal-next). Build-time, CSS estático do time → sem exposição de runtime. Não é bloqueador.
+  - [BAIXO] S6-2 — VITE_IMAP_USER no bundle (Emails.tsx:318) — e-mail, não credencial (ver S5).
+  - [INFO] pip list --outdated: updates menores sem CVE (cryptography 48→49, requests, urllib3, pillow, pypdf...).
 </achados>
 
 <correcao>
-  1. npm: NÃO rodar `audit fix --force`. Registrar o aviso e acompanhar uma release do `next` que atualize o postcss
-     bundlado; reavaliar `npm audit --omit=dev` após o próximo bump do Next. Como é vetor de build (não runtime do app),
-     não bloqueia — documentar a decisão de aceitar temporariamente.
-  2. Python: na próxima janela, subir os pins de `urllib3`, `requests` e `cryptography` em server/requirements.txt
-     (relevantes ao download-por-link e TLS), mantendo o operador `~=` e rodando a suíte:
-     - editar `~=` para a nova minor (ex.: `urllib3~=2.7`), `pip install -r server/requirements.txt`, `py -3 -m pytest tests/ -q`.
-     - NÃO subir tudo de uma vez sem testar; um pacote por commit se houver risco.
-  3. Confirmar que `.gitignore` segue cobrindo `.env`, `apps/*/.env*`, `data/pdfs_inbox`, `data/csv_output`, `data/samples/**`, `logs/`.
-     Não versionar nenhum PDF/CSV real (conteúdo sensível) — só os `.gitkeep`/README de samples.
+  1. S6-1: bump do next para a linha que traz postcss ≥8.5.10 (`npm update next` no(s) workspace(s) afetado(s),
+     ou fixar a resolução de postcss ≥8.5.10 via override no package.json da raiz se o next ainda não subiu).
+     Rodar `npm audit --omit=dev` até zerar as 2 moderadas. Validar que api-backend e portal-next continuam
+     buildando (next 16 → conferir changelog se o bump for de minor).
+  2. INFO (higiene Python, opcional, próxima janela): atualizar em server/requirements.txt (mantendo o pin ~=)
+     os pacotes de superfície de rede/parsing — cryptography, urllib3, requests, pillow — e rodar pytest.
+  3. S6-2: tratado no S5 (opcional). Sem ação obrigatória aqui.
 </correcao>
 
 <restricoes>
-  - NÃO aplicar upgrade breaking (next@9). NÃO remover o pin `~=` do Python. NÃO commitar segredo nem dado real de data/.
-  - Se encontrar segredo no histórico (não encontrado nesta auditoria), a ação é ROTACIONAR + remover do histórico — nunca transcrever o valor.
+  - NÃO commitar .env nem transcrever segredo. .gitignore já cobre — não relaxar.
+  - Não subir next em major sem validar o build dos dois apps Next (carve-out ESLint 9/10 documentado).
+  - Manter os pins ~= do requirements.txt (dev/prod não devem divergir).
 </restricoes>
 
 <validacao>
-  - npm audit --omit=dev (registrar a saída antes/depois)
-  - py -3 -m pip list --outdated
-  - Após bumps Python: py -3 -m pytest tests/ -q + py -3 skills\cobranca-vencidos\scripts\run.py --dry-run
-  - npm run lint && npm run typecheck && npm test (deps JS não mudam — confirmar verde)
+  - npm audit --omit=dev  → 0 vulnerabilidade (ou só as aceitas e documentadas).
+  - npm run build:api && npm run build:portal  (os dois apps Next buildam após o bump).
+  - npm run lint && npm run typecheck && npm test
+  - py -3 -m pytest tests/ -q  (se atualizar deps Python).
 </validacao>
 
 <criterio_de_aceite>
-  - Decisão sobre o aviso do next/postcss registrada (aceito temporariamente, vetor de build).
-  - urllib3/requests/cryptography atualizados (ou plano datado), suíte verde. .gitignore confirmado.
+  `npm audit --omit=dev` sem vulnerabilidades moderadas de postcss (ou documentadas como build-time aceito).
+  Builds dos apps Next verdes. Nenhum segredo versionado (mantido). Gate verde.
 </criterio_de_aceite>
 ```

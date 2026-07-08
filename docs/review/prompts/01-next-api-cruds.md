@@ -1,78 +1,75 @@
 # Prompt de correção — Next API (CRUDs)
 
-> Rodar na raiz do monorepo `pagamentos`, branch `Features`. Base: `docs/review/RELATORIO-CODE-REVIEW.md` §2.
-> Aplica correções de contrato/Zod/lookup na camada `apps/api-backend`. NÃO mexer em produção fora do escopo.
+> Gerado pela revisão pré-produção de 2026-07-08. Aplicar na branch `Features`.
+> Origem dos achados: `docs/review/RELATORIO-CODE-REVIEW.md` §2. Não altere decisões documentadas.
 
 ```xml
 <objetivo>
-  Fechar os achados de contrato e escala da Next API sem regredir os CRUDs já corretos:
-  (1) impedir que o lançamento manual de conta nasça em estado fechado; (2) corrigir o
-  cap silencioso de 100 linhas nos lookups dual-mode de banks/groups/subgroups;
-  (3) tornar o filtro de busca robusto a termo malformado (sem virar 500).
-  Manter o gate verde (lint + typecheck + test + prune).
+  Corrigir defeitos de contrato REST e validação na Next API (api-backend): delete de grupo do plano de
+  contas retornando 500 em vez de 409; users/route.ts vazando e.message em 500; mapeamento de FK (23503)
+  faltando em contas; mensagem de obrigatoriedade inconsistente no schema de conta bancária; e o matcher do
+  middleware sem âncora de segmento.
 </objetivo>
 
 <read_first>
-  - CLAUDE.md (seções "CRUD de contas", "CRUDs dos demais cadastros contábeis", dual-mode)
-  - packages/shared/src/schemas/financial-account-control.schema.ts
-  - apps/api-backend/lib/contas.ts  (e app/api/contas/route.ts, app/api/contas/[id]/route.ts + *.test.ts)
-  - apps/api-backend/lib/banks.ts             (+ app/api/banks/route.ts + *.test.ts)
-  - apps/api-backend/lib/chart-account-groups.ts      (+ app/api/chart-account-groups/route.ts + *.test.ts)
-  - apps/api-backend/lib/chart-account-subgroups.ts   (+ app/api/chart-account-subgroups/route.ts + *.test.ts)
-  - apps/api-backend/lib/lookups.ts  (referência: MAX_LIMIT=1000 que NÃO sofre o cap)
-  - apps/api-backend/lib/contas.ts (sanitizeTerm) + lib/suppliers.ts, lib/cost-centers.ts (mesma string or())
+  - apps/api-backend/lib/chart-account-groups.ts (REFERENCING_TABLES, remove, countReferences)
+  - apps/api-backend/lib/chart-account-subgroups.ts (padrão mapWriteError 23503 — modelo a seguir)
+  - apps/api-backend/lib/financial-accounts.ts:67-75 (padrão mapWriteError — modelo)
+  - apps/api-backend/app/api/users/route.ts
+  - apps/api-backend/lib/response.ts (failFromError)
+  - apps/api-backend/lib/contas.ts (create/update, mapeamento de erro de banco)
+  - packages/shared/src/schemas/financial-account.schema.ts
+  - apps/api-backend/middleware.ts
+  - CLAUDE.md:469-473 (§3 M-2), CLAUDE.md:338-340 (padrão .min(1))
 </read_first>
 
 <achados>
-  - MÉDIO  status definível no POST /api/contas — financial-account-control.schema.ts:238 (financialAccountControlCreateSchema) + lib/contas.ts:174.
-            Um POST { sk_supplier, amount, status:'pago' } cria conta já fechada, furando o ciclo pendente/trigger.
-  - MÉDIO  lookup cap de 100 — lib/banks.ts:104, lib/chart-account-groups.ts:101, lib/chart-account-subgroups.ts:116.
-            A rota de lookup pede limit:1000 mas o service clampa MAX_LIMIT=100 → <select> trunca silenciosamente.
-  - MÉDIO  500 em filtro de busca malformado — lib/contas.ts:79/100, lib/suppliers.ts:81, lib/cost-centers.ts:73 (string or() do PostgREST).
-            sanitizeTerm já remove % , ( ) (não é injeção), mas token tipo-operador remanescente pode gerar filtro inválido → 500.
+  - [MÉDIO] A1-1 — apps/api-backend/lib/chart-account-groups.ts:20 (loop :169-175): REFERENCING_TABLES só
+    tem 'financial_chart_of_account_subgroup'; falta 'financial_chart_of_account' (FK direta
+    chart_account_group_id, migration 058). Grupo referenciado direto por plano → 23503 → 500 em vez de 409.
+  - [MÉDIO] A1-2 — apps/api-backend/app/api/users/route.ts:26: `fail(e.message, 500)` (antipadrão proibido).
+  - [BAIXO] A1-3 — apps/api-backend/lib/contas.ts:191-195 e :210-215: sem mapa 23503 → FK vira 422 com
+    mensagem crua do Postgres.
+  - [BAIXO] A1-4 — packages/shared/src/schemas/financial-account.schema.ts:42-43: bank_id/payment_type_id
+    `.min(0, '… é obrigatório')` — 0 passa na validação, mensagem nunca dispara.
+  - [BAIXO] A1-5 — apps/api-backend/middleware.ts:19: matcher '/api/((?!health|auth/login).*)' casa por
+    prefixo (latente). Cross-ref segurança S1.
 </achados>
 
 <mudancas_exigidas>
-  1. Schema de criação de conta:
-     - Omitir `status` (e confirmar que `status_id` já é omitido) do `financialAccountControlCreateSchema`,
-       de forma que o lançamento manual sempre nasça `pendente` (a trigger fn_set_status_from_due_date assume
-       'a vencer'/'vencido'). NÃO alterar o schema base nem o de UPDATE (a edição de situação no grid/modal
-       continua válida pelo PATCH com grant de coluna `status`).
-     - Atualizar/expandir os testes co-locados para provar: POST com `status` no corpo → o campo é ignorado e a
-       conta nasce `pendente` (ou 422 se preferirem rejeição explícita — decidir e documentar no PR).
-  2. Cap de lookup:
-     - Para o caminho de LOOKUP (sem `page`) de banks/groups/subgroups, devolver a lista completa para o <select>
-       (alinhar o teto ao padrão de lib/lookups.ts: MAX_LIMIT=1000, OU introduzir um modo lookup que ignore o
-       clamp de 100 do CRUD). NÃO mexer no caminho CRUD (`?page`) nem no clamp de 100 da paginação do CRUD.
-     - Teste: lookup retorna > 100 itens quando o cadastro tem > 100 linhas (mockar o repo).
-  3. Filtro de busca robusto:
-     - Endurecer `sanitizeTerm` (ou o ponto de montagem da string or()) para que um termo residual não gere
-       filtro PostgREST inválido — preferir resultado vazio limpo a 500. NÃO introduzir SQL cru; manter PostgREST.
-     - Teste: termo "exótico" (ex.: contém `.` / operador-like) retorna lista vazia/normal, nunca 500.
+  1. A1-1: em chart-account-groups.ts, incluir 'financial_chart_of_account' em REFERENCING_TABLES (a coluna
+     de FK chart_account_group_id já é o REF_COLUMN, countReferences funciona sem outra mudança). Confirmar
+     que remove() devolve 409 (in-use) quando qualquer das duas tabelas referencia o grupo.
+  2. A1-2: trocar o catch final de users/route.ts por `return failFromError(e, 'users');` e remover o import
+     de UserServiceError se ficar sem uso.
+  3. A1-3: adicionar em contas.ts um mapWriteError espelhando financial-accounts.ts (23505→409, 23503→422
+     com mensagem curada: "Fornecedor/centro/plano/situação informado não existe"). Aplicar no create e no
+     update.
+  4. A1-4: decidir a semântica — se bank_id/payment_type_id são obrigatórios, usar `.min(1, '… é obrigatório')`
+     (como status_id no mesmo arquivo); se opcionais (0 = não informado), remover o texto "é obrigatório" e
+     manter `.min(0)`. Alinhar o form (FinancialAccountForm) à decisão (normalização NaN→0 já existe).
+  5. A1-5: ancorar o matcher por fim de segmento, ex.: `'/api/(?!health$|auth/login$).*'` (validar que
+     /api/health e /api/auth/login seguem públicos e todo o resto exige Bearer). Coordenar com o prompt de
+     segurança S1 (mesma linha).
 </mudancas_exigidas>
 
 <restricoes>
-  - NÃO alterar dual-mode já correto (cost-centers, chart-accounts) nem a cascata centro→plano (lib/lookups.ts).
-  - NÃO transformar soft-delete em hard nem vice-versa; os deletes por recurso estão corretos (CLAUDE.md).
-  - NÃO expor service_role em caminho público; login/me seguem usando o cliente anon.
-  - Falsos positivos (não "corrigir"): Zod sem .strict() que descarta chaves derivadas (aceitável);
-    bank_id = max+1 (corrida aceita, baixíssima concorrência); 409-antes-de-404 no update de supplier (inalcançável).
+  - NÃO reintroduzir `fail(e.message, 500)` em nenhum handler (§3 M-2).
+  - NÃO transformar o "código único" app-level em UNIQUE de banco — a race é documentada e aceita.
+  - NÃO mexer no soft vs hard delete nem em "contas sem DELETE" — escopo documentado.
+  - Preservar o dual-mode dos lookups (sem page = lookup intocado) e o sentinela id 0.
 </restricoes>
 
 <validacao>
-  - npm run lint
-  - npm run typecheck
-  - npm test
+  - npm run lint && npm run typecheck && npm test
   - npm run prune
-  - (Python intocado, mas confirmar) py -3 -m pytest tests/ -q
-  - NÃO rodar npm run test:e2e neste ambiente.
+  - Teste manual: DELETE de um grupo referenciado só por plano de contas (sem subgrupo) → 409; PATCH de conta
+    com status_id inexistente → 422 curado; POST /api/users com env ausente → 500 genérico (sem e.message).
 </validacao>
 
 <criterio_de_aceite>
-  - Gate verde (0 erro / 0 warning).
-  - POST /api/contas não cria conta em estado fechado por payload do cliente.
-  - Lookups de banks/groups/subgroups retornam a lista completa para o <select>.
-  - Busca com termo malformado não produz 500.
-  - Nenhum CRUD previamente OK regrediu (testes co-locados continuam verdes).
+  Gate verde (lint/typecheck/test/prune). Delete de grupo em uso retorna 409 "Grupo em uso" (não 500).
+  users/route.ts não vaza detalhe interno. contas mapeia 23503→422 curado. Mensagem de obrigatoriedade do
+  schema coerente com o comportamento. Matcher do middleware casa rota exata.
 </criterio_de_aceite>
 ```
