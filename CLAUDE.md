@@ -1477,6 +1477,13 @@ transporte (não é tributário). **TRANSPORTE (não‑tributário) preservado �
 `CC_LOGISTICA`(4)/`CA_TRANSPORTADORAS`(339), com write‑back, só por assunto+document_type
 (`_is_transport_context`). Backfill retroativo: `scripts/reprocess_classification_overrides.py`
 (`--dry-run`, reusa `resolve_forced_classification`). Testes: `tests/test_classification_overrides.py`.
+**Backfill APLICADO em 2026-07-10** (11 guias tributárias legítimas reclassificadas —
+DAM/DUAM→Taxas Municipais, DARE→Taxas Estaduais, DAS→Taxas Federais, GNRE→GNRE a Recolher,
+IPTU→conta dedicada) + **write-back** em 4 fornecedores (CONTABIL ESQUEMA→GNRE, Receita Federal
+×2→Taxas Federais, PREFEITURA SP→Taxas Municipais). **Correção de dados do Dr. Ricardo (sk 1262):**
+7 contas (ids 423‑429) normalizadas para **reembolso** (`recibo`/`pix`, Jurídico/Reembolsos 14/530);
+a 425 estava órfã em Fiscal/ICMS-Import (3/11) e foi corrigida — depois disso a guarda de exclusão
+foi criada para impedir reincidência.
 **EXCLUSÃO de fornecedor (não regredir):** fornecedores em
 `TAX_CLASSIFICATION_EXCLUDED_SK_SUPPLIERS` (hoje `{1262}` = **Dr. Ricardo**, despachante) **NÃO**
 recebem a classificação tributária forçada — a regra é pulada (o `sk_supplier` é passado a
@@ -2514,7 +2521,15 @@ um check verde ao lado do badge de status (compartilhado entre usuários). **Exc
 (migration 033):** `financial_account_control` tem policy de UPDATE `TO authenticated` com
 **grant restrito às colunas** `has_invoice`/`has_bank_slip` (`GRANT UPDATE (has_invoice,
 has_bank_slip)`) — flags de curadoria "Tem NF ?"/"Tem Boleto" editadas como checkbox
-(`CheckToggle`) no grid de `/consulta` via `setFinancialAccountFlag` (update otimista). **Terceira
+(`CheckToggle`) no grid de `/consulta` via `setFinancialAccountFlag` (update otimista).
+**Baixa automática no ATO da edição (não regredir):** ao marcar a 2ª flag (NF ou BOL) de
+uma conta com **vencimento <= hoje** e **situação em aberto** (`status_id ∈ {1,2,3}`), o
+`handleToggleFlag` de `Consulta.tsx` dispara também `setFinancialAccountStatus(id,
+STATUS_ID_PAGO)` — best-effort (falha aqui não reverte a flag já salva; o batch diário
+reconcilia o que escapar). A regra vive em `qualifiesForAutoPago` (helper de módulo em
+`Consulta.tsx`) e **espelha** o batch Python `baixa-automatica` (6h). Preserva situações
+fechadas (cancelado/baixado/protestado/cartório/prorrogado/já pago) e **não** reverte ao
+desmarcar. Ver "Pipeline de baixa automática (skill `baixa-automatica`)". **Terceira
 coluna gravável pelo `authenticated` (migration 068):** `status_id` (`GRANT UPDATE (status_id)`) —
 a troca de **situação** em `/consulta` (`StatusSelectCell` inline + ação em lote) grava por
 `status_id`; a trigger `fn_set_status_from_due_date` (SECURITY DEFINER) faz o resto. O grant antigo
@@ -2732,11 +2747,59 @@ backups > N dias, só pastas com nome de carimbo `YYYY-MM-DD_HHMMSS`). Docs em `
 Variáveis do `.env` em `references/env_reference.md`. Deploy em produção: ver "Deploy manual do
 Backup do Supabase em produção".
 
+## Pipeline de baixa automática (skill `baixa-automatica`)
+
+Quarto pipeline (reconciliação) — marca como **`pago`** as contas a pagar já quitadas,
+independente do Flask/Next (mesmo padrão de `email-reader`/`cobranca-vencidos`/`backup-supabase`).
+
+**Regra de negócio (fonte única):** uma conta em `financial_account_control` vira `pago`
+(`status_id = 8`) quando **todas** valem: `has_invoice = true` **e** `has_bank_slip = true`
+**e** `due_date <= hoje` (data local) **e** `status_id ∈ {1,2,3}` (pendente/vencido/a vencer —
+**em aberto**). Situações **fechadas** (cancelado/baixado/protestado/cartório/prorrogado/já
+pago) são **preservadas** — nunca reabre nem sobrescreve. A regra **não** reverte (desmarcar
+NF/BOL depois não desfaz o `pago`).
+
+**Duas instâncias da MESMA regra:**
+1. **No ato da edição (`/consulta`, frontend):** `qualifiesForAutoPago` +
+   `handleToggleFlag` em `Consulta.tsx` — ao marcar a 2ª flag (NF/BOL) de uma conta vencida
+   e em aberto, grava `status_id = 8` na hora (best-effort; ver "Baixa automática no ATO da
+   edição" na seção de RLS/grants).
+2. **Batch diário (esta skill):** cobre as contas cujo `due_date` "passa" com o tempo sem
+   nenhuma edição disparar a baixa. Roda **1x/dia às 06:00** na máquina de produção
+   (`scheduler/run_baixa.ps1`).
+
+**Mecânica (`skills/baixa-automatica/scripts/run.py`):** um único
+`PATCH /rest/v1/financial_account_control` filtrado (as 4 condições, `build_filter`) com
+`{status_id: 8}`, escrita via **`SUPABASE_SERVICE_KEY`** (service_role ignora RLS). Setar 8
+explicitamente é seguro — a trigger `fn_set_status_from_due_date` só recalcula quando
+`status_id ∈ {1,2,3}`, então não sobrescreve o 8 (é o mesmo caminho da baixa manual pelo
+`StatusSelectCell`). `--dry-run` faz um `GET` com `Prefer: count=exact` e só reporta o total,
+sem gravar. **Sem dependência Python nova** — `urllib` (stdlib) + `python-dotenv`. Exit code
+`0` = sucesso; `≠ 0` = falha → o wrapper marca a tarefa vermelha + Event Log. `.env`: reusa
+`SUPABASE_URL`/`SUPABASE_SERVICE_KEY` (já presentes para o reader). Teste:
+`tests/test_baixa_automatica.py` (construtor do filtro + ids em aberto). **Isolamento do teste
+(não regredir):** o teste carrega o `run.py` via `importlib` com nome de módulo ÚNICO
+(`baixa_automatica_run`), **não** `import run` via `sys.path` — várias skills têm `run.py`
+(`cobranca-vencidos`, `backup-supabase`), e importar o nome `run` colidiria em `sys.modules`,
+poluindo a suíte (quebrava os testes da cobrança). **Nenhum passo de
+banco** (colunas e grants já existem — migrations 033/068).
+
+**Backfill inicial aplicado (2026-07-10):** a 1ª execução real do batch marcou **15 contas**
+que já se enquadravam na regra (NF + Boleto + vencidas + em aberto) como `pago`; o `--dry-run`
+seguinte reportou `0` (idempotente). Como dev e produção compartilham a **mesma Supabase**, as
+15 baixas já valem para os dois ambientes — não repetir a aplicação após o deploy dos scripts.
+
+```powershell
+py -3 skills\baixa-automatica\scripts\run.py --dry-run   # quantas contas SERIAM baixadas (não grava)
+py -3 skills\baixa-automatica\scripts\run.py             # aplica a baixa
+```
+
 ## Windows Task Scheduler
 
-Três tarefas agendadas na pasta `\Sheild\` do Agendador (produção
+Quatro tarefas agendadas na pasta `\Sheild\` do Agendador (produção
 `C:\Sheild\API\Pagamentos`): **Email Reader** (leitura, 5 min), **Cobrança Vencidos**
-(envios, 08:00) e **Backup Supabase** (02:00 diário — ver seção acima).
+(envios, 08:00), **Backup Supabase** (02:00 diário — ver seção acima) e **Baixa Automática**
+(reconciliação de pagos, 06:00 diário — ver "Pipeline de baixa automática").
 
 `scheduler/run_reader.ps1` — intervalo de 5 min (`$INTERVAL_MIN` em
 `scheduler/setup-task.ps1`). Detecta Python com `pdfplumber` (ordem: `py -3.12`,
@@ -2746,7 +2809,9 @@ máquina: `scheduler/INSTALL.md` (setup detecta executor `pwsh.exe`/`powershell.
 e checa o `.env`).
 
 O backup usa `scheduler/run_backup.ps1` + `setup-backup-task.ps1` (mesmo padrão do runner da
-cobrança: detecção de Python, log diário em `logs/backup/`, Event Log em falha).
+cobrança: detecção de Python, log diário em `logs/backup/`, Event Log em falha). A baixa
+automática usa `scheduler/run_baixa.ps1` + `setup-baixa-task.ps1` (log diário em `logs/baixa/`,
+Event Log `Pagamentos-Baixa` em falha).
 
 Checkout de **desenvolvimento**: `C:\Sheild\Projetos\Claude\Contas a pagar\Pagamentos`
 (branch `Features`, sincronizado com `main`) — clone git completo onde todo o trabalho acontece.
@@ -2932,5 +2997,43 @@ Para validar a **senha** de verdade, rode um dump real só do banco (rápido, n�
 `py -3 skills\backup-supabase\scripts\run.py --skip-db` (só Storage) / `--skip-storage` (só banco).
 Registrar a tarefa (uma vez, **PowerShell como Administrador**):
 `.\scheduler\setup-backup-task.ps1` → cria **"Pagamentos - Backup Supabase"** na pasta `\Sheild\`.
+**Não precisa reiniciar nada** (a tarefa inicia processo novo a cada disparo).
+
+### Deploy manual da Baixa automática em produção (caso específico — não regredir)
+
+Quarto pipeline agendado (**skill `baixa-automatica`**). Mesma máquina/pasta dos outros
+(`C:\Sheild\API\Pagamentos`); o scheduler executa `skills\baixa-automatica\scripts\run.py`
+(`run_baixa.ps1` `$SCRIPT`), 1x/dia às **06:00**. Marca como `pago` as contas com NF + Boleto
+confirmados, vencimento <= hoje e em aberto (um `PATCH` via `service_role`). Mesma **preferência
+do usuário**: atualização de produção é **cópia manual + validação** (nunca `deploy-prod.ps1`).
+
+**O QUE COPIAR para produção:**
+
+| De (dev) | Para (produção) |
+|---|---|
+| `skills\baixa-automatica\` (pasta inteira) | `C:\Sheild\API\Pagamentos\skills\baixa-automatica\` |
+| `scheduler\run_baixa.ps1` | `C:\Sheild\API\Pagamentos\scheduler\` |
+| `scheduler\setup-baixa-task.ps1` | `C:\Sheild\API\Pagamentos\scheduler\` |
+
+- **Sem dependência Python nova** — usa `urllib` (stdlib) + `python-dotenv` (já presente). O
+  `run.py` é um módulo isolado (não importa irmãos), então basta a pasta da skill.
+- **`.env` de produção já tem as chaves** (`SUPABASE_URL`/`SUPABASE_SERVICE_KEY` — o reader
+  depende delas). Nenhuma variável nova, nenhum passo de banco (as colunas
+  `has_invoice`/`has_bank_slip`/`status_id` e os grants já existem — migrations 033/068; a
+  Supabase é a mesma de dev/prod).
+- **Regra espelhada no frontend** (`qualifiesForAutoPago` em `Consulta.tsx`, deploy pelo
+  Vercel) e no batch — as duas instâncias usam as **mesmas 4 condições**. Ao mudar a regra,
+  ajustar os **dois** lados.
+
+Validar (esperado: `imports OK`; o `--dry-run` reporta a contagem sem gravar):
+
+```powershell
+cd C:\Sheild\API\Pagamentos
+py -3 -c "import sys; sys.path.insert(0,'skills/baixa-automatica/scripts'); import run; print('imports OK')"
+py -3 skills\baixa-automatica\scripts\run.py --dry-run
+```
+
+Registrar a tarefa (uma vez, **PowerShell como Administrador**):
+`.\scheduler\setup-baixa-task.ps1` → cria **"Pagamentos - Baixa Automática"** na pasta `\Sheild\`.
 **Não precisa reiniciar nada** (a tarefa inicia processo novo a cada disparo).
 

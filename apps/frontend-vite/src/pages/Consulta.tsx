@@ -178,6 +178,28 @@ function applyStatusId(r: FinancialAccountControl, id: number): FinancialAccount
   return { ...r, status_id: id, status_dim: { status_name: name, status_short_name: name } };
 }
 
+// Situações EM ABERTO — únicas que a baixa automática pode converter para "pago"
+// (preserva cancelado/baixado/protestado/cartório/prorrogado e o que já está pago).
+const OPEN_STATUS_IDS: readonly number[] = [STATUS_IDS.pendente, STATUS_ID_VENCIDO, STATUS_ID_A_VENCER];
+
+// Data local YYYY-MM-DD (não UTC) — evita "voltar um dia" perto da meia-noite. Função de
+// MÓDULO: new Date() é impuro e não pode ser chamado no escopo de render (mesma razão de
+// next7DaysRange/initialFilters).
+function todayLocalISO(): string {
+  const d = new Date();
+  const mm = String(d.getMonth() + 1).padStart(2, '0');
+  const dd = String(d.getDate()).padStart(2, '0');
+  return `${d.getFullYear()}-${mm}-${dd}`;
+}
+
+// Regra de baixa automática (espelha o batch diário em Python `baixa-automatica`): conta
+// com NF E Boleto marcados, vencimento <= hoje e ainda EM ABERTO é considerada paga.
+function qualifiesForAutoPago(r: FinancialAccountControl): boolean {
+  if (!r.has_invoice || !r.has_bank_slip) return false;
+  if (!r.due_date || r.due_date > todayLocalISO()) return false;
+  return OPEN_STATUS_IDS.includes(r.status_id);
+}
+
 interface MetricCard {
   icon: LucideIcon;
   label: string;
@@ -340,11 +362,26 @@ export default function Consulta() {
   // otimista no estado local + persistência via REST; reverte se a gravação falhar.
   const handleToggleFlag = useCallback<ToggleFlag>((row, field, value) => {
     setRows((prev) => prev.map((r) => (r.id === row.id ? { ...r, [field]: value } : r)));
-    void setFinancialAccountFlag(row.id, field, value).catch((e: unknown) => {
-      setRows((prev) => prev.map((r) => (r.id === row.id ? { ...r, [field]: !value } : r)));
-      setError(getErrorMessage(e));
-    });
-  }, []);
+    void setFinancialAccountFlag(row.id, field, value)
+      .then(() => {
+        // Baixa automática no ATO da edição: com NF + Boleto marcados e vencimento vencido,
+        // a conta em aberto vira "pago". Best-effort — falha aqui NÃO reverte a flag já
+        // gravada (o batch diário reconcilia o que escapar). Espelha `qualifiesForAutoPago`.
+        const next = { ...row, [field]: value };
+        if (!qualifiesForAutoPago(next)) return;
+        void setFinancialAccountStatus(row.id, STATUS_ID_PAGO)
+          .then(() => {
+            setRows((prev) => prev.map((r) => (r.id === row.id ? applyStatusId(r, STATUS_ID_PAGO) : r)));
+            setSel((s) => (s && s.id === row.id ? applyStatusId(s, STATUS_ID_PAGO) : s));
+            void refreshStats();
+          })
+          .catch((e: unknown) => setError(getErrorMessage(e)));
+      })
+      .catch((e: unknown) => {
+        setRows((prev) => prev.map((r) => (r.id === row.id ? { ...r, [field]: !value } : r)));
+        setError(getErrorMessage(e));
+      });
+  }, [refreshStats]);
 
   // Altera a situação de uma conta no dropdown inline com update otimista (por status_id).
   // O pai (Consulta) atualiza `rows` após confirmação da API para manter consistência entre
