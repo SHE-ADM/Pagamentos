@@ -2,7 +2,11 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, waitFor, within, fireEvent } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import type { FinancialAccountControl } from '@sheild/shared';
-import { STATUS_ID_PAGO, STATUS_ID_A_VENCER } from '@sheild/shared';
+import { STATUS_ID_PAGO, STATUS_ID_A_VENCER, STATUS_ID_CANCELADO } from '@sheild/shared';
+
+// Flush de microtasks — garante que o .then da persistência da flag (e a checagem de
+// baixa automática) já rodou antes de asserções do tipo "não foi chamado".
+const flush = () => new Promise((r) => setTimeout(r, 0));
 
 // Mocka o serviço de dados — o teste cobre o layout/interação, não a rede.
 const getFinancialAccountControl = vi.fn();
@@ -104,6 +108,53 @@ describe('Consulta', () => {
 
     expect(setFinancialAccountFlag).toHaveBeenCalledWith(1, 'has_invoice', true);
     await waitFor(() => expect(box).toBeChecked());
+  });
+
+  it('baixa automática: marcar a 2ª flag em conta vencida e em aberto muda a situação para "pago"', async () => {
+    const user = userEvent.setup();
+    // NF já marcada, Boleto não; vencimento no passado e situação em aberto (a vencer).
+    getFinancialAccountControl.mockResolvedValue({
+      data: [makeRow({ has_invoice: true, has_bank_slip: false, due_date: '2020-01-01', status_id: STATUS_ID_A_VENCER })],
+      total: 1,
+    });
+    render(<Consulta />);
+
+    const bol = await screen.findByRole('checkbox', { name: /Tem Boleto/ });
+    await user.click(bol);
+
+    expect(setFinancialAccountFlag).toHaveBeenCalledWith(1, 'has_bank_slip', true);
+    // Ambas as flags marcadas + vencido + em aberto → grava status_id = pago.
+    await waitFor(() => expect(setFinancialAccountStatus).toHaveBeenCalledWith(1, STATUS_ID_PAGO));
+  });
+
+  it('baixa automática: NÃO baixa quando o vencimento é futuro', async () => {
+    const user = userEvent.setup();
+    getFinancialAccountControl.mockResolvedValue({
+      data: [makeRow({ has_invoice: true, has_bank_slip: false, due_date: '2999-12-31', status_id: STATUS_ID_A_VENCER })],
+      total: 1,
+    });
+    render(<Consulta />);
+
+    await user.click(await screen.findByRole('checkbox', { name: /Tem Boleto/ }));
+
+    await waitFor(() => expect(setFinancialAccountFlag).toHaveBeenCalledWith(1, 'has_bank_slip', true));
+    await flush();
+    expect(setFinancialAccountStatus).not.toHaveBeenCalled();
+  });
+
+  it('baixa automática: NÃO baixa conta em situação fechada (cancelado)', async () => {
+    const user = userEvent.setup();
+    getFinancialAccountControl.mockResolvedValue({
+      data: [makeRow({ has_invoice: true, has_bank_slip: false, due_date: '2020-01-01', status_id: STATUS_ID_CANCELADO })],
+      total: 1,
+    });
+    render(<Consulta />);
+
+    await user.click(await screen.findByRole('checkbox', { name: /Tem Boleto/ }));
+
+    await waitFor(() => expect(setFinancialAccountFlag).toHaveBeenCalledWith(1, 'has_bank_slip', true));
+    await flush();
+    expect(setFinancialAccountStatus).not.toHaveBeenCalled();
   });
 
   it('o botão "Atualizar" dispara a leitura IMAP dos últimos 7 dias', async () => {
