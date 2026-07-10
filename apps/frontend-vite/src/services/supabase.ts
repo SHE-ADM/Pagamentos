@@ -740,6 +740,8 @@ export interface DashboardKpis {
   vencidasCount: number; vencidasValue: number;
 }
 export interface StatusSlice { status: string; count: number; value: number }
+// Fatia genérica de donut por rótulo (tipos de conta / formas de pagamento).
+export interface LabelSlice { label: string; count: number; value: number }
 export interface SupplierRank { name: string; value: number; count: number }
 export interface MonthlyFlow { month: number; aPagar: number; pago: number }
 export type PriorityKind = 'agua' | 'luz' | 'internet' | 'telefone' | 'aluguel' | 'tributo' | 'outro';
@@ -752,6 +754,8 @@ export interface DashboardData {
   month: number; year: number; scope: DashboardScope;
   kpis: DashboardKpis;
   statusBreakdown: StatusSlice[];
+  documentTypeBreakdown: LabelSlice[];
+  paymentMethodBreakdown: LabelSlice[];
   supplierRanking: SupplierRank[];
   monthlyFlow: MonthlyFlow[];
   priorityAccounts: PriorityAccount[];
@@ -774,13 +778,35 @@ function classifyPriority(text: string): PriorityKind | null {
   return null;
 }
 
-type MonthRow = Pick<FinancialAccountControl, 'id' | 'amount' | 'status_id' | 'due_date' | 'document_type' | 'description'> & {
+type MonthRow = Pick<FinancialAccountControl, 'id' | 'amount' | 'status_id' | 'due_date' | 'document_type' | 'payment_method' | 'description'> & {
   supplier?: { trade_name: string | null; legal_name: string | null } | null;
 };
 type YearRow = Pick<FinancialAccountControl, 'amount' | 'status_id' | 'due_date'>;
 
 const num = (v: number | null | undefined): number => Number(v) || 0;
 const supplierName = (r: MonthRow): string => r.supplier?.trade_name ?? r.supplier?.legal_name ?? 'Sem fornecedor';
+
+// Agrega monthRows por um campo de rótulo → Top N por contagem + fatia "outros".
+// Rótulo ausente (null) vira "não informado".
+function breakdownBy(rows: MonthRow[], pick: (r: MonthRow) => string | null, topN = 8): LabelSlice[] {
+  const map = new Map<string, { count: number; value: number }>();
+  for (const r of rows) {
+    const k = pick(r) ?? 'não informado';
+    const cur = map.get(k) ?? { count: 0, value: 0 };
+    cur.count += 1; cur.value += num(r.amount);
+    map.set(k, cur);
+  }
+  const all = [...map.entries()]
+    .map(([label, v]) => ({ label, ...v }))
+    .sort((a, b) => b.count - a.count);
+  if (all.length <= topN) return all;
+  const top = all.slice(0, topN);
+  const rest = all.slice(topN).reduce(
+    (acc, x) => ({ count: acc.count + x.count, value: acc.value + x.value }),
+    { count: 0, value: 0 },
+  );
+  return [...top, { label: 'outros', ...rest }];
+}
 
 // `scope` = 'month' (mês selecionado, padrão) ou 'all' (todas as contas, sem filtro
 // de data nos painéis). O gráfico de movimentações sempre reflete o `year`.
@@ -795,7 +821,7 @@ export async function getDashboardData(month: number, year: number, scope: Dashb
   // As duas leituras são independentes → Promise.all (antes eram sequenciais).
   const [monthRows, yearRows] = await Promise.all([
     query<MonthRow[]>('financial_account_control', {
-      select: 'id,amount,status_id,due_date,document_type,description,supplier(trade_name,legal_name)',
+      select: 'id,amount,status_id,due_date,document_type,payment_method,description,supplier(trade_name,legal_name)',
       status_id: `neq.${STATUS_ID_CANCELADO}`,
       ...(scope === 'month' ? { and: `(due_date.gte.${first},due_date.lte.${last})` } : {}),
       limit: scope === 'month' ? 5000 : 20000,
@@ -834,6 +860,10 @@ export async function getDashboardData(month: number, year: number, scope: Dashb
   const statusBreakdown: StatusSlice[] = [...statusMap.entries()]
     .map(([status, v]) => ({ status, ...v }))
     .sort((a, b) => b.count - a.count);
+
+  // Tipos de conta (document_type) e formas de pagamento (payment_method) — Top 8 + "outros".
+  const documentTypeBreakdown = breakdownBy(monthRows, (r) => r.document_type);
+  const paymentMethodBreakdown = breakdownBy(monthRows, (r) => r.payment_method);
 
   // Ranking de fornecedores (top 6 por valor)
   const supMap = new Map<string, { value: number; count: number }>();
@@ -879,5 +909,5 @@ export async function getDashboardData(month: number, year: number, scope: Dashb
     })
     .slice(0, 7);
 
-  return { month, year, scope, kpis, statusBreakdown, supplierRanking, monthlyFlow: buckets, priorityAccounts };
+  return { month, year, scope, kpis, statusBreakdown, documentTypeBreakdown, paymentMethodBreakdown, supplierRanking, monthlyFlow: buckets, priorityAccounts };
 }

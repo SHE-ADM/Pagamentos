@@ -28,6 +28,21 @@ const STATUS_VAR: Record<string, string> = {
 };
 const statusColor = (s: string): string => STATUS_VAR[s] ?? 'var(--color-slate-300)';
 
+// Paleta cíclica para donuts sem cor semântica por categoria (tipos de conta/pagamento).
+// Só tokens --color-status-* já validados ≥3:1 sobre branco (preenchimento gráfico, 1.4.11).
+const DONUT_PALETTE = [
+  'var(--color-status-info-fg)',        // #1d4ed8 azul
+  'var(--color-status-success-fg)',     // #15803d verde
+  'var(--color-status-warning-fg)',     // #b45309 âmbar
+  'var(--color-status-error-fg)',       // #b91c1c vermelho
+  'var(--color-status-source-fg)',      // #0f766e teal
+  'var(--color-status-prorrogado-fg)',  // #7c3aed violeta
+  'var(--color-status-baixado-fg)',     // #0e7490 ciano
+  'var(--color-status-neutral-fg)',     // #475569 slate
+];
+const paletteColor = (label: string, i: number): string =>
+  label === 'outros' || label === 'não informado' ? 'var(--color-slate-300)' : DONUT_PALETTE[i % DONUT_PALETTE.length];
+
 const PRIORITY_ICON: Record<PriorityKind, LucideIcon> = {
   agua: Droplet, luz: Zap, internet: Wifi, telefone: Receipt, aluguel: Home, tributo: Receipt, outro: Receipt,
 };
@@ -188,6 +203,31 @@ export default function Dashboard() {
           </div>
         </div>
 
+        {/* Tipos de contas + Tipos de pagamentos */}
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-3 mb-3">
+          <div className="card p-4">
+            <div className="mb-3">
+              <h3 className="text-sm font-semibold text-slate-800">Tipos de contas</h3>
+              <p className="text-xs text-slate-500">Por tipo de documento · {scope === 'all' ? 'Todas as contas' : MONTHS_FULL[month]}</p>
+            </div>
+            <BreakdownDonut
+              segs={(data?.documentTypeBreakdown ?? []).map((s) => ({ key: s.label, label: s.label, count: s.count }))}
+              colorFor={paletteColor}
+            />
+          </div>
+
+          <div className="card p-4">
+            <div className="mb-3">
+              <h3 className="text-sm font-semibold text-slate-800">Tipos de pagamentos</h3>
+              <p className="text-xs text-slate-500">Por forma de pagamento · {scope === 'all' ? 'Todas as contas' : MONTHS_FULL[month]}</p>
+            </div>
+            <BreakdownDonut
+              segs={(data?.paymentMethodBreakdown ?? []).map((s) => ({ key: s.label, label: s.label, count: s.count }))}
+              colorFor={paletteColor}
+            />
+          </div>
+        </div>
+
         {/* Ranking + Prioritárias */}
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
           <div className="card p-4">
@@ -244,15 +284,18 @@ function MonthlyFlow({ data }: { data: DashboardData | null }) {
   );
 }
 
-function StatusDonut({ data }: { data: DashboardData | null }) {
-  const segs = data?.statusBreakdown ?? [];
+// Donut genérico (conic-gradient + furo central + legenda). Reusado pelos três
+// gráficos do Dashboard: situação por status, tipos de conta e formas de pagamento.
+type DonutSeg = { key: string; label: string; count: number };
+
+function BreakdownDonut({ segs, colorFor }: { segs: DonutSeg[]; colorFor: (label: string, i: number) => string }) {
   const total = segs.reduce((s, x) => s + x.count, 0) || 1;
   // Soma cumulativa sem mutar variável de closure no render (React Compiler).
   const stops = segs.map((s, i) => {
     const start = segs.slice(0, i).reduce((acc, x) => acc + x.count, 0);
     const a = (start / total) * 360;
     const b = ((start + s.count) / total) * 360;
-    return `${statusColor(s.status)} ${a}deg ${b}deg`;
+    return `${colorFor(s.label, i)} ${a}deg ${b}deg`;
   });
   return (
     <div className="flex items-center gap-5">
@@ -265,10 +308,10 @@ function StatusDonut({ data }: { data: DashboardData | null }) {
         </div>
       </div>
       <div className="flex-1 min-w-0 flex flex-col gap-1.5">
-        {segs.map((s) => (
-          <div key={s.status} className="flex items-center gap-2 text-xs">
-            <span className="h-2.5 w-2.5 rounded-xs shrink-0" style={{ background: statusColor(s.status) }} />
-            <span className="text-slate-700 capitalize flex-1 truncate">{s.status}</span>
+        {segs.map((s, i) => (
+          <div key={s.key} className="flex items-center gap-2 text-xs">
+            <span className="h-2.5 w-2.5 rounded-xs shrink-0" style={{ background: colorFor(s.label, i) }} />
+            <span className="text-slate-700 capitalize flex-1 truncate">{s.label}</span>
             <span className="font-mono text-slate-900 font-semibold">{s.count}</span>
             <span className="text-slate-600 w-9 text-right">{Math.round((s.count / total) * 100)}%</span>
           </div>
@@ -277,6 +320,12 @@ function StatusDonut({ data }: { data: DashboardData | null }) {
       </div>
     </div>
   );
+}
+
+// Situação por status: cor semântica por nome de status (ignora o índice da paleta).
+function StatusDonut({ data }: { data: DashboardData | null }) {
+  const segs = (data?.statusBreakdown ?? []).map((s) => ({ key: s.status, label: s.status, count: s.count }));
+  return <BreakdownDonut segs={segs} colorFor={(label) => statusColor(label)} />;
 }
 
 function SupplierRanking({ data }: { data: DashboardData | null }) {
