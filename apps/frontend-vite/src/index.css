@@ -119,10 +119,13 @@
 
 /* Sólido brand-dark (#0f6e56 = 6,3:1 com branco) em vez do gradiente from-brand→to-brand-dark:
    a metade clara (from-brand #1d9e75) reprovava AA com texto branco (3,4:1). Só tokens, sem hex.
-   Ver achado A3-2. */
+   Ver achado A3-2.
+   hover:bg-brand-dark é OBRIGATÓRIO: o `.btn` base traz `hover:bg-slate-50`, e `.btn:hover`
+   (especificidade com :hover) vence o `bg-brand-dark` sem :hover — sem este override o botão
+   verde ficava BRANCO no branco (texto branco sobre fundo slate-50) ao passar o mouse. */
 @utility btn-primary {
   @apply bg-brand-dark text-white border-brand-dark
-           shadow-xs hover:shadow-md hover:shadow-brand/25 active:scale-95;
+           hover:bg-brand-dark shadow-xs hover:shadow-md hover:shadow-brand/25 active:scale-95;
 }
 
 @utility input {
