@@ -171,7 +171,7 @@ describe('groupDocumentTypeLabel — guias tributárias colapsam em "Tributos"',
 
   it('preserva tipos não-tributários e null', () => {
     expect(groupDocumentTypeLabel('boleto')).toBe('boleto');
-    expect(groupDocumentTypeLabel('pix')).toBe('pix');
+    expect(groupDocumentTypeLabel('recibo')).toBe('recibo');
     expect(groupDocumentTypeLabel('cte')).toBe('cte');
     expect(groupDocumentTypeLabel(null)).toBeNull();
   });

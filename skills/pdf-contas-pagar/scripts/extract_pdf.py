@@ -942,37 +942,21 @@ def _format_brl(value) -> str:
     return f"R$ {s}"
 
 
-def fallback_invoice_number(doc_type: str, due_date, amount=None) -> str:
+def fallback_invoice_number(doc_type: str, due_date, amount=None, payment_method="") -> str:
     """invoice_number sintetico quando o documento nao traz N do Documento.
 
     Regra de negocio:
-    - PIX (sem N documento): 'PIX_' + valor em moeda BR. Ex.: 'PIX_R$ 10.999,99'.
+    - Pagamento PIX sem tipo claro (payment_method='pix' E document_type='outro'):
+      forma de pagamento + '_' + valor em moeda BR. Ex.: 'pix_R$ 10.999,99'.
     - Demais tipos: tipo_documento + '_' + vencimento em DDMMYY.
       Ex.: 'tributo_030626', 'boleto_100726'.
     A deduplicacao de sufixos '(2)', '(3)'... e feita no momento da gravacao
     no banco (read_emails.py — SupabaseControl.unique_invoice_number).
     """
-    if (doc_type or "").lower() == "pix" and amount is not None:
-        return f"PIX_{_format_brl(amount)}"
+    pm = (payment_method or "").lower()
+    if pm == "pix" and (doc_type or "").lower() == "outro" and amount is not None:
+        return f"{pm}_{_format_brl(amount)}"
     return f"{doc_type}_{_due_date_ddmmyy(due_date)}"
-
-
-# Tipos de documento ja identificados (estrutura fiscal propria) que NUNCA
-# devem virar 'pix' so porque o pagamento e por pix. Um CT-e/NF-e/boleto pago
-# via pix continua sendo CT-e/NF-e/boleto — o override so vale para 'outro'.
-def apply_pix_override(rec: dict) -> dict:
-    """Sobrescreve document_type para 'pix' apenas quando o tipo for indefinido.
-
-    O override existe para pedidos de pagamento avulsos sem tipo claro. Aplicar
-    sobre um documento ja classificado (boleto, CT-e, NF-e, tributo...) apagava
-    o tipo real — ex.: um DACTE de transportadora virava 'pix' so porque o texto
-    mencionava pix. So sobrescreve quando document_type e 'outro'/vazio.
-    """
-    if (rec.get("payment_method") or "").lower() != "pix":
-        return rec
-    if (rec.get("document_type") or "outro").lower() == "outro":
-        rec["document_type"] = "pix"
-    return rec
 
 
 def has_document_number(value) -> bool:
@@ -1032,7 +1016,6 @@ def build_record_from_json(pdf_path, data: dict, source: str) -> dict:
     rec["amount_charged"] = resolve_amount_charged(rec)
     if cnpj and len(cnpj) != 14:
         notes.append("CNPJ do beneficiario invalido")
-    apply_pix_override(rec)
     apply_boleto_barcode_override(rec)
     apply_barcode_due_date(rec)   # vencimento AUTORITATIVO = fator do barcode (corrige inversao dia/mes)
     ensure_due_date(rec, notes)
@@ -1042,7 +1025,7 @@ def build_record_from_json(pdf_path, data: dict, source: str) -> dict:
         notes.append("Emissão ignorada (guia de tributo não tem data de emissão confiável)")
     if not has_document_number(rec["invoice_number"]):
         rec["invoice_number"] = fallback_invoice_number(
-            rec["document_type"], rec["due_date"], rec.get("amount"))
+            rec["document_type"], rec["due_date"], rec.get("amount"), rec.get("payment_method"))
         notes.append("N documento ausente — gerado de tipo+vencimento")
     rec["processing_notes"] = " | ".join(notes) if notes else None
     return rec
@@ -1074,13 +1057,12 @@ def build_record_regex(pdf_path, raw: str, source: str) -> dict:
     rec["amount_charged"] = resolve_amount_charged(rec)
     if len(raw) < 80:
         notes.append("Texto insuficiente — considerar Vision")
-    apply_pix_override(rec)
     apply_boleto_barcode_override(rec)
     apply_barcode_due_date(rec)   # vencimento AUTORITATIVO = fator do barcode (corrige inversao dia/mes)
     ensure_due_date(rec, notes)
     if not has_document_number(rec["invoice_number"]):
         rec["invoice_number"] = fallback_invoice_number(
-            rec["document_type"], rec["due_date"], rec.get("amount"))
+            rec["document_type"], rec["due_date"], rec.get("amount"), rec.get("payment_method"))
         notes.append("N documento ausente — gerado de tipo+vencimento")
     rec["processing_notes"] = " | ".join(notes)
     return rec

@@ -1287,11 +1287,13 @@ def build_financial_payload(row: dict, gmail_message_id: str,
     payload["document_type"] = _apply_cartorio_doc_type(
         payload.get("document_type"), subject, payload.get("supplier_name"))
 
-    # Nº documento em branco → sintético (PIX: valor; demais: tipo+vencimento) — mesma regra do corpo.
+    # Nº documento em branco → sintético (pagamento PIX + tipo 'outro': 'pix_' + valor;
+    # demais: tipo+vencimento) — mesma regra do corpo.
     if not payload.get("invoice_number"):
         synthetic = _synthetic_invoice_number(
             payload.get("document_type"), payload.get("amount"),
-            payload.get("due_date") or payload.get("issue_date"))
+            payload.get("due_date") or payload.get("issue_date"),
+            payload.get("payment_method"))
         if synthetic:
             payload["invoice_number"] = synthetic
 
@@ -2176,16 +2178,18 @@ def _format_brl(value) -> str:
     return f"R$ {s}"
 
 
-def _synthetic_invoice_number(document_type, amount, iso_date) -> str | None:
+def _synthetic_invoice_number(document_type, amount, iso_date, payment_method="") -> str | None:
     """N documento sintetico quando o documento nao traz numero proprio.
 
     Regra de negocio:
-    - PIX (sem N documento): 'PIX_' + valor em moeda BR. Ex.: 'PIX_R$ 10.999,99'.
+    - Pagamento PIX sem tipo claro (payment_method='pix' E document_type='outro'):
+      forma de pagamento + '_' + valor BR. Ex.: 'pix_R$ 10.999,99'.
     - Demais tipos: '{tipo}_{ddmmaa(vencimento|emissao)}' quando ha data.
-    Retorna None quando nao ha base para gerar (nao-PIX sem data).
+    Retorna None quando nao ha base para gerar (sem regra PIX e sem data).
     """
-    if (document_type or "").lower() == "pix" and amount is not None:
-        return f"PIX_{_format_brl(amount)}"
+    pm = (payment_method or "").lower()
+    if pm == "pix" and (document_type or "").lower() == "outro" and amount is not None:
+        return f"{pm}_{_format_brl(amount)}"
     ddmmyy = _iso_date_to_ddmmyy(iso_date)
     if ddmmyy:
         return f"{document_type or 'outro'}_{ddmmyy}"
@@ -2338,13 +2342,11 @@ def extract_from_email_body(body_text: str, received_at: str, message_id: str,
         document_type, payment_method = tax_subject, ("pix" if has_pix else "outro")
     elif classified == "honorários":
         document_type, payment_method = "honorários", "pix"
-    elif has_pix:
-        # PIX sobrescreve o tipo quando não é honorários. Valor em minúsculas para
-        # casar o enum (DOCUMENT_TYPES) e o <select> do frontend — o CHECK do banco
-        # usa lower(), mas a UI é case-sensitive (form de edição falhava com "PIX").
-        document_type, payment_method = "pix", "pix"
     else:
-        document_type, payment_method = classified, "outro"
+        # PIX é FORMA DE PAGAMENTO, não tipo de documento: o tipo fica o classificado
+        # ('outro' quando nada casou) e o PIX detectado reflete só no payment_method.
+        document_type = classified            # 'outro' quando nada casou
+        payment_method = "pix" if has_pix else "outro"
 
     # Boleto com PIX: linha digitavel / codigo de barras de BOLETO valido tem
     # precedencia sobre TODOS os ramos acima (inclusive has_pix e honorarios) —
@@ -2370,11 +2372,11 @@ def extract_from_email_body(body_text: str, received_at: str, message_id: str,
     # Mesma regra do caminho de PDF; só re-rotula tipos genéricos.
     document_type = _apply_cartorio_doc_type(document_type, subject, supplier_name)
 
-    # Numero de documento: valor encontrado no corpo ou sintetico
-    # (PIX: 'PIX_' + valor; demais: tipo+ddmmyy do vencimento/emissao).
+    # Numero de documento: valor encontrado no corpo ou sintetico (pagamento PIX +
+    # tipo 'outro': 'pix_' + valor; demais: tipo+ddmmyy do vencimento/emissao).
     if not invoice_number:
         invoice_number = _synthetic_invoice_number(
-            document_type, amount, due_date or issue_date) or invoice_number
+            document_type, amount, due_date or issue_date, payment_method) or invoice_number
 
     payload = {f: None for f in FINANCIAL_FIELDS}
     payload.update({

@@ -37,7 +37,9 @@ export const DOCUMENT_TYPES = [
   'gare',
   'tributo',
   'multa',
-  'pix',
+  // `pix` NÃO é tipo de documento — é só forma de pagamento (PAYMENT_METHODS). Um
+  // pagamento PIX sem outro indício de tipo fica `outro` (migration 075). Removido
+  // em 2026-07-10.
   'honorários',
   'container',
   // Cartório — pagamento de/em cartório (custas de tabelionato/registro/protesto);
