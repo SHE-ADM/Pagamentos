@@ -181,32 +181,30 @@ export default function Dashboard() {
           })}
         </div>
 
-        {/* Movimentações + Situação */}
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-3 mb-3">
-          <div className="card p-4 lg:col-span-2">
-            <div className="flex items-center justify-between mb-3">
-              <div>
-                <h3 className="text-sm font-semibold text-slate-800">Movimentações mês a mês</h3>
-                <p className="text-xs text-slate-500">Total a pagar vs. pago por vencimento — {year}</p>
-              </div>
-              <span className="text-xs text-slate-500">valores em R$</span>
+        {/* Movimentações mês a mês (largura total) */}
+        <div className="card p-3 mb-3">
+          <div className="flex items-center justify-between mb-2">
+            <div>
+              <h3 className="text-sm font-semibold text-slate-800">Movimentações mês a mês</h3>
+              <p className="text-xs text-slate-500">Total a pagar vs. pago por vencimento — {year}</p>
             </div>
-            <MonthlyFlow data={data} />
+            <span className="text-xs text-slate-500">valores em R$</span>
           </div>
+          <MonthlyFlow data={data} />
+        </div>
 
-          <div className="card p-4">
-            <div className="mb-3">
+        {/* Três donuts na mesma linha: situação, tipos de conta e formas de pagamento */}
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-3 mb-3">
+          <div className="card p-3">
+            <div className="mb-2">
               <h3 className="text-sm font-semibold text-slate-800">Minha situação</h3>
               <p className="text-xs text-slate-500">Por status · {scope === 'all' ? 'Todas as contas' : MONTHS_FULL[month]}</p>
             </div>
             <StatusDonut data={data} />
           </div>
-        </div>
 
-        {/* Tipos de contas + Tipos de pagamentos */}
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-3 mb-3">
-          <div className="card p-4">
-            <div className="mb-3">
+          <div className="card p-3">
+            <div className="mb-2">
               <h3 className="text-sm font-semibold text-slate-800">Tipos de contas</h3>
               <p className="text-xs text-slate-500">Por tipo de documento · {scope === 'all' ? 'Todas as contas' : MONTHS_FULL[month]}</p>
             </div>
@@ -216,8 +214,8 @@ export default function Dashboard() {
             />
           </div>
 
-          <div className="card p-4">
-            <div className="mb-3">
+          <div className="card p-3">
+            <div className="mb-2">
               <h3 className="text-sm font-semibold text-slate-800">Tipos de pagamentos</h3>
               <p className="text-xs text-slate-500">Por forma de pagamento · {scope === 'all' ? 'Todas as contas' : MONTHS_FULL[month]}</p>
             </div>
@@ -264,7 +262,7 @@ function MonthlyFlow({ data }: { data: DashboardData | null }) {
   const max = Math.max(1, ...flow.flatMap((d) => [d.aPagar, d.pago]));
   return (
     <div>
-      <div className="flex items-end gap-1.5 h-48">
+      <div className="flex items-end gap-1.5 h-36">
         {flow.map((d) => (
           <div key={d.month} className="flex-1 flex flex-col items-center justify-end h-full gap-1">
             <div className="flex items-end gap-0.5 w-full justify-center h-full">
@@ -298,16 +296,16 @@ function BreakdownDonut({ segs, colorFor }: { segs: DonutSeg[]; colorFor: (label
     return `${colorFor(s.label, i)} ${a}deg ${b}deg`;
   });
   return (
-    <div className="flex items-center gap-5">
-      <div className="relative w-[150px] h-[150px] shrink-0">
+    <div className="flex items-center gap-4">
+      <div className="relative w-[120px] h-[120px] shrink-0">
         {/* gradiente cônico → inline style (sem equivalente Tailwind) */}
         <div className="w-full h-full rounded-full" style={{ background: `conic-gradient(${stops.join(', ') || 'var(--color-slate-200) 0deg 360deg'})` }} />
-        <div className="absolute inset-5 rounded-full bg-white flex flex-col items-center justify-center shadow-[inset_0_1px_2px_rgba(0,0,0,0.04)]">
-          <span className="font-mono text-2xl font-semibold text-slate-900 leading-none">{total}</span>
+        <div className="absolute inset-4 rounded-full bg-white flex flex-col items-center justify-center shadow-[inset_0_1px_2px_rgba(0,0,0,0.04)]">
+          <span className="font-mono text-xl font-semibold text-slate-900 leading-none">{total}</span>
           <span className="text-xs text-slate-500 mt-0.5">contas</span>
         </div>
       </div>
-      <div className="flex-1 min-w-0 flex flex-col gap-1.5">
+      <div className="flex-1 min-w-0 flex flex-col gap-1">
         {segs.map((s, i) => (
           <div key={s.key} className="flex items-center gap-2 text-xs">
             <span className="h-2.5 w-2.5 rounded-xs shrink-0" style={{ background: colorFor(s.label, i) }} />
