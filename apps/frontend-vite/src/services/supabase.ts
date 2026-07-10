@@ -750,6 +750,9 @@ export interface PriorityAccount {
   due: string | null; amount: number | null; status: string; critical: boolean;
 }
 export type DashboardScope = 'month' | 'all';
+// Filtro por KPI clicado no topo do Dashboard. 'total' = sem filtro (padrão).
+// Os cards de KPI seguem mostrando os totais completos; só os gráficos filtram.
+export type KpiFilter = 'total' | 'pago' | 'aVencer' | 'vencendo7' | 'vencidas';
 export interface DashboardData {
   month: number; year: number; scope: DashboardScope;
   kpis: DashboardKpis;
@@ -826,9 +829,28 @@ export function groupDocumentTypeLabel(dt: string | null): string | null {
   return isTaxDocumentType(dt) ? 'Tributos' : dt;
 }
 
+// Predicado do filtro por KPI. Vale para qualquer linha com status_id + due_date
+// (MonthRow e YearRow). 'total' não filtra.
+function matchesKpiFilter(
+  r: { status_id: number; due_date: string | null },
+  filter: KpiFilter,
+  todayStr: string,
+  in7: string,
+): boolean {
+  switch (filter) {
+    case 'pago': return r.status_id === STATUS_ID_PAGO;
+    case 'aVencer': return r.status_id === STATUS_ID_A_VENCER;
+    case 'vencendo7': return r.status_id === STATUS_ID_A_VENCER && !!r.due_date && r.due_date >= todayStr && r.due_date <= in7;
+    case 'vencidas': return r.status_id === STATUS_ID_VENCIDO;
+    default: return true; // 'total'
+  }
+}
+
 // `scope` = 'month' (mês selecionado, padrão) ou 'all' (todas as contas, sem filtro
 // de data nos painéis). O gráfico de movimentações sempre reflete o `year`.
-export async function getDashboardData(month: number, year: number, scope: DashboardScope = 'month'): Promise<DashboardData> {
+// `filter` = KPI clicado no topo: os cards mantêm os totais completos, mas TODOS
+// os gráficos passam a refletir só o subconjunto do KPI (limpar = 'total').
+export async function getDashboardData(month: number, year: number, scope: DashboardScope = 'month', filter: KpiFilter = 'total'): Promise<DashboardData> {
   const first = new Date(Date.UTC(year, month, 1)).toISOString().slice(0, 10);
   const last = new Date(Date.UTC(year, month + 1, 0)).toISOString().slice(0, 10);
   const todayStr = new Date().toISOString().slice(0, 10);
@@ -867,9 +889,14 @@ export async function getDashboardData(month: number, year: number, scope: Dashb
     vencidasCount: vencidasRows.length, vencidasValue: sum(vencidasRows),
   };
 
+  // Aplica o filtro do KPI clicado APENAS aos gráficos (os KPIs acima usam o
+  // conjunto completo). 'total' => sem filtro (evita recriar os arrays à toa).
+  const fMonth = filter === 'total' ? monthRows : monthRows.filter((r) => matchesKpiFilter(r, filter, todayStr, in7));
+  const fYear = filter === 'total' ? yearRows : yearRows.filter((r) => matchesKpiFilter(r, filter, todayStr, in7));
+
   // Situação por status
   const statusMap = new Map<string, { count: number; value: number }>();
-  for (const r of monthRows) {
+  for (const r of fMonth) {
     const k = STATUS_NAME_BY_ID[r.status_id] ?? 'pendente';
     const cur = statusMap.get(k) ?? { count: 0, value: 0 };
     cur.count += 1; cur.value += num(r.amount);
@@ -881,15 +908,15 @@ export async function getDashboardData(month: number, year: number, scope: Dashb
 
   // Tipos de conta (document_type) e formas de pagamento (payment_method) — Top 8 + "outros".
   // No de tipos de conta, todas as guias tributárias colapsam num único "Tributos".
-  const documentTypeBreakdown = breakdownBy(monthRows, (r) => groupDocumentTypeLabel(r.document_type));
-  const paymentMethodBreakdown = breakdownBy(monthRows, (r) => r.payment_method);
+  const documentTypeBreakdown = breakdownBy(fMonth, (r) => groupDocumentTypeLabel(r.document_type));
+  const paymentMethodBreakdown = breakdownBy(fMonth, (r) => r.payment_method);
   // Donut "Tributos": cópia do de tipos de conta, mas só das guias tributárias,
   // detalhadas por tipo (darf, das, gnre, …).
-  const taxTypeBreakdown = breakdownBy(monthRows.filter((r) => isTaxDocumentType(r.document_type)), (r) => r.document_type);
+  const taxTypeBreakdown = breakdownBy(fMonth.filter((r) => isTaxDocumentType(r.document_type)), (r) => r.document_type);
 
   // Ranking de fornecedores (top 6 por valor)
   const supMap = new Map<string, { value: number; count: number }>();
-  for (const r of monthRows) {
+  for (const r of fMonth) {
     const k = supplierName(r);
     const cur = supMap.get(k) ?? { value: 0, count: 0 };
     cur.value += num(r.amount); cur.count += 1;
@@ -902,7 +929,7 @@ export async function getDashboardData(month: number, year: number, scope: Dashb
 
   // Movimentações mês a mês (12 baldes)
   const buckets: MonthlyFlow[] = Array.from({ length: 12 }, (_, m) => ({ month: m, aPagar: 0, pago: 0 }));
-  for (const r of yearRows) {
+  for (const r of fYear) {
     if (!r.due_date) continue;
     const m = Number(r.due_date.slice(5, 7)) - 1;
     if (m < 0 || m > 11) continue;
@@ -911,7 +938,7 @@ export async function getDashboardData(month: number, year: number, scope: Dashb
   }
 
   // Contas críticas / prioritárias: utilidades essenciais OU vencidas.
-  const priorityAccounts: PriorityAccount[] = monthRows
+  const priorityAccounts: PriorityAccount[] = fMonth
     .map((r): PriorityAccount | null => {
       const kind = classifyPriority(`${supplierName(r)} ${r.description ?? ''} ${r.document_type ?? ''}`);
       const isVencido = r.status_id === STATUS_ID_VENCIDO;
