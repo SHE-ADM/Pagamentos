@@ -889,8 +889,8 @@ export default function Consulta() {
             // destacada em fonte (Jakarta itálica) e cor (brand) distintas das células.
             renderRowFooter={(r) =>
               r.additional_info ? (
-                <div className="flex items-start gap-1.5 px-3 py-1.5 font-jakarta text-xs italic text-brand-dark whitespace-pre-wrap">
-                  <Info size={13} className="mt-0.5 shrink-0 text-brand" aria-hidden="true" />
+                <div className="flex items-start gap-1.5 px-3 py-1.5 font-jakarta text-xs italic text-slate-600 whitespace-pre-wrap">
+                  <Info size={13} className="mt-0.5 shrink-0 text-slate-500" aria-hidden="true" />
                   <span>
                     <span className="font-semibold not-italic">Informação adicional:</span> {r.additional_info}
                   </span>
