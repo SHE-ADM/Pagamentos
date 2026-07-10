@@ -1025,8 +1025,8 @@ export default function Consulta() {
           onCancel={() => setEditing(null)}
           className="fixed inset-0 m-auto h-fit max-h-[90vh] w-full max-w-2xl overflow-y-auto rounded-xl border-0 bg-white p-0 shadow-lg backdrop:bg-black/50"
         >
-          <div className="p-6">
-            <h2 className="mb-4 text-base font-semibold text-gray-900">Editar conta</h2>
+          <div className="p-4">
+            <h2 className="mb-3 text-base font-semibold text-gray-900">Editar conta</h2>
             <ContaForm
               mode="edit"
               defaultValues={editing}
