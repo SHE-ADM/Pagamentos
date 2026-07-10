@@ -12,6 +12,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 import pypdf
 
@@ -88,6 +89,45 @@ class TestDecryptPdf(unittest.TestCase):
         plain = _make_plain_pdf()
         try:
             self.assertFalse(extract_pdf._pdf_is_encrypted(plain))
+        finally:
+            plain.unlink()
+
+
+class TestEncryptedOwnerOnlyFallback(unittest.TestCase):
+    """Boleto cifrado só com senha de DONO (senha de usuario vazia): o pypdf marca
+    cifrado e decrypt('') devolve 0, mas o pdfminer/pdfplumber le. process_pdf deve
+    seguir com o ORIGINAL em vez de descartar como 'protegido por senha' (SB Credito)."""
+
+    def test_cifrado_mas_legivel_segue_com_original(self):
+        plain = _make_plain_pdf()
+        try:
+            with mock.patch.object(extract_pdf, "_is_image_file", return_value=False), \
+                 mock.patch.object(extract_pdf, "_pdf_is_encrypted", return_value=True), \
+                 mock.patch.object(extract_pdf, "_decrypt_pdf", return_value=None), \
+                 mock.patch.object(extract_pdf, "_pdf_text_readable", return_value=True), \
+                 mock.patch.object(extract_pdf, "_boleto_pages", return_value=[]), \
+                 mock.patch.object(extract_pdf, "_extract_single",
+                                   return_value={"amount": 8615.64,
+                                                 "document_type": "boleto"}) as m_extract:
+                recs = extract_pdf.process_pdf(plain)
+            self.assertEqual(len(recs), 1)
+            self.assertEqual(recs[0]["document_type"], "boleto")  # nao e failure_record
+            # Extraiu do ORIGINAL (fallback pdfplumber), nao de um decifrado.
+            self.assertEqual(m_extract.call_args.args[0], plain)
+        finally:
+            plain.unlink()
+
+    def test_cifrado_e_ilegivel_retorna_falha(self):
+        plain = _make_plain_pdf()
+        try:
+            with mock.patch.object(extract_pdf, "_is_image_file", return_value=False), \
+                 mock.patch.object(extract_pdf, "_pdf_is_encrypted", return_value=True), \
+                 mock.patch.object(extract_pdf, "_decrypt_pdf", return_value=None), \
+                 mock.patch.object(extract_pdf, "_pdf_text_readable", return_value=False):
+                recs = extract_pdf.process_pdf(plain)
+            self.assertEqual(len(recs), 1)
+            self.assertEqual(recs[0]["document_type"], "ERRO")
+            self.assertIn("senha", (recs[0].get("processing_notes") or "").lower())
         finally:
             plain.unlink()
 

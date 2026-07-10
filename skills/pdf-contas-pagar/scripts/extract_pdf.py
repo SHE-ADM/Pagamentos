@@ -1069,6 +1069,19 @@ def _pdf_is_encrypted(pdf_path) -> bool:
         return False
 
 
+def _pdf_text_readable(pdf_path) -> bool:
+    """True se o pdfplumber/pdfminer consegue LER texto do PDF sem senha. Cobre o caso
+    comum de boleto cifrado só com senha de DONO (senha de USUARIO vazia + flags de
+    restrição): o pypdf marca is_encrypted=True e reader.decrypt('') devolve 0 (nao
+    decifra), mas o pdfminer abre o arquivo transparentemente. Sem esse fallback, o
+    boleto legivel era descartado como 'protegido por senha' (caso SB Credito)."""
+    try:
+        with pdfplumber.open(str(pdf_path)) as pdf:
+            return any((page.extract_text() or "").strip() for page in pdf.pages[:2])
+    except Exception:
+        return False
+
+
 def _decrypt_pdf(pdf_path, passwords) -> "Path | None":
     """Tenta abrir o PDF cifrado com cada senha candidata (senha vazia primeiro, depois
     as fornecidas — ex.: CNPJ[:4]/[:5]/[:6] do pagador). Em sucesso, grava uma cópia
@@ -1142,11 +1155,18 @@ def process_pdf(pdf_path, force_vision=False, pdf_passwords=None):
     try:
         if _pdf_is_encrypted(pdf_path):
             dec = _decrypt_pdf(pdf_path, pdf_passwords)
-            if dec is None:
+            if dec is not None:
+                tmps.append(dec)
+                work = dec
+            elif _pdf_text_readable(pdf_path):
+                # Cifrado apenas com senha de DONO (senha de usuario vazia): o pypdf
+                # nao decifra, mas o pdfminer/pdfplumber le normalmente. Segue com o
+                # ORIGINAL em vez de descartar como ilegivel (caso SB Credito).
+                log.info(f"  → {pdf_path.name}: cifrado so com restricoes de dono — lido via pdfplumber")
+                work = pdf_path
+            else:
                 log.warning(f"  ✗ {pdf_path.name}: protegido por senha — nenhuma senha candidata abriu")
                 return [_failure_record(pdf_path, "PDF protegido por senha — nenhuma senha candidata (CNPJ) abriu")]
-            tmps.append(dec)
-            work = dec
 
         boleto_pages = _boleto_pages(work)
         if len(boleto_pages) >= 2:

@@ -16,6 +16,10 @@ E um **terceiro pipeline (infra): backup diário do Supabase** (skill `backup-su
 `pg_dump` do banco + download do bucket `attachments`, agendado às 02:00. Ver "Pipeline de
 backup do Supabase (skill `backup-supabase`)".
 
+E um **quarto pipeline (reconciliação): baixa automática de contas pagas** (skill
+`baixa-automatica`) — marca como `pago` as contas com NF + Boleto confirmados e vencimento
+vencido, agendado às 06:00. Ver "Pipeline de baixa automática (skill `baixa-automatica`)".
+
 > **Arquitetura: monorepo Sheild com backend híbrido.** Desde a reestruturação de
 > 2026-06-09, o projeto adota o monorepo `apps/* + packages/shared` (npm workspaces),
 > mas o backend é **híbrido** — pontos onde ainda diverge do padrão genérico:
@@ -938,7 +942,7 @@ apps/frontend-vite/src/components/
 │   ├── dataGrid.variants.ts   # cva por slot (header/row/cell/skeleton/empty/pin/resize/grip/densidade/wrap) default|silver
 │   └── dataGrid.rows.ts       # buildRenderItems (achata linhas→itens row/second/detail p/ virtualização)
 ├── AuthLayout.tsx             # (gradient) wrapper full-page para Forgot/Reset
-├── AttachmentViewer.tsx       # visualizador de PDF (signed URL do Storage) em <dialog> nativo (showModal: role/foco/trap/Esc nativos) + iframe
+├── AttachmentViewer.tsx       # visualizador de PDF (signed URL do Storage) em <dialog> nativo (showModal: role/foco/trap/Esc nativos) + iframe SEM sandbox — o viewer PDF do Chrome (PDFium) não renderiza em iframe sandboxed, nem com allow-scripts (S5-1 introduziu e quebrou o boleto; revertido). NÃO reintroduzir sandbox; ver comentário no componente
 ├── Layout.tsx (+ Layout.test.tsx)   # sidebar; navLink = cva local (estado active); menu em 5 grupos (ver abaixo)
 ├── ProtectedRoute.tsx
 ├── ErrorBoundary.tsx          # boundary raiz (main.tsx): chunk lazy obsoleto → auto-reload; runtime → fallback "Recarregar" (+ teste/a11y)
@@ -1308,6 +1312,27 @@ ordem inversa). **Limpeza retroativa** aplicada em 2026-07-03: hard delete de 7 
 que coexistiam com o boleto do mesmo e-mail (ids 379/327/146/242/129/387/111; boletos
 380/328/147/243/130/388/112 preservados) — todos os pares tinham valor idêntico.
 
+### Documentos NÃO-pagáveis pulados no Passo 2 (baixa de recebível, assinatura/marketing — não regredir)
+
+Duas guardas adicionais em `extract_and_store_accounts` **Passo 2**, no mesmo ponto e padrão
+(`skipped_nonpayable`) dos skips CT-e/fatura+boleto — **acima** das validações
+`sem_valor`/`sem_fornecedor`, para o e-mail virar `ignorado` (não `falha`) e **não logar erro**:
+
+- **Baixa/cancelamento de RECEBÍVEL próprio** (`_is_receivable_notice(subject, description)`):
+  e-mail sobre títulos que a **empresa EMITIU** (relatório de baixa/cancelamento, ex.: assunto
+  "COBRANÇA OTIMOTEX" / "Cobranças não enviadas", ou descrição "Cancelamento (Baixa)…") — não é
+  conta a pagar. Sinais: `_RECEIVABLE_SUBJECT_TERMS` (assunto) ou `_RECEIVABLE_DESC_RE` (descrição).
+- **Conteúdo visual sem valor** (`_is_nonpayable_visual(row)`): imagem de **assinatura/logo de
+  e-mail** (`image001.png` colada no corpo, Vision descreve "Assinatura de e-mail comercial") ou
+  **apresentação/proposta de marketing** (ex.: GNW Business). **Conservador:** só dispara com
+  `amount<=0` **E** sem código de barras — recibo/boleto legítimo (inclusive inline) tem valor
+  e/ou linha digitável, então nunca cai aqui. Regex `_SIGNATURE_DESC_RE`/`_MARKETING_DESC_RE`
+  sobre a `description`. **Limitação conhecida:** quando o Vision devolve só o contato cru (nome +
+  telefone) em vez de "assinatura", a imagem não casa e cai em `sem_valor` (ex.: assinatura da
+  Saito no e-mail de locação) — aceitável, vira lançamento manual.
+
+Testes: `tests/test_nonpayable_rules.py`.
+
 ### Vencimento AUTORITATIVO pelo fator do código de barras (não regredir)
 
 A data de vencimento de um boleto é **codificada pelo emissor no FATOR DE VENCIMENTO** do
@@ -1406,53 +1431,61 @@ origem: id 400 ("PAGAMENTO CARTORIO ...", boleto real → re-rotulado `cartório
 066 amplia o CHECK + faz backfill dos genéricos com contexto de cartório no assunto. Teste:
 `tests/test_doc_type_cartorio.py`.
 
-**Classificação contábil FORÇADA por tipo de documento (extração — não regredir):** certos
-documentos vão SEMPRE para uma conta contábil fixa, e parte deles **propaga** a classificação ao
-cadastro do fornecedor (write-back). Regras (só na extração de e-mail; o CRUD manual/modal segue com o
-write-back TS próprio):
+**Classificação contábil AUTOMÁTICA de GUIAS TRIBUTÁRIAS (extração — não regredir):** para
+**e‑mails tributários** (`_is_tax_document`, `document_type` ∈ `darf, das, gru, dae, dare, gnre,
+ipva, iptu, dam, duam, dam / duam, iss, itbi, gare, tributo`), a guia é **relacionada
+automaticamente ao plano de contas** (`financial_chart_of_account`) pelo TIPO/CONTEXTO do imposto,
+determinando `cost_center_id`/`chart_account_id` — **NÃO** a partir do `supplier`. **Precedência
+MÁXIMA:** essa regra determinística **VENCE** o default do fornecedor e as demais regras; e **grava
+com write‑back** (o `supplier` é atualizado com o mesmo destino, exceto **OTIMOTEX** `sk=1` e
+**funcionário** — trigger `trg_supplier_no_funcionario_classification`). Quando **não** dá para
+determinar (sem sinal, `tributo` sem esfera, ou código ausente no cadastro), **não força** — cai no
+comportamento atual (default do fornecedor).
 
-| Documento | `cost_center_id` | `chart_account_id` | Write-back no `supplier`? |
-|---|---|---|---|
-| **IRRF** | 3 (Fiscal) | 28 (IRRF a Recolher) | **Não** |
-| **DUIMP** ou **ICMS Importação** | 3 (Fiscal) | 11 (ICMS Importação a Recolher) | **Sim** |
-| **Transporte / transportadora / CT-e** | 4 (Logística) | 339 (Serviços de Transportadoras) | **Sim** |
-| **DAM / DUAM** | *(do plano `4.1.06`)* | *(do plano `4.1.06`)* | **Não** |
-| **GNRE de ICMS Substituição Tributária** (frase de ST **ou** remetente `@lebianco`) | *(do plano `4.1.02`)* | *(do plano `4.1.02`)* | **Não** |
+O alvo é sempre um **`account_code`** do plano, resolvido para `(cost_center_id, chart_account_id)`
+por `SupabaseControl.classification_for_account_code(code)` (cacheado, `:640`) — **não hardcodar ids**
+(se o cadastro reclassificar, a regra acompanha). Resolvedor `_resolve_tax_chart_code(document_type,
+blob, sender_email)` em **3 níveis** (blob = assunto+descrição+corpo, sem acento via `_ns_body`/
+`_has_word`):
 
-**Estas regras SOBREPÕEM a classificação herdada do fornecedor** (o `cost_center_id`/`chart_account_id`
-que `_finalize_supplier` injeta a partir do `supplier`): a regra roda DEPOIS e sobrescreve o payload.
-Regra global: **nunca** gravar no `supplier` quando `sk_supplier = 1` (OTIMOTEX). Implementação em
-`read_emails.py`: constantes `CC_FISCAL`/`CC_LOGISTICA`/`CA_IRRF`/`CA_ICMS_IMPORT`/`CA_TRANSPORTADORAS`
-(ids reais dos cadastros — não usar magic number), detector puro `_detect_forced_classification(
-document_type, subject, *extra_texts)` (regras de id FIXO) e o wrapper
-`resolve_forced_classification(ctrl, document_type, subject, *extra_texts)` →
-`(cost_center_id, chart_account_id, write_back)`, aplicado por `apply_forced_classification(ctrl,
-payload, extra_text=None)`. **Regras RESOLVIDAS do plano de contas por código** (`_chart_code_for_document`
-+ `SupabaseControl.classification_for_account_code(code)`, cacheado): usam o `cost_center_id` + o
-`chart_account_id` (PK) da própria linha do plano — **não hardcodar** os ids (se o cadastro for
-reclassificado, a regra acompanha; se o código não existir, não força e mantém o default do fornecedor):
-**DAM / DUAM** → código `4.1.06` (`DAM_DUAM_CHART_CODE`; hoje "ISS a Recolher", cc=3/id=42, por
-`document_type`); **GNRE de ICMS Substituição Tributária** → código `4.1.02`
-(`GNRE_ICMS_ST_CHART_CODE`; hoje "ICMS-ST a Recolher", cc=3/id=33) — exige `document_type='gnre'` **E**
-um de DOIS gatilhos: (a) frase EXPLÍCITA de ST no texto (`_ICMS_ST_PHRASES`: `substituição tributária`/
-`subst.tribut`/`icms st`…) **ou** (b) **remetente do domínio `@lebianco`** (`_is_lebianco_sender`/
-`LEBIANCO_DOMAIN = "lebianco.com.br"`, + subdomínios — o setor que envia as guias de ST; o
-`sender_email` do payload é passado por `resolve_forced_classification`/`_chart_code_for_document`).
-GNRE só com código de receita/protocolo, de outro remetente, **não** casa — decisão do usuário.
-**Detecção** dos demais por
-ASSUNTO + DESCRIÇÃO do documento (+ corpo no caminho de corpo, via `extra_text`), palavra inteira sem
-acento (`_has_word`/`_ns_body`): `irrf`, `duimp` e as frases `_ICMS_IMPORT_PHRASES` (`icms importacao`…;
-**nunca** casa "icms" sozinho — ICMS/GNRE normal não cai aqui); transporte reusa `_is_transport_context`
-(cobre `document_type=='cte'` + termos NO ASSUNTO). Precedência: regras fixas (IRRF → DUIMP/ICMS →
-transporte) e, só se nenhuma casar, as por código (DAM/DUAM, GNRE-ST) — assim uma GNRE de ICMS
-**Importação** vai para 3/11 (regra fixa), não para 4.1.02. **Ponto de aplicação:** APÓS
-`_finalize_supplier` (que já setou `sk_supplier` + o default do fornecedor) e ANTES da gravação, nos dois
-caminhos (PDF em `extract_and_store_accounts`; corpo em `try_extract_from_body`, onde os clones de
-parcela herdam a classificação do payload base). **Write-back** via `SupabaseControl.
-update_supplier_classification(sk, cc, ca)` (PATCH `supplier`, best-effort — espelha o TS
-`setSupplierClassification`); nunca para `sk=1`. Backfill retroativo:
-`scripts/reprocess_classification_overrides.py` (`--dry-run`, reusa `resolve_forced_classification`).
-Testes: `tests/test_classification_overrides.py`.
+1. **Frase/combinação específica** (maior prioridade): `_ICMS_IMPORT_PHRASES`→`4.3.05` (ICMS
+   Importação); `_ICMS_ST_PHRASES` **ou** GNRE de `@lebianco` (`_is_lebianco_sender`)→`4.1.02`
+   (ICMS‑ST); `imposto de importacao`→`4.3.01` (II); `pis`+`cofins`+(`csll`/`retid`)→`4.2.05`.
+2. **Por `document_type`** (a guia já determina o imposto — vem ANTES do scan p/ não rebaixar GNRE):
+   `gnre`→`4.4.01` (GNRE a Recolher), `gare`→`4.1.01` (ICMS), `iss`→`4.1.06`, `ipva`→`6.4.02`,
+   `iptu`→`6.4.01`, `das`→`4.4.04` (Taxas Federais — Simples sem conta dedicada).
+3. **Palavra‑chave distintiva** no texto (refina DARF/DARE/GRU): `irrf`→`4.2.03`, `irpj`→`4.2.01`,
+   `csll`→`4.2.02`, `inss`→`4.2.04`, `iss`→`4.1.06`, `ipi`→`4.1.03`, `cofins`→`4.1.05`, `pis`→`4.1.04`,
+   `icms`→`4.1.01`, `ipva`→`6.4.02`, `iptu`→`6.4.01`.
+4. **Fallback por ESFERA** do `document_type`: federal (`darf`/`gru`/`dae`)→`4.4.04`; estadual
+   (`dare`)→`4.4.02`; municipal (`dam`/`duam`/`dam / duam`/`itbi`)→`4.4.03`. `tributo` (sem esfera)
+   **não força** (evita mis‑forçar boleto de fornecedor mal‑rotulado).
+
+`resolve_forced_classification(ctrl, document_type, subject, *extra_texts, sender_email, sk_supplier)`
+→ `(cc, ca, write_back)`: se `_is_tax_document`, o fornecedor **não** está excluído (ver EXCLUSÃO
+abaixo) e o resolvedor devolve um code com cc/ca ≠ 0/0 → `(cc, ca, True)`. Aplicado por
+`apply_forced_classification` (que passa `sk_supplier`) APÓS `_finalize_supplier` e ANTES da
+gravação, nos dois caminhos (PDF em `extract_and_store_accounts`; corpo em `try_extract_from_body`,
+onde os clones de parcela herdam a classificação). Write‑back via `update_supplier_classification(sk,
+cc, ca)` (PATCH `supplier`, best‑effort; nunca `sk=1`). As regras antigas fixas (IRRF/ICMS‑Import) e
+por‑código (DAM/DUAM→ISS, GNRE‑ST) foram **subsumidas** pelo resolvedor (removidas
+`_detect_forced_classification`/`_chart_code_for_document` e as constantes `CC_FISCAL`/`CA_IRRF`/
+`CA_ICMS_IMPORT`/`DAM_DUAM_*`/`GNRE_ICMS_ST_CHART_CODE`). **Mudanças de comportamento:** DAM/DUAM sai
+de ISS (4.1.06) → Taxas Municipais (4.4.03); GNRE sem ST agora classifica (4.4.01, antes 0/0);
+IRRF/ICMS‑Import/GNRE‑ST/DAM passam a fazer **write‑back**; um CT‑e com "IRRF" no texto segue como
+transporte (não é tributário). **TRANSPORTE (não‑tributário) preservado à parte:** CT‑e/frete →
+`CC_LOGISTICA`(4)/`CA_TRANSPORTADORAS`(339), com write‑back, só por assunto+document_type
+(`_is_transport_context`). Backfill retroativo: `scripts/reprocess_classification_overrides.py`
+(`--dry-run`, reusa `resolve_forced_classification`). Testes: `tests/test_classification_overrides.py`.
+**EXCLUSÃO de fornecedor (não regredir):** fornecedores em
+`TAX_CLASSIFICATION_EXCLUDED_SK_SUPPLIERS` (hoje `{1262}` = **Dr. Ricardo**, despachante) **NÃO**
+recebem a classificação tributária forçada — a regra é pulada (o `sk_supplier` é passado a
+`resolve_forced_classification`) e a conta mantém o **default do fornecedor** (Dr. Ricardo =
+Jurídico/Reembolsos 14/530). Motivo: as contas dele são **reembolso de tributos, honorários e
+outros tipos jurídicos**, nunca conta fiscal pura, mesmo quando o documento é uma guia de
+arrecadação (Junta Comercial). Ver memória `dr-ricardo-reembolso`. **Risco residual:** outro
+fornecedor mal‑rotulado como tributário (ainda não na allowlist de exclusão) seria classificado
+por esfera — acrescentar o `sk_supplier` ao set quando identificado.
 
 **CT-e / transporte: só o BOLETO gera conta; o CT-e fiscal é ignorado (não regredir):** o
 CT-e (Conhecimento de Transporte) é documento **fiscal**, não pagável — quem se paga é o
@@ -1821,6 +1854,19 @@ legível) é preferível. Teste: `tests/test_body_installments.py`.
 > `tests/test_pdf_decrypt.py` (decrypt + candidatos) e a validação dos helpers contra o PDF real
 > (`_boleto_pages`/`_write_single_page`). **Importante (produção):** copiar `extract_pdf.py` **e**
 > `read_emails.py` juntos e instalar `pypdf` na máquina do scheduler — ver "Deploy manual".
+
+> **Boleto cifrado só com senha de DONO (usuário vazia) — RESOLVIDO via pdfplumber (não regredir):**
+> caso distinto do OBER (SB Crédito / HYOSUNG via "SB CREDITO SECURITIZADORA"): o PDF é cifrado
+> **só com senha de DONO** (senha de USUÁRIO vazia + flags de restrição). O `pypdf` marca
+> `is_encrypted=True` e `reader.decrypt('')` devolve `0` (**não** decifra), mas o **pdfplumber/
+> pdfminer lê o arquivo transparentemente**. Antes, o gate de decrypt descartava esses boletos
+> legíveis como "protegido por senha" → `extracao_falhou` em massa (14 boletos SB Crédito presos).
+> Correção em `process_pdf`: quando `_pdf_is_encrypted` E `_decrypt_pdf` retorna `None` **MAS**
+> `_pdf_text_readable(pdf_path)` (o pdfplumber lê texto) → segue com o PDF **ORIGINAL**
+> (`work = pdf_path`) em vez de emitir `_failure_record`. Só quando o pdfplumber TAMBÉM não lê
+> (senha real desconhecida — ex.: boleto dos **Correios** "Sua Fatura Correios Empresas") é que
+> vira falha/manual. Testes: `tests/test_pdf_decrypt.py` (`TestEncryptedOwnerOnlyFallback`).
+> **Deploy:** só `extract_pdf.py` (sem dependência nova).
 `extract_from_email_body()` faz parsing por regex. **Fornecedor** (`_BODY_NAME_RE`): rótulo no
 início da linha — `fornecedor`/`responsável`/`prestador`/`nome` (+ `favorecido`/`beneficiário`/
 `cedente`/`razão social`/`empresa`). O **separador `:`/`-` é OPCIONAL** (aceita só espaço,
@@ -1834,13 +1880,19 @@ com stopwords cortando a captura). Depois o **mapa por remetente** (`_supplier_f
 `_SENDER_SUPPLIER_MAP`: `correios.com.br` → `Correios`) e só então cai para `sender_email`.
 **Valor** (`_extract_body_amount`): (1) "Total"/"Valor Total" com `R$` tem precedência; (2) valores
 `R$` somados; (3) **fallback sem `R$`** (`_BODY_LABELED_AMT_RE`) — número rotulado por `Valor`/`Total`
-no formato BR com **exatamente 2 casas** (`Valor 50,00`, `Total 1.250,00`), usado só quando não há
+no formato BR com **2 a 3 casas** (`Valor 50,00`, `Total 1.250,00`), usado só quando não há
 nenhum `R$` (exige rótulo + centavos p/ não pegar número solto/`NF 1087`; "Total" tem precedência
-sobre "Valor"). O fallback tolera **um conectivo curto colado ao número** (`de`/`da`/`do`) entre o
-rótulo e o valor — `o valor de 172,39` casa; um substantivo no meio (`Total da nota 1.250,00`, sem
-`R$`) **não** casa (conservador, evita falso positivo; o caminho com `R$` cobre o caso comum). `payment_method='pix'` se o termo aparecer (ou sempre, p/ honorários). **Valida
+sobre "Valor"). **3ª casa decimal (não regredir):** aceita `,\d{2,3}` — o 3º dígito é digitação com
+zero a mais (ex.: `VALOR: 1.799,960` → R$ 1.799,96, id 186, nota interna NIKE); `_brl_to_decimal`
+trata vírgula como decimal BR com `,\d{1,3}$` e `round(…,2)` normaliza (sem o fix, caía no ramo de
+milhar e virava R$ 1,80). O fallback tolera **um conectivo curto colado ao número** (`de`/`da`/`do`)
+entre o rótulo e o valor — `o valor de 172,39` casa; um substantivo no meio (`Total da nota 1.250,00`,
+sem `R$`) **não** casa (conservador, evita falso positivo; o caminho com `R$` cobre o caso comum).
+`payment_method='pix'` se o termo aparecer (ou sempre, p/ honorários). **Vencimento** (`_BODY_DUE_RE`
+= "vencimento"): fallback **`_BODY_PAYDATE_RE`** reconhece `DATA (PARA/DE) PAGAMENTO: DD/MM/AA` (rótulo
+das notas internas, id 186) antes de cair na data de emissão/extração. **Valida
 fornecedor+valor**: sem valor → não grava conta (vira `falha`). `email_body_excerpt` (migration 016)
-guarda o corpo completo. O **barcode do corpo**
+guarda o corpo completo. Testes: `tests/test_body_amount.py`. O **barcode do corpo**
 é normalizado por `_normalize_body_barcode`, que reusa `extract_pdf.normalize_barcode` (import
 lazy) — mesma regra canônica do caminho de PDF (44/48 dígitos mantidos, 47 → 44, outros →
 None), em vez de um `re.sub` solto que aceitava qualquer sequência de 44-48 (F2).
@@ -1947,10 +1999,18 @@ pagável (`boleto/fatura/vencimento/`acrônimos…) que **não** gera conta a pa
 
 **Notificações → `ignorado`** (`subject_is_ignorable_notification`, `tests/test_match_keyword.py`):
 e-mails de aviso/confirmação **sem anexo e sem conta no corpo** (gatilho no lugar do antigo
-`falha`) viram `ignorado`. Termos: palavra inteira `nfe, nf-e, informe, sieg`; frases
-`informativo, confirmado (o) pagamento, confirmação de/do pagamento, pagamento confirmado,
+`falha`) viram `ignorado`. Termos: palavra inteira `nfe, nf-e, informe, sieg, cte, ct-e, dacte`;
+frases `informativo, confirmado (o) pagamento, confirmação de/do pagamento, pagamento confirmado,
 pagamento processado, aviso de vencimento, título a vencer, lembrete de vencimento, títulos
-próximos do vencimento, comprovante de pix, protesto, protestado, cartório, comunicado`.
+próximos do vencimento, comprovante de pix, protesto, protestado, cartório, comunicado,
+fatura a vencer, aviso de fatura, conhecimento de transporte`.
+**CT-e/transporte (não regredir):** os termos `cte`/`ct-e`/`dacte`/`conhecimento de transporte`
+fecham a lacuna da notificação de CT-e **sem anexo/link** (ex.: SSW "Arquivos de Conhecimento de
+Transporte Eletronico", "OCORRENCIA CTE …") — a regra CT-e-sem-boleto de `extract_and_store` só
+atua quando há PDF extraído; aqui não há anexo, então cai neste nível. Como `notification` é o
+**último** critério de `status_for_result`, um boleto de transporte real gera conta ANTES e não é
+escondido. **`fatura a vencer`/`aviso de fatura`** cobrem o aviso da transitobrasil ("Aviso de
+fatura a vencer"). Testes: `tests/test_nonpayable_rules.py` + `tests/test_match_keyword.py`.
 **Nota:** qualquer assunto com a palavra `lembrete` já é ignorado **antes** deste ponto, no
 nível FORTE (`subject_is_reminder`, sem baixar/extrair — ver "Assunto com 'lembrete'"), então o
 termo `lembrete de vencimento` aqui é redundante; os demais termos de vencimento (`aviso de
@@ -2210,11 +2270,23 @@ local/agendada (ver flag `EMAIL_READER_ENABLED` acima e memória [[vercel-deploy
 ## Banco de dados (Supabase)
 
 Migrations em `supabase/migrations/`, aplicadas **manualmente no SQL Editor** em ordem
-numérica (`001` → `073`). **Próxima migration = `074`** (verificar sempre antes de criar nova).
+numérica (`001` → `074`). **Próxima migration = `075`** (verificar sempre antes de criar nova).
 Não há migration automática. (As `059`/`060`/`061`/`063`/`064`/`066`/`067`/
-`068`/`069`/`070`/`071`/**`072`**/**`073`** foram aplicadas **direto via Supabase MCP** nesta máquina — o
-arquivo numerado serve
-de histórico; **não reaplicar** no SQL Editor (todas idempotentes, mas evite re-run). A **073**
+`068`/`069`/`070`/`071`/**`072`**/**`073`**/**`074`** foram aplicadas **direto via Supabase MCP** nesta
+máquina — o arquivo numerado serve
+de histórico; **não reaplicar** no SQL Editor (todas idempotentes, mas evite re-run). A **074**
+(correção de REGRESSÃO da 072 — não regredir): a 072 revogou `EXECUTE` de `resolve_company_id` de
+`authenticated`, mas o trigger `BEFORE INSERT/UPDATE trg_fe_company_id` → `trg_fe_resolve_company()`
+era **SECURITY INVOKER**, então passou a rodar como `authenticated` (sem EXECUTE) e **quebrou TODO
+UPDATE do frontend** em `financial_account_control` — marcar NF/BOL e trocar situação em `/consulta`
+davam `403 permission denied for function resolve_company_id`. Fix: a função do trigger vira
+**`SECURITY DEFINER`** (owner `postgres`, que mantém EXECUTE) + `search_path` fixo + chamada
+qualificada `public.resolve_company_id`. Comportamento inalterado (o `company_id` já era resolvido em
+todo write); o vetor S2-1 segue FECHADO (RPC direta por `anon`/`authenticated` continua `42501`).
+Verificado no banco: `prosecdef=true`, UPDATE de curadoria como `authenticated` não levanta 42501, e
+`anon`→42501 na RPC. **Lição:** ao revogar EXECUTE de uma função chamada por TRIGGER, garantir que a
+função do trigger seja SECURITY DEFINER (owner com EXECUTE) — senão todo write pelo papel restrito
+quebra. A **073**
 (higiene da auditoria de segurança 2026-07-08, idempotente): (1) **A5-2** — seed do grupo 1
 "Administrador" em `user_group` (a 065 faz `UPDATE user_profile SET group_id=1`, mas a 063 só semeava
 o sentinela 0 — em aplicação LIMPA a FK abortaria); (2) **S2-2** — policy **RESTRICTIVE**

@@ -93,14 +93,17 @@ class IgnorableNotificationTest(unittest.TestCase):
                         "ALERTA: Título protestado - Sua reputação no SPC/Serasa",
                         "Intimação de protesto - Tabelionato",
                         "Comunicado do Cartório de Protesto",
-                        "Comunicado Importante: Operações de entrega - Arlete"]:
+                        "Comunicado Importante: Operações de entrega - Arlete",
+                        # CT-e/transporte SEM boleto — documento fiscal, notificacao
+                        # de disponibilizacao/ocorrencia; nao e conta a pagar.
+                        "Arquivos de Conhecimento de Transporte Eletronico (1)",
+                        "OCORRENCIA CTE 699089 P 207 NF 241733 ENTREGA COM FALTA"]:
             self.assertTrue(read_emails.subject_is_ignorable_notification(assunto), assunto)
 
     def test_pagaveis_reais_sao_false(self):
-        # Sem termo de notificacao — boleto/CT-e de verdade ficam em 'falha' p/ revisao.
+        # Sem termo de notificacao — boleto de verdade fica em 'falha' p/ revisao.
         for assunto in ["Recebimento: Boleto e NFS-e Nº 37535",
                         "Boletos emitidos por: COMPANHIA INDUSTRIAL CATAGUASES",
-                        "Arquivos de Conhecimento de Transporte Eletronico (1)",
                         "RES: boleto e nf em anexo favor confirmar"]:
             self.assertFalse(read_emails.subject_is_ignorable_notification(assunto), assunto)
 

@@ -900,12 +900,19 @@ def _is_non_supplier_term(name: str | None) -> bool:
 # decisao do usuario; 'multa' tambem fica de fora (pode ter fornecedor proprio).
 _TAX_DOCUMENT_TYPES = frozenset({
     "darf", "das", "gru", "dae", "dare", "gnre", "ipva", "iptu",
-    "dam", "duam", "iss", "itbi", "gare", "tributo",
+    "dam", "duam", "dam / duam", "iss", "itbi", "gare", "tributo",
 })
 
 # sk_supplier (= supplier_id) da OTIMOTEX, a propria empresa pagadora (constante do
 # sistema). Guias de imposto sem favorecido identificavel sao lancadas sob a OTIMOTEX.
 OTIMOTEX_SK_SUPPLIER = 1
+
+# Fornecedores EXCLUIDOS da classificacao contabil TRIBUTARIA deterministica. Ex.: "Dr. Ricardo"
+# (sk 1262) e um despachante — suas contas sao REEMBOLSO de tributos, honorarios e outros tipos
+# JURIDICOS (Juridico/Reembolsos), NUNCA conta fiscal/tributaria pura, ainda que o documento seja
+# uma guia de arrecadacao (Junta Comercial etc.). Para esses, a regra tributaria NAO forca —
+# preserva o default do fornecedor / o valor da extracao. Ver memoria dr-ricardo-reembolso.
+TAX_CLASSIFICATION_EXCLUDED_SK_SUPPLIERS = frozenset({1262})
 
 
 def _is_tax_document(document_type: str | None) -> bool:
@@ -1062,13 +1069,25 @@ def subject_is_pure_nfe(subject: str) -> bool:
 # anexo/conta — se nao veio anexo nem dado no corpo, e so um aviso.
 #   - palavra inteira (curtos/sigla): evita casar dentro de outras palavras.
 #   - frase (substring): expressoes inequivocas de notificacao.
-NOTIFICATION_WORD_TERMS = frozenset({"nfe", "nf-e", "informe", "sieg"})
+NOTIFICATION_WORD_TERMS = frozenset({
+    "nfe", "nf-e", "informe", "sieg",
+    # CT-e/transporte: documento FISCAL. A notificacao de disponibilizacao de CT-e
+    # (ou aviso de OCORRENCIA de entrega) SEM boleto anexo/no corpo nao e conta a
+    # pagar — vira 'ignorado'. Um boleto de transporte real gera conta ANTES (o
+    # 'notification' e o ultimo criterio), entao nao e escondido por estes termos.
+    "cte", "ct-e", "dacte",
+})
 NOTIFICATION_PHRASE_TERMS = (
     "informativo", "confirmado o pagamento", "confirmado pagamento",
     "confirmacao de pagamento", "confirmacao do pagamento", "pagamento confirmado",
     "pagamento processado", "aviso de vencimento",
     "titulo a vencer", "lembrete de vencimento", "titulos proximos do vencimento",
     "comprovante de pix", "protesto", "protestado", "cartorio", "comunicado",
+    # Aviso/lembrete de fatura a vencer (ex.: transitobrasil "Aviso de fatura a
+    # vencer") — e so um AVISO, nao a cobranca em si; sem anexo/conta → 'ignorado'.
+    "fatura a vencer", "aviso de fatura",
+    # Notificacao de disponibilizacao de CT-e (SSW/transportadora) sem boleto.
+    "conhecimento de transporte",
 )
 
 
@@ -1451,9 +1470,12 @@ _BODY_NET_RE     = re.compile(
 # Tolera um conectivo curto (de/da/do) entre o rotulo e o numero ("valor de 172,39")
 # sem casar substring ("valor desconto" nao casa: o numero nao segue o conectivo).
 # group(1)=rotulo, group(2)=numero. "Total"/"Valor Total" tem precedencia sobre "Valor".
+# Aceita 2-3 casas decimais: o 3º digito e digitacao com zero a mais (ex.: "VALOR:
+# 1.799,960" → 1799,96, id 186) — o _brl_to_decimal normaliza. Continua exigindo >=2
+# casas (nao captura numero solto/quantidade/"NF 1087").
 _BODY_LABELED_AMT_RE = re.compile(
     r"(?i)\b(valor\s+total|total|valor)\b(?:\s+(?:de|da|do))?\s*[:\-]?\s*"
-    r"(\d{1,3}(?:\.\d{3})*,\d{2}|\d+,\d{2})(?!\d)")
+    r"(\d{1,3}(?:\.\d{3})*,\d{2,3}|\d+,\d{2,3})(?!\d)")
 # Tabela de boletos/parcelas no corpo: cada título é uma sequência de 6 campos —
 # documento, parcela, emissão (data), vencimento (data), valor (R$) e dias — que o
 # webmail quebra em linhas separadas (\r). Detecta a OBER e similares. A linha
@@ -1464,6 +1486,11 @@ _BODY_INSTALLMENTS_RE = re.compile(
     r"R\$\s*([\d.]*\d,\d{1,2})\s+\d{1,4}")
 _BODY_PIX_RE     = re.compile(r"\bpix\b", re.IGNORECASE)
 _BODY_DUE_RE     = re.compile(r"(?i)venc(?:imento|to)?\D{0,15}?(\d{2}/\d{2}/\d{2,4})")
+# "DATA (PARA/DE/DO) PAGAMENTO: DD/MM/AA" — rotulo de vencimento usado nas notas
+# internas de pagamento (ex.: "DATA PARA PAGAMENTO: 22/06/26", id 186). Fallback
+# apos "vencimento" e antes de usar a data de emissao/extracao.
+_BODY_PAYDATE_RE = re.compile(
+    r"(?i)data\s+(?:para|de|do)?\s*pagamento\D{0,10}?(\d{2}/\d{2}/\d{2,4})")
 _BODY_ISSUE_RE   = re.compile(r"(?i)emiss[aã]o\D{0,10}?(\d{2}/\d{2}/\d{2,4})")
 _BODY_INVOICE_RE = re.compile(r"(?i)\b(?:nf(?:[- ]?e)?|nota\s+fiscal|fatura\s+n[º°.]?)\s*[n°.:]?\s*(\d{3,})")
 # Nº de documento rotulado EXPLICITAMENTE como "Número do documento" — valor
@@ -1805,21 +1832,12 @@ def _apply_cartorio_doc_type(document_type: str | None, subject: str | None,
 # independentemente do default do fornecedor; parte deles tambem propaga a classificacao
 # ao supplier (write-back). Ver "Classificacao contabil forcada" no CLAUDE.md.
 # ---------------------------------------------------------------------------
-# Centros de custo / planos de conta alvo (ids reais dos cadastros — nao usar magic number).
-CC_FISCAL          = 3    # financial_cost_center: FIS — Fiscal
+# Centro de custo / plano de contas do TRANSPORTE (regra NAO-tributaria — CT-e/frete).
 CC_LOGISTICA       = 4    # financial_cost_center: LOG — Logistica
-CA_IRRF            = 28   # financial_chart_of_account: 4.2.03 — IRRF a Recolher
-CA_ICMS_IMPORT     = 11   # financial_chart_of_account: 4.3.05 — ICMS Importacao a Recolher
 CA_TRANSPORTADORAS = 339  # financial_chart_of_account: 48.2.01 — Servicos de Transportadoras
 
-# Regras cuja classificacao NAO e fixa — e RESOLVIDA da linha do plano de contas por um
-# CODIGO (cost_center_id + chart_account_id da propria linha). Nenhuma propaga ao supplier.
-#   - DAM / DUAM  -> plano 4.1.06 ("extraidos da tabela ... do codigo 4.1.06").
-#   - GNRE de ICMS Substituicao Tributaria (frase explicita) -> plano 4.1.02.
-DAM_DUAM_DOC_TYPE       = "dam / duam"
-DAM_DUAM_CHART_CODE     = "4.1.06"
-GNRE_DOC_TYPE           = "gnre"
-GNRE_ICMS_ST_CHART_CODE = "4.1.02"
+# document_type canonico da GNRE (usado no gatilho @lebianco de ICMS-ST).
+GNRE_DOC_TYPE = "gnre"
 
 # ICMS Substituicao Tributaria — frases EXPLICITAS (sem acento, substring). So GNRE com esse
 # sinal vira 4.1.02; GNRE so com codigo de receita/protocolo NAO casa (decisao do usuario).
@@ -1844,74 +1862,113 @@ _ICMS_IMPORT_PHRASES = ("icms importacao", "icms de importacao",
                         "icms na importacao", "importacao icms")
 
 
-def _detect_forced_classification(document_type: str | None, subject: str | None,
-                                  *extra_texts: str | None) -> tuple[int, int, bool] | None:
-    """Detecta a classificacao contabil FORCADA a partir do tipo/contexto do documento.
+# ---------------------------------------------------------------------------
+# Relacao TRIBUTARIA -> plano de contas (financial_chart_of_account). ESTRITA e
+# EXCLUSIVAMENTE para _is_tax_document. Determina o account_code do plano a partir do
+# TIPO/CONTEXTO do imposto (nunca do supplier) e resolve para (cost_center_id,
+# chart_account_id) via classification_for_account_code (segue o cadastro). Precedencia
+# MAXIMA (vence o default do fornecedor) e write-back True (o supplier e atualizado com o
+# mesmo destino — exceto OTIMOTEX/funcionario, barrados em apply_forced_classification).
+# ---------------------------------------------------------------------------
+# Nivel 2 — por document_type, quando a guia JA determina o imposto (sem palavra-chave).
+# GNRE = veiculo de ICMS interestadual -> conta propria "GNRE a Recolher" (a menos que ST/
+# importacao, tratados antes, no nivel 1); GARE = ICMS/SP. Vem ANTES do scan generico para
+# nao rebaixar GNRE (que costuma citar "icms") a 4.1.01.
+_TAX_DOCTYPE_CHART_CODES = {
+    "gnre": "4.4.01",   # GNRE a Recolher
+    "gare": "4.1.01",   # ICMS a Recolher (GARE = ICMS/SP)
+    "iss":  "4.1.06",   # ISS a Recolher
+    "ipva": "6.4.02",   # IPVA
+    "iptu": "6.4.01",   # IPTU
+    "das":  "4.4.04",   # Taxas Federais a Recolher (Simples Nacional — sem conta dedicada)
+}
+# Nivel 3 — fallback por ESFERA do document_type, quando o imposto especifico nao foi
+# identificado (ex.: "PAGAMENTO IMPOSTOS" tipo darf, "DARE T05"). 'tributo' (sem esfera)
+# NAO entra -> nao forca (evita mis-forcar boleto de fornecedor mal-rotulado).
+_TAX_SPHERE_CHART_CODES = {
+    "darf": "4.4.04", "gru": "4.4.04", "dae": "4.4.04",           # federal
+    "dare": "4.4.02",                                             # estadual
+    "dam": "4.4.03", "duam": "4.4.03", "dam / duam": "4.4.03", "itbi": "4.4.03",  # municipal
+}
+# Nivel 1 — palavra-chave DISTINTIVA do imposto (assunto+descricao), especifico->generico.
+# (termo palavra-inteira, account_code). ICMS-import/ICMS-ST/II/PIS-COFINS-CSLL sao tratados
+# a parte em _resolve_tax_chart_code (frases/combinacoes). 'das'/'gare'/'gnre'/'dare'/'dam'
+# NAO entram aqui (colidem com palavras do PT ou sao ambiguos) — resolvem por doctype/esfera.
+_TAX_KEYWORD_CHART_CODES = (
+    ("irrf",   "4.2.03"),   # IRRF a Recolher
+    ("irpj",   "4.2.01"),   # IRPJ a Recolher
+    ("csll",   "4.2.02"),   # CSLL a Recolher
+    ("inss",   "4.2.04"),   # INSS Retido a Recolher
+    ("iss",    "4.1.06"),   # ISS a Recolher
+    ("ipi",    "4.1.03"),   # IPI a Recolher
+    ("cofins", "4.1.05"),   # COFINS a Recolher
+    ("pis",    "4.1.04"),   # PIS a Recolher
+    ("icms",   "4.1.01"),   # ICMS a Recolher
+    ("ipva",   "6.4.02"),   # IPVA
+    ("iptu",   "6.4.01"),   # IPTU
+)
 
-    Retorna (cost_center_id, chart_account_id, write_back_supplier) ou None. O
-    `write_back_supplier` indica se a mesma classificacao deve ser gravada no cadastro do
-    fornecedor. Precedencia: IRRF -> DUIMP/ICMS -> transporte.
 
-    - **IRRF / DUIMP / ICMS Importacao**: termos DISTINTIVOS — escaneados em assunto +
-      `extra_texts` (descricao do documento + corpo). Palavra inteira sem acento
-      (`_has_word`/`_ns_body`); ICMS importacao por FRASE (nunca "icms" sozinho).
-    - **Transporte**: reusa `_is_transport_context(subject, None, document_type)` — cobre
-      `document_type=='cte'` E termos de transporte NO ASSUNTO apenas. NAO escaneia a
-      descricao/corpo livre (mesma cautela de `_apply_transport_boleto_doc_type`: "transporte"/
-      "frete" solto no corpo geraria falso positivo). O boleto de transporte ja chega 'cte'.
-    """
-    blob = " ".join(_ns_body(t) for t in (subject, *extra_texts) if t)
-    # IRRF (imposto de renda retido) -> Fiscal / IRRF a Recolher. NAO propaga ao supplier
-    # (e imposto do documento, nao a classificacao normal do fornecedor).
-    if _has_word(blob, "irrf"):
-        return (CC_FISCAL, CA_IRRF, False)
-    # DUIMP ou ICMS Importacao -> Fiscal / ICMS Importacao a Recolher. Propaga ao supplier.
-    if _has_word(blob, "duimp") or any(p in blob for p in _ICMS_IMPORT_PHRASES):
-        return (CC_FISCAL, CA_ICMS_IMPORT, True)
-    # Transporte/transportadora/CT-e -> Logistica / Servicos de Transportadoras. Propaga ao
-    # supplier. So assunto + document_type (NAO a descricao/corpo — evita falso positivo).
-    if _is_transport_context(subject, None, document_type):
-        return (CC_LOGISTICA, CA_TRANSPORTADORAS, True)
-    return None
-
-
-def _chart_code_for_document(document_type: str | None, blob: str,
-                             *, sender_email: str | None = None) -> str | None:
-    """account_code cuja classificacao deve ser FORCADA (regras RESOLVIDAS do plano de
-    contas, sem write-back), ou None. `blob` = assunto+descricao+corpo ja normalizado.
-      - DAM / DUAM -> 4.1.06 (por document_type).
-      - GNRE de ICMS Substituicao Tributaria -> 4.1.02, por DOIS gatilhos: frase explicita
-        de ST no texto OU remetente do dominio @lebianco (setor que envia as guias de ST)."""
+def _resolve_tax_chart_code(document_type: str | None, blob: str,
+                            *, sender_email: str | None = None) -> str | None:
+    """account_code do plano de contas para uma GUIA TRIBUTARIA, do TIPO/CONTEXTO do imposto
+    (nunca do supplier). `blob` = assunto+descricao(+corpo) JA normalizado (`_ns_body`, sem
+    acento). Ordem: (1) imposto distintivo por frase/palavra; (2) por document_type especifico;
+    (3) palavra-chave distintiva no texto; (4) fallback por esfera. Retorna account_code ou
+    None (nao determinavel -> o chamador nao forca)."""
     dt = (document_type or "").strip().lower()
-    if dt == DAM_DUAM_DOC_TYPE:
-        return DAM_DUAM_CHART_CODE
-    if dt == GNRE_DOC_TYPE and (any(p in blob for p in _ICMS_ST_PHRASES)
-                                or _is_lebianco_sender(sender_email)):
-        return GNRE_ICMS_ST_CHART_CODE
-    return None
+    # (1) frases/combinacoes especificas (maior prioridade)
+    if any(p in blob for p in _ICMS_IMPORT_PHRASES):
+        return "4.3.05"                                    # ICMS Importacao a Recolher
+    if any(p in blob for p in _ICMS_ST_PHRASES) or (
+            dt == GNRE_DOC_TYPE and _is_lebianco_sender(sender_email)):
+        return "4.1.02"                                    # ICMS-ST a Recolher
+    if "imposto de importacao" in blob:
+        return "4.3.01"                                    # Imposto de Importacao (II) a Recolher
+    if _has_word(blob, "pis") and _has_word(blob, "cofins") and (
+            _has_word(blob, "csll") or "retid" in blob):
+        return "4.2.05"                                    # PIS/COFINS/CSLL Retidos
+    # (2) document_type que JA determina o imposto (GNRE/GARE/ISS/IPVA/IPTU/DAS)
+    if dt in _TAX_DOCTYPE_CHART_CODES:
+        return _TAX_DOCTYPE_CHART_CODES[dt]
+    # (3) palavra-chave distintiva do imposto no texto (refina DARF/DARE/GRU)
+    for term, code in _TAX_KEYWORD_CHART_CODES:
+        if _has_word(blob, term):
+            return code
+    # (4) fallback por esfera do document_type
+    return _TAX_SPHERE_CHART_CODES.get(dt)
 
 
 def resolve_forced_classification(ctrl, document_type: str | None, subject: str | None,
                                   *extra_texts: str | None,
-                                  sender_email: str | None = None) -> tuple[int, int, bool] | None:
-    """Classificacao contabil FORCADA COMPLETA (retorna (cc, ca, write_back) ou None).
+                                  sender_email: str | None = None,
+                                  sk_supplier: int | None = None) -> tuple[int, int, bool] | None:
+    """Classificacao contabil FORCADA (retorna (cost_center_id, chart_account_id, write_back)
+    ou None).
 
-    Junta as regras de id FIXO (`_detect_forced_classification`: IRRF/DUIMP/ICMS/transporte)
-    com as regras RESOLVIDAS do plano de contas por codigo (`_chart_code_for_document`:
-    DAM/DUAM -> 4.1.06; GNRE de ICMS Substituicao Tributaria -> 4.1.02, por frase de ST OU
-    remetente @lebianco), que usam o cost_center_id + chart_account_id da propria linha do
-    plano. As regras fixas tem precedencia; as por codigo so entram quando nenhuma fixa casa e
-    nao propagam ao supplier (write_back=False). Se o codigo nao existir no cadastro, nao
-    forca (None)."""
-    fixed = _detect_forced_classification(document_type, subject, *extra_texts)
-    if fixed:
-        return fixed
-    blob = " ".join(_ns_body(t) for t in (subject, *extra_texts) if t)
-    code = _chart_code_for_document(document_type, blob, sender_email=sender_email)
-    if code:
-        cost_center_id, chart_account_id = ctrl.classification_for_account_code(code)
-        if cost_center_id or chart_account_id:
-            return (cost_center_id, chart_account_id, False)
+    Precedencia MAXIMA para GUIA TRIBUTARIA (`_is_tax_document`): a conta e relacionada ao
+    plano de contas pelo TIPO/CONTEXTO do imposto (`_resolve_tax_chart_code` ->
+    `classification_for_account_code`), VENCENDO o default do fornecedor. Grava com write-back
+    (write_back=True; a exclusao OTIMOTEX/funcionario fica em apply_forced_classification). Se a
+    guia nao permite determinar (sem sinal, ou codigo ausente no cadastro), NAO forca (cai no
+    comportamento atual — default do fornecedor).
+
+    EXCLUSAO: fornecedores em `TAX_CLASSIFICATION_EXCLUDED_SK_SUPPLIERS` (ex.: Dr. Ricardo,
+    despachante — reembolso/honorarios/juridico) NAO recebem classificacao tributaria forcada —
+    a regra e pulada e a conta mantem o default do fornecedor / o valor da extracao.
+
+    Abaixo (NAO-tributario): TRANSPORTE — CT-e/frete -> Logistica / Servicos de Transportadoras
+    (com write-back). So assunto + document_type (nao a descricao/corpo — evita falso positivo)."""
+    if (_is_tax_document(document_type)
+            and sk_supplier not in TAX_CLASSIFICATION_EXCLUDED_SK_SUPPLIERS):
+        blob = " ".join(_ns_body(t) for t in (subject, *extra_texts) if t)
+        code = _resolve_tax_chart_code(document_type, blob, sender_email=sender_email)
+        if code:
+            cost_center_id, chart_account_id = ctrl.classification_for_account_code(code)
+            if cost_center_id or chart_account_id:
+                return (cost_center_id, chart_account_id, True)
+    if _is_transport_context(subject, None, document_type):
+        return (CC_LOGISTICA, CA_TRANSPORTADORAS, True)
     return None
 
 
@@ -1929,6 +1986,7 @@ def apply_forced_classification(ctrl, payload: dict, extra_text: str | None = No
         ctrl, payload.get("document_type"),
         payload.get("subject"), payload.get("description"), extra_text,
         sender_email=payload.get("sender_email"),
+        sk_supplier=payload.get("sk_supplier"),
     )
     if not override:
         return
@@ -1991,7 +2049,10 @@ def _brl_to_decimal(raw: str | None):
     if not raw:
         return None
     s = re.sub(r"[^\d,.]", "", raw)
-    if re.search(r",\d{1,2}$", s):
+    # Vírgula = separador decimal BR. Aceita 1-3 casas: um 3º dígito é digitação com
+    # zero a mais (ex.: "1.799,960" → 1799,96) — o round(…,2) normaliza. Sem esse
+    # tolerância, "1.799,960" caía no ramo de milhar e virava 1,8 (bug real, id 186).
+    if re.search(r",\d{1,3}$", s):
         s = s.replace(".", "").replace(",", ".")
     else:
         s = s.replace(",", "")
@@ -2246,6 +2307,10 @@ def extract_from_email_body(body_text: str, received_at: str, message_id: str,
 
     due_match = _BODY_DUE_RE.search(body_text)
     due_date  = _br_date_to_iso(due_match.group(1)) if due_match else None
+    if not due_date:
+        # "DATA PARA PAGAMENTO: DD/MM/AA" (nota interna) → vencimento.
+        pay_match = _BODY_PAYDATE_RE.search(body_text)
+        due_date  = _br_date_to_iso(pay_match.group(1)) if pay_match else None
     if not due_date:
         due_date = issue_date  # sem vencimento explicito, usa data de emissao
     if not due_date:
@@ -2993,6 +3058,59 @@ def _email_has_real_boleto(rows: list) -> bool:
     return any(_is_boleto_barcode(r.get("barcode")) for r in rows)
 
 
+# Baixa/cancelamento de RECEBIVEL proprio — e-mail sobre titulos que a EMPRESA
+# EMITIU (relatorio de baixa/cancelamento), nao um documento que ela deve pagar.
+# Sinais: assunto de cobranca propria ("COBRANCA OTIMOTEX") ou o proprio relatorio
+# de baixa na descricao. NAO e conta a pagar → ignorado (nao 'sem_fornecedor').
+_RECEIVABLE_SUBJECT_TERMS = ("cobranca otimotex", "cobrancas nao enviadas")
+_RECEIVABLE_DESC_RE = re.compile(
+    r"cancelamento \(baixa\)|titulos? baixad|boletos? baixad"
+)
+
+
+def _is_receivable_notice(subject: str | None, description: str | None) -> bool:
+    """True se o e-mail e um AVISO/relatorio de baixa de RECEBIVEL proprio (titulo
+    que a empresa emitiu), nunca conta a pagar. Comparacao sem acento."""
+    subj = _strip_accents_lower(subject or "")
+    if any(t in subj for t in _RECEIVABLE_SUBJECT_TERMS):
+        return True
+    return bool(_RECEIVABLE_DESC_RE.search(_strip_accents_lower(description or "")))
+
+
+# 'Documento' visual que NAO e conta a pagar: imagem de assinatura/logo de e-mail
+# (image001.png colada no corpo) ou apresentacao/proposta de marketing — lidos via
+# Vision, sem valor. So dispara quando amount<=0 E sem codigo de barras: um recibo/
+# boleto legitimo (inclusive inline) tem valor e/ou linha digitavel, entao nao cai aqui.
+_SIGNATURE_DESC_RE = re.compile(
+    r"assinatura de e-?mail|assinatura comercial|assinatura de rodape|"
+    r"logotipo|logomarca|rodape de e-?mail|cabecalho de e-?mail"
+)
+_MARKETING_DESC_RE = re.compile(
+    r"apresentac[ao]{2} (institucional|comercial|de servicos|da empresa)|"
+    r"proposta comercial|material (de )?marketing|institucional da|catalogo de produtos"
+)
+
+
+def _nonpayable_visual_amount(value) -> float:
+    """Converte o amount (string do CSV, decimal com ponto) em float; 0.0 se invalido."""
+    try:
+        return float(str(value or "0").replace(",", "."))
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _is_nonpayable_visual(row: dict) -> bool:
+    """True para conteudo visual sem valor que nao e conta a pagar (assinatura/logo
+    de e-mail ou apresentacao/proposta de marketing). Conservador: exige amount<=0 e
+    ausencia de codigo de barras para nao afetar recibo/boleto legitimo."""
+    if _nonpayable_visual_amount(row.get("amount")) > 0:
+        return False
+    if _is_boleto_barcode(row.get("barcode")):
+        return False
+    desc = _strip_accents_lower(row.get("description") or "")
+    return bool(_SIGNATURE_DESC_RE.search(desc) or _MARKETING_DESC_RE.search(desc))
+
+
 def extract_and_store_accounts(saved_pdfs: list, message_id: str,
                                ctrl: "SupabaseControl",
                                email_rec: dict = None) -> tuple:
@@ -3102,6 +3220,23 @@ def extract_and_store_accounts(saved_pdfs: list, message_id: str,
                 f"    Fatura/relatorio ignorado — boleto presente no mesmo e-mail "
                 f"({row.get('source_file')})"
             )
+            skipped_nonpayable += 1
+            continue
+
+        # Baixa/cancelamento de RECEBIVEL proprio (relatorio de titulos que a empresa
+        # EMITIU, ex.: "COBRANCA OTIMOTEX") NAO e conta a pagar → ignorado, sem logar
+        # 'sem_fornecedor'. Roda antes das validacoes (o documento nao tem fornecedor
+        # justamente por nao ser uma conta a pagar).
+        if _is_receivable_notice(err_ctx.get("subject"), row.get("description")):
+            log.info("    Baixa/cobranca de recebivel proprio ignorada — nao gera conta a pagar")
+            skipped_nonpayable += 1
+            continue
+
+        # Conteudo visual sem valor que nao e conta a pagar: imagem de assinatura/logo
+        # de e-mail (image001.png) ou apresentacao/proposta de marketing (Vision) →
+        # ignorado, sem logar 'sem_valor'.
+        if _is_nonpayable_visual(row):
+            log.info(f"    Conteudo nao-pagavel (assinatura/marketing) ignorado — {row.get('source_file')}")
             skipped_nonpayable += 1
             continue
 
