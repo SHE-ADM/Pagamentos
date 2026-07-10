@@ -755,6 +755,7 @@ export interface DashboardData {
   kpis: DashboardKpis;
   statusBreakdown: StatusSlice[];
   documentTypeBreakdown: LabelSlice[];
+  taxTypeBreakdown: LabelSlice[];
   paymentMethodBreakdown: LabelSlice[];
   supplierRanking: SupplierRank[];
   monthlyFlow: MonthlyFlow[];
@@ -806,6 +807,23 @@ function breakdownBy(rows: MonthRow[], pick: (r: MonthRow) => string | null, top
     { count: 0, value: 0 },
   );
   return [...top, { label: 'outros', ...rest }];
+}
+
+// Documentos tributários (guias de arrecadação) — agrupados num único rótulo
+// "Tributos" no donut de tipos de conta. Espelha a noção de documento fiscal do
+// pipeline (_is_tax_document); `gps` (INSS/previdência) incluído por ser guia de
+// arrecadação. Ajuste o conjunto se a operação exigir.
+const TAX_DOCUMENT_TYPES = new Set<string>([
+  'darf', 'gps', 'das', 'gru', 'dae', 'dare', 'gnre',
+  'ipva', 'iptu', 'dam / duam', 'iss', 'itbi', 'gare', 'tributo',
+]);
+export function isTaxDocumentType(dt: string | null): boolean {
+  return !!dt && TAX_DOCUMENT_TYPES.has(dt.toLowerCase());
+}
+// No donut de tipos de conta, todas as guias tributárias colapsam em "Tributos"
+// (o detalhamento por tipo vai no donut dedicado "Tributos").
+export function groupDocumentTypeLabel(dt: string | null): string | null {
+  return isTaxDocumentType(dt) ? 'Tributos' : dt;
 }
 
 // `scope` = 'month' (mês selecionado, padrão) ou 'all' (todas as contas, sem filtro
@@ -862,8 +880,12 @@ export async function getDashboardData(month: number, year: number, scope: Dashb
     .sort((a, b) => b.count - a.count);
 
   // Tipos de conta (document_type) e formas de pagamento (payment_method) — Top 8 + "outros".
-  const documentTypeBreakdown = breakdownBy(monthRows, (r) => r.document_type);
+  // No de tipos de conta, todas as guias tributárias colapsam num único "Tributos".
+  const documentTypeBreakdown = breakdownBy(monthRows, (r) => groupDocumentTypeLabel(r.document_type));
   const paymentMethodBreakdown = breakdownBy(monthRows, (r) => r.payment_method);
+  // Donut "Tributos": cópia do de tipos de conta, mas só das guias tributárias,
+  // detalhadas por tipo (darf, das, gnre, …).
+  const taxTypeBreakdown = breakdownBy(monthRows.filter((r) => isTaxDocumentType(r.document_type)), (r) => r.document_type);
 
   // Ranking de fornecedores (top 6 por valor)
   const supMap = new Map<string, { value: number; count: number }>();
@@ -909,5 +931,5 @@ export async function getDashboardData(month: number, year: number, scope: Dashb
     })
     .slice(0, 7);
 
-  return { month, year, scope, kpis, statusBreakdown, documentTypeBreakdown, paymentMethodBreakdown, supplierRanking, monthlyFlow: buckets, priorityAccounts };
+  return { month, year, scope, kpis, statusBreakdown, documentTypeBreakdown, taxTypeBreakdown, paymentMethodBreakdown, supplierRanking, monthlyFlow: buckets, priorityAccounts };
 }

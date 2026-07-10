@@ -23,8 +23,12 @@ const MOCK: DashboardData = {
   ],
   documentTypeBreakdown: [
     { label: 'boleto', count: 70, value: 30000 },
-    { label: 'pix', count: 30, value: 10000 },
+    { label: 'Tributos', count: 30, value: 10000 },
     { label: 'outros', count: 28, value: 7121.73 },
+  ],
+  taxTypeBreakdown: [
+    { label: 'darf', count: 18, value: 6000 },
+    { label: 'gnre', count: 12, value: 4000 },
   ],
   paymentMethodBreakdown: [
     { label: 'boleto', count: 80, value: 35000 },
@@ -60,14 +64,18 @@ describe('Dashboard', () => {
     expect(screen.getByText('Sabesp')).toBeInTheDocument();
   });
 
-  it('renderiza os donuts de tipos de contas e formas de pagamento', async () => {
+  it('renderiza os donuts de tipos de contas, tributos e formas de pagamento', async () => {
     render(<Dashboard />);
     expect(await screen.findByText('Tipos de contas')).toBeInTheDocument();
+    // "Tributos" aparece como título do donut e como fatia de "Tipos de contas".
+    expect(screen.getAllByText('Tributos').length).toBeGreaterThan(0);
     expect(screen.getByText('Tipos de pagamentos')).toBeInTheDocument();
     // fatias das legendas (rótulos crus dos enums)
     expect(screen.getAllByText('boleto').length).toBeGreaterThan(0);
-    expect(screen.getByText('pix')).toBeInTheDocument();
     expect(screen.getByText('ted')).toBeInTheDocument();
     expect(screen.getByText('outros')).toBeInTheDocument();
+    // detalhamento por tipo de guia no donut "Tributos"
+    expect(screen.getByText('darf')).toBeInTheDocument();
+    expect(screen.getByText('gnre')).toBeInTheDocument();
   });
 });
