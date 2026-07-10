@@ -21,6 +21,15 @@ const MOCK: DashboardData = {
     { status: 'pago', count: 42, value: 10903.7 },
     { status: 'vencido', count: 8, value: 12031.01 },
   ],
+  documentTypeBreakdown: [
+    { label: 'boleto', count: 70, value: 30000 },
+    { label: 'pix', count: 30, value: 10000 },
+    { label: 'outros', count: 28, value: 7121.73 },
+  ],
+  paymentMethodBreakdown: [
+    { label: 'boleto', count: 80, value: 35000 },
+    { label: 'ted', count: 48, value: 12121.73 },
+  ],
   supplierRanking: [
     { name: 'Avance Info/Adm/Farmácia', value: 19493.41, count: 12 },
     { name: 'CPFL Energia', value: 6420.3, count: 3 },
@@ -49,5 +58,16 @@ describe('Dashboard', () => {
     render(<Dashboard />);
     expect(await screen.findByText('Avance Info/Adm/Farmácia')).toBeInTheDocument();
     expect(screen.getByText('Sabesp')).toBeInTheDocument();
+  });
+
+  it('renderiza os donuts de tipos de contas e formas de pagamento', async () => {
+    render(<Dashboard />);
+    expect(await screen.findByText('Tipos de contas')).toBeInTheDocument();
+    expect(screen.getByText('Tipos de pagamentos')).toBeInTheDocument();
+    // fatias das legendas (rótulos crus dos enums)
+    expect(screen.getAllByText('boleto').length).toBeGreaterThan(0);
+    expect(screen.getByText('pix')).toBeInTheDocument();
+    expect(screen.getByText('ted')).toBeInTheDocument();
+    expect(screen.getByText('outros')).toBeInTheDocument();
   });
 });
