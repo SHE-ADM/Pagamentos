@@ -4,6 +4,8 @@ import {
   parseBrlAmount,
   isCurrencyValueSearch,
   applyFinancialFilters,
+  groupDocumentTypeLabel,
+  isTaxDocumentType,
 } from './supabase';
 
 describe('parsePaginationTotal', () => {
@@ -152,6 +154,40 @@ describe('applyFinancialFilters — busca inclui classificação contábil', () 
     });
     expect(params.get('amount')).toBe('eq.167.15');
     expect(params.get('or')).toBeNull();
+  });
+});
+
+describe('groupDocumentTypeLabel — guias tributárias colapsam em "Tributos"', () => {
+  it('agrupa todos os tipos tributários num único rótulo', () => {
+    for (const t of ['darf', 'gps', 'das', 'gru', 'dae', 'dare', 'gnre', 'ipva', 'iptu', 'dam / duam', 'iss', 'itbi', 'gare', 'tributo']) {
+      expect(groupDocumentTypeLabel(t)).toBe('Tributos');
+    }
+  });
+
+  it('é robusto a variação de caixa', () => {
+    expect(groupDocumentTypeLabel('DARF')).toBe('Tributos');
+    expect(groupDocumentTypeLabel('GNRE')).toBe('Tributos');
+  });
+
+  it('preserva tipos não-tributários e null', () => {
+    expect(groupDocumentTypeLabel('boleto')).toBe('boleto');
+    expect(groupDocumentTypeLabel('pix')).toBe('pix');
+    expect(groupDocumentTypeLabel('cte')).toBe('cte');
+    expect(groupDocumentTypeLabel(null)).toBeNull();
+  });
+});
+
+describe('isTaxDocumentType — predicado de guia tributária', () => {
+  it('true para tipos tributários (robusto a caixa)', () => {
+    expect(isTaxDocumentType('darf')).toBe(true);
+    expect(isTaxDocumentType('GNRE')).toBe(true);
+    expect(isTaxDocumentType('dam / duam')).toBe(true);
+  });
+
+  it('false para não-tributário e null', () => {
+    expect(isTaxDocumentType('boleto')).toBe(false);
+    expect(isTaxDocumentType('multa')).toBe(false);
+    expect(isTaxDocumentType(null)).toBe(false);
   });
 });
 

@@ -193,8 +193,8 @@ export default function Dashboard() {
           <MonthlyFlow data={data} />
         </div>
 
-        {/* Três donuts na mesma linha: situação, tipos de conta e formas de pagamento */}
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-3 mb-3">
+        {/* Donuts na mesma linha: situação, tipos de conta, tributos e formas de pagamento */}
+        <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-3 mb-3">
           <div className="card p-3">
             <div className="mb-2">
               <h3 className="text-sm font-semibold text-slate-800">Minha situação</h3>
@@ -210,6 +210,17 @@ export default function Dashboard() {
             </div>
             <BreakdownDonut
               segs={(data?.documentTypeBreakdown ?? []).map((s) => ({ key: s.label, label: s.label, count: s.count }))}
+              colorFor={paletteColor}
+            />
+          </div>
+
+          <div className="card p-3">
+            <div className="mb-2">
+              <h3 className="text-sm font-semibold text-slate-800">Tributos</h3>
+              <p className="text-xs text-slate-500">Por tipo de guia · {scope === 'all' ? 'Todas as contas' : MONTHS_FULL[month]}</p>
+            </div>
+            <BreakdownDonut
+              segs={(data?.taxTypeBreakdown ?? []).map((s) => ({ key: s.label, label: s.label, count: s.count }))}
               colorFor={paletteColor}
             />
           </div>
@@ -333,14 +344,14 @@ function SupplierRanking({ data }: { data: DashboardData | null }) {
   return (
     <div>
       {rows.map((r, i) => (
-        <div key={r.name} className="flex items-center gap-2.5 py-2">
-          <span className={`shrink-0 h-5.5 w-5.5 rounded-full text-xs font-bold flex items-center justify-center ${i < 3 ? 'bg-brand-dark text-white' : 'bg-slate-200 text-slate-600'}`}>{i + 1}</span>
+        <div key={r.name} className="flex items-center gap-2 py-1">
+          <span className={`shrink-0 h-5 w-5 rounded-full text-xs font-bold flex items-center justify-center ${i < 3 ? 'bg-brand-dark text-white' : 'bg-slate-200 text-slate-600'}`}>{i + 1}</span>
           <div className="flex-1 min-w-0">
-            <div className="flex justify-between gap-2 mb-1">
-              <span className="text-sm font-medium text-slate-700 truncate">{r.name}</span>
-              <span className="font-mono text-sm font-semibold text-slate-900 whitespace-nowrap">{fmtMoney(r.value)}</span>
+            <div className="flex justify-between gap-2 mb-0.5">
+              <span className="text-xs font-medium text-slate-700 truncate">{r.name}</span>
+              <span className="font-mono text-xs font-semibold text-slate-900 whitespace-nowrap">{fmtMoney(r.value)}</span>
             </div>
-            <div className="h-1.5 rounded-full bg-slate-100 overflow-hidden">
+            <div className="h-1 rounded-full bg-slate-100 overflow-hidden">
               {/* largura dinâmica → inline style */}
               <div className="h-full bg-brand rounded-full transition-all" style={{ width: `${Math.max(2, (r.value / max) * 100)}%` }} />
             </div>
@@ -356,22 +367,22 @@ function PriorityList({ data }: { data: DashboardData | null }) {
   const rows = data?.priorityAccounts ?? [];
   if (!rows.length) return <p className="text-xs text-slate-500 py-4">Nenhuma conta crítica ou prioritária no período.</p>;
   return (
-    <div className="flex flex-col gap-2">
+    <div className="flex flex-col gap-1.5">
       {rows.map((r) => {
         const Icon = PRIORITY_ICON[r.kind];
         const err = r.critical || r.status === 'vencido';
         return (
-          <div key={r.id} className={`flex items-center gap-2.5 px-3 py-2 rounded-lg border border-l-2 ${err ? 'bg-status-error-bg border-status-error-border border-l-status-error-solid' : 'bg-white border-slate-200/80 border-l-brand'}`}>
-            <span className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-lg ${err ? 'bg-status-error-solid/10 text-status-error-fg' : 'bg-brand/10 text-brand'}`}>
-              <Icon size={15} />
+          <div key={r.id} className={`flex items-center gap-2 px-2.5 py-1.5 rounded-lg border border-l-2 ${err ? 'bg-status-error-bg border-status-error-border border-l-status-error-solid' : 'bg-white border-slate-200/80 border-l-brand'}`}>
+            <span className={`flex h-6 w-6 shrink-0 items-center justify-center rounded-lg ${err ? 'bg-status-error-solid/10 text-status-error-fg' : 'bg-brand/10 text-brand'}`}>
+              <Icon size={13} />
             </span>
             <div className="flex-1 min-w-0">
-              <div className="text-sm font-medium text-slate-700 truncate">{r.supplier}</div>
+              <div className="text-xs font-medium text-slate-700 truncate">{r.supplier}</div>
               {/* slate-600 (não slate-500): nas linhas críticas o card é bg-status-error-bg
                   (vermelho-claro) e slate-500 dá 4,35:1 (reprova AA); slate-600 dá ~7:1. */}
               <div className="text-xs text-slate-600">vence {fmtDate(r.due)}</div>
             </div>
-            <span className={`font-mono text-sm font-semibold whitespace-nowrap ${err ? 'text-status-error-fg' : 'text-slate-900'}`}>{fmtMoney(r.amount)}</span>
+            <span className={`font-mono text-xs font-semibold whitespace-nowrap ${err ? 'text-status-error-fg' : 'text-slate-900'}`}>{fmtMoney(r.amount)}</span>
             <StatusBadge value={r.status} />
           </div>
         );
