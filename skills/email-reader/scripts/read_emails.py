@@ -360,6 +360,13 @@ class SupabaseControl:
             payload = dict(payload)   # copia — nao muta o dict do chamador ao traduzir status
             _apply_barcode_due_date(payload)  # rede de seguranca: vencimento pelo fator do barcode
             _apply_status_id(payload)
+            # Autoria (Etapa 1 — visibilidade por dono): dono = usuario do remetente
+            # (sender_email -> UUID via RPC), padrao sentinela quando nao casa. So no INSERT;
+            # se ja veio created_by, respeita. Falha/None -> DEFAULT da coluna (sentinela).
+            if not payload.get("created_by"):
+                owner = self.resolve_user(payload.get("sender_email"))
+                if owner:
+                    payload["created_by"] = owner
             data = json.dumps(payload).encode()
             req = urllib.request.Request(
                 f"{self.base}/rest/v1/financial_account_control?on_conflict=gmail_message_id",
@@ -562,6 +569,26 @@ class SupabaseControl:
                 return json.loads(r.read())  # RPC escalar → o proprio bigint
         except Exception as e:
             log.warning(f"Falha ao resolver fornecedor (RPC): {e}")
+            return None
+
+    def resolve_user(self, sender_email: str | None) -> str | None:
+        """Resolve o UUID do usuario dono da conta a partir do e-mail do remetente,
+        via RPC resolve_user_for_account (migration 076). A RPC ja devolve o usuario-
+        padrao (teste@otimotex.com.br) quando o e-mail nao casa nenhum usuario — mantem
+        100% do relacionamento. Em erro/sem e-mail retorna None (o DEFAULT da coluna
+        created_by assume o sentinela)."""
+        if not self._available or not sender_email:
+            return None
+        body = json.dumps({"p_email": sender_email}).encode()
+        try:
+            req = urllib.request.Request(
+                f"{self.base}/rest/v1/rpc/resolve_user_for_account",
+                data=body, headers=self.headers, method="POST",
+            )
+            with urllib.request.urlopen(req, timeout=10) as r:
+                return json.loads(r.read())  # RPC escalar → UUID (str)
+        except Exception as e:
+            log.warning(f"Falha ao resolver usuario dono (RPC): {e}")
             return None
 
     def supplier_defaults(self, sk_supplier: int) -> tuple[int, int]:

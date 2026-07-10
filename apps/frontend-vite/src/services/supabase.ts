@@ -500,6 +500,18 @@ export async function getFinancialAccountControl({
   return { data, total, totalIsEstimate };
 }
 
+// Diretório id→e-mail dos usuários (view app_user, migration 077) para exibir o AUTOR
+// (criado / editado / situação alterada) no detalhe de /consulta. São poucos usuários
+// internos → busca única, sem paginação. Falha não é crítica (o detalhe cai no fallback).
+export async function getAppUsers(): Promise<Record<string, string>> {
+  const url = new URL(`${BASE_URL}/rest/v1/app_user`);
+  url.searchParams.set('select', 'id,email');
+  const res = await fetch(url.toString(), { headers: await authHeaders() });
+  if (!res.ok) return {};
+  const rows = (await res.json()) as { id: string; email: string }[];
+  return Object.fromEntries(rows.map((r) => [r.id, r.email]));
+}
+
 // Flags de curadoria manual de uma conta ("Tem NF ?" / "Tem Boleto"), editáveis
 // como checkbox em /consulta. A migration 033 restringe o papel `authenticated`
 // a escrever SOMENTE estas duas colunas (column-level grant + policy de RLS).

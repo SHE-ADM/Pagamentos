@@ -1,6 +1,6 @@
 import type { NextRequest } from 'next/server';
 import { ok, fail, failFromError } from '@/lib/response';
-import { requireAuth } from '@/lib/auth';
+import { requireAuth, getAuthenticatedUser } from '@/lib/auth';
 import { contaService } from '@/lib/contas';
 
 // /api/contas/:id — GET (por id) + PATCH (atualização parcial).
@@ -35,8 +35,9 @@ export async function GET(req: NextRequest, ctx: Context) {
 }
 
 export async function PATCH(req: NextRequest, ctx: Context) {
-  const denied = await requireAuth(req);
-  if (denied) return denied;
+  // Autoria (Etapa 2): precisamos do UUID do editor para carimbar updated_by/status_changed_by.
+  const user = await getAuthenticatedUser(req);
+  if (!user) return fail('Autenticação necessária', 401);
 
   const id = parseId((await ctx.params).id);
   if (id === null) return fail('Identificador de conta inválido', 400);
@@ -49,7 +50,7 @@ export async function PATCH(req: NextRequest, ctx: Context) {
   }
 
   try {
-    return ok(await contaService.update(id, body ?? {}));
+    return ok(await contaService.update(id, body ?? {}, user.id));
   } catch (e) {
     return mapError(e);
   }

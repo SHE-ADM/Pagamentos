@@ -16,6 +16,7 @@ const getFinancialAccountCount = vi.fn();
 const setFinancialAccountFlag = vi.fn();
 const setFinancialAccountStatus = vi.fn();
 const setFinancialAccountStatusBulk = vi.fn();
+const getAppUsers = vi.fn();
 
 vi.mock('../services/supabase', () => ({
   getFinancialAccountControl: (...args: unknown[]) => getFinancialAccountControl(...args),
@@ -25,6 +26,7 @@ vi.mock('../services/supabase', () => ({
   setFinancialAccountFlag: (...args: unknown[]) => setFinancialAccountFlag(...args),
   setFinancialAccountStatus: (...args: unknown[]) => setFinancialAccountStatus(...args),
   setFinancialAccountStatusBulk: (...args: unknown[]) => setFinancialAccountStatusBulk(...args),
+  getAppUsers: (...args: unknown[]) => getAppUsers(...args),
 }));
 
 // Mocka o leitor IMAP — o teste cobre o disparo pelo botão "Atualizar", não a rede.
@@ -78,6 +80,7 @@ describe('Consulta', () => {
     });
     getFinancialAccountTotalValue.mockResolvedValue(0);
     getFinancialAccountCount.mockResolvedValue(0);
+    getAppUsers.mockReset().mockResolvedValue({});
     setFinancialAccountFlag.mockReset().mockResolvedValue(undefined);
     setFinancialAccountStatus.mockReset().mockResolvedValue(undefined);
     setFinancialAccountStatusBulk.mockReset().mockResolvedValue(undefined);
@@ -124,6 +127,29 @@ describe('Consulta', () => {
     expect(await screen.findByText(/Pagamento via PIX ag\. Bruno/)).toBeInTheDocument();
     // Só a linha com additional_info ganha o rótulo do rodapé.
     expect(screen.getAllByText('Informação adicional:')).toHaveLength(1);
+  });
+
+  it('detalhe da conta mostra os autores (criado/editado/situação) resolvidos por e-mail', async () => {
+    getAppUsers.mockResolvedValue({
+      'uuid-a': 'ester@otimotex.com.br',
+      'uuid-b': 'barbara@otimotex.com.br',
+    });
+    getFinancialAccountControl.mockResolvedValue({
+      data: [makeRow({
+        created_by: 'uuid-a', updated_by: 'uuid-b',
+        status_changed_by: 'uuid-b', status_changed_at: '2026-07-10T20:00:00Z',
+      })],
+      total: 1,
+    });
+    render(<Consulta />);
+
+    // Abre o detalhe clicando na linha (célula não-interativa: Nº do documento).
+    fireEvent.click(await screen.findByText('12345'));
+    expect(await screen.findByText('Criado por')).toBeInTheDocument();
+    expect(screen.getByText('Última edição por')).toBeInTheDocument();
+    expect(screen.getByText('Situação alterada por')).toBeInTheDocument();
+    // Autor resolvido por e-mail via getAppUsers (criado por = ester).
+    expect(screen.getByText('ester@otimotex.com.br')).toBeInTheDocument();
   });
 
   it('baixa automática: marcar a 2ª flag em conta vencida e em aberto muda a situação para "pago"', async () => {
