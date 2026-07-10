@@ -174,6 +174,6 @@ export const detailCell = cva('p-0 border-b', {
 
 /** Célula do rodapé de registro (conteúdo sempre-visível abaixo das células, ex.: info adicional). */
 export const footerCell = cva('p-0 border-b', {
-  variants: { variant: { default: 'border-slate-100 bg-brand/5', silver: 'border-zinc-100 bg-brand/5' } },
+  variants: { variant: { default: 'border-slate-100 bg-white', silver: 'border-zinc-100 bg-white' } },
   defaultVariants: { variant: 'default' },
 });
