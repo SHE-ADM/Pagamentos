@@ -53,6 +53,39 @@ class ExtractBodyAmountTest(unittest.TestCase):
     def test_sem_valor_retorna_none(self):
         self.assertIsNone(read_emails._extract_body_amount("sem valor algum aqui"))
 
+    def test_valor_rotulado_sem_rs_tres_casas_decimais(self):
+        # Bug id 186 (PAGAMENTO SORTEIO/NIKE): "VALOR: 1.799,960" (3 casas, zero a
+        # mais digitado, sem R$) caía como 'sem valor'. Deve normalizar p/ 1799,96.
+        self.assertEqual(
+            read_emails._extract_body_amount("FORNECEDOR: NIKE\r\nVALOR: 1.799,960\r\n"),
+            1799.96)
+
+    def test_brl_to_decimal_tolera_terceira_casa(self):
+        self.assertEqual(read_emails._brl_to_decimal("1.799,960"), 1799.96)
+        self.assertEqual(read_emails._brl_to_decimal("50,00"), 50.00)  # 2 casas intacto
+
+
+# Nota interna de pagamento (id 186): corpo estruturado FORNECEDOR/CNPJ/VALOR/DATA/PIX.
+# Antes falhava por "sem valor" (3 casas) e o vencimento saía por acaso (data do e-mail).
+NIKE_BODY = (
+    "FORNECEDOR: NIKE\r\n\r\nCNPJ: 59.546.515/0071-47\r\n\r\n"
+    "VALOR: 1.799,960\r\n\r\nDATA PARA PAGAMENTO: 22/06/26\r\n\r\nPAGAMENTO: PIX\r\n"
+)
+
+
+class BodyInternalPaymentNoteTest(unittest.TestCase):
+    def test_extrai_valor_fornecedor_vencimento_e_pix(self):
+        payload = read_emails.extract_from_email_body(
+            NIKE_BODY, "2026-06-30T10:00:00+00:00", "<nike186>",
+            sender_email="barbara@otimotex.com.br",
+            subject="PAGAMENTO SORTEIO BLUSAS DO BRASIL - SAMUEL")
+        self.assertIsNotNone(payload)
+        self.assertEqual(payload["amount"], 1799.96)
+        self.assertEqual(payload["supplier_cnpj"], "59546515007147")
+        self.assertEqual(payload["payment_method"], "pix")
+        # Vencimento vem do rótulo "DATA PARA PAGAMENTO", não da data do e-mail (30/06).
+        self.assertEqual(payload["due_date"], "2026-06-22")
+
 
 # Corpo real da fatura consolidada Rodonaves (id 318): o mesmo valor aparece em
 # "Valor da fatura" e "Valor liquido" (Decrescimo R$ 0,00) — a soma DUPLICAVA.

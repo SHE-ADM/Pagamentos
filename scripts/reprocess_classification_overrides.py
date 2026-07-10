@@ -1,18 +1,19 @@
 """
-reprocess_classification_overrides.py — Aplica RETROATIVAMENTE as regras de classificacao
-contabil FORCADA por tipo de documento (mesma logica da extracao de e-mail):
+reprocess_classification_overrides.py — Aplica RETROATIVAMENTE a CLASSIFICACAO CONTABIL
+por tipo de documento (mesma logica/fonte unica da extracao de e-mail:
+read_emails.resolve_forced_classification).
 
-  IRRF                       -> cost_center_id=3,  chart_account_id=28   (NAO grava no supplier)
-  DUIMP / ICMS Importacao    -> cost_center_id=3,  chart_account_id=11   (grava no supplier)
-  Transporte/transportadora/cte -> cost_center_id=4, chart_account_id=339 (grava no supplier)
-  DAM / DUAM                 -> classificacao do plano de contas 4.1.06   (NAO grava no supplier)
-  GNRE ICMS Subst. Tributaria -> classificacao do plano de contas 4.1.02  (NAO grava no supplier)
-    (gatilho: frase de ST no texto OU remetente do dominio @lebianco)
+  GUIA TRIBUTARIA (_is_tax_document)  -> relacionada ao plano de contas pelo TIPO/CONTEXTO do
+    imposto (_resolve_tax_chart_code -> classification_for_account_code); precedencia MAXIMA,
+    write-back True. Ex.: DAS/GNRE/DARE/DAM-DUAM/IPTU/IRRF/ICMS/ISS -> a conta "X a Recolher"
+    correspondente (ver "Classificacao contabil FORCADA" no CLAUDE.md).
+  TRANSPORTE (cte/frete, NAO-tributario) -> cost_center_id=4, chart_account_id=339 (write-back).
 
-Deteccao por ASSUNTO + DESCRICAO do documento + REMETENTE (via
-read_emails.resolve_forced_classification — fonte unica; DAM/DUAM e GNRE-ST resolvem a
-classificacao da tabela financial_chart_of_account pelos codigos 4.1.06 e 4.1.02). O write-back
-no supplier NUNCA ocorre para a OTIMOTEX (sk_supplier=1).
+Deteccao por ASSUNTO + DESCRICAO do documento + REMETENTE. O write-back no supplier NUNCA
+ocorre para a OTIMOTEX (sk_supplier=1). So altera a conta quando a classificacao diverge da atual.
+
+CUIDADO: documentos MAL-ROTULADOS (boleto de fornecedor gravado como dare/dae) serao
+reclassificados como imposto — revise o dry-run e corrija o document_type antes, se necessario.
 
 Uso:
     py -3 scripts/reprocess_classification_overrides.py --dry-run   # so lista o que faria
@@ -66,6 +67,32 @@ def _patch_account_classification(ctrl, fac_id: int, cost_center_id: int, chart_
     urllib.request.urlopen(req, timeout=15)
 
 
+def _apply_account_change(ctrl, acc: dict, cc: int, ca: int, dry_run: bool) -> bool:
+    """Grava a nova classificacao na conta se divergir da atual. Retorna True se mudou."""
+    if acc.get("cost_center_id") == cc and acc.get("chart_account_id") == ca:
+        return False
+    fac_id = acc["id"]
+    if dry_run:
+        log.info(f"(dry-run) conta id={fac_id} [{acc.get('document_type')}] "
+                 f"cc {acc.get('cost_center_id')}->{cc} / ca {acc.get('chart_account_id')}->{ca}")
+    else:
+        _patch_account_classification(ctrl, fac_id, cc, ca)
+        log.info(f"conta id={fac_id} [{acc.get('document_type')}] -> cc={cc} ca={ca}")
+    return True
+
+
+def _collect_writeback(acc: dict, cc: int, ca: int, write_back: bool, writebacks: dict) -> None:
+    """Acumula o write-back do fornecedor (dedupe por sk; so write_back e nunca OTIMOTEX sk=1)."""
+    sk = acc.get("sk_supplier")
+    if not (write_back and sk and sk != R.OTIMOTEX_SK_SUPPLIER):
+        return
+    if sk in writebacks and writebacks[sk] != (cc, ca):
+        log.warning(f"fornecedor {sk} com classificacoes conflitantes "
+                    f"{writebacks[sk]} vs {(cc, ca)} — mantendo a primeira")
+    else:
+        writebacks.setdefault(sk, (cc, ca))
+
+
 def reclassify_accounts(ctrl, dry_run: bool) -> "tuple[int, dict]":
     """Reclassifica as contas cujo assunto/descricao casa uma regra. Retorna (contas
     alteradas, write-backs pendentes {sk_supplier: (cc, ca)})."""
@@ -76,33 +103,17 @@ def reclassify_accounts(ctrl, dry_run: bool) -> "tuple[int, dict]":
     changed = 0
     writebacks: "dict[int, tuple[int, int]]" = {}
     for acc in rows:
-        # sender_email alimenta a regra GNRE @lebianco -> ICMS-ST (mesma logica da extracao).
+        # sender_email alimenta a regra GNRE @lebianco -> ICMS-ST; sk_supplier permite a
+        # exclusao de fornecedores nao-tributarios (ex.: Dr. Ricardo) — mesma logica da extracao.
         override = R.resolve_forced_classification(
             ctrl, acc.get("document_type"), acc.get("subject"), acc.get("description"),
-            sender_email=acc.get("sender_email"))
+            sender_email=acc.get("sender_email"), sk_supplier=acc.get("sk_supplier"))
         if not override:
             continue
         cc, ca, write_back = override
-        fac_id = acc["id"]
-
-        # Conta: so grava se divergir da classificacao atual.
-        if acc.get("cost_center_id") != cc or acc.get("chart_account_id") != ca:
+        if _apply_account_change(ctrl, acc, cc, ca, dry_run):
             changed += 1
-            if dry_run:
-                log.info(f"(dry-run) conta id={fac_id} [{acc.get('document_type')}] "
-                         f"cc {acc.get('cost_center_id')}->{cc} / ca {acc.get('chart_account_id')}->{ca}")
-            else:
-                _patch_account_classification(ctrl, fac_id, cc, ca)
-                log.info(f"conta id={fac_id} [{acc.get('document_type')}] -> cc={cc} ca={ca}")
-
-        # Write-back no supplier: so tipos com write_back e nunca OTIMOTEX (sk=1).
-        sk = acc.get("sk_supplier")
-        if write_back and sk and sk != R.OTIMOTEX_SK_SUPPLIER:
-            if sk in writebacks and writebacks[sk] != (cc, ca):
-                log.warning(f"fornecedor {sk} com classificacoes conflitantes "
-                            f"{writebacks[sk]} vs {(cc, ca)} — mantendo a primeira")
-            else:
-                writebacks.setdefault(sk, (cc, ca))
+        _collect_writeback(acc, cc, ca, write_back, writebacks)
     return changed, writebacks
 
 
