@@ -6,7 +6,7 @@
 import { useEffect, useState, useCallback } from 'react';
 import { RefreshCw, FileText, CheckCircle2, Clock, TrendingUp, AlertCircle, Building2, Zap, Droplet, Wifi, Home, Receipt } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
-import { getDashboardData, type DashboardData, type DashboardScope, type PriorityKind } from '../services/supabase';
+import { getDashboardData, type DashboardData, type DashboardScope, type PriorityKind, type KpiFilter } from '../services/supabase';
 import { getErrorMessage } from '../lib/getErrorMessage';
 import Alert from '../components/atoms/Alert';
 import StatusBadge from '../components/StatusBadge';
@@ -47,12 +47,18 @@ const PRIORITY_ICON: Record<PriorityKind, LucideIcon> = {
   agua: Droplet, luz: Zap, internet: Wifi, telefone: Receipt, aluguel: Home, tributo: Receipt, outro: Receipt,
 };
 
+// Rótulo pt-BR do filtro ativo (indicador no cabeçalho).
+const KPI_FILTER_LABEL: Record<KpiFilter, string> = {
+  total: 'Todos', pago: 'Pagos', aVencer: 'A vencer', vencendo7: 'A vencer em 7 dias', vencidas: 'Vencidas',
+};
+
 export default function Dashboard() {
   // Estado inicial via inicializador LAZY — não chamar new Date() no corpo do render
   // (impureza; §5 / React Compiler). Ver achado A2-2.
   const [month, setMonth] = useState(() => new Date().getMonth());
   const [year, setYear] = useState(() => new Date().getFullYear());
   const [scope, setScope] = useState<DashboardScope>('month');
+  const [filter, setFilter] = useState<KpiFilter>('total');
   const [data, setData] = useState<DashboardData | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -61,13 +67,16 @@ export default function Dashboard() {
     setLoading(true);
     setError(null);
     try {
-      setData(await getDashboardData(month, year, scope));
+      setData(await getDashboardData(month, year, scope, filter));
     } catch (e) {
       setError(getErrorMessage(e));
     } finally {
       setLoading(false);
     }
-  }, [month, year, scope]);
+  }, [month, year, scope, filter]);
+
+  // Clicar num KPI aplica seu filtro; clicar no mesmo (ou no "Total") limpa.
+  const toggleFilter = (f: KpiFilter): void => setFilter((cur) => (cur === f ? 'total' : f));
 
   useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect
@@ -75,12 +84,12 @@ export default function Dashboard() {
   }, [load]);
 
   const k = data?.kpis;
-  const kpis: { icon: LucideIcon; label: string; amount: number; count: number; tone: 'neutral' | 'success' | 'muted' | 'danger' }[] = [
-    { icon: FileText, label: scope === 'all' ? 'Total a pagar' : 'Total a pagar no mês', amount: k?.totalValue ?? 0, count: k?.totalCount ?? 0, tone: 'neutral' },
-    { icon: CheckCircle2, label: 'Pagos', amount: k?.pagoValue ?? 0, count: k?.pagoCount ?? 0, tone: 'success' },
-    { icon: Clock, label: 'A vencer', amount: k?.aVencerValue ?? 0, count: k?.aVencerCount ?? 0, tone: 'muted' },
-    { icon: TrendingUp, label: 'A vencer em 7 dias', amount: k?.vencendoValue ?? 0, count: k?.vencendoCount ?? 0, tone: 'muted' },
-    { icon: AlertCircle, label: 'Vencidas', amount: k?.vencidasValue ?? 0, count: k?.vencidasCount ?? 0, tone: 'danger' },
+  const kpis: { icon: LucideIcon; label: string; amount: number; count: number; tone: 'neutral' | 'success' | 'muted' | 'danger'; filter: KpiFilter }[] = [
+    { icon: FileText, label: scope === 'all' ? 'Total a pagar' : 'Total a pagar no mês', amount: k?.totalValue ?? 0, count: k?.totalCount ?? 0, tone: 'neutral', filter: 'total' },
+    { icon: CheckCircle2, label: 'Pagos', amount: k?.pagoValue ?? 0, count: k?.pagoCount ?? 0, tone: 'success', filter: 'pago' },
+    { icon: Clock, label: 'A vencer', amount: k?.aVencerValue ?? 0, count: k?.aVencerCount ?? 0, tone: 'muted', filter: 'aVencer' },
+    { icon: TrendingUp, label: 'A vencer em 7 dias', amount: k?.vencendoValue ?? 0, count: k?.vencendoCount ?? 0, tone: 'muted', filter: 'vencendo7' },
+    { icon: AlertCircle, label: 'Vencidas', amount: k?.vencidasValue ?? 0, count: k?.vencidasCount ?? 0, tone: 'danger', filter: 'vencidas' },
   ];
 
   return (
@@ -91,6 +100,18 @@ export default function Dashboard() {
           <h1 className="text-sm font-semibold text-slate-800">Dashboard financeiro</h1>
           <p className="text-xs text-slate-500 mt-0.5">
             Contas a pagar · {scope === 'all' ? 'Todas as contas' : `${MONTHS_FULL[month]} ${year}`}
+            {filter !== 'total' && (
+              <>
+                {' · '}
+                <button
+                  type="button"
+                  onClick={() => setFilter('total')}
+                  className="font-medium text-brand-dark hover:underline"
+                >
+                  filtrando: {KPI_FILTER_LABEL[filter]} ✕
+                </button>
+              </>
+            )}
           </p>
         </div>
         <div className="flex items-center gap-3 flex-wrap justify-end">
@@ -160,12 +181,21 @@ export default function Dashboard() {
 
         {/* Faixa de KPIs */}
         <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-5 gap-2 mb-3">
-          {kpis.map(({ icon: Icon, label, amount, count, tone }) => {
+          {kpis.map(({ icon: Icon, label, amount, count, tone, filter: kpiFilter }) => {
             const borderLeft = tone === 'danger' ? 'border-l-status-error-solid' : tone === 'success' ? 'border-l-status-success-fg' : 'border-l-brand';
             const iconCls = tone === 'danger' ? 'bg-status-error-solid/10 text-status-error-fg' : tone === 'success' ? 'bg-status-success-bg text-status-success-fg' : 'bg-brand/10 text-brand';
             const valueCls = tone === 'danger' ? 'text-status-error-fg' : tone === 'success' ? 'text-status-success-fg' : tone === 'muted' ? 'text-slate-500' : 'text-slate-800';
+            // 'total' nunca fica "ativo" (é o estado sem filtro); os demais destacam quando selecionados.
+            const active = filter === kpiFilter && kpiFilter !== 'total';
             return (
-              <div key={label} className={`flex items-center gap-2 rounded-lg p-2 border-l-2 bg-white shadow-xs hover:shadow-sm transition-shadow animate-fade-in-up ${borderLeft}`}>
+              <button
+                key={label}
+                type="button"
+                onClick={() => toggleFilter(kpiFilter)}
+                aria-pressed={active}
+                title={kpiFilter === 'total' ? 'Limpar filtro' : `Filtrar por ${label}`}
+                className={`flex items-center gap-2 rounded-lg p-2 border-l-2 bg-white shadow-xs hover:shadow-sm transition-shadow animate-fade-in-up text-left w-full cursor-pointer focus:outline-none focus-visible:ring-2 focus-visible:ring-brand ${borderLeft} ${active ? 'ring-2 ring-brand shadow-sm' : ''}`}
+              >
                 <div className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-full ${iconCls}`}>
                   <Icon size={14} />
                 </div>
@@ -176,7 +206,7 @@ export default function Dashboard() {
                   </div>
                   <div className="text-xs text-slate-500 truncate">{label}</div>
                 </div>
-              </div>
+              </button>
             );
           })}
         </div>

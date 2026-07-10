@@ -1,6 +1,6 @@
 // src/pages/Dashboard.test.tsx
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen } from '@testing-library/react';
+import { render, screen, fireEvent } from '@testing-library/react';
 import Dashboard from './Dashboard';
 import * as supabase from '../services/supabase';
 import type { DashboardData } from '../services/supabase';
@@ -54,8 +54,26 @@ describe('Dashboard', () => {
     render(<Dashboard />);
     expect(await screen.findByText('Total a pagar no mês')).toBeInTheDocument();
     expect(screen.getByText('Vencidas')).toBeInTheDocument();
-    // getDashboardData chamado com o mês corrente e escopo 'month'
-    expect(supabase.getDashboardData).toHaveBeenCalledWith(new Date().getMonth(), new Date().getFullYear(), 'month');
+    // getDashboardData chamado com o mês corrente, escopo 'month' e sem filtro ('total')
+    expect(supabase.getDashboardData).toHaveBeenCalledWith(new Date().getMonth(), new Date().getFullYear(), 'month', 'total');
+  });
+
+  it('clicar num KPI aplica o filtro e clicar de novo o limpa', async () => {
+    render(<Dashboard />);
+    const pagos = await screen.findByRole('button', { name: /Pagos/i });
+
+    fireEvent.click(pagos);
+    expect(await screen.findByText(/filtrando: Pagos/i)).toBeInTheDocument();
+    expect(supabase.getDashboardData).toHaveBeenLastCalledWith(
+      new Date().getMonth(), new Date().getFullYear(), 'month', 'pago',
+    );
+    expect(pagos).toHaveAttribute('aria-pressed', 'true');
+
+    fireEvent.click(pagos);
+    expect(supabase.getDashboardData).toHaveBeenLastCalledWith(
+      new Date().getMonth(), new Date().getFullYear(), 'month', 'total',
+    );
+    expect(pagos).toHaveAttribute('aria-pressed', 'false');
   });
 
   it('renderiza ranking e contas prioritárias', async () => {
