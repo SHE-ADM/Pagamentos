@@ -203,8 +203,11 @@ Código de barras → Informações adicionais** (os 3 pares na mesma linha; có
 **Informações adicionais** por último — `<textarea>` de texto livre, coluna
 `financial_account_control.additional_info` TEXT nullable, migration 064). Esse texto é escrito
 pelo usuário e **aparece no card de detalhe de `/consulta`** (bloco "Informações adicionais",
-`whitespace-pre-wrap`); é distinto de `processing_notes` (auditoria/pipeline, exibido como
-"Observações") e nunca é tocado pela extração. Na
+`whitespace-pre-wrap`) **E como um rodapé SEMPRE-visível abaixo das células do registro** no grid
+(prop `renderRowFooter` do `DataGrid` — ver "Grid compartilhado"), destacado em fonte
+`font-jakarta` itálica + texto `text-slate-600` sobre fundo `bg-status-warning-bg` (amarelo pastel);
+só os registros com `additional_info` ganham o rodapé. É distinto de `processing_notes`
+(auditoria/pipeline, exibido como "Observações") e nunca é tocado pela extração. Na
 **inclusão** (modo `create`), **Emissão e Vencimento já vêm com a data de hoje** (`todayISO()`,
 data local — `toFormValues` só preenche quando não há `defaultValues`; edição mantém os valores
 da conta). **Sem botão de exclusão** em nenhuma das telas.
@@ -939,8 +942,8 @@ apps/frontend-vite/src/components/
 │   ├── ChartAccountSubgroupForm.tsx  # (tabelas) form de subgrupo — código + descrição + grupo(lookup obrigatório)
 │   ├── CrudTablePage.tsx      # (tabelas) página CRUD genérica <T,TInput> (lista+busca+modais) — base das 5 páginas
 │   ├── DataGrid.tsx           # grid sobre TanStack Table v8 (+ DataGrid.test.tsx) — ver seção própria
-│   ├── dataGrid.variants.ts   # cva por slot (header/row/cell/skeleton/empty/pin/resize/grip/densidade/wrap) default|silver
-│   └── dataGrid.rows.ts       # buildRenderItems (achata linhas→itens row/second/detail p/ virtualização)
+│   ├── dataGrid.variants.ts   # cva por slot (header/row/cell/skeleton/empty/footer/pin/resize/grip/densidade/wrap) default|silver
+│   └── dataGrid.rows.ts       # buildRenderItems (achata linhas→itens row/second/footer/detail p/ virtualização)
 ├── AuthLayout.tsx             # (gradient) wrapper full-page para Forgot/Reset
 ├── AttachmentViewer.tsx       # visualizador de PDF (signed URL do Storage) em <dialog> nativo (showModal: role/foco/trap/Esc nativos) + iframe SEM sandbox — o viewer PDF do Chrome (PDFium) não renderiza em iframe sandboxed, nem com allow-scripts (S5-1 introduziu e quebrou o boleto; revertido). NÃO reintroduzir sandbox; ver comentário no componente
 ├── Layout.tsx (+ Layout.test.tsx)   # sidebar; navLink = cva local (estado active); menu em 5 grupos (ver abaixo)
@@ -1446,11 +1449,17 @@ por nome (RPC `financial_dup_by_name` / `_dup_by_name`) foi **removida** — "EF
 
 `extract_pdf.py` usa `_ns()` (strip de acentos + lowercase) para lookup em `_DOC_TYPE_NORM`.
 CHECK constraint em `financial_account_control.document_type` usa `lower()` (migrations 014,
-017, **024**, **026**, **043**, **062** e **066**). Tipos aceitos incluem: `boleto`, `cte`, `nfe`, `nfse`, `tributo`,
-`das`, `pix`, `seguro`, `fatura`, `recibo`, `contrato`, `honorários`, `container`, `multa`, `dare`, `cartório`, `outro`
-(DAS de Simples Nacional → `das`; PIX → `pix`; **`multa`** = multa/penalidade/juros avulsos, auto de
+017, **024**, **026**, **043**, **062**, **066** e **075**). Tipos aceitos incluem: `boleto`, `cte`, `nfe`, `nfse`, `tributo`,
+`das`, `seguro`, `fatura`, `recibo`, `contrato`, `honorários`, `container`, `multa`, `dare`, `cartório`, `outro`
+(DAS de Simples Nacional → `das`; **`multa`** = multa/penalidade/juros avulsos, auto de
 infração; **`dare`** = Documento de Arrecadação de Receitas Estaduais, antes dobrado em `dae` — a
 migration 062 separou DAE=eSocial de DARE=estadual em `_DOC_TYPE_NORM`/`_BODY_DOC_KEYWORDS`).
+**`pix` NÃO é tipo de documento (removido na migration 075)** — é só forma de pagamento
+(`PAYMENT_METHODS`). Um pagamento PIX sem outro indício de tipo fica `document_type='outro'` e
+`payment_method='pix'`; quando não há Nº de documento próprio, o sintético é
+**`{payment_method}_{valor}`** (`pix_R$ …`) para PIX+`outro`, senão `{tipo}_{ddmmaa}`. As antigas
+fontes de `document_type='pix'` (`apply_pix_override` no PDF e o ramo `has_pix` do corpo) foram
+removidas — o backfill da 075 converteu os `pix` existentes em `outro`.
 `container` = frete/demurrage/movimentação de
 contêineres (keyword de assunto + classificação no corpo e PDF; migration 026).
 `SKIP_ACCOUNT_TYPES = ['nfe', 'nfse']` — não geram conta a pagar.
@@ -1604,8 +1613,9 @@ frouxos (`documento nº`) capturavam lixo ("Banco"). Backfill da migration 043 c
 
 **Regra honorários** (migration 024): e-mail de honorários (keyword de assunto `honorário`;
 termo `honorário(s)` no corpo ou recibo) é gravado com `document_type='honorários'` e
-`payment_method='pix'` — honorários têm **precedência sobre o override de PIX** do tipo, e o
-pagamento é forçado a `pix` tanto no corpo (`extract_from_email_body`) quanto no PDF
+`payment_method='pix'` — honorários mantêm o tipo `honorários` mesmo com PIX detectado (o PIX só
+define a forma de pagamento, nunca o tipo — ver a nota sobre `pix` removido dos tipos de documento),
+e o pagamento é forçado a `pix` tanto no corpo (`extract_from_email_body`) quanto no PDF
 (`build_financial_payload`).
 
 **Forma de pagamento DECLARADA no corpo → `payment_method` (não regredir):** quando o pagador
@@ -2091,7 +2101,7 @@ faturas SIEG em `ignorado`; o handler A1 (baixar o boleto real) segue como melho
 | `/tabelas/plano-de-contas` | `ChartAccountsPage.tsx` | `financial_chart_of_account` (CRUD via Next API) |
 | `/tabelas/grupos-plano-de-contas` | `ChartAccountGroupsPage.tsx` | `financial_chart_of_account_group` (CRUD via Next API) |
 | `/tabelas/subgrupos-plano-de-contas` | `ChartAccountSubgroupsPage.tsx` | `financial_chart_of_account_subgroup` (CRUD via Next API) |
-| `/dashboard` | `Dashboard.tsx` | `financial_account_control` (KPIs/gráficos por mês ou geral; `getDashboardData`) |
+| `/dashboard` | `Dashboard.tsx` | `financial_account_control` (KPIs/gráficos por mês ou geral; `getDashboardData`). **Cards de KPI clicáveis = filtro** (Total/Pagos/A vencer/A vencer em 7 dias/Vencidas): clicar aplica o filtro (`KpiFilter`) a TODOS os gráficos; os KPIs seguem com os totais completos. **4 donuts** (situação · tipos de conta · **Tributos** = só guias tributárias detalhadas · formas de pagamento; tipos de conta colapsa os tributários numa fatia "Tributos" via `groupDocumentTypeLabel`/`isTaxDocumentType`) |
 | `/cobranca/envios` | `cobranca/CobrancaEnvios.tsx` | `cobranca_envios_log` (ver "Pipeline de cobrança de vencidos") |
 | `/cobranca/erros` | `cobranca/CobrancaErros.tsx` | `cobranca_erros_log` |
 
@@ -2212,10 +2222,17 @@ faturas SIEG em `ignorado`; o handler A1 (baixar o boleto real) segue como melho
     "Carregar mais"; rodapé "{carregadas} de {total}"). Técnica **spacer-rows** (linhas em fluxo normal
     entre dois `<tr>` espaçadores — **preserva `table-fixed`, larguras, fixação sticky e o `<thead>`
     fixo**, sem posicionamento absoluto); cada `<tr>` real leva `data-index` + `ref={measureElement}`
-    para **altura dinâmica** (cobre word-wrap, sub-linha e o detalhe expandido). `buildRenderItems`
-    (`dataGrid.rows.ts`) achata as linhas em itens `row/second/detail` (1 item = 1 `<tr>`). **Fallback
+    para **altura dinâmica** (cobre word-wrap, sub-linha, rodapé e o detalhe expandido). `buildRenderItems`
+    (`dataGrid.rows.ts`) achata as linhas em itens `row/second/footer/detail` (1 item = 1 `<tr>`). **Fallback
     sem layout (jsdom/testes):** altura do viewport `0` → renderiza tudo (não virtualiza), mantendo os
     testes verdes. `/emails` **não** liga virtualização.
+  - **Rodapé de registro sempre-visível (opt-in `renderRowFooter`, usado em `/consulta`)**: prop
+    `renderRowFooter?: (row) => ReactNode` — quando retorna nó não-nulo, o grid emite um `<tr>`
+    full-width (`colSpan`, slot `footerCell`) **abaixo das células daquele registro**, sempre visível
+    (sem clique), distinto do `detail` (clique/seleção) e do `second` (breakpoint). Ordem dos itens:
+    `row → second → footer → detail`. `/consulta` usa para exibir a **informação adicional**
+    (`additional_info`) só nos registros que a têm — ver "CRUD de contas". Virtualização preservada
+    (o footer é um `RenderItem` próprio com `data-index`/`measureElement`; `estimateSize` ~30px).
     - **Auto-recuperação do scrollRect (não regredir):** o `react-virtual` cacheia a altura do viewport
       (`scrollRect`) via `ResizeObserver`; trocas de aba/inatividade (ou um "ResizeObserver loop") fazem
       o navegador **descartar notificações de resize** → o `scrollRect` fica defasado (pequeno), a janela
@@ -2315,11 +2332,13 @@ local/agendada (ver flag `EMAIL_READER_ENABLED` acima e memória [[vercel-deploy
 ## Banco de dados (Supabase)
 
 Migrations em `supabase/migrations/`, aplicadas **manualmente no SQL Editor** em ordem
-numérica (`001` → `074`). **Próxima migration = `075`** (verificar sempre antes de criar nova).
+numérica (`001` → `075`). **Próxima migration = `076`** (verificar sempre antes de criar nova).
 Não há migration automática. (As `059`/`060`/`061`/`063`/`064`/`066`/`067`/
-`068`/`069`/`070`/`071`/**`072`**/**`073`**/**`074`** foram aplicadas **direto via Supabase MCP** nesta
+`068`/`069`/`070`/`071`/**`072`**/**`073`**/**`074`**/**`075`** foram aplicadas **direto via Supabase MCP** nesta
 máquina — o arquivo numerado serve
-de histórico; **não reaplicar** no SQL Editor (todas idempotentes, mas evite re-run). A **074**
+de histórico; **não reaplicar** no SQL Editor (todas idempotentes, mas evite re-run). A **075**
+remove **`pix`** do CHECK de `financial_account_control.document_type` (pix é só forma de pagamento)
++ backfill dos 39 registros `pix`→`outro` — ver "Normalização de `document_type`". A **074**
 (correção de REGRESSÃO da 072 — não regredir): a 072 revogou `EXECUTE` de `resolve_company_id` de
 `authenticated`, mas o trigger `BEFORE INSERT/UPDATE trg_fe_company_id` → `trg_fe_resolve_company()`
 era **SECURITY INVOKER**, então passou a rodar como `authenticated` (sem EXECUTE) e **quebrou TODO
@@ -2926,6 +2945,16 @@ lê os arquivos do disco.
 > → `ignorado`) já valeu para dev **e** prod (mesma Supabase), então só falta o arquivo. Validação
 > (esperado `True`): `py -3 -c "import sys; sys.path.insert(0,'skills/email-reader/scripts'); import
 > read_emails as R; print(hasattr(R,'subject_is_payment_confirmation'))"`
+
+> **DEPLOY 2026-07-10 — `pix` deixa de ser tipo de documento (PENDENTE de cópia p/ prod):** PIX é só
+> forma de pagamento; `document_type='outro'` quando não há tipo claro (migration 075 + `extract_pdf.py`
+> sem `apply_pix_override` + ramo `has_pix` do corpo em `read_emails.py`). Deploy = copiar os **2
+> arquivos** (`read_emails.py` **e** `extract_pdf.py`, interdependentes — o sintético `pix_valor` vive
+> nos dois). **Sem `.env`.** A **migration 075** (backfill `pix`→`outro` + CHECK) já rodou na Supabase
+> compartilhada → **vale para prod sem passo extra de banco**. Nº doc sintético de PIX+`outro` passou de
+> `PIX_valor` para **`pix_valor`** (minúsculo, do `payment_method`). Validação (esperado `False`):
+> `py -3 -c "import sys; sys.path.insert(0,'skills/pdf-contas-pagar/scripts'); import extract_pdf as e;
+> print(hasattr(e,'apply_pix_override'))"`
 
 ### Deploy manual da Cobrança de vencidos (envios) em produção (caso específico — não regredir)
 

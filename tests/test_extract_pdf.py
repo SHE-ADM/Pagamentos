@@ -11,31 +11,6 @@ sys.path.insert(0, str(Path(__file__).parents[1] / "skills" / "pdf-contas-pagar"
 import extract_pdf as e  # noqa: E402
 
 
-class ApplyPixOverrideTest(unittest.TestCase):
-    """Override de pix só vale para tipo indefinido — nunca apaga um tipo fiscal.
-
-    Regressão: um DACTE (CT-e) da Arlete Transportes virava 'pix' só porque o
-    texto mencionava pix, perdendo o tipo real e o tratamento de chave/barcode.
-    """
-
-    def test_nao_sobrescreve_documento_fiscal_identificado(self):
-        for dtype in ("cte", "boleto", "nfe", "nfse", "DARF"):
-            rec = {"document_type": dtype, "payment_method": "pix"}
-            got = e.apply_pix_override(dict(rec))["document_type"]
-            self.assertEqual(got, dtype, f"{dtype} não deve virar pix")
-
-    def test_sobrescreve_apenas_tipo_indefinido(self):
-        for dtype in ("outro", ""):
-            rec = {"document_type": dtype, "payment_method": "pix"}
-            got = e.apply_pix_override(dict(rec))["document_type"]
-            self.assertEqual(got, "pix")
-
-    def test_sem_pix_mantem_tipo(self):
-        rec = {"document_type": "outro", "payment_method": "boleto"}
-        got = e.apply_pix_override(dict(rec))["document_type"]
-        self.assertEqual(got, "outro")
-
-
 # Codigo de barras FEBRABAN de boleto: 44 digitos, moeda '9' (pos 4), banco != '000'.
 BOLETO_44 = "0019" + "0" * 40
 # Chave de acesso NF-e/CT-e: 44 digitos, moeda != '9' -> NAO e boleto.
@@ -133,20 +108,28 @@ class ImageAttachmentVisionTest(unittest.TestCase):
 
 
 class FallbackInvoiceNumberTest(unittest.TestCase):
-    """N documento sintetico: PIX usa o valor; demais tipos usam tipo+vencimento."""
+    """N documento sintetico: pagamento PIX + tipo 'outro' usa forma+valor
+    (pix_R$ …); demais casos usam tipo+vencimento."""
 
-    def test_pix_usa_valor_em_moeda_br(self):
+    def test_pix_outro_usa_forma_de_pagamento_e_valor(self):
+        # payment_method='pix' E document_type='outro' → 'pix_' + valor BR (minúsculo).
         self.assertEqual(
-            e.fallback_invoice_number("pix", "2026-06-20", 10999.99),
-            "PIX_R$ 10.999,99")
+            e.fallback_invoice_number("outro", "2026-06-20", 10999.99, "pix"),
+            "pix_R$ 10.999,99")
         self.assertEqual(
-            e.fallback_invoice_number("pix", None, 1250),
-            "PIX_R$ 1.250,00")
+            e.fallback_invoice_number("outro", None, 1250, "pix"),
+            "pix_R$ 1.250,00")
 
     def test_pix_sem_valor_cai_para_tipo_vencimento(self):
         self.assertEqual(
-            e.fallback_invoice_number("pix", "2026-06-20", None),
-            "pix_200626")
+            e.fallback_invoice_number("outro", "2026-06-20", None, "pix"),
+            "outro_200626")
+
+    def test_tipo_definido_pago_por_pix_usa_tipo_vencimento(self):
+        # Tipo real (boleto) pago via pix NÃO vira 'pix_…' — só 'outro' dispara a regra.
+        self.assertEqual(
+            e.fallback_invoice_number("boleto", "2026-07-10", 50.00, "pix"),
+            "boleto_100726")
 
     def test_demais_tipos_usam_tipo_vencimento(self):
         self.assertEqual(

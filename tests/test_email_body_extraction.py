@@ -255,15 +255,15 @@ class ExtractFromEmailBodyTest(unittest.TestCase):
         # A linha digitável de boleto (moeda '9') dispara o discriminador.
         self.assertTrue(read_emails._is_boleto_barcode(payload["barcode"]))
 
-    def test_pix_puro_no_corpo_continua_pix(self):
-        """Corpo só-PIX (sem linha digitável de boleto) permanece pix/pix."""
+    def test_pix_puro_no_corpo_vira_outro_com_pagamento_pix(self):
+        """Corpo só-PIX (sem linha digitável): pagamento 'pix', tipo 'outro' (PIX não é tipo)."""
         body = "Por favor, pagar via PIX o valor de R$ 250,00 hoje."
         payload = read_emails.extract_from_email_body(
             body, "2026-06-11T10:00:00+00:00", "<msg-pixpuro>", "fornecedor@x.com.br")
         self.assertIsNotNone(payload)
         self.assertIsNone(payload["barcode"])
         self.assertEqual(payload["payment_method"], "pix")
-        self.assertEqual(payload["document_type"], "pix")
+        self.assertEqual(payload["document_type"], "outro")
 
     def test_honorario_com_barcode_paga_boleto(self):
         """build_financial_payload: honorário emitido em boleto → payment_method boleto."""
@@ -404,20 +404,19 @@ class TryExtractFromBodyTest(unittest.TestCase):
         self.assertEqual(outcome, read_emails.BODY_CREATED)
         self.assertEqual(len(ctrl.financial_calls), 1)
         self.assertEqual(ctrl.financial_calls[0]["payment_method"], "pix")
-        # document_type deve ser minusculo ('pix'), nao 'PIX' — casa o enum/select do
-        # frontend (o CHECK do banco usa lower(), mas a UI e case-sensitive).
-        self.assertEqual(ctrl.financial_calls[0]["document_type"], "pix")
+        # PIX é forma de PAGAMENTO, não tipo de documento: sem tipo claro, fica 'outro'.
+        self.assertEqual(ctrl.financial_calls[0]["document_type"], "outro")
         self.assertEqual(ctrl.error_calls, [])
 
     def test_pix_sem_n_documento_gera_invoice_com_valor(self):
-        """PIX sem N documento → invoice_number = 'PIX_' + valor em moeda BR."""
+        """Pagamento PIX + tipo 'outro' sem N documento → invoice_number = 'pix_' + valor BR."""
         ctrl = FakeControl()
         read_emails.try_extract_from_body(
             {"message_id": "<msg-pix-inv>"}, PIX_BODY,
             "2026-06-10T00:00:00+00:00", "<msg-pix-inv>", ctrl,
         )
         self.assertEqual(len(ctrl.financial_calls), 1)
-        self.assertEqual(ctrl.financial_calls[0]["invoice_number"], "PIX_R$ 1.250,00")
+        self.assertEqual(ctrl.financial_calls[0]["invoice_number"], "pix_R$ 1.250,00")
 
     def test_documento_duplicado_vira_duplicidade(self):
         """Conteudo ja existente no banco (remetente reenviou) nao grava de novo:
