@@ -138,11 +138,13 @@ const contaRepository = {
     return getSupabaseAdmin().from(TABLE).select(SELECT_WITH_SUPPLIER).eq('id', id).maybeSingle();
   },
 
-  create(payload: FinancialAccountControlCreate) {
+  // `created_by` é carimbado pelo servidor (UUID do usuário logado) — não vem do corpo.
+  create(payload: FinancialAccountControlCreate & { created_by?: string }) {
     return getSupabaseAdmin().from(TABLE).insert(payload).select(SELECT_WITH_SUPPLIER).single();
   },
 
-  update(id: number, payload: FinancialAccountControlUpdate) {
+  // `updated_by` é carimbado pelo servidor (UUID do usuário logado) — não vem do corpo.
+  update(id: number, payload: FinancialAccountControlUpdate & { updated_by?: string }) {
     return getSupabaseAdmin().from(TABLE).update(payload).eq('id', id).select(SELECT_WITH_SUPPLIER).maybeSingle();
   },
 };
@@ -201,11 +203,14 @@ export const contaService = {
    * (sk_supplier obrigatório, amount > 0, document_type/payment_method dos enums).
    * @throws {ContaServiceError} 422 (payload inválido) ou 409 (violação UNIQUE).
    */
-  async create(raw: unknown): Promise<FinancialAccountControl> {
+  async create(raw: unknown, userId?: string): Promise<FinancialAccountControl> {
     const parsed = financialAccountControlCreateSchema.safeParse(raw);
     if (!parsed.success) throw new ContaServiceError(formatZodError(parsed.error), 422);
 
-    const { data, error } = await contaRepository.create(parsed.data);
+    // Autoria (Etapa 1 — visibilidade por dono): carimba o UUID do usuário logado
+    // (resolvido do Bearer no handler). Sem userId, o DEFAULT da coluna (sentinela) assume.
+    const payload = userId ? { ...parsed.data, created_by: userId } : parsed.data;
+    const { data, error } = await contaRepository.create(payload);
     if (error) throw mapWriteError(error);
     const conta = data as unknown as FinancialAccountControl;
     await writeBackSupplierClassification(conta);
@@ -217,11 +222,14 @@ export const contaService = {
    * (ex.: `status='cancelado'` é a forma de "remover" — não há hard-delete).
    * @throws {ContaServiceError} 422 (payload inválido), 404 (inexistente) ou 409 (UNIQUE).
    */
-  async update(id: number, raw: unknown): Promise<FinancialAccountControl> {
+  async update(id: number, raw: unknown, userId?: string): Promise<FinancialAccountControl> {
     const parsed = financialAccountControlUpdateSchema.safeParse(raw);
     if (!parsed.success) throw new ContaServiceError(formatZodError(parsed.error), 422);
 
-    const { data, error } = await contaRepository.update(id, parsed.data);
+    // Autoria (Etapa 2): carimba o editor. Quando status_id muda no PATCH, a trigger deriva
+    // status_changed_by do mesmo ator (updated_by) — não precisa enviar aqui.
+    const payload = userId ? { ...parsed.data, updated_by: userId } : parsed.data;
+    const { data, error } = await contaRepository.update(id, payload);
     if (error) throw mapWriteError(error);
     if (!data) throw new ContaServiceError('Conta não encontrada', 404);
     const conta = data as unknown as FinancialAccountControl;

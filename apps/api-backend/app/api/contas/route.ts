@@ -1,6 +1,6 @@
 import type { NextRequest } from 'next/server';
-import { ok, failFromError } from '@/lib/response';
-import { requireAuth } from '@/lib/auth';
+import { ok, fail, failFromError } from '@/lib/response';
+import { requireAuth, getAuthenticatedUser } from '@/lib/auth';
 import { contaService } from '@/lib/contas';
 
 // /api/contas — GET (lista paginada/filtrada) + POST (criação).
@@ -29,8 +29,9 @@ export async function GET(req: NextRequest) {
 }
 
 export async function POST(req: NextRequest) {
-  const denied = await requireAuth(req);
-  if (denied) return denied;
+  // Autoria (visibilidade por dono): precisamos do UUID do usuário logado, não só do gate.
+  const user = await getAuthenticatedUser(req);
+  if (!user) return fail('Autenticação necessária', 401);
 
   let body: unknown;
   try {
@@ -40,7 +41,7 @@ export async function POST(req: NextRequest) {
   }
 
   try {
-    const data = await contaService.create(body ?? {});
+    const data = await contaService.create(body ?? {}, user.id);
     return ok(data, undefined, 201);
   } catch (e) {
     return failFromError(e, 'contas');

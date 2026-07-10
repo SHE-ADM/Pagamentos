@@ -35,6 +35,7 @@ import {
   setFinancialAccountFlag,
   setFinancialAccountStatus,
   setFinancialAccountStatusBulk,
+  getAppUsers,
   type FinancialStats,
 } from '../services/supabase';
 import { startEmailRead, getEmailReadProgress, type ReadProgress } from '../services/emailReader';
@@ -48,7 +49,7 @@ import AttachmentViewer from '../components/AttachmentViewer';
 import DataGrid from '../components/organisms/DataGrid';
 import ContaForm from '../components/organisms/ContaForm';
 import { getConsultaColumns, STATUS_OPTIONS, type ToggleFlag, type StatusChangeCallback } from '../hooks/useGridColumns';
-import { fmtDate, fmtMoney, fmtCnpj, fmtCostCenter, fmtChartAccount } from '../lib/format';
+import { fmtDate, fmtDateTime, fmtMoney, fmtCnpj, fmtCostCenter, fmtChartAccount } from '../lib/format';
 import { csvCell } from '../lib/csv';
 
 // Fornecedor no card de detalhe: id (sk_supplier) concatenado ao nome com " - ".
@@ -224,6 +225,9 @@ export default function Consulta() {
   // Contagem de documentos NÃO cancelados para o filtro aplicado (rodapé). null = sem dado.
   const [filteredCount, setFilteredCount] = useState<number | null>(null);
   const [sel, setSel] = useState<FinancialAccountControl | null>(null);
+  // Diretório id→e-mail (view app_user) para exibir o AUTOR no detalhe (migration 077).
+  const [appUsers, setAppUsers] = useState<Record<string, string>>({});
+  const userEmail = (id: string | null): string => (id ? (appUsers[id] ?? id) : '—');
   const [viewing, setViewing] = useState<string | null>(null);
   // Edição de conta (modal com ContaForm → PATCH /api/contas/:id).
   const [editing, setEditing] = useState<FinancialAccountControl | null>(null);
@@ -313,6 +317,13 @@ export default function Consulta() {
     void load(1, 'replace');
     void refreshStats();
   }, [load, refreshStats]);
+
+  // Diretório de usuários (id→e-mail) para o detalhe — busca única no mount. Falha é
+  // silenciosa (o detalhe cai no fallback do UUID). void: fire-and-forget idiomático.
+  useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    void getAppUsers().then(setAppUsers).catch(() => undefined);
+  }, []);
 
   // Debounce da busca por fornecedor (fonte única — sem ref): 350ms após a última tecla,
   // congela f.supplier em applied. O cleanup cancela o timeout pendente quando f.supplier
@@ -963,6 +974,9 @@ export default function Consulta() {
                                   ['Código de barras', r.barcode || '—'],
                                   ['Origem', r.source_file],
                                   ['Observações', r.processing_notes || '—'],
+                                  ['Criado por', userEmail(r.created_by)],
+                                  ['Última edição por', userEmail(r.updated_by)],
+                                  ['Situação alterada por', `${userEmail(r.status_changed_by)} · ${fmtDateTime(r.status_changed_at)}`],
                                 ] as [string, string | null][]
                               ).map(([k, v], i) => (
                                 <div

@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { NextRequest } from 'next/server';
 
-vi.mock('@/lib/auth', () => ({ requireAuth: vi.fn() }));
+vi.mock('@/lib/auth', () => ({ requireAuth: vi.fn(), getAuthenticatedUser: vi.fn() }));
 vi.mock('@/lib/contas', () => {
   class ContaServiceError extends Error {
     status: number;
@@ -15,10 +15,11 @@ vi.mock('@/lib/contas', () => {
 });
 
 import { GET, POST } from './route';
-import { requireAuth } from '@/lib/auth';
+import { requireAuth, getAuthenticatedUser } from '@/lib/auth';
 import { contaService, ContaServiceError } from '@/lib/contas';
 
 const requireAuthMock = vi.mocked(requireAuth);
+const getUserMock = vi.mocked(getAuthenticatedUser);
 const listMock = vi.mocked(contaService.list);
 const createMock = vi.mocked(contaService.create);
 
@@ -31,6 +32,7 @@ function postRequest(jsonImpl: () => Promise<unknown>): NextRequest {
 
 beforeEach(() => {
   requireAuthMock.mockReset();
+  getUserMock.mockReset();
   listMock.mockReset();
   createMock.mockReset();
 });
@@ -54,12 +56,21 @@ describe('GET /api/contas', () => {
 });
 
 describe('POST /api/contas', () => {
-  beforeEach(() => requireAuthMock.mockResolvedValue(null));
+  const USER = { id: 'fe8d268d-2bc3-4418-8cae-65e426c3fb4e' };
+  beforeEach(() => getUserMock.mockResolvedValue(USER as never));
 
-  it('201 no sucesso', async () => {
+  it('201 no sucesso e propaga o user.id (autoria) ao service', async () => {
     createMock.mockResolvedValue({ id: 7, sk_supplier: 1, amount: 100 } as never);
     const res = await POST(postRequest(async () => ({ sk_supplier: 1, amount: 100 })));
     expect(res.status).toBe(201);
+    expect(createMock).toHaveBeenCalledWith({ sk_supplier: 1, amount: 100 }, USER.id);
+  });
+
+  it('401 quando não autenticado — não toca o service', async () => {
+    getUserMock.mockResolvedValue(null);
+    const res = await POST(postRequest(async () => ({ sk_supplier: 1, amount: 100 })));
+    expect(res.status).toBe(401);
+    expect(createMock).not.toHaveBeenCalled();
   });
 
   it('422 quando o payload é inválido', async () => {

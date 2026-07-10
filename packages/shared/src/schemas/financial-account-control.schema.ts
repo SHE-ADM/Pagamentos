@@ -269,6 +269,13 @@ export const financialAccountControlSchema = z.object({
   extracted_at: z.string().nullable(),
   created_at: z.string(),
   updated_at: z.string(),
+  // Autoria (migrations 076/077) — UUIDs carimbados pelo servidor/trigger; nunca vêm do input.
+  // created_by = DONO (base da visibilidade por dono); updated_by = último editor;
+  // status_changed_by/at = quem/quando mudou a situação.
+  created_by: z.string().nullable(),
+  updated_by: z.string().nullable(),
+  status_changed_by: z.string().nullable(),
+  status_changed_at: z.string().nullable(),
 
   // Fornecedor embutido — presente quando o select inclui supplier(...).
   // Fonte de verdade única para exibição (nome/CNPJ/CPF vêm daqui via JOIN).
@@ -298,6 +305,11 @@ export const financialAccountControlInputSchema = financialAccountControlSchema.
   // `status_id` PERMANECE no input (entrada de escrita da situação — baixa/cancelamento via PATCH).
   created_at: true,
   updated_at: true,
+  // Autoria carimbada pelo servidor/trigger — nunca entra pelo corpo do cliente.
+  created_by: true,
+  updated_by: true,
+  status_changed_by: true,
+  status_changed_at: true,
   supplier: true,
   cost_center: true,
   chart_account: true,

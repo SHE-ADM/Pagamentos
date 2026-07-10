@@ -473,6 +473,49 @@ não pega) · linha=RLS em `financial_account_control`. Roadmap restante: migrat
 `belongsToGroup`/`requirePermission` em `lib/auth.ts` + menu no `Layout.tsx`. Ler o blueprint antes
 de implementar.
 
+**Visibilidade de contas por DONO, por grupo (Etapa 1 APLICADA — migration 076):** primeira
+dimensão de visibilidade por linha efetivamente em produção (independente do blueprint acima, que é
+por empresa/centro/plano). Cada `financial_account_control` tem **`created_by`** (UUID → `auth.users`,
+NOT NULL DEFAULT sentinela `teste@otimotex.com.br` `fe8d268d-…`, FK `ON DELETE SET DEFAULT`) = o DONO.
+**Preenchimento (server-side, nunca do corpo do cliente):** UI nova conta → Next API carimba o
+usuário logado (`getAuthenticatedUser(req).id`, `contaService.create(raw, userId)` em `lib/contas.ts`;
+POST usa `getAuthenticatedUser`, não `requireAuth`); extração → `SupabaseControl.resolve_user(sender_email)`
+(RPC `resolve_user_for_account`, sentinela quando não casa) injetado no `register_financial`; fallback
+= DEFAULT da coluna. **Restrição por grupo (opt-in):** flag `user_group.sees_only_own_accounts` (só
+**Comercial=6** ligada; **Financeiro=7** e demais = false → veem tudo). **Enforcement por RLS SELECT**
+de `financial_account_control`: `USING (NOT public.auth_group_sees_only_own() OR created_by = auth.uid())`
+— cobre `/consulta` (grid + busca) e `/dashboard`, que leem via `authenticated`; `service_role`
+(Next API/Python) mantém bypass. **Re-varredura ao criar usuários (operacional):** o backfill do
+`created_by` é ponto-no-tempo — contas históricas de um usuário criado DEPOIS ficam no sentinela até
+uma re-varredura. Ao cadastrar usuário novo, rodar (via Supabase MCP/SQL Editor) para re-atribuir só
+as divergentes (idempotente; preserva `updated_by`/`status_changed_by`):
+`UPDATE financial_account_control f SET created_by = public.resolve_user_for_account(f.sender_email)
+WHERE f.created_by IS DISTINCT FROM public.resolve_user_for_account(f.sender_email);`
+(aplicado em 2026-07-10: 40 contas movidas do sentinela p/ estela/rose/bruna após esses usuários
+surgirem; estado final 0 divergências).
+
+**Auditoria de autor (Etapa 2 APLICADA — migration 077):** além do `created_by` (dono), a conta
+registra **`updated_by`** (último editor) e **`status_changed_by`/`status_changed_at`** (quem/quando
+mudou a situação) — todos UUID → `auth.users`, NOT NULL DEFAULT sentinela. Carimbo pela trigger
+**`trg_fac_authorship`** (`fn_stamp_account_authorship`, SECURITY DEFINER): no INSERT `updated_by`/
+`status_changed_by` := `created_by`; no UPDATE `updated_by` := `coalesce(auth.uid(), NEW.updated_by,
+OLD)` e, quando `status_id` MUDA, `status_changed_by`/`_at` idem. **Cobre os 3 caminhos:** curadoria
+REST direta (`authenticated` → `auth.uid()`); Next API PATCH (`contaService.update(raw, userId)` +
+`getAuthenticatedUser` no handler → `updated_by` explícito, service_role sem `auth.uid()`); Python
+(insert herda `created_by`). O trigger roda **antes** de `trg_fe_status_vencimento` (nome `trg_fac_*`
+< `trg_fe_*`), então vê o `status_id` do humano, não o recálculo automático por vencimento.
+**Exibição:** o card de detalhe de `/consulta` mostra **Criado por / Última edição por / Situação
+alterada por** (e-mail resolvido pela view **`public.app_user`** via `getAppUsers()` — diretório
+id→e-mail, grant `authenticated`, usuários internos). `created_by`/`updated_by`/`status_changed_by`/
+`status_changed_at` estão no schema de LEITURA de `@sheild/shared` (nunca no input — carimbados pelo
+servidor/trigger).
+
+**Escala futura (fora das Etapas 1–2):** `auth_is_admin()` (bypass por papel) e as dimensões de
+visibilidade do blueprint (`docs/design/permissoes-por-grupo.md`: empresa/centro/plano). Hardening
+opcional: alinhar a policy de UPDATE (`authenticated_update_financial_flags`, hoje `USING(true)`) à
+visibilidade por dono para usuários restritos (hoje a UI já não mostra a linha, mas um PATCH forjado
+por id contornaria).
+
 **Erros 5xx não vazam detalhe interno (segurança §3 M-2):** os route handlers de CRUD usam
 `failFromError(e, '<tag>')` (`lib/response.ts`) — erro com `status` 4xx ecoa a mensagem
 curada; 5xx (ou sem status) vira `'Erro interno ao processar a solicitação'` e o detalhe
@@ -2332,11 +2375,24 @@ local/agendada (ver flag `EMAIL_READER_ENABLED` acima e memória [[vercel-deploy
 ## Banco de dados (Supabase)
 
 Migrations em `supabase/migrations/`, aplicadas **manualmente no SQL Editor** em ordem
-numérica (`001` → `075`). **Próxima migration = `076`** (verificar sempre antes de criar nova).
+numérica (`001` → `077`). **Próxima migration = `078`** (verificar sempre antes de criar nova).
 Não há migration automática. (As `059`/`060`/`061`/`063`/`064`/`066`/`067`/
-`068`/`069`/`070`/`071`/**`072`**/**`073`**/**`074`**/**`075`** foram aplicadas **direto via Supabase MCP** nesta
+`068`/`069`/`070`/`071`/**`072`**/**`073`**/**`074`**/**`075`**/**`076`**/**`077`** foram aplicadas **direto via Supabase MCP** nesta
 máquina — o arquivo numerado serve
-de histórico; **não reaplicar** no SQL Editor (todas idempotentes, mas evite re-run). A **075**
+de histórico; **não reaplicar** no SQL Editor (todas idempotentes, mas evite re-run). A **077**
+(**Etapa 2 — auditoria de autor** — ver "Visibilidade de contas por dono"): adiciona
+`updated_by`/`status_changed_by`/`status_changed_at` (NOT NULL DEFAULT sentinela + FK) + backfill; a
+trigger `trg_fac_authorship` (`fn_stamp_account_authorship`, SECURITY DEFINER — roda ANTES dos
+`trg_fe_*` para ver o `status_id` do humano, não o recálculo) carimba o editor via
+`coalesce(auth.uid(), explícito)`; e a view `public.app_user (id,email)` (grant `authenticated`) para
+exibir o autor. A **076**
+(**Etapa 1 — visibilidade de contas por DONO, por grupo** — ver "Visibilidade de contas por dono"):
+adiciona `financial_account_control.created_by` (UUID → `auth.users`, NOT NULL DEFAULT sentinela
+`teste@otimotex.com.br`, FK `ON DELETE SET DEFAULT`) + backfill via `sender_email`; flag
+`user_group.sees_only_own_accounts` (Comercial=6 → true); RPC `resolve_user_for_account(p_email)`
+(service_role); helper `auth_group_sees_only_own()`; e troca a policy SELECT de
+`financial_account_control` para `NOT auth_group_sees_only_own() OR created_by = auth.uid()`
+(grupo sem flag vê tudo; Comercial vê só as próprias; service_role/admin com bypass). A **075**
 remove **`pix`** do CHECK de `financial_account_control.document_type` (pix é só forma de pagamento)
 + backfill dos 39 registros `pix`→`outro` — ver "Normalização de `document_type`". A **074**
 (correção de REGRESSÃO da 072 — não regredir): a 072 revogou `EXECUTE` de `resolve_company_id` de
@@ -2448,7 +2504,7 @@ internet` ao CHECK de `document_type` e faz backfill — ver "Normalização de 
 | Tabela | Propósito |
 |---|---|
 | `email_control` | Dedup/controle. `status` ∈ (`extraído`, `recebido`, `pendente`, `falha`, `ignorado`, `duplicidade`) — **migrations 022/031**. `extraído`=PDF extraído (CSV gerado); `recebido`=sem PDF, conta via corpo; `pendente`=PDF salvo sem CSV (substitui `baixado`); `falha`=casou keyword mas sem PDF e sem conta no corpo; `ignorado`=não-financeiro (sem keyword) **ou NF-e pura sem conta a pagar** (`subject_is_pure_nfe`); `duplicidade`=pagável do corpo duplica conta já registrada por outro e-mail (**migration 031**; card/filtro próprios em `/emails`). O status é calculado em `process_message` pelo resultado real (conta/CSV/corpo/duplicata), não por `pdf_extracted` |
-| `financial_account_control` | Tabela principal de contas a pagar — uma linha por documento; alimentada pelo pipeline de e-mail **e** por CRUD manual (baixas, consolidações, dashboards). Substitui a antiga `financial_emails` (dropada na migration 020). O fornecedor é referenciado **só pela FK `sk_supplier`** (surrogate key snowflake, NOT NULL — **migration 042**, antes era `supplier_id`) — nome/CNPJ vêm do JOIN com `supplier` (colunas denormalizadas dropadas na **migration 041**). Tem `sender_email` (migration 023; backfill em 025) usado na resolução p/ alinhar `supplier.email`, e `subject` (migration 025) — exibidos/buscados em `/consulta`. **Classificação contábil** (migrations 047/048): `cost_center_id`/`chart_account_id` SMALLINT, NOT NULL DEFAULT 0 (FKs para os cadastros; id 0 = "não informado") — preenchidos no CRUD manual (cascata centro→plano) |
+| `financial_account_control` | Tabela principal de contas a pagar — uma linha por documento; alimentada pelo pipeline de e-mail **e** por CRUD manual (baixas, consolidações, dashboards). Substitui a antiga `financial_emails` (dropada na migration 020). O fornecedor é referenciado **só pela FK `sk_supplier`** (surrogate key snowflake, NOT NULL — **migration 042**, antes era `supplier_id`) — nome/CNPJ vêm do JOIN com `supplier` (colunas denormalizadas dropadas na **migration 041**). Tem `sender_email` (migration 023; backfill em 025) usado na resolução p/ alinhar `supplier.email`, e `subject` (migration 025) — exibidos/buscados em `/consulta`. **Classificação contábil** (migrations 047/048): `cost_center_id`/`chart_account_id` SMALLINT, NOT NULL DEFAULT 0 (FKs para os cadastros; id 0 = "não informado") — preenchidos no CRUD manual (cascata centro→plano). **Autoria** (migrations 076/077): `created_by` (DONO — base da visibilidade por dono), `updated_by`, `status_changed_by`, `status_changed_at` — UUID → `auth.users`, NOT NULL DEFAULT sentinela `teste@otimotex.com.br`, carimbados pelo servidor/trigger `trg_fac_authorship` (ver "Visibilidade de contas por dono" / "Auditoria de autor") |
 | `financial_cost_center` / `financial_chart_of_account` | **Cadastros de classificação contábil** (pré-existentes, **preservados em limpezas**) usados como lookup no modal de contas. `financial_cost_center` é **gerenciado pelo CRUD de centros de custo** (`/tabelas/centros-de-custo` — PK `cost_center_id` SMALLINT IDENTITY ALWAYS; id 0 = sentinela "não informado", fora do CRUD; ver "CRUD de centros de custo"). `financial_chart_of_account` (também gerenciado pelo **CRUD de Plano de contas** — `/tabelas/plano-de-contas`) tem `cost_center_id` (relaciona o plano ao centro — base da CASCATA), `chart_account_subgroup_id` (FK → subgrupo) e `is_postable` (só os postáveis são lançáveis). Os cadastros `financial_bank`, `financial_account`, `financial_chart_of_account_group` e `financial_chart_of_account_subgroup` também ganharam CRUD próprio (grupo Tabelas — ver "CRUDs dos demais cadastros contábeis"). Lidos via `lib/lookups.ts` (service_role) **e** pelo frontend via embed REST (papel `authenticated`); RLS habilitado com policy de SELECT `TO authenticated` (migration 049 — sem ela o embed voltava null e a UI mostrava `#id`) |
 | `email_processing_errors` | Log de falhas com `raw_payload` JSON |
 | `supplier` | Fornecedores. PK = `sk_supplier` (surrogate key snowflake auto-incremental — **migration 042**); `supplier_id` é **chave de negócio** (NOT NULL UNIQUE, só nesta tabela; = `sk_supplier` nos fornecedores criados pela extração, via trigger de espelho `trg_supplier_mirror_id`, podendo divergir em cargas externas). Auto-criados pelo trigger de resolução, mas **cadastro PRESERVADO** (curadoria manual de `email`/`email2`/`email3`/`email4`) — **nunca truncar** em limpezas (ver "Limpeza / reset de dados"). Reconhecimento por **e-mail** em `email`/`email2`/`email3`/`email4` (migrations 023/027/028) — ver "Auto-resolução de fornecedor". **Soft delete** via `deleted_at` (migration 045) — a baixa pelo CRUD da Next API marca `deleted_at` (nunca hard delete) e é bloqueada quando há contas vinculadas; ver "CRUD de fornecedores (Next API)". **Classificação default** `cost_center_id`/`chart_account_id` (SMALLINT NOT NULL DEFAULT 0 + FKs — migration 052): semeia o lançamento de novas contas e é atualizada pelo write-back do modal; ver "Classificação default do fornecedor — sync bidirecional" |
@@ -2525,6 +2581,11 @@ O frontend consome os schemas de dados (`FinancialAccountControl`, `EmailControl
 `ProcessingError`) **apenas como `import type`** (sem `.parse()` em runtime — `services/supabase.ts`
 faz cast); só os schemas de **auth** rodam em runtime via `zodResolver`.
 
+**Autoria no schema (migrations 076/077):** `financialAccountControlSchema` (leitura) tem
+`created_by`/`updated_by`/`status_changed_by`/`status_changed_at` (`z.string().nullable()`) — todos
+**OMITIDOS** dos schemas de input/create/update/manualEdit (são carimbados pelo servidor/trigger,
+nunca pelo cliente). Consumidos só na exibição do autor no detalhe de `/consulta`.
+
 **Fornecedor no schema (migrations 040/041/042):** `financialAccountControlSchema` **não** tem mais
 `supplier_name`/`supplier_cnpj`/`supplier_cpf` — só `sk_supplier` (`z.number().int()`, NOT NULL — a
 FK surrogate; `supplier_id` ficou só na tabela `supplier`) e um recurso embutido opcional `supplier`
@@ -2569,7 +2630,13 @@ create e no PATCH.
 
 RLS habilitado em todas as tabelas. Policies de leitura são `TO authenticated`
 (migrations 015/018/019); escrita em `financial_account_control` é `TO service_role`
-(CRUD via Next API). Toda nova tabela deve seguir o mesmo padrão. **Exceção pontual
+(CRUD via Next API). Toda nova tabela deve seguir o mesmo padrão. **Exceção — leitura por DONO
+(migration 076):** a policy SELECT de `financial_account_control` deixou de ser `USING (true)` e
+passou a `USING (NOT public.auth_group_sees_only_own() OR created_by = auth.uid())` — grupo com a
+flag `sees_only_own_accounts` (Comercial) vê só as próprias; demais veem tudo. As colunas de autoria
+`created_by`/`updated_by`/`status_changed_by`/`status_changed_at` (migrations 076/077) são carimbadas
+pelo servidor/trigger `trg_fac_authorship`, nunca pelo cliente — ver "Visibilidade de contas por
+dono" e "Auditoria de autor". **Exceção pontual
 (migration 030):** `email_control` tem policy de UPDATE `TO authenticated`, mas com
 **grant restrito à coluna** `reviewed_at` (`GRANT UPDATE (reviewed_at)`) — o frontend só
 consegue marcar "revisado", não alterar outras colunas. `reviewed_at` é setado em `/emails`
@@ -2955,6 +3022,17 @@ lê os arquivos do disco.
 > `PIX_valor` para **`pix_valor`** (minúsculo, do `payment_method`). Validação (esperado `False`):
 > `py -3 -c "import sys; sys.path.insert(0,'skills/pdf-contas-pagar/scripts'); import extract_pdf as e;
 > print(hasattr(e,'apply_pix_override'))"`
+
+> **DEPLOY 2026-07-10 — autoria `created_by` na extração (PENDENTE de cópia p/ prod):** a Etapa 1 de
+> visibilidade por dono (migration 076) faz o pipeline gravar o DONO da conta a partir do remetente.
+> Deploy = copiar **só** `read_emails.py` (novos `SupabaseControl.resolve_user` + injeção de `created_by`
+> no `register_financial`; `extract_pdf.py` NÃO muda nesta). **Sem `.env`.** A **migration 076** já rodou
+> na Supabase compartilhada (coluna + backfill + RPC `resolve_user_for_account` + RLS) → **vale para prod
+> sem passo de banco**. O Next API/frontend saem pelo Vercel no merge. Validação (esperado `True`):
+> `py -3 -c "import sys; sys.path.insert(0,'skills/email-reader/scripts'); import read_emails as R;
+> print(hasattr(R.SupabaseControl,'resolve_user'))"`
+> **Etapa 2 (auditoria de autor, migration 077) NÃO muda o Python** — só migration (já aplicada) +
+> Next API/frontend (Vercel). A cópia pendente do `read_emails.py` é só a da Etapa 1 (mesma).
 
 ### Deploy manual da Cobrança de vencidos (envios) em produção (caso específico — não regredir)
 

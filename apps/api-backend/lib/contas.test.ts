@@ -105,6 +105,20 @@ describe('contaService.create', () => {
     expect(insertArg).toMatchObject({ sk_supplier: 1, amount: 100 });
   });
 
+  it('carimba created_by = userId no insert (autoria — visibilidade por dono)', async () => {
+    resultQueue.push({ data: { id: 12, sk_supplier: 1, amount: 100 }, error: null });
+    await contaService.create({ sk_supplier: 1, amount: 100 }, 'fe8d268d-2bc3-4418-8cae-65e426c3fb4e');
+    const insertArg = builders[0].insert.mock.calls[0][0] as Record<string, unknown>;
+    expect(insertArg).toMatchObject({ sk_supplier: 1, amount: 100, created_by: 'fe8d268d-2bc3-4418-8cae-65e426c3fb4e' });
+  });
+
+  it('sem userId NÃO envia created_by (DEFAULT do banco assume)', async () => {
+    resultQueue.push({ data: { id: 13, sk_supplier: 1, amount: 100 }, error: null });
+    await contaService.create({ sk_supplier: 1, amount: 100 });
+    const insertArg = builders[0].insert.mock.calls[0][0] as Record<string, unknown>;
+    expect(insertArg).not.toHaveProperty('created_by');
+  });
+
   it('422 com amount <= 0', async () => {
     await expect(contaService.create({ sk_supplier: 1, amount: 0 })).rejects.toMatchObject({ status: 422 });
   });
@@ -155,6 +169,20 @@ describe('contaService.update', () => {
   it('404 quando não existe', async () => {
     resultQueue.push({ data: null, error: null });
     await expect(contaService.update(9, { status: 'cancelado' })).rejects.toMatchObject({ status: 404 });
+  });
+
+  it('carimba updated_by = userId no update (autoria — quem editou)', async () => {
+    resultQueue.push({ data: { id: 5, amount: 200 }, error: null });
+    await contaService.update(5, { amount: 200 }, 'fe8d268d-2bc3-4418-8cae-65e426c3fb4e');
+    const updateArg = builders[0].update.mock.calls[0][0] as Record<string, unknown>;
+    expect(updateArg).toMatchObject({ amount: 200, updated_by: 'fe8d268d-2bc3-4418-8cae-65e426c3fb4e' });
+  });
+
+  it('sem userId NÃO envia updated_by (trigger/DEFAULT assume)', async () => {
+    resultQueue.push({ data: { id: 5, amount: 200 }, error: null });
+    await contaService.update(5, { amount: 200 });
+    const updateArg = builders[0].update.mock.calls[0][0] as Record<string, unknown>;
+    expect(updateArg).not.toHaveProperty('updated_by');
   });
 
   it('422 com document_type fora do enum', async () => {
