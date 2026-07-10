@@ -1358,8 +1358,46 @@ de verdade** e sobrescreve o valor extraído.
   best-effort (qualquer falha é ignorada — não derruba a gravação). Contas do **corpo** não têm
   barcode → no-op.
 
+- **GATE de CONSISTÊNCIA do barcode (id 463 — não regredir):** o fator só é AUTORITATIVO quando o
+  barcode é **confiável** — o **valor embutido nele** (`amount_from_barcode`, posições 10-19) bate
+  com o `amount` extraído (tolerância 1 centavo). Um barcode **mal lido pelo OCR** (comum em boleto
+  **ESCANEADO** → `pdf_vision`) tem valor divergente e **NÃO** dita o vencimento. Falha real (id 463
+  CIPATEX, e-mail "BOLETOS CIPATEX" com 3 anexos escaneados): o Vision leu a data impressa **certa**
+  (`2026-07-10`) e o valor certo (R$ 32.400), mas leu o **barcode embaralhado** (valor R$ 2.026.142,93,
+  fator 1259) — a regra do fator sobrescreveu o vencimento correto por `2025-11-08` (impossível: <
+  emissão). A blindagem centraliza tudo em **`authoritative_barcode_due_date(barcode, amount, ref,
+  issue_date)`** (`extract_pdf.py`), usada pelos **dois** pontos de aplicação (`apply_barcode_due_date`
+  e a rede `_apply_barcode_due_date`): devolve o vencimento **só** com barcode consistente. Preserva a correção
+  original (id 435: barcode consistente → corrige a inversão) e mata o novo erro (barcode corrompido →
+  mantém a data impressa). **Varredura (2026-07-10):** dos 167 boletos, 6 têm barcode inconsistente;
+  só o 463 fora vítima (os outros 4 com erro de casa decimal geram fator fora de faixa → `None`, nunca
+  sobrescreveram; 194 já divergia). id 463 corrigido para `2026-07-10`.
+- **GATE 2 — PLAUSIBILIDADE + PRIORIDADE da data impressa (id 473/474 — não regredir):** dois reforços
+  para boleto **SECURITIZADO/renegociado** cujo fator da linha digitável ficou o ORIGINAL (stale) e
+  diverge do vencimento IMPRESSO (HYOSUNG via SB Crédito: fator 1051 → 2025-04-14, mas impresso
+  2026-07-21). (1) `authoritative_barcode_due_date` ganhou o parâmetro `issue_date` e rejeita
+  (`None`) quando `venc < emissão` (impossível — fator stale/errado), além do gate de valor. (2)
+  **A data de vencimento IMPRESSA no TEXTO do PDF é a fonte PRIMÁRIA** (análise do PDF real >
+  LLM > fator): `extract_due_date_from_text(raw)` ancora no rótulo "Vencimento" (ignora "Data do
+  Documento"/"Data Movto") e, quando plausível (≥ emissão), **vence** o LLM e o barcode em
+  `build_record` (caminho `pdf_text`). O fator só volta a mandar em PDF **escaneado** (sem texto —
+  onde corrige inversão do Vision, id 435). **Coerência entre as duas camadas (não regredir):** a rede
+  universal de `register_financial` NÃO reestraga a data impressa que o `build_record` já gravou —
+  para o boleto de texto, o **gate 2 (venc < emissão) rejeita** o fator stale (`None`), então a rede é
+  no-op; para o escaneado, o fator consistente corrige a inversão. As duas camadas convivem sem
+  conflito (verificado em payloads frescos). Dados: 473/474 (1 conta errada cada) → reprocessados em
+  **8 contas** (ids 488-495, 4 parcelas/carnê, venc. 21/07…11/08/2026).
+- **Split de carnê com linha digitável QUEBRADA (id 473/474 — não regredir):** `_boleto_pages` detecta
+  boletos por `extract_linha_digitavel`; num carnê HYOSUNG a linha vinha **quebrada em 3 linhas**
+  (`…630000 1` / `ITAU 341-7` / `10510000356008`) e os 3 regex falhavam → 0 páginas → **1 conta em vez
+  de 4**. Um 4º padrão em `extract_linha_digitavel` (captura os 4 campos + o 1º bloco isolado de 14
+  dígitos, `re.DOTALL`, ignorando ruído no meio) restaura a detecção → carnê dividido em 1 registro por
+  boleto. **Limitação:** carnê **escaneado** (sem texto) segue sem split (evolução futura: Vision
+  multi-boleto).
+
 Testes: `tests/test_barcode_due_date.py` (fator real do id 435 → `2026-07-08`; desambiguação do
-reset; fator 0; não-boleto; correção de inversão; no-op quando já bate). **Deploy:** mudança só
+reset; fator 0; não-boleto; correção de inversão; no-op quando já bate; **gate de consistência:
+barcode corrompido do id 463 NÃO sobrescreve a data correta**). **Deploy:** mudança só
 em Python — copiar `extract_pdf.py` **e** `read_emails.py` para produção (ver "Deploy manual do
 Email Reader"). A trigger de banco recalcula `a vencer`/`vencido` a partir do `due_date` corrigido.
 

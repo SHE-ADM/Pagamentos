@@ -95,16 +95,22 @@ def _apply_barcode_due_date(payload: dict) -> None:
     que o Vision/OCR pode inverter (falha grave: id 435 gravou 07/08 no lugar de 08/07). Antes de
     gravar QUALQUER conta com boleto FEBRABAN, sobrescreve o due_date pelo derivado do barcode se
     divergir. Aplicado em register_financial (choke point unico de toda gravacao do pipeline
-    Python — PDF, corpo e reprocessos), alem da correcao em extract_pdf.build_record. Best-effort:
-    import lazy do extract_pdf; qualquer falha e ignorada (nao derruba a gravacao)."""
+    Python — PDF, corpo e reprocessos), alem da correcao em extract_pdf.build_record. So confia no
+    fator quando o barcode e CONSISTENTE (valor embutido == amount — `authoritative_barcode_due_date`):
+    um barcode mal lido pelo OCR (boleto escaneado) tem valor divergente e NAO dita a data (id 463).
+    Best-effort: import lazy do extract_pdf; qualquer falha e ignorada (nao derruba a gravacao)."""
     if not payload.get("barcode"):
         return
     try:
         if str(EXTRACT_SCRIPT.parent) not in sys.path:
             sys.path.insert(0, str(EXTRACT_SCRIPT.parent))
-        from extract_pdf import due_date_from_barcode
-        bc_due = due_date_from_barcode(
-            payload.get("barcode"), payload.get("issue_date") or payload.get("extracted_at"))
+        from extract_pdf import authoritative_barcode_due_date
+        # GATES: so sobrescreve pelo fator quando o barcode e CONSISTENTE com o valor E o
+        # vencimento derivado nao e anterior a emissao (fator stale de boleto securitizado).
+        bc_due = authoritative_barcode_due_date(
+            payload.get("barcode"), payload.get("amount"),
+            payload.get("issue_date") or payload.get("extracted_at"),
+            issue_date=payload.get("issue_date"))
     except Exception:
         return
     cur = str(payload.get("due_date") or "")[:10]
