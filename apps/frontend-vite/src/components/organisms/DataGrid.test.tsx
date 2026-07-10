@@ -90,6 +90,19 @@ describe('DataGrid', () => {
     expect(screen.queryByText('Detalhe de Beta')).not.toBeInTheDocument();
   });
 
+  it('renderiza o rodapé (renderRowFooter) só nas linhas com conteúdo, sem clique', () => {
+    render(
+      <DataGrid
+        {...baseProps}
+        renderRowFooter={(r) => (r.id === 1 ? <span>Obs de {r.name}</span> : null)}
+      />,
+    );
+    // Rodapé sempre-visível: aparece na linha 1 sem nenhuma interação...
+    expect(screen.getByText('Obs de Alpha')).toBeInTheDocument();
+    // ...e não aparece na linha 2 (renderRowFooter retornou null).
+    expect(screen.queryByText('Obs de Beta')).not.toBeInTheDocument();
+  });
+
   it('aplica rowClassName na linha (tr e células) conforme a linha', () => {
     render(
       <DataGrid

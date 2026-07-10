@@ -51,6 +51,7 @@ import {
   secondCell,
   secondText,
   detailCell,
+  footerCell,
   pinnedCell,
   resizeHandle,
   gripHandle,
@@ -79,6 +80,8 @@ interface DataGridProps<T> {
   variant?: GridVariant;
   /** Painel de detalhe expandido abaixo da linha selecionada. */
   renderDetail?: (row: T) => ReactNode;
+  /** Rodapé SEMPRE-visível abaixo das células do registro. Retorne null p/ não emitir. */
+  renderRowFooter?: (row: T) => ReactNode;
   /** Liga a barra de gestão (ocultar/fixar/reordenar/redimensionar/densidade) + persistência. */
   gridId?: string;
   enableColumnManagement?: boolean;
@@ -125,6 +128,8 @@ interface RowRender<T> {
   isSelected: boolean;
   mainCells: Cell<T, unknown>[];
   secondLineItems: Cell<T, unknown>[];
+  /** Conteúdo do rodapé sempre-visível do registro (null = sem rodapé). */
+  footerNode: ReactNode;
 }
 
 /** Acesso tipado ao `meta` customizado da coluna (todos os campos são opcionais). */
@@ -296,6 +301,7 @@ export default function DataGrid<T>({
   ariaLabel = 'Registros financeiros',
   variant = 'default',
   renderDetail,
+  renderRowFooter,
   gridId,
   enableColumnManagement = false,
   enableSelection = false,
@@ -561,10 +567,16 @@ export default function DataGrid<T>({
       secondLineItems: cells.filter(
         (c) => colMeta(c.column).secondLine && isHidden(colMeta(c.column)) && hasValue(c.getValue()),
       ),
+      footerNode: renderRowFooter?.(row.original) ?? null,
     };
   });
   const renderItems = buildRenderItems(
-    rowRenders.map((rr) => ({ key: rr.key, hasSecondLine: rr.secondLineItems.length > 0, isSelected: rr.isSelected })),
+    rowRenders.map((rr) => ({
+      key: rr.key,
+      hasSecondLine: rr.secondLineItems.length > 0,
+      hasFooter: rr.footerNode != null,
+      isSelected: rr.isSelected,
+    })),
     !!renderDetail,
   );
 
@@ -576,6 +588,7 @@ export default function DataGrid<T>({
       const kind = renderItems[index]?.kind;
       if (kind === 'detail') return 320;
       if (kind === 'second') return 28;
+      if (kind === 'footer') return 30;
       return rowEstimate;
     },
     overscan: 10,
@@ -723,10 +736,19 @@ export default function DataGrid<T>({
     </tr>
   );
 
+  const renderFooterTr = (rr: RowRender<T>, itemKey: string, dataIndex: number | undefined, measureRef: MeasureRef): ReactNode => (
+    <tr key={itemKey} data-index={dataIndex} ref={measureRef} aria-label="Informação adicional do registro">
+      <td colSpan={colSpan} className={footerCell({ variant })}>
+        <div className="animate-fade-in-up">{rr.footerNode}</div>
+      </td>
+    </tr>
+  );
+
   const renderOneItem = (item: RenderItem, dataIndex?: number): ReactNode => {
     const rr = rowRenders[item.rowIndex];
     const measureRef: MeasureRef = dataIndex != null ? rowVirtualizer.measureElement : undefined;
     if (item.kind === 'second') return renderSecondLineTr(rr, item.key, dataIndex, measureRef);
+    if (item.kind === 'footer') return renderFooterTr(rr, item.key, dataIndex, measureRef);
     if (item.kind === 'detail') return renderDetailRowTr(rr, item.key, dataIndex, measureRef);
     return renderBodyRowTr(rr, item.key, dataIndex, measureRef);
   };

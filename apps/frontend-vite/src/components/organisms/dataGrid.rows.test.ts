@@ -4,6 +4,7 @@ import { buildRenderItems, type RenderRowDescriptor } from './dataGrid.rows';
 const row = (key: string, over: Partial<RenderRowDescriptor> = {}): RenderRowDescriptor => ({
   key,
   hasSecondLine: false,
+  hasFooter: false,
   isSelected: false,
   ...over,
 });
@@ -29,10 +30,17 @@ describe('buildRenderItems', () => {
     expect(buildRenderItems([row('a', { isSelected: true })], true).map((i) => i.kind)).toEqual(['row', 'detail']);
   });
 
-  it('respeita a ordem row → second → detail na mesma linha', () => {
-    const items = buildRenderItems([row('a', { hasSecondLine: true, isSelected: true })], true);
-    expect(items.map((i) => i.kind)).toEqual(['row', 'second', 'detail']);
+  it('insere o item "footer" logo após a linha (e a sub-linha) quando há rodapé', () => {
+    const items = buildRenderItems([row('a', { hasFooter: true })], false);
+    expect(items.map((i) => i.kind)).toEqual(['row', 'footer']);
+    expect(items[1].key).toBe('a::footer');
+    expect(items[1].rowIndex).toBe(0);
+  });
+
+  it('respeita a ordem row → second → footer → detail na mesma linha', () => {
+    const items = buildRenderItems([row('a', { hasSecondLine: true, hasFooter: true, isSelected: true })], true);
+    expect(items.map((i) => i.kind)).toEqual(['row', 'second', 'footer', 'detail']);
     expect(items.every((i) => i.rowIndex === 0)).toBe(true);
-    expect(items.map((i) => i.key)).toEqual(['a', 'a::second', 'a::detail']);
+    expect(items.map((i) => i.key)).toEqual(['a', 'a::second', 'a::footer', 'a::detail']);
   });
 });

@@ -110,6 +110,22 @@ describe('Consulta', () => {
     await waitFor(() => expect(box).toBeChecked());
   });
 
+  it('mostra a informação adicional como rodapé do registro, sem clicar (só nas linhas que a têm)', async () => {
+    getFinancialAccountControl.mockResolvedValue({
+      data: [
+        makeRow({ id: 1, additional_info: 'Pagamento via PIX ag. Bruno — ref. julho' }),
+        makeRow({ id: 2, invoice_number: '67890' }),
+      ],
+      total: 2,
+    });
+    render(<Consulta />);
+
+    // Rodapé sempre-visível: o texto aparece sem nenhuma interação.
+    expect(await screen.findByText(/Pagamento via PIX ag\. Bruno/)).toBeInTheDocument();
+    // Só a linha com additional_info ganha o rótulo do rodapé.
+    expect(screen.getAllByText('Informação adicional:')).toHaveLength(1);
+  });
+
   it('baixa automática: marcar a 2ª flag em conta vencida e em aberto muda a situação para "pago"', async () => {
     const user = userEvent.setup();
     // NF já marcada, Boleto não; vencimento no passado e situação em aberto (a vencer).

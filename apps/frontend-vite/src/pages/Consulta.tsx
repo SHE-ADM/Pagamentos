@@ -12,6 +12,7 @@ import {
   X,
   Eye,
   Pencil,
+  Info,
   type LucideIcon,
 } from 'lucide-react';
 import {
@@ -884,6 +885,18 @@ export default function Consulta() {
             maxBodyHeight="78vh"
             loading={loading}
             emptyMessage={loading ? 'Buscando registros…' : 'Nenhum registro encontrado — ajuste os filtros e clique em Buscar'}
+            // Rodapé SEMPRE-visível abaixo das células: a informação adicional do registro,
+            // destacada em fonte (Jakarta itálica) e cor (brand) distintas das células.
+            renderRowFooter={(r) =>
+              r.additional_info ? (
+                <div className="flex items-start gap-1.5 px-3 py-1.5 font-jakarta text-xs italic text-brand-dark whitespace-pre-wrap">
+                  <Info size={13} className="mt-0.5 shrink-0 text-brand" aria-hidden="true" />
+                  <span>
+                    <span className="font-semibold not-italic">Informação adicional:</span> {r.additional_info}
+                  </span>
+                </div>
+              ) : null
+            }
             renderDetail={(r) => (
                           <div className="relative bg-slate-50/60 border-l-2 border-brand p-4">
                             <button
