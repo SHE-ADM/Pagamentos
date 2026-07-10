@@ -203,7 +203,7 @@ export default function ContaForm({ mode, defaultValues, onSubmit, onCancel, sub
   const labelSource: ClassificationSource | undefined = mode === 'create' ? (prefill ?? undefined) : defaultValues;
 
   return (
-    <form onSubmit={submit} className="space-y-4" noValidate>
+    <form onSubmit={submit} className="space-y-3" noValidate>
       {submitError && <Alert variant="error">{submitError}</Alert>}
 
       <SupplierSelect
@@ -234,7 +234,7 @@ export default function ContaForm({ mode, defaultValues, onSubmit, onCancel, sub
         onChange={setChartAccountId}
       />
 
-      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
         <label className="block">
           <span className="block text-sm font-medium text-gray-700 mb-1">Tipo de documento</span>
           <select
@@ -285,14 +285,14 @@ export default function ContaForm({ mode, defaultValues, onSubmit, onCancel, sub
       <label className="block">
         <span className="block text-sm font-medium text-gray-700 mb-1">Informações adicionais</span>
         <textarea
-          className="input min-h-20"
-          rows={3}
+          className="input min-h-16"
+          rows={2}
           placeholder="Observações livres sobre a conta…"
           {...register('additional_info')}
         />
       </label>
 
-      <div className="flex justify-end gap-2 pt-2">
+      <div className="flex justify-end gap-2 pt-1">
         {onCancel && (
           <button type="button" onClick={onCancel} className="btn" disabled={submitting}>
             Cancelar
