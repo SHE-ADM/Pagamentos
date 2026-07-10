@@ -239,8 +239,8 @@ export default function Dashboard() {
 
         {/* Ranking + Prioritárias */}
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
-          <div className="card p-4">
-            <div className="flex items-center gap-2 mb-3">
+          <div className="card p-3">
+            <div className="flex items-center gap-2 mb-2">
               <span className="flex h-6 w-6 items-center justify-center rounded-lg bg-brand/10 text-brand"><Building2 size={14} /></span>
               <div>
                 <h3 className="text-sm font-semibold text-slate-800">Ranking de fornecedores</h3>
@@ -250,8 +250,8 @@ export default function Dashboard() {
             <SupplierRanking data={data} />
           </div>
 
-          <div className="card p-4">
-            <div className="flex items-center gap-2 mb-3">
+          <div className="card p-3">
+            <div className="flex items-center gap-2 mb-2">
               <span className="flex h-6 w-6 items-center justify-center rounded-lg bg-status-error-solid/10 text-status-error-fg"><Zap size={14} /></span>
               <div>
                 <h3 className="text-sm font-semibold text-slate-800">Contas críticas e prioritárias</h3>
@@ -273,21 +273,21 @@ function MonthlyFlow({ data }: { data: DashboardData | null }) {
   const max = Math.max(1, ...flow.flatMap((d) => [d.aPagar, d.pago]));
   return (
     <div>
-      <div className="flex items-end gap-1.5 h-36">
+      <div className="flex items-end gap-1.5 h-28">
         {flow.map((d) => (
           <div key={d.month} className="flex-1 flex flex-col items-center justify-end h-full gap-1">
             <div className="flex items-end gap-0.5 w-full justify-center h-full">
               {/* altura dinâmica → inline style (sem classe Tailwind equivalente) */}
-              <div className="w-[42%] max-w-4 bg-brand rounded-t-sm transition-all" style={{ height: `${(d.aPagar / max) * 100}%` }} title={`A pagar: ${fmtMoney(d.aPagar)}`} />
-              <div className="w-[42%] max-w-4 bg-slate-300 rounded-t-sm transition-all" style={{ height: `${(d.pago / max) * 100}%` }} title={`Pago: ${fmtMoney(d.pago)}`} />
+              <div className="w-[42%] max-w-4 bg-slate-300 rounded-t-sm transition-all" style={{ height: `${(d.aPagar / max) * 100}%` }} title={`A pagar: ${fmtMoney(d.aPagar)}`} />
+              <div className="w-[42%] max-w-4 bg-brand rounded-t-sm transition-all" style={{ height: `${(d.pago / max) * 100}%` }} title={`Pago: ${fmtMoney(d.pago)}`} />
             </div>
             <span className="text-xs text-slate-500">{MONTHS[d.month]}</span>
           </div>
         ))}
       </div>
-      <div className="flex gap-4 justify-center mt-2.5">
-        <span className="inline-flex items-center gap-1.5 text-xs text-slate-600"><span className="h-2 w-3.5 rounded-xs bg-brand" /> A pagar</span>
-        <span className="inline-flex items-center gap-1.5 text-xs text-slate-600"><span className="h-2 w-3.5 rounded-xs bg-slate-300" /> Pago</span>
+      <div className="flex gap-4 justify-center mt-2">
+        <span className="inline-flex items-center gap-1.5 text-xs text-slate-600"><span className="h-2 w-3.5 rounded-xs bg-slate-300" /> A pagar</span>
+        <span className="inline-flex items-center gap-1.5 text-xs text-slate-600"><span className="h-2 w-3.5 rounded-xs bg-brand" /> Pago</span>
       </div>
     </div>
   );
@@ -344,7 +344,7 @@ function SupplierRanking({ data }: { data: DashboardData | null }) {
   return (
     <div>
       {rows.map((r, i) => (
-        <div key={r.name} className="flex items-center gap-2 py-1">
+        <div key={r.name} className="flex items-center gap-2 py-0.5">
           <span className={`shrink-0 h-5 w-5 rounded-full text-xs font-bold flex items-center justify-center ${i < 3 ? 'bg-brand-dark text-white' : 'bg-slate-200 text-slate-600'}`}>{i + 1}</span>
           <div className="flex-1 min-w-0">
             <div className="flex justify-between gap-2 mb-0.5">
@@ -367,12 +367,12 @@ function PriorityList({ data }: { data: DashboardData | null }) {
   const rows = data?.priorityAccounts ?? [];
   if (!rows.length) return <p className="text-xs text-slate-500 py-4">Nenhuma conta crítica ou prioritária no período.</p>;
   return (
-    <div className="flex flex-col gap-1.5">
+    <div className="flex flex-col gap-1">
       {rows.map((r) => {
         const Icon = PRIORITY_ICON[r.kind];
         const err = r.critical || r.status === 'vencido';
         return (
-          <div key={r.id} className={`flex items-center gap-2 px-2.5 py-1.5 rounded-lg border border-l-2 ${err ? 'bg-status-error-bg border-status-error-border border-l-status-error-solid' : 'bg-white border-slate-200/80 border-l-brand'}`}>
+          <div key={r.id} className={`flex items-center gap-2 px-2.5 py-1 rounded-lg border border-l-2 ${err ? 'bg-status-error-bg border-status-error-border border-l-status-error-solid' : 'bg-white border-slate-200/80 border-l-brand'}`}>
             <span className={`flex h-6 w-6 shrink-0 items-center justify-center rounded-lg ${err ? 'bg-status-error-solid/10 text-status-error-fg' : 'bg-brand/10 text-brand'}`}>
               <Icon size={13} />
             </span>
