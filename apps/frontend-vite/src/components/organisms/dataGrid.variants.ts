@@ -172,8 +172,10 @@ export const detailCell = cva('p-0 border-b', {
   defaultVariants: { variant: 'default' },
 });
 
-/** Célula do rodapé de registro (conteúdo sempre-visível abaixo das células, ex.: info adicional). */
+/** Célula do rodapé de registro (conteúdo sempre-visível abaixo das células, ex.: info adicional).
+ *  Fundo amarelo pastel via token `status-warning-bg` (#fffbeb) — só o TOM claro, sem semântica de
+ *  aviso; o texto slate-600 mantém contraste AA. */
 export const footerCell = cva('p-0 border-b', {
-  variants: { variant: { default: 'border-slate-100 bg-white', silver: 'border-zinc-100 bg-white' } },
+  variants: { variant: { default: 'border-slate-100 bg-status-warning-bg', silver: 'border-zinc-100 bg-status-warning-bg' } },
   defaultVariants: { variant: 'default' },
 });
