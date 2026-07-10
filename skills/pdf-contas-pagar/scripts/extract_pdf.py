@@ -431,6 +431,17 @@ def extract_linha_digitavel(text):
     if m:
         return re.sub(r"\D", "", m.group())
 
+    # Padrao 4: linha digitavel QUEBRADA em linhas — o nome do banco ("ITAU 341-7") ou outro
+    # ruido se intercala entre os 4 primeiros campos e o campo final de 14 digitos (fator+valor).
+    # Ex. (carne HYOSUNG): "34191.09099 11249.463834 38053.630000 1" / "ITAU 341-7" / "10510000356008".
+    # Captura SO as duas partes (grupos 1 e 2) e junta — o ruido do meio (com digitos) NAO entra.
+    # re.DOTALL p/ cruzar linhas; janela curta + \b\d{14}\b pega o 1o bloco isolado de 14 digitos.
+    m = re.search(
+        r"(\d{5}[. ]\d{5}\s+\d{5}[. ]\d{6}\s+\d{5}[. ]\d{6}\s+\d)\b.{0,80}?\b(\d{14})\b",
+        text, re.DOTALL)
+    if m:
+        return re.sub(r"\D", "", m.group(1) + m.group(2))
+
     return None
 
 
@@ -510,13 +521,52 @@ def due_date_from_barcode(barcode, ref_date=None) -> "str | None":
     return min(plausible, key=lambda c: abs((c - ref).days)).isoformat()
 
 
+def authoritative_barcode_due_date(barcode, amount, ref_date=None,
+                                   issue_date=None) -> "str | None":
+    """Vencimento derivado do FATOR do barcode, mas SO quando o barcode e CONFIAVEL. Dois gates:
+
+    1. **VALOR:** o valor embutido no barcode (`amount_from_barcode`, posicoes 10-19) bate com o
+       `amount` extraido (tolerancia 1 centavo). Barcode MAL LIDO pelo OCR (boleto ESCANEADO ->
+       pdf_vision) tem valor divergente -> None (id 463 CIPATEX: OCR deu valor R$ 2mi e fator errado,
+       sobrescrevendo o vencimento correto por 2025-11-08).
+    2. **PLAUSIBILIDADE:** o vencimento do fator NAO pode ser ANTERIOR a `issue_date` — um boleto
+       nunca vence antes de emitido. Cobre o boleto SECURITIZADO/renegociado cujo fator da linha
+       digitavel ficou o ORIGINAL (stale) e diverge do vencimento IMPRESSO (id 473/474 HYOSUNG:
+       fator 1051 -> 2025-04-14 < emissao 2026-05-26 -> rejeitado; a data impressa 2026-07-21 vence).
+
+    Sem valor no barcode / sem `amount` -> None (nao ha como cross-validar). Guard universal e
+    deterministico. Combina os gates com `due_date_from_barcode` — fonte unica do vencimento
+    autoritativo por barcode."""
+    bc_due = due_date_from_barcode(barcode, ref_date)
+    if not bc_due:
+        return None
+    bc_val = amount_from_barcode(barcode)
+    if bc_val is None or amount is None or amount == "":
+        return None
+    try:
+        if abs(float(bc_val) - float(amount)) > 0.01:
+            return None  # gate 1: barcode inconsistente com o valor -> mal lido, nao confiavel
+    except (TypeError, ValueError):
+        return None
+    iss = _coerce_date(issue_date)
+    bd = _coerce_date(bc_due)
+    if iss is not None and bd is not None and bd < iss:
+        return None  # gate 2: venc < emissao (impossivel) -> fator stale/errado, nao confiavel
+    return bc_due
+
+
 def apply_barcode_due_date(rec: dict) -> bool:
     """A data de vencimento AUTORITATIVA de um boleto e o fator de vencimento do codigo de
     barras (deterministico), NAO a data impressa — que o Vision/OCR pode inverter (dia/mes).
-    Quando ha boleto FEBRABAN com fator valido, deriva o vencimento do barcode e SOBRESCREVE o
-    due_date extraido se divergir. Retorna True se corrigiu. Usa emissao/extracao como referencia
-    para desambiguar o reset da base FEBRABAN. Idempotente (no-op se ja bate)."""
-    bc_due = due_date_from_barcode(rec.get("barcode"), rec.get("issue_date") or rec.get("extracted_at"))
+    Quando ha boleto FEBRABAN com fator valido E CONSISTENTE (valor do barcode == amount, ver
+    `authoritative_barcode_due_date`), deriva o vencimento do barcode e SOBRESCREVE o due_date
+    extraido se divergir. Barcode mal lido (valor divergente) NAO sobrescreve — preserva a data
+    correta. Retorna True se corrigiu. Usa emissao/extracao como referencia para desambiguar o
+    reset da base FEBRABAN. Idempotente (no-op se ja bate)."""
+    bc_due = authoritative_barcode_due_date(
+        rec.get("barcode"), rec.get("amount"),
+        rec.get("issue_date") or rec.get("extracted_at"),
+        issue_date=rec.get("issue_date"))
     if not bc_due:
         return False
     cur = str(rec.get("due_date") or "")[:10]
@@ -528,6 +578,38 @@ def apply_barcode_due_date(rec: dict) -> bool:
         f'{rec["processing_notes"]} | {note}' if rec.get("processing_notes") else note
     )
     return True
+
+
+# Vencimento IMPRESSO no texto do boleto: ancorado no rotulo "Vencimento" (ignora "Data do
+# Documento"/"Data Movto"). Ate 80 chars sem digito/barra entre o rotulo e a data (o texto
+# "PAGAVEL... APOS O" costuma se intercalar). DOTALL p/ cruzar linhas.
+_TEXT_DUE_RE = re.compile(r"(?i)\bvencimento\b[^\d/]{0,80}?(\d{2}/\d{2}/\d{4})", re.DOTALL)
+
+
+def extract_due_date_from_text(text) -> "str | None":
+    """Vencimento IMPRESSO extraido DETERMINISTICAMENTE do texto do PDF (rotulo 'Vencimento').
+    Prioriza a analise do PDF REAL sobre o LLM e o fator do barcode — a data impressa e a verdade
+    do boleto (ex.: securitizado/renegociado com fator STALE, id 473/474 HYOSUNG). Retorna
+    'YYYY-MM-DD' ou None. So faz sentido em PDF de TEXTO (no Vision o `raw` e o JSON, nao o boleto)."""
+    if not text:
+        return None
+    m = _TEXT_DUE_RE.search(text)
+    if not m:
+        return None
+    try:
+        return datetime.strptime(m.group(1), "%d/%m/%Y").date().isoformat()
+    except ValueError:
+        return None
+
+
+def _due_date_plausible(due, issue) -> bool:
+    """True se o vencimento nao e ANTERIOR a emissao (boleto nunca vence antes de emitido).
+    Sem emissao -> True (nao ha como validar)."""
+    d = _coerce_date(due)
+    if d is None:
+        return False
+    i = _coerce_date(issue)
+    return i is None or d >= i
 
 
 def is_boleto_barcode(barcode) -> bool:
@@ -1043,8 +1125,15 @@ def build_record(pdf_path, raw, source):
     # Tier 1: valor ausente no texto mas presente no codigo de barras bancario.
     apply_barcode_amount(rec)
     # Vencimento pelo fator do barcode recuperado aqui (regex/Vision) — idempotente com o
-    # builder; cobre o caso do LLM ter perdido o barcode que o regex/Vision recuperou.
+    # builder; cobre o caso do LLM ter perdido o barcode que o regex/Vision recuperou. Os gates
+    # (valor + venc >= emissao) evitam sobrescrever com fator mal lido/stale.
     apply_barcode_due_date(rec)
+    # PRIORIDADE MAXIMA (analise do PDF REAL): a data de vencimento IMPRESSA no texto do PDF, quando
+    # presente e plausivel (>= emissao), VENCE o LLM e o fator do barcode — a data impressa e a
+    # verdade do boleto (id 473/474 securitizado: fator stale de 2025 vs vencimento impresso de 2026).
+    text_due = extract_due_date_from_text(raw)
+    if text_due and _due_date_plausible(text_due, rec.get("issue_date")):
+        rec["due_date"] = text_due
     # Boleto com PIX: barcode de boleto valido (recuperado aqui via regex/Vision)
     # define o pagamento como boleto, sobrepondo um payment_method='pix' do LLM.
     apply_boleto_barcode_override(rec)
