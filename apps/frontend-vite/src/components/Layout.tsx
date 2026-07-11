@@ -61,7 +61,7 @@ export default function Layout({ children }: Readonly<{ children: ReactNode }>) 
           navOpen ? 'translate-x-0' : '-translate-x-full',
         )}
       >
-        <div className="px-4 py-4 border-b border-sidebar-border flex items-center justify-between">
+        <div className="px-4 py-3 border-b border-sidebar-border flex items-center justify-between">
           <div className="flex items-center gap-2.5">
             <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-linear-to-br from-brand to-brand-dark shadow-xs shadow-brand/30">
               <Receipt size={16} className="text-white" />
@@ -86,9 +86,9 @@ export default function Layout({ children }: Readonly<{ children: ReactNode }>) 
             (superfície escura) em vez de transbordar sobre o <main> branco — senão os
             últimos itens e o rodapé caem no fundo claro e o texto slate-400 reprova AA
             (2,57:1). Mantém todo o texto sobre bg-sidebar (~7:1). */}
-        <nav className="flex-1 min-h-0 overflow-y-auto px-2 py-3 space-y-0.5">
+        <nav className="flex-1 min-h-0 overflow-y-auto px-2 py-2 space-y-0.5">
           {/* Grupo 1 — Recebimentos */}
-          <p className="px-3 pt-1 pb-1.5 text-xs font-bold tracking-widest text-slate-400 uppercase">
+          <p className="px-3 pt-0.5 pb-1 text-xs font-bold tracking-widest text-slate-400 uppercase">
             Recebimentos
           </p>
           <NavLink to="/emails" onClick={closeNav} className={({ isActive }) => navLink({ active: isActive })}>
@@ -99,7 +99,7 @@ export default function Layout({ children }: Readonly<{ children: ReactNode }>) 
           </NavLink>
 
           {/* Grupo 2 — Envios */}
-          <p className="px-3 pt-4 pb-1.5 text-xs font-bold tracking-widest text-slate-400 uppercase">
+          <p className="px-3 pt-2.5 pb-1 text-xs font-bold tracking-widest text-slate-400 uppercase">
             Envios
           </p>
           <NavLink to="/cobranca/envios" onClick={closeNav} className={({ isActive }) => navLink({ active: isActive })}>
@@ -110,7 +110,7 @@ export default function Layout({ children }: Readonly<{ children: ReactNode }>) 
           </NavLink>
 
           {/* Grupo 3 — Contas */}
-          <p className="px-3 pt-4 pb-1.5 text-xs font-bold tracking-widest text-slate-400 uppercase">
+          <p className="px-3 pt-2.5 pb-1 text-xs font-bold tracking-widest text-slate-400 uppercase">
             Contas
           </p>
           <NavLink to="/consulta" onClick={closeNav} className={({ isActive }) => navLink({ active: isActive })}>
@@ -124,7 +124,7 @@ export default function Layout({ children }: Readonly<{ children: ReactNode }>) 
           </NavLink>
 
           {/* Grupo 4 — Tabelas */}
-          <p className="px-3 pt-4 pb-1.5 text-xs font-bold tracking-widest text-slate-400 uppercase">
+          <p className="px-3 pt-2.5 pb-1 text-xs font-bold tracking-widest text-slate-400 uppercase">
             Tabelas
           </p>
           <NavLink to="/tabelas/bancos" onClick={closeNav} className={({ isActive }) => navLink({ active: isActive })}>
@@ -147,7 +147,7 @@ export default function Layout({ children }: Readonly<{ children: ReactNode }>) 
           </NavLink>
 
           {/* Grupo 5 — Análise */}
-          <p className="px-3 pt-4 pb-1.5 text-xs font-bold tracking-widest text-slate-400 uppercase">
+          <p className="px-3 pt-2.5 pb-1 text-xs font-bold tracking-widest text-slate-400 uppercase">
             Análise
           </p>
           <NavLink to="/dashboard" onClick={closeNav} className={({ isActive }) => navLink({ active: isActive })}>
@@ -155,7 +155,7 @@ export default function Layout({ children }: Readonly<{ children: ReactNode }>) 
           </NavLink>
         </nav>
 
-        <div className="px-4 py-3 border-t border-sidebar-border space-y-2">
+        <div className="px-4 py-2.5 border-t border-sidebar-border space-y-2">
           {user && (
             <div className="flex items-center justify-between gap-2">
               <div className="flex items-center gap-2 min-w-0">
@@ -177,7 +177,6 @@ export default function Layout({ children }: Readonly<{ children: ReactNode }>) 
               </button>
             </div>
           )}
-          <div className="text-xs text-slate-400">v1.0.0 — fase 1</div>
         </div>
       </aside>
 

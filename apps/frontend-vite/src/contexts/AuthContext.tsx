@@ -58,7 +58,7 @@ const isInvalidSessionStatus = (status?: number): boolean =>
 // autorização — é imposto só no cliente e o access_token segue válido no servidor até a
 // expiração real do Supabase (apagar o marcador `pag:last-activity` "esquece" o teto). O
 // reforço real seria encurtar a expiração do JWT / revogar o refresh token no logout.
-const IDLE_MINUTES = Number(import.meta.env.VITE_SESSION_IDLE_MINUTES) || 10;
+const IDLE_MINUTES = Number(import.meta.env.VITE_SESSION_IDLE_MINUTES) || 30;
 const IDLE_TIMEOUT_MS = IDLE_MINUTES * 60_000;
 
 export function AuthProvider({ children }: Readonly<{ children: ReactNode }>) {

@@ -671,7 +671,7 @@ Alvo: **WCAG 2.1 Nível AA** em todas as telas. Regras práticas:
   **vermelha ~5 dias** por causas que só o axe em navegador via:
   - **Sidebar transbordava sobre o `<main>` branco.** O `<nav>` era `flex-1` **sem overflow**; com
     todos os itens (19 links + 5 grupos) o conteúdo excedia o viewport e os últimos itens + o rodapé
-    (avatar/e-mail/versão) caíam sobre o fundo BRANCO do `<main>`, onde `text-slate-400` dá 2,57:1.
+    (avatar/e-mail) caíam sobre o fundo BRANCO do `<main>`, onde `text-slate-400` dá 2,57:1.
     Fix (`Layout.tsx`): `nav` = **`flex-1 min-h-0 overflow-y-auto`** — rola DENTRO da sidebar escura
     (`bg-sidebar`, ~7:1). **Não** remover o `min-h-0`/`overflow-y-auto`.
   - **Corpo do Dashboard = região rolável sem acesso por teclado** (`scrollable-region-focusable`,
@@ -726,13 +726,13 @@ O acesso às rotas internas (`/emails`, `/consulta`, `/erros`) exige login.
   (`getRememberPreference` no `useState`) — desmarcado na primeira vez e, uma vez marcado,
   permanece marcado nas próximas sessões até o usuário desmarcar. Refresh (F5) na mesma aba
   mantém em ambos os casos.
-- **Logout por inatividade (teto de 10 min, vale em ambos os modos)**: `useIdleLogout`
-  (`src/hooks/`) desloga após `VITE_SESSION_IDLE_MINUTES` sem atividade (padrão 10 min).
+- **Logout por inatividade (teto de 30 min, vale em ambos os modos)**: `useIdleLogout`
+  (`src/hooks/`) desloga após `VITE_SESSION_IDLE_MINUTES` sem atividade (padrão 30 min).
   Marcador de atividade em `localStorage` (`pag:last-activity`, compartilhado entre abas);
   reiniciado no `SIGNED_IN`, limpo no `SIGNED_OUT`. O helper `isIdleExpired(timeoutMs)`
   (exportado do mesmo hook) é usado no `AuthContext.init()` para deslogar já na reabertura
   quando o período ocioso herdado expirou — assim "Lembrar-me" mantém a sessão por **no
-  máximo 10 min** entre reaberturas, sem flash de conteúdo protegido.
+  máximo 30 min** entre reaberturas, sem flash de conteúdo protegido.
 - **Suspensão durante processamento**: `suspendIdleLogout()`/`resumeIdleLogout()`
   (contador no `useIdleLogout`) pausam o teto de inatividade enquanto a leitura de
   e-mails roda (`Emails.handleRead` suspende no início e retoma no `finally`, ambos os
@@ -1013,6 +1013,13 @@ apps/frontend-vite/src/components/
 > (feito para "Cadastro de fornecedores", "Cadastro de contas" e **"Dashboard"**). **Não há mais
 > nenhum item `breve`** na sidebar — todos os itens são links ativos.
 
+O **rodapé da sidebar** mostra apenas **avatar + e-mail + botão Sair** — o antigo texto de versão
+`v1.0.0 — fase 1` foi **removido**. Os espaçamentos verticais foram **compactados** para o menu
+**caber sem scroll** em telas ~900px+ (`nav-link` = `py-1.5`; cabeçalhos de grupo = `pt-2.5 pb-1`,
+o 1º grupo `pt-0.5 pb-1`; `<nav>` `py-2`; logo `py-3`; rodapé `py-2.5`). O `overflow-y-auto min-h-0`
+do `<nav>` **permanece** como rede de segurança para viewports muito baixas (rola DENTRO da sidebar
+escura em vez de transbordar sobre o `<main>` branco — não regredir, ver a11y).
+
 Hooks em `src/hooks/`: `useContainerBreakpoint.ts` (faixa `sm`/`md`/`lg` pela largura
 **real do container** via `ResizeObserver` — não da janela; usado pelo `DataGrid` p/ ocultar
 colunas considerando sidebar/paddings), `useGridPreferences.ts` (estado de layout do grid —
@@ -1055,7 +1062,10 @@ embutido, via sintaxe do PostgREST `alias(coluna)` no `order` — `sortKey: 'sup
 sort/filter client-side, que não usamos — a ordenação é sempre server-side). Ordem das colunas de
 `/consulta`: **… Tipo Pagamento → Plano de contas → Vencimento → Valor → NF → BOL → Situação → Extração**
 (`Extração` é a última; **não há mais colunas "Ações" nem "Centro de custo"**). `Extração` (badge
-`extraction_source`) aparece **só** no grid (removida do detalhe e do CSV). O **card de detalhe** de
+`extraction_source`) aparece **só** no grid (removida do detalhe e do CSV); contas criadas
+**manualmente** (`extraction_source` nulo) exibem o rótulo **"Criado pelo usuário"** (constante
+`MANUAL_EXTRACTION_LABEL` em `useGridColumns`) em vez de "—" — o pipeline SEMPRE grava um
+`extraction_source`, então vazio identifica de forma confiável a criação manual. O **card de detalhe** de
 `/consulta` continua mostrando **Centro de custo e Plano de contas SEPARADOS** (via `fmtCostCenter`/
 `fmtChartAccount`, inalterados) — a concatenação é exclusiva do grid.
 A coluna **"Situação" ordena alfabeticamente pelo NOME** da dimensão (`sortKey: 'status'`, mapeado
