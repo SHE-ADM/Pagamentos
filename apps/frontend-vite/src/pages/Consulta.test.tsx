@@ -129,6 +129,21 @@ describe('Consulta', () => {
     expect(screen.getAllByText('Informação adicional:')).toHaveLength(1);
   });
 
+  it('coluna Extração mostra "Criado pelo usuário" na conta manual e o badge de origem na do pipeline', async () => {
+    getFinancialAccountControl.mockResolvedValue({
+      data: [
+        makeRow({ id: 1, extraction_source: null }), // conta manual (sem pipeline)
+        makeRow({ id: 2, invoice_number: '67890', extraction_source: 'pdf_text' }), // do pipeline
+      ],
+      total: 2,
+    });
+    render(<Consulta />);
+
+    // Conta manual → rótulo "Criado pelo usuário"; conta do pipeline → "pdf anexado".
+    expect(await screen.findByText('Criado pelo usuário')).toBeInTheDocument();
+    expect(screen.getByText('pdf anexado')).toBeInTheDocument();
+  });
+
   it('detalhe da conta mostra os autores (criado/editado/situação) resolvidos por e-mail', async () => {
     getAppUsers.mockResolvedValue({
       'uuid-a': 'ester@otimotex.com.br',
