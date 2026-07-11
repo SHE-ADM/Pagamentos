@@ -321,7 +321,6 @@ export default function Consulta() {
   // Diretório de usuários (id→e-mail) para o detalhe — busca única no mount. Falha é
   // silenciosa (o detalhe cai no fallback do UUID). void: fire-and-forget idiomático.
   useEffect(() => {
-    // eslint-disable-next-line react-hooks/set-state-in-effect
     void getAppUsers().then(setAppUsers).catch(() => undefined);
   }, []);
 

@@ -32,6 +32,12 @@ export const STATUS_OPTIONS: readonly StatusOption[] = STATUS_LIFECYCLE_ORDER.ma
   label: name.charAt(0).toUpperCase() + name.slice(1),
 }));
 
+// Rótulo da coluna "Extração" para contas criadas MANUALMENTE pelo usuário (via
+// ContaForm/POST /api/contas): não passam pelo pipeline, então extraction_source é
+// nulo. O pipeline SEMPRE grava um extraction_source (pdf_text/pdf_vision/image_vision/
+// email_body/falha), logo o valor vazio identifica de forma confiável a criação manual.
+const MANUAL_EXTRACTION_LABEL = 'Criado pelo usuário';
+
 /** Callback acionado ao marcar/desmarcar um checkbox de flag na célula do grid. */
 export type ToggleFlag = (
   row: FinancialAccountControl,
@@ -220,11 +226,14 @@ export function getConsultaColumns(
   {
     key: 'extraction_source',
     header: 'Extração',
-    size: 120,
-    minSize: 100,
+    size: 150,
+    minSize: 130,
     sortKey: 'extraction_source',
     hideOn: ['sm', 'md'],
-    render: (r) => createElement(StatusBadge, { value: r.extraction_source }),
+    // Conta manual (extraction_source nulo) → badge neutro "Criado pelo usuário";
+    // conta do pipeline → badge da origem (pdf anexado / imagem anexada / corpo email…).
+    render: (r) =>
+      createElement(StatusBadge, { value: r.extraction_source || MANUAL_EXTRACTION_LABEL }),
   },
   ];
 }
