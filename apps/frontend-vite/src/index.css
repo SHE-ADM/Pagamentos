@@ -180,7 +180,7 @@
 }
 
 @utility nav-link {
-  @apply flex items-center gap-2 px-3 py-2 text-sm text-slate-400 rounded-lg
+  @apply flex items-center gap-2 px-3 py-1.5 text-sm text-slate-400 rounded-lg
            border-l-2 border-transparent transition-all duration-150
            hover:bg-white/8 hover:text-white;
   & > svg {

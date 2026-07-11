@@ -116,8 +116,8 @@ describe('AuthContext', () => {
     const user = { id: '1', email: 'admin@sheild.app.br' };
     getSession.mockResolvedValue({ data: { session: { user } } });
     signOut.mockResolvedValue({ error: null });
-    // Marcador de atividade antigo (15 min) → teto de 10 min já estourado.
-    localStorage.setItem(IDLE_KEY, String(Date.now() - 15 * 60_000));
+    // Marcador de atividade antigo (35 min) → teto de 30 min já estourado.
+    localStorage.setItem(IDLE_KEY, String(Date.now() - 35 * 60_000));
 
     renderProvider();
 
