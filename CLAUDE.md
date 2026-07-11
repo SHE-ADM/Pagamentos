@@ -485,7 +485,14 @@ POST usa `getAuthenticatedUser`, não `requireAuth`); extração → `SupabaseCo
 **Comercial=6** ligada; **Financeiro=7** e demais = false → veem tudo). **Enforcement por RLS SELECT**
 de `financial_account_control`: `USING (NOT public.auth_group_sees_only_own() OR created_by = auth.uid())`
 — cobre `/consulta` (grid + busca) e `/dashboard`, que leem via `authenticated`; `service_role`
-(Next API/Python) mantém bypass. **Re-varredura ao criar usuários (operacional):** o backfill do
+(Next API/Python) mantém bypass. **Estendido a `/emails` e `/erros` (migration 078):** as policies
+SELECT de `email_control` e `email_processing_errors` usam a MESMA flag/helper, porém casando o
+REMETENTE com o e-mail do logado — `USING (NOT public.auth_group_sees_only_own() OR
+lower(sender_email) = lower(auth.email()))`. Diferença intencional de chave: `/consulta` casa por
+`created_by` (UUID resolvido, com sentinela); `/emails` e `/erros` casam o TEXTO `sender_email`
+diretamente com `auth.email()`. Linhas com `sender_email` NULL ficam ocultas para usuários restritos
+(hoje não há nenhuma). A policy de UPDATE de `email_control` (grant só de `reviewed_at`) não mudou.
+**Re-varredura ao criar usuários (operacional):** o backfill do
 `created_by` é ponto-no-tempo — contas históricas de um usuário criado DEPOIS ficam no sentinela até
 uma re-varredura. Ao cadastrar usuário novo, rodar (via Supabase MCP/SQL Editor) para re-atribuir só
 as divergentes (idempotente; preserva `updated_by`/`status_changed_by`):
@@ -2143,9 +2150,9 @@ faturas SIEG em `ignorado`; o handler A1 (baixar o boleto real) segue como melho
 
 | Rota | Componente | Tabela |
 |---|---|---|
-| `/emails` | `Emails.tsx` | `email_control` + `financial_account_control` por `message_id` |
-| `/consulta` | `Consulta.tsx` | `financial_account_control` (scroll infinito + virtualização, filtros, CSV client-side) |
-| `/erros` | `Erros.tsx` | `email_processing_errors` |
+| `/emails` | `Emails.tsx` | `email_control` + `financial_account_control` por `message_id` (RLS por remetente p/ grupo restrito — migration 078) |
+| `/consulta` | `Consulta.tsx` | `financial_account_control` (scroll infinito + virtualização, filtros, CSV client-side; RLS por dono p/ grupo restrito — migration 076) |
+| `/erros` | `Erros.tsx` | `email_processing_errors` (RLS por remetente p/ grupo restrito — migration 078) |
 | `/contas` | `ContasNovaPage.tsx` | `financial_account_control` (lançamento manual via `ContaForm`) |
 | `/fornecedores` | `SuppliersPage.tsx` | `supplier` (CRUD via Next API) |
 | `/tabelas/centros-de-custo` | `CostCentersPage.tsx` | `financial_cost_center` (CRUD via Next API) + grid complementar mestre-detalhe do plano de contas do centro selecionado (`financial_chart_of_account` lançável) |
@@ -2385,11 +2392,17 @@ local/agendada (ver flag `EMAIL_READER_ENABLED` acima e memória [[vercel-deploy
 ## Banco de dados (Supabase)
 
 Migrations em `supabase/migrations/`, aplicadas **manualmente no SQL Editor** em ordem
-numérica (`001` → `077`). **Próxima migration = `078`** (verificar sempre antes de criar nova).
+numérica (`001` → `078`). **Próxima migration = `079`** (verificar sempre antes de criar nova).
 Não há migration automática. (As `059`/`060`/`061`/`063`/`064`/`066`/`067`/
-`068`/`069`/`070`/`071`/**`072`**/**`073`**/**`074`**/**`075`**/**`076`**/**`077`** foram aplicadas **direto via Supabase MCP** nesta
+`068`/`069`/`070`/`071`/**`072`**/**`073`**/**`074`**/**`075`**/**`076`**/**`077`**/**`078`** foram aplicadas **direto via Supabase MCP** nesta
 máquina — o arquivo numerado serve
-de histórico; **não reaplicar** no SQL Editor (todas idempotentes, mas evite re-run). A **077**
+de histórico; **não reaplicar** no SQL Editor (todas idempotentes, mas evite re-run). A **078**
+(**Etapa 1 estendida a `/emails` e `/erros`** — ver "Visibilidade de contas por dono"): reescreve as
+policies SELECT de `email_control` e `email_processing_errors` (papel `authenticated`) para
+`NOT public.auth_group_sees_only_own() OR lower(sender_email) = lower(auth.email())` — reusa o helper
+e a flag `user_group.sees_only_own_accounts` da 076, mas casando o **remetente do e-mail** com o e-mail
+do usuário logado (não o `created_by`/UUID). Grupo restrito (Comercial=6) vê só os e-mails/erros de que
+é remetente; demais grupos veem tudo (preservado); `service_role` mantém bypass. A **077**
 (**Etapa 2 — auditoria de autor** — ver "Visibilidade de contas por dono"): adiciona
 `updated_by`/`status_changed_by`/`status_changed_at` (NOT NULL DEFAULT sentinela + FK) + backfill; a
 trigger `trg_fac_authorship` (`fn_stamp_account_authorship`, SECURITY DEFINER — roda ANTES dos
@@ -2513,10 +2526,10 @@ internet` ao CHECK de `document_type` e faz backfill — ver "Normalização de 
 
 | Tabela | Propósito |
 |---|---|
-| `email_control` | Dedup/controle. `status` ∈ (`extraído`, `recebido`, `pendente`, `falha`, `ignorado`, `duplicidade`) — **migrations 022/031**. `extraído`=PDF extraído (CSV gerado); `recebido`=sem PDF, conta via corpo; `pendente`=PDF salvo sem CSV (substitui `baixado`); `falha`=casou keyword mas sem PDF e sem conta no corpo; `ignorado`=não-financeiro (sem keyword) **ou NF-e pura sem conta a pagar** (`subject_is_pure_nfe`); `duplicidade`=pagável do corpo duplica conta já registrada por outro e-mail (**migration 031**; card/filtro próprios em `/emails`). O status é calculado em `process_message` pelo resultado real (conta/CSV/corpo/duplicata), não por `pdf_extracted` |
+| `email_control` | Dedup/controle. `status` ∈ (`extraído`, `recebido`, `pendente`, `falha`, `ignorado`, `duplicidade`) — **migrations 022/031**. `extraído`=PDF extraído (CSV gerado); `recebido`=sem PDF, conta via corpo; `pendente`=PDF salvo sem CSV (substitui `baixado`); `falha`=casou keyword mas sem PDF e sem conta no corpo; `ignorado`=não-financeiro (sem keyword) **ou NF-e pura sem conta a pagar** (`subject_is_pure_nfe`); `duplicidade`=pagável do corpo duplica conta já registrada por outro e-mail (**migration 031**; card/filtro próprios em `/emails`). O status é calculado em `process_message` pelo resultado real (conta/CSV/corpo/duplicata), não por `pdf_extracted`. **Visibilidade por REMETENTE (migration 078):** a policy SELECT (`authenticated`) filtra por `lower(sender_email)=lower(auth.email())` quando o grupo do usuário tem `sees_only_own_accounts` (Comercial) — `/emails` mostra só os e-mails de que o usuário é remetente; demais grupos veem tudo; `service_role` com bypass |
 | `financial_account_control` | Tabela principal de contas a pagar — uma linha por documento; alimentada pelo pipeline de e-mail **e** por CRUD manual (baixas, consolidações, dashboards). Substitui a antiga `financial_emails` (dropada na migration 020). O fornecedor é referenciado **só pela FK `sk_supplier`** (surrogate key snowflake, NOT NULL — **migration 042**, antes era `supplier_id`) — nome/CNPJ vêm do JOIN com `supplier` (colunas denormalizadas dropadas na **migration 041**). Tem `sender_email` (migration 023; backfill em 025) usado na resolução p/ alinhar `supplier.email`, e `subject` (migration 025) — exibidos/buscados em `/consulta`. **Classificação contábil** (migrations 047/048): `cost_center_id`/`chart_account_id` SMALLINT, NOT NULL DEFAULT 0 (FKs para os cadastros; id 0 = "não informado") — preenchidos no CRUD manual (cascata centro→plano). **Autoria** (migrations 076/077): `created_by` (DONO — base da visibilidade por dono), `updated_by`, `status_changed_by`, `status_changed_at` — UUID → `auth.users`, NOT NULL DEFAULT sentinela `teste@otimotex.com.br`, carimbados pelo servidor/trigger `trg_fac_authorship` (ver "Visibilidade de contas por dono" / "Auditoria de autor") |
 | `financial_cost_center` / `financial_chart_of_account` | **Cadastros de classificação contábil** (pré-existentes, **preservados em limpezas**) usados como lookup no modal de contas. `financial_cost_center` é **gerenciado pelo CRUD de centros de custo** (`/tabelas/centros-de-custo` — PK `cost_center_id` SMALLINT IDENTITY ALWAYS; id 0 = sentinela "não informado", fora do CRUD; ver "CRUD de centros de custo"). `financial_chart_of_account` (também gerenciado pelo **CRUD de Plano de contas** — `/tabelas/plano-de-contas`) tem `cost_center_id` (relaciona o plano ao centro — base da CASCATA), `chart_account_subgroup_id` (FK → subgrupo) e `is_postable` (só os postáveis são lançáveis). Os cadastros `financial_bank`, `financial_account`, `financial_chart_of_account_group` e `financial_chart_of_account_subgroup` também ganharam CRUD próprio (grupo Tabelas — ver "CRUDs dos demais cadastros contábeis"). Lidos via `lib/lookups.ts` (service_role) **e** pelo frontend via embed REST (papel `authenticated`); RLS habilitado com policy de SELECT `TO authenticated` (migration 049 — sem ela o embed voltava null e a UI mostrava `#id`) |
-| `email_processing_errors` | Log de falhas com `raw_payload` JSON |
+| `email_processing_errors` | Log de falhas com `raw_payload` JSON. **Visibilidade por REMETENTE (migration 078):** policy SELECT (`authenticated`) filtra por `lower(sender_email)=lower(auth.email())` para grupo com `sees_only_own_accounts` (Comercial) — `/erros` mostra só os erros de que o usuário é remetente; demais veem tudo; `service_role` com bypass |
 | `supplier` | Fornecedores. PK = `sk_supplier` (surrogate key snowflake auto-incremental — **migration 042**); `supplier_id` é **chave de negócio** (NOT NULL UNIQUE, só nesta tabela; = `sk_supplier` nos fornecedores criados pela extração, via trigger de espelho `trg_supplier_mirror_id`, podendo divergir em cargas externas). Auto-criados pelo trigger de resolução, mas **cadastro PRESERVADO** (curadoria manual de `email`/`email2`/`email3`/`email4`) — **nunca truncar** em limpezas (ver "Limpeza / reset de dados"). Reconhecimento por **e-mail** em `email`/`email2`/`email3`/`email4` (migrations 023/027/028) — ver "Auto-resolução de fornecedor". **Soft delete** via `deleted_at` (migration 045) — a baixa pelo CRUD da Next API marca `deleted_at` (nunca hard delete) e é bloqueada quando há contas vinculadas; ver "CRUD de fornecedores (Next API)". **Classificação default** `cost_center_id`/`chart_account_id` (SMALLINT NOT NULL DEFAULT 0 + FKs — migration 052): semeia o lançamento de novas contas e é atualizada pelo write-back do modal; ver "Classificação default do fornecedor — sync bidirecional" |
 | `company` | Empresa pagadora (**cadastro**, tem campo `email`). Auto-resolvida pelo trigger `resolve_company_id` a partir de `payer_cnpj`/`payer_name`. **Preservada em limpezas** (ver abaixo) |
 | `status` | **Dimensão** de situação (`status_id`, `status_name`, `status_short_name`, `has_opened`/`has_closed`/`has_invoiced`). 10 linhas (ids 1..10) = **domínio de `financial_account_control.status_id`** (fonte única — a coluna `status` texto foi removida na 069) + alvo da FK `fk_fac_status`. O nome de exibição da conta vem do embed `status_dim:status(...)`. **Cadastro/configuração — preservar em limpezas** |
@@ -2646,7 +2659,13 @@ passou a `USING (NOT public.auth_group_sees_only_own() OR created_by = auth.uid(
 flag `sees_only_own_accounts` (Comercial) vê só as próprias; demais veem tudo. As colunas de autoria
 `created_by`/`updated_by`/`status_changed_by`/`status_changed_at` (migrations 076/077) são carimbadas
 pelo servidor/trigger `trg_fac_authorship`, nunca pelo cliente — ver "Visibilidade de contas por
-dono" e "Auditoria de autor". **Exceção pontual
+dono" e "Auditoria de autor". **Exceção — leitura por REMETENTE em `/emails` e `/erros`
+(migration 078):** as policies SELECT de `email_control` e `email_processing_errors` também deixaram
+de ser `USING (true)` e passaram a `USING (NOT public.auth_group_sees_only_own() OR
+lower(sender_email) = lower(auth.email()))` — a MESMA flag/helper da 076, mas casando o **remetente**
+(`sender_email`) com o e-mail do usuário logado (`auth.email()`), não o `created_by`/UUID. Grupo
+restrito (Comercial) vê só os e-mails/erros de que é remetente; demais veem tudo; `service_role`
+mantém bypass. Linha com `sender_email` NULL fica oculta ao usuário restrito. **Exceção pontual
 (migration 030):** `email_control` tem policy de UPDATE `TO authenticated`, mas com
 **grant restrito à coluna** `reviewed_at` (`GRANT UPDATE (reviewed_at)`) — o frontend só
 consegue marcar "revisado", não alterar outras colunas. `reviewed_at` é setado em `/emails`
