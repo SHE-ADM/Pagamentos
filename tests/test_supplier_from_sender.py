@@ -61,7 +61,7 @@ class ExtractAndStoreSupplierFromSenderTest(unittest.TestCase):
             "sender_email": sender_email,
             "subject":      "Boleto",
         }
-        _, accounts_saved, _nonpayable = read_emails.extract_and_store_accounts(
+        _, accounts_saved, _nonpayable, _att_account = read_emails.extract_and_store_accounts(
             [Path("boleto.pdf")], "msg-1", ctrl, email_rec=email_rec
         )
         return ctrl, accounts_saved

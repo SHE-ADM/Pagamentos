@@ -103,9 +103,10 @@ class DedupBarcodeSyntheticTest(unittest.TestCase):
         self.assertEqual(dup["id"], 42)
         self.assertTrue(any("invoice_number=eq." in u for u in urls))
 
-    def test_sem_barcode_mantem_impressao3(self):
-        """Documento do CORPO (sem barcode): impressao 3 segue casando por
-        valor+vencimento+tipo (nao adiciona barcode=is.null)."""
+    def test_sem_barcode_impressao3_por_valor_venc_fornecedor(self):
+        """Documento do CORPO (sem barcode): impressao 3 casa por fornecedor+valor+
+        vencimento, SEM barcode=is.null e SEM document_type — o tipo varia entre os
+        documentos da mesma divida ('boleto' no PDF x 'fatura' no corpo)."""
         ctrl = _ctrl()
         urls = []
 
@@ -120,7 +121,117 @@ class DedupBarcodeSyntheticTest(unittest.TestCase):
         with mock.patch.object(R.urllib.request, "urlopen", fake_urlopen):
             ctrl.find_financial_duplicate(payload)
 
+        # impressao 3 sem barcode: não adiciona barcode=is.null nem document_type.
         self.assertFalse(any("barcode=is.null" in u for u in urls))
+        self.assertFalse(any("document_type=eq" in u for u in urls))
+        # casa por fornecedor+valor+vencimento
+        self.assertTrue(any("amount=eq" in u and "due_date=eq" in u and "sk_supplier=eq" in u
+                            for u in urls))
+
+    def test_corpo_casa_boleto_existente_qualquer_ordem(self):
+        """NOVO documento do CORPO (sem barcode, tipo 'fatura') casa um BOLETO já
+        gravado (com barcode, tipo 'boleto') da mesma dívida — cobre a ordem inversa
+        (corpo chega depois do boleto), caso real id 511/512 (Smart Web R$ 49,90)."""
+        ctrl = _ctrl()
+
+        def fake_urlopen(req, timeout=None):
+            # impressao 3 (sem barcode=is.null) casa o boleto existente, mesmo ele
+            # tendo barcode e tipo diferente.
+            if "amount=eq" in req.full_url and "due_date=eq" in req.full_url:
+                return _Resp([{"id": 511, "due_date": "2026-07-19", "barcode": "07794..."}])
+            return _Resp([])
+
+        payload = {
+            "sk_supplier": 1213, "amount": 49.90, "due_date": "2026-07-19",
+            "document_type": "fatura", "invoice_number": "fatura_190726",
+        }
+        with mock.patch.object(R.urllib.request, "urlopen", fake_urlopen):
+            dup = ctrl.find_financial_duplicate(payload)
+
+        self.assertIsNotNone(dup)
+        self.assertEqual(dup["id"], 511)
+
+
+class DedupCrossTypeBodyTest(unittest.TestCase):
+    """Robustez cross-e-mail (ids 7/176, 217/218): um BOLETO (com barcode) que chega
+    depois casa a conta do CORPO da MESMA divida (mesmo fornecedor+valor+vencimento)
+    mesmo com document_type diferente ('outro' x 'boleto'). Antes a impressao 3 exigia
+    tipo igual e deixava a duplicata passar."""
+
+    def test_boleto_casa_conta_do_corpo_ignorando_tipo(self):
+        ctrl = _ctrl()
+        urls = []
+
+        def fake_urlopen(req, timeout=None):
+            urls.append(req.full_url)
+            # impressao 1 (barcode exato) nao casa; impressao 3 (barcode=is.null) casa
+            # a conta do corpo (id 7, sem barcode, tipo 'outro').
+            if "barcode=is.null" in req.full_url:
+                return _Resp([{"id": 7, "due_date": "2026-06-22", "barcode": None}])
+            return _Resp([])
+
+        payload = {
+            "sk_supplier": 1182, "amount": 304.0, "due_date": "2026-06-22",
+            "document_type": "boleto", "invoice_number": "571854",
+            "barcode": "34191234500000304000001112057941590755787812",
+        }
+        with mock.patch.object(R.urllib.request, "urlopen", fake_urlopen):
+            dup = ctrl.find_financial_duplicate(payload)
+
+        self.assertIsNotNone(dup)
+        self.assertEqual(dup["id"], 7)
+        # A consulta da impressao 3 (barcode=is.null) NAO restringe por document_type
+        # e casa por fornecedor+valor+vencimento.
+        imp3 = next(u for u in urls if "barcode=is.null" in u)
+        self.assertNotIn("document_type=eq", imp3)
+        self.assertIn("due_date=eq", imp3)
+        self.assertIn("amount=eq", imp3)
+        self.assertIn("sk_supplier=eq", imp3)
+
+
+class DedupQueryRetryTest(unittest.TestCase):
+    """Robustez: um hiccup de rede na consulta de duplicidade NAO pode virar
+    'sem duplicata' (que criaria conta duplicada). A consulta e re-tentada em
+    falha transitoria antes de desistir."""
+
+    def test_retry_em_falha_transitoria_acha_duplicata(self):
+        ctrl = _ctrl()
+        calls = {"n": 0}
+
+        def fake_urlopen(req, timeout=None):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise TimeoutError("hiccup de rede")
+            return _Resp([{"id": 99, "due_date": "2026-07-19", "barcode": None}])
+
+        payload = {
+            "sk_supplier": 1213, "amount": 49.90, "due_date": "2026-07-19",
+            "document_type": "fatura", "invoice_number": "fatura_190726",
+        }
+        with mock.patch.object(R.urllib.request, "urlopen", fake_urlopen), \
+             mock.patch.object(R.time, "sleep", lambda *a, **k: None):
+            dup = ctrl.find_financial_duplicate(payload)
+
+        self.assertIsNotNone(dup)
+        self.assertEqual(dup["id"], 99)
+        self.assertGreaterEqual(calls["n"], 2)  # re-tentou apos a 1a falha
+
+    def test_desiste_apos_esgotar_tentativas(self):
+        ctrl = _ctrl()
+
+        def fake_urlopen(req, timeout=None):
+            raise TimeoutError("supabase indisponivel")
+
+        payload = {
+            "sk_supplier": 1213, "amount": 49.90, "due_date": "2026-07-19",
+            "document_type": "fatura", "invoice_number": "fatura_190726",
+        }
+        with mock.patch.object(R.urllib.request, "urlopen", fake_urlopen), \
+             mock.patch.object(R.time, "sleep", lambda *a, **k: None):
+            dup = ctrl.find_financial_duplicate(payload)
+
+        # Esgotou as tentativas → None (nao bloqueia a insercao), mas tentou N vezes.
+        self.assertIsNone(dup)
 
 
 if __name__ == "__main__":
