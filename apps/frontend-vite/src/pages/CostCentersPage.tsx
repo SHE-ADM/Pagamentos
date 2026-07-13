@@ -19,6 +19,9 @@ import SearchInput from '../components/molecules/SearchInput';
 import Alert from '../components/atoms/Alert';
 
 const PAGE_SIZE = 20;
+// Grid mestre (centros de custo) exibe menos registros por página para liberar
+// espaço vertical ao grid complementar (plano de contas) logo abaixo.
+const MASTER_PAGE_SIZE = 7;
 // Colunas do grid complementar são estáticas (read-only) — definir uma vez fora do componente.
 const DETAIL_COLUMNS = getCostCenterChartAccountColumns();
 // Rótulo do centro selecionado no cabeçalho do grid complementar ("código — descrição").
@@ -78,7 +81,7 @@ export default function CostCentersPage() {
     try {
       const result = await listCostCentersPage({
         page,
-        limit: PAGE_SIZE,
+        limit: MASTER_PAGE_SIZE,
         search: search || undefined,
         sort: sort.col ?? undefined,
         order: sort.dir ?? undefined,
@@ -263,7 +266,7 @@ export default function CostCentersPage() {
   };
 
   const columns = getCostCenterColumns(openEdit, isAdminGroup ? requestDelete : undefined);
-  const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
+  const totalPages = Math.max(1, Math.ceil(total / MASTER_PAGE_SIZE));
   const detailTotalPages = Math.max(1, Math.ceil(detailTotal / PAGE_SIZE));
   const deleteName = deleteTarget
     ? (deleteTarget.cost_center_description ?? deleteTarget.cost_center_code ?? `#${deleteTarget.cost_center_id}`)
