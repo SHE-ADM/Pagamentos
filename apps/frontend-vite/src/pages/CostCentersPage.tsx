@@ -76,6 +76,10 @@ export default function CostCentersPage() {
   const formDialogRef = useRef<HTMLDialogElement>(null);
   const deleteDialogRef = useRef<HTMLDialogElement>(null);
   const detailRef = useRef<HTMLElement>(null);
+  // Seleciona o primeiro centro só uma vez (na abertura); depois o usuário controla.
+  const didAutoSelectRef = useRef(false);
+  // Rola o detalhe para a viewport apenas em seleção pelo usuário (não na auto-seleção inicial).
+  const shouldScrollDetailRef = useRef(false);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -170,10 +174,20 @@ export default function CostCentersPage() {
     }
   }, [deleteTarget]);
 
+  // Na abertura, seleciona o primeiro centro (equivale a clicar nele) para já exibir o
+  // plano de contas correspondente. Roda uma única vez, quando as linhas chegam.
+  useEffect(() => {
+    if (didAutoSelectRef.current || rows.length === 0) return;
+    didAutoSelectRef.current = true;
+    setSelected(rows[0]);
+  }, [rows]);
+
   // Ao selecionar um centro, traz o grid complementar (plano de contas) para a viewport —
   // caso contrário ele abriria no rodapé da página, exigindo rolagem para ser visto.
+  // Só rola em seleção pelo usuário (não na auto-seleção inicial da abertura).
   useEffect(() => {
-    if (!selected) return;
+    if (!selected || !shouldScrollDetailRef.current) return;
+    shouldScrollDetailRef.current = false;
     detailRef.current?.scrollIntoView?.({ behavior: 'smooth', block: 'start' });
   }, [selected]);
 
@@ -197,6 +211,7 @@ export default function CostCentersPage() {
   // Clique na linha do mestre alterna a seleção (mesmo centro → desmarca). O grid
   // complementar recarrega via efeito; sempre volta à 1ª página do detalhe.
   const handleSelect = (costCenter: CostCenter) => {
+    shouldScrollDetailRef.current = true;
     setSelected((prev) => (prev?.cost_center_id === costCenter.cost_center_id ? null : costCenter));
     setDetailPage(1);
   };

@@ -5,7 +5,6 @@ vi.mock('../contexts/AuthContext', () => ({
   useAuth: () => ({ user: null, session: null, loading: false, isAdmin: false, groupId: 0, isAdminGroup: false, signOut: vi.fn() }),
 }));
 import { render, screen } from '@testing-library/react';
-import userEvent from '@testing-library/user-event';
 import { axe } from '../../tests/axe';
 import type { CostCenter, ChartAccount } from '@sheild/shared';
 
@@ -44,8 +43,8 @@ const chartAccount: ChartAccount = {
 };
 
 beforeEach(() => {
-  vi.mocked(listCostCentersPage).mockResolvedValue({ data: [sample], total: 1, page: 1, limit: 20 });
-  vi.mocked(listChartAccountsByCostCenter).mockResolvedValue({ data: [chartAccount], total: 1, page: 1, limit: 20 });
+  vi.mocked(listCostCentersPage).mockResolvedValue({ data: [sample], total: 1, page: 1, limit: 6 });
+  vi.mocked(listChartAccountsByCostCenter).mockResolvedValue({ data: [chartAccount], total: 1, page: 1, limit: 10 });
 });
 
 describe('CostCentersPage a11y', () => {
@@ -56,8 +55,9 @@ describe('CostCentersPage a11y', () => {
   });
 
   it('não tem violações com o grid complementar visível', async () => {
+    // O primeiro centro é auto-selecionado na abertura, então o grid complementar
+    // já fica visível sem clique.
     const { container } = render(<CostCentersPage />);
-    await userEvent.click(await screen.findByText('Tecnologia da Informação'));
     await screen.findByText('Serviços de TI');
     expect(await axe(container)).toHaveNoViolations();
   });
