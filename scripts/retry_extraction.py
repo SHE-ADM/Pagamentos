@@ -201,7 +201,7 @@ def _reprocess_one(ctrl: SupabaseControl, mid: str, g: dict, dry_run: bool) -> s
         "received_at":  ctx.get("received_at"),
     }
     try:
-        csvs_ok, accounts_saved, _nonpayable = extract_and_store_accounts(
+        csvs_ok, accounts_saved, _nonpayable, _att_account = extract_and_store_accounts(
             pdfs, mid, ctrl, email_rec=email_ctx
         )
         if ec and csvs_ok:
@@ -293,7 +293,7 @@ def main():
             continue
 
         email_ctx = {"message_id": msg_id, "subject": subject}
-        csvs_ok, accounts_saved, _nonpayable = extract_and_store_accounts(
+        csvs_ok, accounts_saved, _nonpayable, _att_account = extract_and_store_accounts(
             pdfs, msg_id, ctrl, email_rec=email_ctx
         )
 

@@ -1469,12 +1469,39 @@ Email Reader"). A trigger de banco recalcula `a vencer`/`vencido` a partir do `d
 Além do dedup por `message_id`, `find_financial_duplicate(payload)` evita gravar o
 **mesmo documento** chegado em e-mails diferentes. Casa por 3 impressões: (1) barcode;
 (2) **`sk_supplier`** + `invoice_number` (≥6) + valor — pega **guia/DAS reemitida** com o mesmo
-número e vencimento novo; (3) **`sk_supplier`** + valor + vencimento + tipo. Quando encontra
+número e vencimento novo; (3) **`sk_supplier`** + valor + vencimento (**+ tipo só quando o novo
+NÃO tem barcode** — ver abaixo). Quando encontra
 duplicata, `extract_and_store_accounts` **não cria outra conta**: se a reemissão tem
 vencimento **mais recente**, chama `update_financial` para atualizar `due_date` + boleto
 (`barcode`, `amount_charged`, `fine_interest`, `other_additions`) na conta existente — uma
 guia paga uma vez, sempre com o boleto válido. A trigger recalcula a situação em `status` no
 UPDATE (só quando em aberto — migration 034).
+
+**Impressão 3 casa por `sk_supplier`+valor+vencimento, INDEPENDENTE do `document_type`
+(robustez cross-e-mail — não regredir):** regra de negócio — **se fornecedor + valor +
+vencimento coincidem, é a MESMA conta a pagar**; o `document_type` varia entre os documentos
+que descrevem a dívida (`boleto` no PDF, `fatura`/`outro`/`pix` no corpo). Antes a impressão 3
+exigia `document_type` igual e deixava a duplicata passar em **qualquer ordem de chegada**,
+criando 2 contas — casos reais **ids 7/176** (ESPRO), **217/218** e **511/512** (Smart Web).
+O tipo **saiu** da impressão 3. Distinção que permanece — **código de barras**:
+- **Novo doc COM barcode** (boleto autoritativo): casa `sk_supplier`+valor+vencimento com
+  `barcode=is.null` — só candidatos SEM linha digitável (conta do corpo/notificação da mesma
+  dívida). Boletos DISTINTOS (cada um com barcode próprio, ex.: parcelas HYOSUNG, guias GNRE de
+  R$ 399,03) **NÃO** se fundem: candidato com barcode ≠ é documento distinto (a impressão 1 já
+  teria casado se fosse o mesmo).
+- **Novo doc SEM barcode** (corpo/notificação/reemissão): casa **qualquer** conta da mesma
+  dívida (`sk_supplier`+valor+vencimento), inclusive um boleto já gravado com barcode — um
+  documento sem linha digitável nunca é um 2º pagável legítimo, então é a mesma dívida.
+
+**Enriquecimento:** quando um boleto casa uma conta do corpo **sem barcode** (vencimento igual),
+`extract_and_store_accounts` grava a linha digitável do boleto na conta sobrevivente (o boleto
+sempre vence o corpo), sem duplicar. Testes: `tests/test_dup_barcode_synthetic.py`
+(`DedupCrossTypeBodyTest` + `test_corpo_casa_boleto_existente_qualquer_ordem`) e
+`tests/test_boleto_dedup_suppresses_body.py` (enriquecimento). **Limpeza retroativa** (2026-07-13):
+hard delete das duplicatas do corpo ids 7 (mantido 176), 218 (mantido 217) e 512 (mantido 511,
+enriquecido com o barcode). **NÃO são duplicatas** (preservados): boletos distintos de mesmo
+valor/vencimento com barcodes próprios (HYOSUNG 286/287, GNRE 297/300 e 329/330, DAMSP 267/402)
+e lançamentos manuais com números distintos (Multa 411/412).
 
 **Boletos DISTINTOS não podem fundir por número SINTÉTICO nem por valor/vencimento
 quando têm código de barras próprio (não regredir):** quando o PDF não traz Nº do
@@ -1487,7 +1514,8 @@ sintético** (`_is_synthetic_invoice_number` — só Nº PRÓPRIO do documento �
 de DAS/guia segue funcionando por número real) e a **impressão 3 só casa candidatos SEM
 barcode quando o NOVO tem barcode** (`barcode=is.null`) — código de barras presente e
 diferente = documento distinto (a impressão 1 já teria casado se fossem o mesmo). Sem barcode
-no novo (corpo do e-mail), a impressão 3 segue por valor+vencimento+tipo. Testes:
+no novo (corpo do e-mail), a impressão 3 casa por `sk_supplier`+valor+vencimento (ver a regra
+detalhada abaixo — o `document_type` **não** entra na impressão 3). Testes:
 `tests/test_dup_barcode_synthetic.py`.
 
 **A dedup casa por `sk_supplier`, não por texto do fornecedor** (migrations 040/041/042): o
@@ -1936,8 +1964,22 @@ e-mails `status='falha'`, rebusca o corpo no IMAP, baixa o boleto pelo link e gr
 
 ### Caminho `email_body`
 
-Acionado em `process_message()` **só quando `accounts_saved == 0`** (o anexo não gerou
-conta válida) — assim o corpo nunca conflita com um arquivo anexado válido.
+Acionado em `process_message()` **só quando o anexo NÃO respondeu por nenhum pagável**
+— assim o corpo nunca conflita com um arquivo anexado válido ("o boleto sempre vence o
+corpo"). O gate usa a flag **`attachment_account`** (4º retorno de
+`extract_and_store_accounts`), que é True quando um PDF anexado gerou uma conta pagável
+**criada como nova OU casada/atualizada por DEDUP** contra uma conta já existente (mesmo
+documento chegado por outro e-mail). **Não regredir para `accounts_saved == 0`** (só
+contas NOVAS): um boleto **deduplicado** tem `accounts_saved==0` e, com o gate antigo, o
+corpo criava uma conta ESPÚRIA com dados divergentes — falha real id 510 (OBER,
+R$ 5.576,66): o boleto anexado deduplicou contra o id 159 (venc. 18/07 pelo fator do
+código de barras), mas o corpo gravou uma 2ª conta com venc. 11/07 (lido do texto, sem
+barcode), que ainda foi auto-baixada para `pago` por causa da data errada. Cobertura:
+`tests/test_boleto_dedup_suppresses_body.py`. **Limpeza retroativa** (2026-07-13): hard
+delete do id 510 (id 159 preservado). Caso ainda ABERTO após o fix: id 7 (corpo, ESPRO
+R$ 304) duplica o id 176 (boleto) — mesma dívida em **e-mails separados**, não deduplicada
+por o tipo divergir (`outro`×`boleto`); causa distinta (gap de dedup cross-e-mail), não
+coberta por este fix.
 
 **MÚLTIPLAS PARCELAS no corpo → UMA conta por boleto (NUNCA somar — não regredir):**
 quando o corpo lista uma TABELA de boletos (documento, parcela, emissão, vencimento,
@@ -2052,8 +2094,10 @@ espelha o webmail inteiro (o app substitui abrir a caixa). O filtro de keyword d
   `falha`. Cobre a thread original + seu `RES:`/encaminhamento. `email_rec['duplicate_of']` guarda
   o id da conta; `notes` registra "Duplicata — conta já registrada (id N)". Vale no pipeline e no
   `scripts/reprocess_body_emails.py`. Testes: `tests/test_body_duplicate.py`.
-- **Corpo é fallback só quando o anexo NÃO gera conta** (`accounts_saved==0`) — havendo
-  conta de arquivo anexado válido, o corpo é ignorado (sem conflito).
+- **Corpo é fallback só quando o anexo NÃO respondeu por nenhum pagável**
+  (`attachment_account==False` — conta nova **ou** boleto deduplicado; ver "Caminho
+  `email_body`") — havendo conta de arquivo anexado válido (mesmo deduplicada), o corpo é
+  ignorado (sem conflito).
 
 **Matching de keyword (`match_keyword`, `tests/test_match_keyword.py`)** — comparação
 **sem acento** (NFD + lowercase). Dois modos:

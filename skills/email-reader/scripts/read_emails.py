@@ -205,6 +205,13 @@ def _apply_status_id(payload: dict) -> None:
 # ---------------------------------------------------------------------------
 # Supabase — controle de deduplicação
 # ---------------------------------------------------------------------------
+# Retry da checagem de duplicidade: um hiccup de rede na consulta faria _find
+# retornar None ("sem duplicata") e o pipeline GRAVARIA uma conta duplicada. Por
+# isso a consulta de dedup e re-tentada em falha transitoria antes de desistir.
+DUP_QUERY_ATTEMPTS = int(os.getenv("DUP_QUERY_ATTEMPTS", "3"))
+DUP_QUERY_BACKOFF  = float(os.getenv("DUP_QUERY_BACKOFF", "1.5"))  # segundos * tentativa
+
+
 class SupabaseControl:
     """Gerencia a tabela email_control no Supabase."""
 
@@ -465,9 +472,14 @@ class SupabaseControl:
           1. barcode (linha digitavel / codigo de barras / chave) — definitivo;
           2. fornecedor + numero do documento + valor — pega DAS reenviado com
              vencimento diferente (numero da guia identico);
-          3. fornecedor + valor + vencimento + tipo — pega o mesmo encargo
+          3. fornecedor + valor + vencimento (+ tipo) — pega o mesmo encargo
              emitido em documentos com numero proprio distinto (ex.: boleto x
-             RPS da mesma fatura, ambos R$ X no mesmo vencimento).
+             RPS da mesma fatura, ambos R$ X no mesmo vencimento). Quando o NOVO
+             documento tem barcode (boleto autoritativo), casa a conta do CORPO/
+             notificacao da mesma divida IGNORANDO o document_type — fecha o gap
+             cross-e-mail em que o corpo gravou tipo generico ('outro') e o boleto
+             chega depois como 'boleto' (ids 7/176, 217/218), que a exigencia de
+             tipo igual deixava passar, criando conta duplicada.
         As impressoes 2 e 3 sao complementares — uma sozinha deixa passar casos
         que a outra pega; por isso ambas sao verificadas.
 
@@ -486,19 +498,32 @@ class SupabaseControl:
             return f"{col}=eq.{urllib.parse.quote(sval, safe='')}"
 
         def _find(clauses: list) -> dict | None:
+            # Re-tenta em falha TRANSITORIA (rede/timeout): uma consulta que falha
+            # e retorna None seria lida como "sem duplicata" e criaria conta
+            # duplicada. Um resultado vazio (rows == []) NAO e erro — retorna None
+            # de imediato (nao re-tenta). Esgotadas as tentativas, retorna None
+            # (nao bloqueia a insercao indefinidamente) apos logar.
             filters = "&".join(clauses)
-            try:
-                req = urllib.request.Request(
-                    f"{self.base}/rest/v1/financial_account_control"
-                    f"?{filters}&select=id,due_date,barcode&limit=1",
-                    headers=self.headers,
-                )
-                with urllib.request.urlopen(req, timeout=5) as r:
-                    rows = json.loads(r.read())
-                    return rows[0] if rows else None
-            except Exception as e:
-                log.warning(f"Falha na checagem de duplicidade de conteudo: {e}")
-                return None
+            last_err = None
+            for attempt in range(1, DUP_QUERY_ATTEMPTS + 1):
+                try:
+                    req = urllib.request.Request(
+                        f"{self.base}/rest/v1/financial_account_control"
+                        f"?{filters}&select=id,due_date,barcode&limit=1",
+                        headers=self.headers,
+                    )
+                    with urllib.request.urlopen(req, timeout=5) as r:
+                        rows = json.loads(r.read())
+                        return rows[0] if rows else None
+                except Exception as e:
+                    last_err = e
+                    if attempt < DUP_QUERY_ATTEMPTS:
+                        time.sleep(DUP_QUERY_BACKOFF * attempt)
+            log.warning(
+                f"Falha na checagem de duplicidade de conteudo apos "
+                f"{DUP_QUERY_ATTEMPTS} tentativas: {last_err}"
+            )
+            return None
 
         # 1. Barcode — identificador definitivo do documento de pagamento.
         barcode = (payload.get("barcode") or "").strip()
@@ -532,19 +557,27 @@ class SupabaseControl:
             if m:
                 return m
 
-        # 3. fornecedor + valor + vencimento + tipo (mesmo encargo, numero distinto).
-        # Quando o NOVO documento tem codigo de barras, so casa candidatos SEM
-        # barcode: barcode presente e DIFERENTE = documento distinto (boletos com
-        # valor/vencimento iguais mas linhas digitaveis proprias — impressao 1 ja
-        # teria casado se fossem o mesmo). Sem barcode no novo, mantem o casamento
-        # por valor+vencimento+tipo (caminho de corpo / reemissao sem barcode).
-        impressao3 = [supplier_clause] + [
-            _eq_clause(col, payload.get(col))
-            for col in ("amount", "due_date", "document_type")
-        ]
+        # 3. fornecedor + valor + vencimento — MESMA divida, INDEPENDENTE do tipo.
+        # Regra de negocio: se fornecedor + valor + vencimento coincidem, e a mesma
+        # conta a pagar (o tipo varia entre os documentos que a descrevem — 'boleto'
+        # no PDF, 'fatura'/'outro'/'pix' no corpo). Exigir tipo igual deixava passar
+        # duplicatas cross-e-mail em QUALQUER ordem de chegada (ids 7/176, 217/218,
+        # 511/512). O document_type NAO entra mais na impressao 3.
+        base3 = [supplier_clause,
+                 _eq_clause("amount", payload.get("amount")),
+                 _eq_clause("due_date", payload.get("due_date"))]
         if barcode:
-            impressao3.append("barcode=is.null")
-        return _find(impressao3)
+            # NOVO doc tem codigo de barras: so casa candidatos SEM barcode. Barcode
+            # presente e DIFERENTE = documento distinto (a impressao 1 ja teria casado
+            # se fossem o mesmo) — assim boletos distintos de mesmo valor/vencimento
+            # (parcelas, guias GNRE de R$ 399,03) NAO se fundem, cada um com sua linha
+            # digitavel. O candidato sem barcode e a conta do corpo/notificacao da
+            # mesma divida.
+            return _find(base3 + ["barcode=is.null"])
+        # NOVO sem barcode (corpo / notificacao / reemissao): casa qualquer conta da
+        # mesma divida (fornecedor+valor+vencimento), inclusive um boleto ja gravado
+        # com barcode — o documento sem linha digitavel nunca e um 2o pagavel legitimo.
+        return _find(base3)
 
     def resolve_supplier(self, payload: dict) -> int | None:
         """Resolve/cria o fornecedor via RPC resolve_supplier_for_account e devolve
@@ -3154,16 +3187,27 @@ def extract_and_store_accounts(saved_pdfs: list, message_id: str,
     Liga cada conta ao e-mail por gmail_message_id; multiplos PDFs no mesmo
     e-mail recebem sufixo (#1, #2, ...) para nao colidir na chave unica.
     Emails defeituosos sao logados em email_processing_errors e pulados.
-    Retorna (lista de CSVs gerados, total de contas gravadas, nonpayable_only).
+    Retorna (lista de CSVs gerados, total de contas gravadas, nonpayable_only,
+    attachment_account).
 
     `nonpayable_only` = True quando TODO registro extraido foi pulado como
     NAO-PAGAVEL (NF-e/NFS-e ou CT-e/transporte sem boleto) e NENHUM registro pagavel
     foi tentado — sinaliza o chamador a marcar o e-mail 'ignorado' (nao 'falha'). Se
     houve um boleto que falhou por sem_valor/sem_fornecedor, NAO e nonpayable_only
     (segue 'falha' para revisao).
+
+    `attachment_account` = True quando um PDF anexado produziu uma conta pagavel que
+    foi EFETIVAMENTE tratada — gravada como nova OU casada/atualizada por dedup contra
+    uma conta ja existente (mesmo documento chegado por outro e-mail). "O boleto sempre
+    vence o corpo": quando isto e True o chamador NAO deve rodar o fallback do corpo,
+    pois o anexo ja respondeu pelo(s) pagavel(is) do e-mail. Antes o gate usava so
+    accounts_saved (contas NOVAS), entao um boleto deduplicado (accounts_saved==0)
+    deixava o corpo criar uma conta espuria com dados divergentes (ex.: vencimento
+    lido do texto do corpo, sem o barcode) — id 510 (OBER): corpo gravou venc. 11/07
+    duplicando o boleto id 159 (venc. 18/07 pelo fator do codigo de barras).
     """
     csvs_ok, accounts_saved, acc_index = [], 0, 0
-    skipped_nonpayable, payable_attempts = 0, 0
+    skipped_nonpayable, payable_attempts, dup_matches = 0, 0, 0
     err_ctx = email_rec or {}
 
     # Senhas candidatas (CNPJ[:4]/[:5]/[:6] do pagador) para boletos protegidos —
@@ -3338,11 +3382,12 @@ def extract_and_store_accounts(saved_pdfs: list, message_id: str,
         if dup:
             new_due = payload.get("due_date")
             old_due = dup.get("due_date")
+            new_barcode = (payload.get("barcode") or "").strip() or None
             # ISO 'YYYY-MM-DD' compara corretamente como string.
             if new_due and (not old_due or str(new_due) > str(old_due)):
                 ctrl.update_financial(dup["id"], {
                     "due_date":       new_due,
-                    "barcode":        payload.get("barcode"),
+                    "barcode":        new_barcode,
                     "amount_charged": payload.get("amount_charged"),
                     "fine_interest":  payload.get("fine_interest"),
                     "other_additions": payload.get("other_additions"),
@@ -3351,11 +3396,30 @@ def extract_and_store_accounts(saved_pdfs: list, message_id: str,
                     f"    [REEMISSAO] mesma guia — conta atualizada p/ vencimento "
                     f"{new_due} ({row.get('source_file')})"
                 )
+            elif new_barcode and not (dup.get("barcode") or "").strip():
+                # A conta existente (corpo/notificacao) NAO tem linha digitavel e o
+                # novo documento e um BOLETO da MESMA divida: grava o barcode/boleto
+                # na conta sobrevivente, mesmo com vencimento igual/mais antigo — o
+                # boleto sempre vence o corpo. Fecha o gap cross-e-mail sem duplicar.
+                ctrl.update_financial(dup["id"], {
+                    "barcode":        new_barcode,
+                    "amount_charged": payload.get("amount_charged"),
+                    "fine_interest":  payload.get("fine_interest"),
+                    "other_additions": payload.get("other_additions"),
+                })
+                log.info(
+                    f"    [DUP-DOC] boleto enriquece conta existente com código de "
+                    f"barras ({row.get('source_file')})"
+                )
             else:
                 log.info(
                     f"    [DUP-DOC] reemissão igual/mais antiga — mantido "
                     f"({row.get('source_file')})"
                 )
+            # O boleto anexado casou uma conta ja existente: o pagavel foi tratado.
+            # Conta como conta do anexo → suprime o fallback do corpo (nao regredir:
+            # sem isto o corpo criava conta espuria, ex.: id 510).
+            dup_matches += 1
             acc_index += 1
             continue
 
@@ -3373,7 +3437,9 @@ def extract_and_store_accounts(saved_pdfs: list, message_id: str,
         acc_index += 1
 
     nonpayable_only = skipped_nonpayable > 0 and payable_attempts == 0
-    return csvs_ok, accounts_saved, nonpayable_only
+    # Anexo respondeu por um pagavel (conta nova OU dedup contra conta existente).
+    attachment_account = accounts_saved > 0 or dup_matches > 0
+    return csvs_ok, accounts_saved, nonpayable_only, attachment_account
 
 
 # Resultado da extração pelo corpo (try_extract_from_body) — orienta o status do
@@ -3712,7 +3778,7 @@ def process_message(mail, uid: bytes, keywords: list,
         elif inline_image:
             rec["notes"] = "Imagem inline do corpo lida via Vision"
 
-        csvs_ok, accounts_saved, nonpayable_only = extract_and_store_accounts(
+        csvs_ok, accounts_saved, nonpayable_only, attachment_account = extract_and_store_accounts(
             saved_pdfs, message_id, ctrl, email_rec=rec)
 
         csv_generated = len(csvs_ok) > 0
@@ -3724,12 +3790,15 @@ def process_message(mail, uid: bytes, keywords: list,
         if not has_att:
             rec["notes"] = "Sem anexo PDF — registrado para revisão"
 
-        # Corpo é fallback SOMENTE quando o anexo NÃO produziu conta válida
-        # (accounts_saved == 0). Assim os dados do corpo nunca conflitam com um
-        # arquivo anexado válido (reconhecido como conta a pagar) — havendo conta
-        # do anexo, o corpo é ignorado. try_extract_from_body valida fornecedor+valor.
+        # Corpo é fallback SOMENTE quando o anexo NÃO respondeu por nenhum pagável.
+        # "O boleto sempre vence o corpo": `attachment_account` cobre tanto a conta
+        # NOVA gravada quanto o boleto DEDUPLICADO contra uma conta já existente
+        # (mesmo documento por outro e-mail). Antes o gate usava só accounts_saved,
+        # então um boleto deduplicado (accounts_saved==0) deixava o corpo criar uma
+        # conta espúria com vencimento divergente — ex.: id 510 (OBER) duplicou o
+        # boleto id 159 com data errada. try_extract_from_body valida fornecedor+valor.
         body_outcome = BODY_NONE
-        if accounts_saved == 0:
+        if not attachment_account:
             body_outcome = try_extract_from_body(rec, body_text, received_at, message_id, ctrl,
                                                  sender_email=sender_email)
             if body_outcome == BODY_CREATED:
