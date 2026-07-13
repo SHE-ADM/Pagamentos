@@ -1355,23 +1355,35 @@ débito**: "o boleto sempre vence". Regra (em `extract_and_store_accounts`):
 - **só fatura (sem boleto) → extrai a fatura** normalmente.
 
 O sinal é o **CÓDIGO DE BARRAS** (`_is_boleto_barcode` — linha digitável 44 FEBRABAN moeda
-'9' ou 48 de arrecadação), **NÃO** o `document_type`: o extrator rotula tanto o boleto quanto
-o relatório como `boleto`, mas só o boleto tem linha digitável (o relatório traz uma chave de
-44 dígitos com moeda ≠ '9', ex.: padariabelga id 387). Por isso a decisão **não** pode ser por
-`document_type`.
+'9' ou 48 de arrecadação) **+ o VALOR**, **NÃO** o `document_type`: o extrator rotula tanto o
+boleto quanto o relatório como `boleto`, mas só o boleto tem linha digitável (o relatório traz
+uma chave de 44 dígitos com moeda ≠ '9', ex.: padariabelga id 387). Por isso a decisão **não**
+pode ser por `document_type`.
+
+**GUARDA DE VALOR (não regredir — caso LMED id 519/520):** o descarte só vale para a linha
+**sem** boleto próprio cujo **valor COINCIDE** com um boleto real do e-mail (a fatura/relatório
+descreve o **MESMO** débito — mesmo valor). Uma linha de valor **DISTINTO** é **outra dívida** e
+é **mantida mesmo sem barcode**. Isso cobre o **2º boleto ESCANEADO** (`pdf_vision`) cujo Vision
+**não leu a linha digitável** — antes, bastava existir 1 boleto real para descartar QUALQUER
+linha sem barcode, e o 2º boleto era **perdido silenciosamente** (e-mail "BOLETOS LMED": 2937
+R$ 2.476,55 com barcode + 1748 R$ 1.166,67 sem barcode → só o 2937 virava conta). Bias
+intencional: **preservar** a conta (perda silenciosa é pior que uma conta a revisar).
 
 Implementação — `extract_and_store_accounts` roda em **DOIS PASSOS** (não regredir para o
 loop anexo-a-anexo, que era cego ao resto do e-mail): **Passo 1** extrai TODOS os anexos e
 coleta as linhas (`pending`); calcula `has_real_boleto = _email_has_real_boleto(pending)`
-(algum anexo com boleto real). **Passo 2** grava as contas — quando `has_real_boleto`, cada
-linha **sem** boleto real (`not _is_boleto_barcode(payload['barcode'])`) é **ignorada** (skip
-intencional, logado, contado em `skipped_nonpayable`; **não** é `falha`). A regra fica **acima**
-das validações (`sem_valor`/`sem_fornecedor`) e da dedup. Sem boleto no e-mail, `has_real_boleto`
-é False → a fatura é gravada. Casos preservados: carnê / 2 boletos reais (ambos com linha
-digitável → nenhum descartado); boleto + guia com barcode de arrecadação (ambos pagáveis). É
-**independente da ORDEM** dos anexos (o pré-scan do passo 1 decide antes de gravar). Testes:
-`tests/test_fatura_boleto.py` (helper + fluxo completo com `run_extraction` mockado, incluindo
-ordem inversa). **Limpeza retroativa** aplicada em 2026-07-03: hard delete de 7 faturas/relatórios
+(algum anexo com boleto real) e `real_boleto_amounts = _real_boleto_amounts(pending)` (valores
+dos boletos reais, normalizados por `_amount_key`). **Passo 2** grava as contas — uma linha
+**sem** boleto próprio (`not _is_boleto_barcode(payload['barcode'])`) só é **ignorada** quando
+`_amount_key(payload['amount']) in real_boleto_amounts` (mesmo valor de um boleto real → mesma
+dívida). Skip intencional, logado, contado em `skipped_nonpayable`; **não** é `falha`. A regra
+fica **acima** das validações (`sem_valor`/`sem_fornecedor`) e da dedup. Sem boleto no e-mail →
+`real_boleto_amounts` vazio → nada descartado (a fatura é gravada). Casos preservados: carnê /
+2 boletos reais (ambos com linha digitável → nenhum descartado); **2 boletos de valores
+distintos, um sem barcode → ambos gravados**; boleto + guia com barcode de arrecadação (ambos
+pagáveis). É **independente da ORDEM** dos anexos (o pré-scan do passo 1 decide antes de gravar).
+Testes: `tests/test_fatura_boleto.py` (helper + fluxo completo com `run_extraction` mockado —
+ordem inversa, valores distintos sem barcode, mesmo valor sem barcode ainda ignorado). **Limpeza retroativa** aplicada em 2026-07-03: hard delete de 7 faturas/relatórios
 que coexistiam com o boleto do mesmo e-mail (ids 379/327/146/242/129/387/111; boletos
 380/328/147/243/130/388/112 preservados) — todos os pares tinham valor idêntico.
 
