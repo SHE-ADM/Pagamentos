@@ -18,10 +18,12 @@ import CostCenterForm from '../components/organisms/CostCenterForm';
 import SearchInput from '../components/molecules/SearchInput';
 import Alert from '../components/atoms/Alert';
 
-const PAGE_SIZE = 20;
 // Grid mestre (centros de custo) exibe menos registros por página para liberar
 // espaço vertical ao grid complementar (plano de contas) logo abaixo.
-const MASTER_PAGE_SIZE = 7;
+const MASTER_PAGE_SIZE = 6;
+// Grid complementar (plano de contas) — poucos registros para os dois grids
+// caberem juntos na página sem scroll vertical.
+const DETAIL_PAGE_SIZE = 10;
 // Colunas do grid complementar são estáticas (read-only) — definir uma vez fora do componente.
 const DETAIL_COLUMNS = getCostCenterChartAccountColumns();
 // Rótulo do centro selecionado no cabeçalho do grid complementar ("código — descrição").
@@ -115,7 +117,7 @@ export default function CostCentersPage() {
     try {
       const result = await listChartAccountsByCostCenter(selected.cost_center_id, {
         page: detailPage,
-        limit: PAGE_SIZE,
+        limit: DETAIL_PAGE_SIZE,
         sort: detailSort.col ?? undefined,
         order: detailSort.dir ?? undefined,
       });
@@ -267,7 +269,7 @@ export default function CostCentersPage() {
 
   const columns = getCostCenterColumns(openEdit, isAdminGroup ? requestDelete : undefined);
   const totalPages = Math.max(1, Math.ceil(total / MASTER_PAGE_SIZE));
-  const detailTotalPages = Math.max(1, Math.ceil(detailTotal / PAGE_SIZE));
+  const detailTotalPages = Math.max(1, Math.ceil(detailTotal / DETAIL_PAGE_SIZE));
   const deleteName = deleteTarget
     ? (deleteTarget.cost_center_description ?? deleteTarget.cost_center_code ?? `#${deleteTarget.cost_center_id}`)
     : '';
@@ -290,7 +292,7 @@ export default function CostCentersPage() {
         </div>
       </div>
 
-      <div className="flex-1 overflow-y-auto px-6 py-5">
+      <div className="flex-1 overflow-y-auto px-6 py-2">
         {error && (
           <Alert variant="error" className="mb-4">
             <strong>Erro:</strong> {error}
@@ -328,14 +330,13 @@ export default function CostCentersPage() {
             gridId="tabela-centros-de-custo"
             enableColumnManagement
             defaultDensity="compact"
-            maxBodyHeight="70vh"
             loading={loading}
             ariaLabel="Centros de custo cadastrados"
             emptyMessage="Nenhum centro de custo encontrado"
           />
         </div>
 
-        <div className="flex items-center justify-between py-2 px-1">
+        <div className="flex items-center justify-between py-1 px-1">
           <span className="text-xs text-gray-500">
             {total} centros de custo · Página {page} de {totalPages}
           </span>
@@ -350,7 +351,7 @@ export default function CostCentersPage() {
         </div>
 
         {/* Grid complementar: plano de contas lançável do centro de custo selecionado. */}
-        <section ref={detailRef} className="mt-6 scroll-mt-4" aria-label="Plano de contas do centro de custo">
+        <section ref={detailRef} className="mt-2 scroll-mt-4" aria-label="Plano de contas do centro de custo">
           <div className="mb-2 flex items-center gap-2">
             <Layers size={16} className="text-brand" />
             <h2 className="text-sm font-semibold text-gray-900">
@@ -378,7 +379,6 @@ export default function CostCentersPage() {
               gridId="tabela-centros-de-custo-plano"
               enableColumnManagement
               defaultDensity="compact"
-              maxBodyHeight="40vh"
               loading={detailLoading}
               ariaLabel="Plano de contas do centro de custo selecionado"
               emptyMessage={
@@ -390,7 +390,7 @@ export default function CostCentersPage() {
           </div>
 
           {selected && (
-            <div className="flex items-center justify-between py-2 px-1">
+            <div className="flex items-center justify-between py-1 px-1">
               <span className="text-xs text-gray-500">
                 {detailTotal} planos de contas · Página {detailPage} de {detailTotalPages}
               </span>
