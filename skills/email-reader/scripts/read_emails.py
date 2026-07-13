@@ -2899,9 +2899,17 @@ class _PinnedHTTPSHandler(urllib.request.HTTPSHandler):
     certificado preservada) — o server_hostname continua sendo o hostname original."""
 
     def https_open(self, req):  # noqa: D102
+        # `_check_hostname` foi REMOVIDO do HTTPSHandler no Python 3.12+ (a verificação
+        # de hostname passou a ser carregada pelo `context`). Referenciá-lo direto
+        # levantava AttributeError e quebrava TODO download de link HTTPS sob Python
+        # 3.14 (produção) — BRASPRESS e qualquer portal por link. Passamos só `context`
+        # (que preserva a validação de certificado/hostname); em Python < 3.12 o
+        # atributo ainda existe e é aceito pela HTTPSConnection.
+        kwargs = {"context": self._context}
+        if hasattr(self, "_check_hostname"):
+            kwargs["check_hostname"] = self._check_hostname
         return self.do_open(
-            _pinned_conn_factory(_PinnedHTTPSConnection, req.full_url), req,
-            context=self._context, check_hostname=self._check_hostname)
+            _pinned_conn_factory(_PinnedHTTPSConnection, req.full_url), req, **kwargs)
 
 
 def _build_safe_opener(*handlers: "urllib.request.BaseHandler") -> "urllib.request.OpenerDirector":
@@ -2936,8 +2944,17 @@ def _fetch_url(url: str, timeout: int = 30,
     except urllib.error.HTTPError as e:
         log.info(f"    HTTP {e.code}: {url[:70]}")
         return None
-    except Exception as e:
-        log.info(f"    Falha ao acessar link ({type(e).__name__}): {url[:70]}")
+    except (urllib.error.URLError, OSError, http.client.HTTPException) as e:
+        # Falha de REDE esperada (host inacessivel / timeout / TLS / conexao). Silenciosa.
+        # OSError cobre socket.timeout, ssl.SSLError, ConnectionError e TimeoutError.
+        log.info(f"    Falha de rede ao acessar link ({type(e).__name__}): {url[:70]}")
+        return None
+    except Exception:
+        # Erro INESPERADO = provavel BUG de codigo (ex.: incompatibilidade de versao
+        # do Python que quebrou TODO download HTTPS sob 3.14 — AttributeError
+        # '_check_hostname'). NAO pode se disfarcar de "link inacessivel": loga com
+        # TRACEBACK (visivel no log/`/erros`) e segue sem derrubar o run inteiro.
+        log.exception(f"    Erro inesperado ao acessar link (possivel bug): {url[:70]}")
         return None
 
 
