@@ -1515,6 +1515,15 @@ enriquecido com o barcode). **NÃO são duplicatas** (preservados): boletos dist
 valor/vencimento com barcodes próprios (HYOSUNG 286/287, GNRE 297/300 e 329/330, DAMSP 267/402)
 e lançamentos manuais com números distintos (Multa 411/412).
 
+**Retry da consulta de dedup (robustez de rede — não regredir):** um hiccup de rede na
+consulta de duplicidade (`_find`) faria `find_financial_duplicate` retornar `None` ("sem
+duplicata") e o pipeline **gravaria conta duplicada**. Por isso `_find` **re-tenta** em falha
+transitória (`DUP_QUERY_ATTEMPTS` default 3, backoff `DUP_QUERY_BACKOFF` default 1,5s × tentativa)
+antes de desistir; um resultado **vazio** (`rows == []`) NÃO é erro — retorna `None` de imediato
+(não re-tenta). Esgotadas as tentativas, retorna `None` (não bloqueia a inserção
+indefinidamente) após logar. Testes: `tests/test_dup_barcode_synthetic.py`
+(`DedupQueryRetryTest`).
+
 **Boletos DISTINTOS não podem fundir por número SINTÉTICO nem por valor/vencimento
 quando têm código de barras próprio (não regredir):** quando o PDF não traz Nº do
 documento nem vencimento, o pipeline gera um `invoice_number` **sintético**
@@ -1965,9 +1974,27 @@ passa por `upload_attachment` dentro de `extract_and_store_accounts`, anexo ou l
   desconhecido controla a URL — **nunca** remover essas guardas. Os caminhos legítimos
   (BRASPRESS, página HTML intermediária) batem em hosts públicos e passam. O cookiejar do
   `http.cookiejar` só envia cookie a domínio correspondente (sem vazamento cross-domain).
+- **`_PinnedHTTPSHandler` compatível com Python 3.12+/3.14 (não regredir):** o handler que
+  fixa o IP validado (anti-DNS-rebinding, S4-1) NÃO pode referenciar `self._check_hostname` —
+  atributo **removido do `HTTPSHandler` no Python 3.12+** (a verificação de hostname passou a
+  ser carregada pelo `context`). Sob **Python 3.14** (a produção roda 3.14.5) o acesso direto
+  lançava `AttributeError('_check_hostname')` e quebrava **TODO** download de link HTTPS
+  (BRASPRESS, SIEG, qualquer portal) — o e-mail caía em `falha`. `https_open` passa só
+  `context` (preserva a verificação de certificado/cadeia via `_context.wrap_socket` com o
+  `server_hostname` original) e inclui `check_hostname` **apenas se o atributo existir**
+  (Python < 3.12). A guarda anti-SSRF continua intacta. Regressão travada em
+  `tests/test_ssrf_guard.py` (`PinnedHttpsHandlerPy312PlusTest`).
+- **Erro de código NÃO se disfarça de "link inacessível" (robustez — lição do bug 3.14):**
+  `_fetch_url` separa **falha de REDE esperada** (`urllib.error.URLError`/`OSError`/
+  `http.client.HTTPException` — host/timeout/TLS/conexão → `log.info` silencioso, retorna
+  `None`) de **erro INESPERADO** (bug de código, ex.: incompatibilidade de versão do Python →
+  `log.exception` com **traceback**, visível, e segue sem derrubar o run). Antes, um
+  `except Exception` genérico logava só "falha ao acessar link", escondendo o `AttributeError`
+  do handler por dias em produção. **Não** voltar ao `except Exception` mudo.
 
 Testes: `tests/test_link_extraction.py` (reconhecimento, unescape, filtro de suspeito, URL
-BRASPRESS) e `tests/test_ssrf_guard.py` (bloqueio de IP interno/scheme/porta + redirect + contenção em PDF_INBOX).
+BRASPRESS) e `tests/test_ssrf_guard.py` (bloqueio de IP interno/scheme/porta + redirect +
+contenção em PDF_INBOX + compat Python 3.12+ do handler HTTPS).
 
 **Reprocessar histórico**: `scripts/reprocess_link_emails.py` (com `--dry-run`) varre os
 e-mails `status='falha'`, rebusca o corpo no IMAP, baixa o boleto pelo link e grava em
