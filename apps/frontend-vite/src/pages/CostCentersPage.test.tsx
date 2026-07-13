@@ -29,6 +29,12 @@ const sample: CostCenter = {
   cost_center_description: 'Tecnologia da Informação',
 };
 
+const sample2: CostCenter = {
+  cost_center_id: 8,
+  cost_center_code: 'FIN',
+  cost_center_description: 'Financeiro',
+};
+
 const chartAccount: ChartAccount = {
   chart_account_id: 12,
   account_code: '3.1.01',
@@ -47,15 +53,16 @@ const detailMock = vi.mocked(listChartAccountsByCostCenter);
 
 beforeEach(() => {
   listMock.mockReset();
-  listMock.mockResolvedValue({ data: [sample], total: 1, page: 1, limit: 20 });
+  listMock.mockResolvedValue({ data: [sample, sample2], total: 2, page: 1, limit: 6 });
   detailMock.mockReset();
-  detailMock.mockResolvedValue({ data: [chartAccount], total: 1, page: 1, limit: 20 });
+  detailMock.mockResolvedValue({ data: [chartAccount], total: 1, page: 1, limit: 10 });
 });
 
 describe('CostCentersPage', () => {
   it('lista os centros de custo carregados', async () => {
     render(<CostCentersPage />);
     expect(await screen.findByText('Tecnologia da Informação')).toBeInTheDocument();
+    expect(screen.getByText('Financeiro')).toBeInTheDocument();
     expect(listMock).toHaveBeenCalled();
   });
 
@@ -67,17 +74,20 @@ describe('CostCentersPage', () => {
     expect(await screen.findByRole('button', { name: 'Cadastrar', hidden: true })).toBeInTheDocument();
   });
 
-  it('mostra a instrução do grid complementar antes de selecionar um centro', async () => {
+  it('auto-seleciona o primeiro centro na abertura e carrega o plano de contas', async () => {
     render(<CostCentersPage />);
-    await screen.findByText('Tecnologia da Informação');
-    expect(screen.getByText(/selecione um centro de custo para ver o plano de contas/i)).toBeInTheDocument();
-    expect(detailMock).not.toHaveBeenCalled();
+    // Sem clique: o plano do primeiro centro (id 5) já aparece.
+    expect(await screen.findByText('Serviços de TI')).toBeInTheDocument();
+    expect(detailMock).toHaveBeenCalledWith(5, expect.objectContaining({ page: 1, limit: 10 }));
+    expect(
+      screen.queryByText(/selecione um centro de custo para ver o plano de contas/i),
+    ).not.toBeInTheDocument();
   });
 
-  it('carrega o plano de contas ao clicar num centro de custo', async () => {
+  it('carrega o plano de contas de outro centro ao clicá-lo', async () => {
     render(<CostCentersPage />);
-    await userEvent.click(await screen.findByText('Tecnologia da Informação'));
-    expect(await screen.findByText('Serviços de TI')).toBeInTheDocument();
-    expect(detailMock).toHaveBeenCalledWith(5, expect.objectContaining({ page: 1, limit: 20 }));
+    await screen.findByText('Serviços de TI'); // auto-seleção concluída
+    await userEvent.click(screen.getByText('Financeiro'));
+    expect(detailMock).toHaveBeenCalledWith(8, expect.objectContaining({ page: 1, limit: 10 }));
   });
 });
