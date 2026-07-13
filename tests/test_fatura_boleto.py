@@ -162,6 +162,31 @@ class ExtractAndStoreFaturaBoletoTest(unittest.TestCase):
         ctrl, saved, _ = self._run(["boleto1.pdf", "boleto2.pdf"], rows)
         self.assertEqual(saved, 2)
 
+    def test_dois_boletos_valores_distintos_um_sem_barcode(self):
+        # Caso LMED: 2 boletos ESCANEADOS, o Vision leu a linha digitavel de um so.
+        # Valores DISTINTOS = dividas distintas → AMBOS viram conta; o sem barcode
+        # NAO e descartado pela regra fatura+boleto (nao regredir — perda silenciosa).
+        rows = {
+            "b_2937.pdf": _row("b_2937.pdf", BOLETO_REAL, amount="2476.55"),
+            "b_1748.pdf": _row("b_1748.pdf", None, amount="1166.67"),  # Vision nao leu o barcode
+        }
+        ctrl, saved, _ = self._run(["b_2937.pdf", "b_1748.pdf"], rows)
+        self.assertEqual(saved, 2)
+        amounts = sorted(float(c["amount"]) for c in ctrl.financial_calls)
+        self.assertEqual(amounts, [1166.67, 2476.55])
+        self.assertEqual(ctrl.error_calls, [])
+
+    def test_fatura_sem_barcode_mesmo_valor_ainda_ignorada(self):
+        # Preserva a regra fatura+boleto: linha SEM barcode com o MESMO valor de um
+        # boleto real e a fatura do MESMO debito → ignorada (so o boleto vira conta).
+        rows = {
+            "boleto.pdf": _row("boleto.pdf", BOLETO_REAL, amount="500.00"),
+            "fatura.pdf": _row("fatura.pdf", None, doc_type="fatura", amount="500.00"),
+        }
+        ctrl, saved, _ = self._run(["boleto.pdf", "fatura.pdf"], rows)
+        self.assertEqual(saved, 1)
+        self.assertEqual(ctrl.financial_calls[0]["barcode"], BOLETO_REAL)
+
 
 if __name__ == "__main__":
     unittest.main()

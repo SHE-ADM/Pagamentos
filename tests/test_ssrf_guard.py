@@ -114,5 +114,37 @@ class InboxContainmentTest(unittest.TestCase):
         self.assertFalse(read_emails._is_within_inbox(inbox / ".." / ".." / "evil.pdf"))
 
 
+class PinnedHttpsHandlerPy312PlusTest(unittest.TestCase):
+    """Regressão Python 3.12+/3.14: HTTPSHandler NAO tem mais `_check_hostname`
+    (absorvido pelo `context`). Referenciá-lo direto levantava AttributeError e
+    quebrava TODO download de link HTTPS (BRASPRESS e qualquer portal). O handler
+    deve passar `context` e omitir `check_hostname` quando o atributo nao existe."""
+
+    def test_https_open_sem_check_hostname_nao_quebra(self):
+        h = read_emails._PinnedHTTPSHandler()
+        # Simula Python 3.12+ (atributo ausente).
+        if hasattr(h, "_check_hostname"):
+            del h._check_hostname
+
+        captured = {}
+
+        def fake_do_open(conn_factory, req, **kwargs):
+            captured.update(kwargs)
+            return "resp"
+
+        h.do_open = fake_do_open  # evita abrir socket real
+
+        class _Req:
+            full_url = "https://example.com/x"
+
+        # Sem a correção, isto levantava AttributeError('_check_hostname').
+        with mock.patch.object(read_emails, "_pin_ip_for_host", return_value="93.184.216.34"):
+            out = h.https_open(_Req())
+
+        self.assertEqual(out, "resp")
+        self.assertIn("context", captured)             # context sempre passado (preserva TLS)
+        self.assertNotIn("check_hostname", captured)   # omitido em 3.12+
+
+
 if __name__ == "__main__":
     unittest.main()

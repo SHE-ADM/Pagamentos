@@ -2899,9 +2899,17 @@ class _PinnedHTTPSHandler(urllib.request.HTTPSHandler):
     certificado preservada) — o server_hostname continua sendo o hostname original."""
 
     def https_open(self, req):  # noqa: D102
+        # `_check_hostname` foi REMOVIDO do HTTPSHandler no Python 3.12+ (a verificação
+        # de hostname passou a ser carregada pelo `context`). Referenciá-lo direto
+        # levantava AttributeError e quebrava TODO download de link HTTPS sob Python
+        # 3.14 (produção) — BRASPRESS e qualquer portal por link. Passamos só `context`
+        # (que preserva a validação de certificado/hostname); em Python < 3.12 o
+        # atributo ainda existe e é aceito pela HTTPSConnection.
+        kwargs = {"context": self._context}
+        if hasattr(self, "_check_hostname"):
+            kwargs["check_hostname"] = self._check_hostname
         return self.do_open(
-            _pinned_conn_factory(_PinnedHTTPSConnection, req.full_url), req,
-            context=self._context, check_hostname=self._check_hostname)
+            _pinned_conn_factory(_PinnedHTTPSConnection, req.full_url), req, **kwargs)
 
 
 def _build_safe_opener(*handlers: "urllib.request.BaseHandler") -> "urllib.request.OpenerDirector":
@@ -2936,8 +2944,17 @@ def _fetch_url(url: str, timeout: int = 30,
     except urllib.error.HTTPError as e:
         log.info(f"    HTTP {e.code}: {url[:70]}")
         return None
-    except Exception as e:
-        log.info(f"    Falha ao acessar link ({type(e).__name__}): {url[:70]}")
+    except (urllib.error.URLError, OSError, http.client.HTTPException) as e:
+        # Falha de REDE esperada (host inacessivel / timeout / TLS / conexao). Silenciosa.
+        # OSError cobre socket.timeout, ssl.SSLError, ConnectionError e TimeoutError.
+        log.info(f"    Falha de rede ao acessar link ({type(e).__name__}): {url[:70]}")
+        return None
+    except Exception:
+        # Erro INESPERADO = provavel BUG de codigo (ex.: incompatibilidade de versao
+        # do Python que quebrou TODO download HTTPS sob 3.14 — AttributeError
+        # '_check_hostname'). NAO pode se disfarcar de "link inacessivel": loga com
+        # TRACEBACK (visivel no log/`/erros`) e segue sem derrubar o run inteiro.
+        log.exception(f"    Erro inesperado ao acessar link (possivel bug): {url[:70]}")
         return None
 
 
@@ -3126,6 +3143,28 @@ def _email_has_real_boleto(rows: list) -> bool:
     return any(_is_boleto_barcode(r.get("barcode")) for r in rows)
 
 
+def _amount_key(value) -> float | None:
+    """Normaliza um valor monetario para comparacao (float 2 casas) ou None."""
+    try:
+        return round(float(value), 2)
+    except (TypeError, ValueError):
+        return None
+
+
+def _real_boleto_amounts(rows: list) -> set:
+    """Conjunto dos VALORES dos boletos REAIS (linha digitavel valida) do e-mail.
+    A regra fatura+boleto so descarta uma linha SEM boleto proprio quando ela tem o
+    MESMO valor de um boleto real — a fatura/relatorio do MESMO debito. Uma linha de
+    valor DISTINTO e outra divida e deve ser mantida mesmo sem barcode (ex.: 2o boleto
+    ESCANEADO cujo Vision nao leu a linha digitavel — caso LMED 2937 R$2476,55 +
+    1748 R$1166,67). Sem isso, o 2o boleto era descartado silenciosamente."""
+    return {
+        _amount_key(r.get("amount"))
+        for r in rows
+        if _is_boleto_barcode(r.get("barcode"))
+    } - {None}
+
+
 # Baixa/cancelamento de RECEBIVEL proprio — e-mail sobre titulos que a EMPRESA
 # EMITIU (relatorio de baixa/cancelamento), nao um documento que ela deve pagar.
 # Sinais: assunto de cobranca propria ("COBRANCA OTIMOTEX") ou o proprio relatorio
@@ -3254,12 +3293,16 @@ def extract_and_store_accounts(saved_pdfs: list, message_id: str,
             pending.append(row)
 
     # Regra FATURA + BOLETO (multi-anexo): quando ALGUM anexo do e-mail traz um
-    # BOLETO REAL (linha digitavel valida), as linhas SEM boleto real — a fatura/
-    # relatorio do MESMO debito — sao ignoradas ("o boleto sempre vence"). Sozinha
-    # (sem boleto no e-mail), a fatura e extraida normalmente. O sinal e o CODIGO DE
-    # BARRAS, nao o document_type: o extrator rotula tanto o boleto quanto o
-    # relatorio como 'boleto', mas so o boleto tem linha digitavel (_is_boleto_barcode).
+    # BOLETO REAL (linha digitavel valida), a fatura/relatorio do MESMO debito e
+    # ignorada ("o boleto sempre vence"). Sozinha (sem boleto), a fatura e extraida.
+    # O sinal e o CODIGO DE BARRAS + o VALOR: o descarte so vale para a linha SEM
+    # boleto proprio cujo valor COINCIDE com um boleto real (mesmo debito). Uma linha
+    # de valor DISTINTO e outra divida e e mantida mesmo sem barcode — cobre o 2o
+    # boleto ESCANEADO cujo Vision nao leu a linha digitavel (caso LMED, valores
+    # 2476,55 x 1166,67). Antes, bastava existir 1 boleto real p/ descartar QUALQUER
+    # linha sem barcode, perdendo o 2o boleto silenciosamente.
     has_real_boleto = _email_has_real_boleto(pending)
+    real_boleto_amounts = _real_boleto_amounts(pending) if has_real_boleto else set()
 
     # ------------------------------------------------------------------
     # Passo 2 — grava as contas
@@ -3292,11 +3335,13 @@ def extract_and_store_accounts(saved_pdfs: list, message_id: str,
             continue
 
         # Fatura/relatorio acompanhando um BOLETO no mesmo e-mail → ignorado (regra
-        # fatura+boleto). So o boleto (linha digitavel) vira conta a pagar; a fatura
-        # descreve o MESMO debito e geraria conta duplicada.
-        if has_real_boleto and not _is_boleto_barcode(payload.get("barcode")):
+        # fatura+boleto). So descarta a linha SEM boleto proprio cujo VALOR coincide
+        # com um boleto real do e-mail (mesmo debito). Linha de valor DISTINTO e outra
+        # divida → mantida mesmo sem barcode (2o boleto escaneado sem linha digitavel).
+        if (not _is_boleto_barcode(payload.get("barcode"))
+                and _amount_key(payload.get("amount")) in real_boleto_amounts):
             log.info(
-                f"    Fatura/relatorio ignorado — boleto presente no mesmo e-mail "
+                f"    Fatura/relatorio ignorado — mesmo valor de um boleto no e-mail "
                 f"({row.get('source_file')})"
             )
             skipped_nonpayable += 1
