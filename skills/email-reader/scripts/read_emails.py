@@ -2689,6 +2689,45 @@ def _ssw_doc_kind(url: str) -> "str | None":
         return "dacte"
     return None
 
+
+def _is_ssw_sender(sender_email: "str | None") -> bool:
+    """True para o remetente do sistema de faturas SSW (transportadoras)."""
+    return "sswsistemas.com.br" in (sender_email or "").lower()
+
+
+# Nome do CEDENTE na intro da fatura SSW: "...serviços de transporte realizados por <NOME>."
+_SSW_CEDENTE_NAME_RE = re.compile(r"realizad[oa]s?\s+por\s+([^.\r\n]+)", re.IGNORECASE)
+
+
+def _ssw_cedente_from_body(sender_email: "str | None", body_text: "str | None",
+                           own_cnpj: "str | None") -> "tuple[str | None, str | None]":
+    """CEDENTE (transportadora que EMITE a fatura e RECEBE o pagamento) de uma fatura
+    SSW de transporte, extraído do CORPO do e-mail — sinal DETERMINISTICO que blinda
+    contra o erro do extrator de pegar o EMITENTE do CT-e agregado (a transportadora
+    SUBCONTRATADA) como fornecedor.
+
+    O corpo da fatura SSW nomeia o cedente em dois pontos estáveis: a intro
+    ("...realizados por <NOME>.") e o rodapé ("Atenciosamente / <NOME> LTDA /
+    CNPJ: XX.XXX.XXX/XXXX-XX"). O CNPJ do cedente é o CNPJ mascarado do corpo que NÃO
+    é o da própria empresa pagadora (OTIMOTEX); com mais de um, prefere o ÚLTIMO (rodapé).
+
+    Retorna (name, cnpj_14_digitos) — cada um pode ser None. Função pura; só dispara para
+    remetente SSW. Degrada com segurança para (None, None) quando o corpo não casa."""
+    if not _is_ssw_sender(sender_email) or not body_text:
+        return (None, None)
+    own = re.sub(r"\D", "", str(own_cnpj or "")) or None
+    cnpj = None
+    for m in _BODY_CNPJ_RE.finditer(body_text):
+        digits = re.sub(r"\D", "", m.group(0))
+        if len(digits) == 14 and digits != own:
+            cnpj = digits  # mantém o último não-próprio (rodapé do cedente)
+    name_m = _SSW_CEDENTE_NAME_RE.search(body_text)
+    name = name_m.group(1).strip() if name_m else None
+    if not cnpj and not name:
+        return (None, None)
+    return (name or None, cnpj)
+
+
 _MAX_PDF_LINK_BYTES = 50 * 1024 * 1024  # 50 MB
 _LINK_UA = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -3220,7 +3259,8 @@ def _is_nonpayable_visual(row: dict) -> bool:
 
 def extract_and_store_accounts(saved_pdfs: list, message_id: str,
                                ctrl: "SupabaseControl",
-                               email_rec: dict = None) -> tuple:
+                               email_rec: dict = None,
+                               body_text: str = "") -> tuple:
     """Extrai cada PDF e grava as contas resultantes em financial_account_control.
 
     Liga cada conta ao e-mail por gmail_message_id; multiplos PDFs no mesmo
@@ -3248,6 +3288,14 @@ def extract_and_store_accounts(saved_pdfs: list, message_id: str,
     csvs_ok, accounts_saved, acc_index = [], 0, 0
     skipped_nonpayable, payable_attempts, dup_matches = 0, 0, 0
     err_ctx = email_rec or {}
+
+    # ROBUSTEZ (cedente do boleto vence o emitente do CT-e): em fatura SSW de transporte,
+    # o extrator pode gravar o EMITENTE do CT-e agregado (transportadora SUBCONTRATADA)
+    # como fornecedor. O CEDENTE do boleto (quem EMITE a fatura e recebe) é nomeado no
+    # corpo de forma determinística — computado uma vez e aplicado por boleto abaixo.
+    _own_cnpj = ctrl.company_cnpj() if hasattr(ctrl, "company_cnpj") else None
+    ssw_cedente_name, ssw_cedente_cnpj = _ssw_cedente_from_body(
+        err_ctx.get("sender_email"), body_text, _own_cnpj)
 
     # Senhas candidatas (CNPJ[:4]/[:5]/[:6] do pagador) para boletos protegidos —
     # computadas uma vez por e-mail; vazias quando o CNPJ não está disponível.
@@ -3321,6 +3369,19 @@ def extract_and_store_accounts(saved_pdfs: list, message_id: str,
         payload["sender_email"] = err_ctx.get("sender_email")
         payload["subject"]      = err_ctx.get("subject")  # exibido/buscado em /consulta (migration 025)
         ctx     = {**err_ctx, "source_file": row.get("source_file")}
+
+        # Cedente do boleto (fatura SSW de transporte): sobrepõe o fornecedor extraído
+        # SÓ quando a linha É um boleto real (linha digitável válida) — o cedente do corpo
+        # é o credor autoritativo; o emitente do CT-e agregado é a transportadora
+        # subcontratada. Degrada sozinho quando o corpo não nomeia o cedente (None/None).
+        if (ssw_cedente_cnpj or ssw_cedente_name) and _is_boleto_barcode(payload.get("barcode")):
+            if ssw_cedente_cnpj:
+                payload["supplier_cnpj"] = ssw_cedente_cnpj
+            if ssw_cedente_name:
+                payload["supplier_name"] = ssw_cedente_name
+            payload.pop("supplier_cpf", None)  # cedente PJ — descarta CPF do emitente
+            log.info("    [CEDENTE-SSW] fornecedor do boleto pelo cedente do corpo: "
+                     f"{ssw_cedente_name!r} / {ssw_cedente_cnpj}")
 
         # CT-e / transporte SEM boleto NAO gera conta a pagar (regra 1): o CT-e e
         # documento fiscal; so o boleto de frete e pagavel. supplier_name ainda
@@ -3824,7 +3885,7 @@ def process_message(mail, uid: bytes, keywords: list,
             rec["notes"] = "Imagem inline do corpo lida via Vision"
 
         csvs_ok, accounts_saved, nonpayable_only, attachment_account = extract_and_store_accounts(
-            saved_pdfs, message_id, ctrl, email_rec=rec)
+            saved_pdfs, message_id, ctrl, email_rec=rec, body_text=body_text)
 
         csv_generated = len(csvs_ok) > 0
         rec["pdf_extracted"]  = csv_generated
