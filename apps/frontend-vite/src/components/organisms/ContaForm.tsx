@@ -4,7 +4,7 @@
 // (@sheild/shared). Fornecedor via react-select (SupplierSelect). Tipo de documento
 // e tipo de pagamento são selects de APENAS CONSULTA (valores pré-definidos dos enums,
 // obrigatórios). O envio (POST/PATCH na Next API) é responsabilidade do pai.
-import { useEffect, useState } from 'react';
+import { useRef, useState } from 'react';
 import { useForm } from 'react-hook-form';
 import {
   financialAccountControlCreateSchema,
@@ -111,11 +111,14 @@ export default function ContaForm({ mode, defaultValues, onSubmit, onCancel, sub
   // id 0 (sentinela "não informado") aparece vazio no select.
   const [costCenterId, setCostCenterId] = useState<number | null>(orNull(defaultValues?.cost_center_id));
   const [chartAccountId, setChartAccountId] = useState<number | null>(orNull(defaultValues?.chart_account_id));
-  // Classificação DEFAULT do fornecedor selecionado (só modo create) — fonte dos
-  // rótulos do pré-preenchimento. Em edição, os rótulos vêm de `defaultValues`.
-  // Os selects de centro/plano são CONTROLADOS (espelham `value`), então o pré-preenchimento
-  // reflete sozinho ao atualizar costCenterId/chartAccountId — sem remonte por `key`.
+  // Classificação DEFAULT do fornecedor selecionado — fonte dos rótulos ao re-semear.
+  // Fica preenchido depois que o usuário ESCOLHE/TROCA o fornecedor (create OU edição);
+  // antes disso (edição), os rótulos vêm de `defaultValues` (a própria conta). Os selects
+  // de centro/plano são CONTROLADOS (espelham `value`), então refletem o novo valor/rótulo
+  // sozinhos ao atualizar costCenterId/chartAccountId — sem remonte por `key`.
   const [prefill, setPrefill] = useState<ClassificationSource | null>(null);
+  // Descarta respostas obsoletas de getSupplier quando o fornecedor é trocado em sequência.
+  const supplierReqRef = useRef(0);
 
   // Cascata: trocar (ou limpar) o centro de custo zera o plano de contas, que pode não
   // pertencer ao novo centro. O ChartAccountSelect remonta via `key={costCenterId}`.
@@ -124,32 +127,31 @@ export default function ContaForm({ mode, defaultValues, onSubmit, onCancel, sub
     setChartAccountId(null);
   };
 
-  // Pré-preenchimento (só na CRIAÇÃO): ao escolher um fornecedor, semeia Centro de
-  // custo / Plano de contas com a classificação default do supplier (migration 052).
-  // O usuário pode trocar; trocar o fornecedor re-semeia. Em edição não roda (usa a
-  // classificação da própria conta). Fetch-on-change (padrão `void load()` do projeto).
-  useEffect(() => {
-    if (mode !== 'create' || skSupplier == null) return;
-    let cancelled = false;
-    const load = async () => {
+  // Ao ESCOLHER/TROCAR o fornecedor (ação do usuário — o onChange do SupplierSelect NÃO
+  // dispara no mount), re-semeia Centro de custo / Plano de contas com a classificação
+  // default do supplier (migration 052). Vale nos DOIS modos: em EDIÇÃO corrige o caso do
+  // fornecedor trocado (ex.: boleto securitizado reatribuído ao credor real) que antes
+  // mantinha a classificação 0/0 do fornecedor anterior. Novo fornecedor sem default (0/0)
+  // limpa a classificação (o usuário define manualmente). Limpar o fornecedor (null) não
+  // mexe na classificação já digitada. Fetch-on-change com guarda anti-corrida por reqId.
+  const handleSupplierChange = (newSk: number | null) => {
+    setSkSupplier(newSk);
+    const reqId = ++supplierReqRef.current;
+    if (newSk == null) return;
+    void (async () => {
       try {
-        const sup = await getSupplier(skSupplier);
-        if (cancelled) return;
+        const sup = await getSupplier(newSk);
+        if (supplierReqRef.current !== reqId) return; // resposta obsoleta — fornecedor mudou
         const cc = sup.cost_center_id || 0;
         const ca = sup.chart_account_id || 0;
         setPrefill(cc || ca ? sup : null);
         setCostCenterId(cc || null);
         setChartAccountId(ca || null);
-        // Selects controlados → refletem o novo valor/rótulo sozinhos (sem nonce/remonte).
       } catch {
-        // Falha ao buscar defaults não bloqueia o lançamento — segue sem pré-preencher.
+        // Falha ao buscar defaults não bloqueia o lançamento — segue sem re-semear.
       }
-    };
-    void load();
-    return () => {
-      cancelled = true;
-    };
-  }, [mode, skSupplier]);
+    })();
+  };
 
   const submit = handleSubmit(async (raw) => {
     setSupplierError(null);
@@ -198,9 +200,9 @@ export default function ContaForm({ mode, defaultValues, onSubmit, onCancel, sub
     await onSubmit(parsed.data);
   });
 
-  // Fonte dos rótulos dos selects de classificação: na criação, o default do
-  // fornecedor (pré-preenchimento); na edição, a própria conta.
-  const labelSource: ClassificationSource | undefined = mode === 'create' ? (prefill ?? undefined) : defaultValues;
+  // Fonte dos rótulos dos selects de classificação: depois que o usuário escolhe/troca o
+  // fornecedor, o default dele (prefill); antes disso, a própria conta (edição) ou nada.
+  const labelSource: ClassificationSource | undefined = prefill ?? defaultValues ?? undefined;
 
   return (
     <form onSubmit={submit} className="space-y-3" noValidate>
@@ -211,7 +213,7 @@ export default function ContaForm({ mode, defaultValues, onSubmit, onCancel, sub
         label="Fornecedor"
         value={skSupplier}
         defaultLabel={defaultValues?.supplier?.trade_name ?? defaultValues?.supplier?.legal_name}
-        onChange={setSkSupplier}
+        onChange={handleSupplierChange}
         error={supplierError ?? undefined}
       />
 
