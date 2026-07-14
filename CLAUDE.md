@@ -1679,6 +1679,30 @@ Caso misto (CT-e fiscal + boleto no mesmo e-mail): o boleto grava → `accounts_
 transporte para `cte`; Fase B **hard delete** de 100 CT-e fiscais + 87 e-mails → `ignorado`;
 estado final: as únicas contas `cte` são boletos de transporte).
 
+**CEDENTE do boleto vence o EMITENTE do CT-e agregado (fatura SSW — não regredir):** numa
+fatura de transporte que **agrega um ou mais CT-e**, o credor é o **cedente/beneficiário do
+boleto** (a transportadora que EMITE a fatura e recebe o pagamento), **não** o **emitente do
+CT-e** (a transportadora física SUBCONTRATADA). O extrator, vendo o bloco "IDENTIFICAÇÃO DO
+EMITENTE" do CT-e, gravava o subcontratado como fornecedor — falha real id 528 (fatura
+CAMPINENSE Nº 0324348, R$ 502,40) gravada sob **TRANSPORTADORA J.D.F.** (o CT-e agregado).
+Correção em **duas camadas** (defesa em profundidade):
+- **Prompt (`extract_pdf.py`, soft):** a seção CT-e ganhou a "PRIORIDADE DO CEDENTE DO BOLETO"
+  — se o documento tem boleto (linha digitável / 'Cedente' / 'Nosso Número'), o
+  `supplier_name`/`supplier_cnpj` é o cedente; a regra de EMITENTE vale só para **DACTE/CT-e
+  PURO** (sem boleto).
+- **Guarda determinística (`read_emails.py`, robusta — imune à variação do LLM):**
+  `_ssw_cedente_from_body(sender, body, own_cnpj)` extrai o cedente do CORPO da fatura SSW
+  (`sswsistemas.com.br`) — nome via "…realizados por `<NOME>`" e CNPJ do rodapé (o CNPJ
+  mascarado que **não** é o da própria OTIMOTEX). Em `extract_and_store_accounts`, para a linha
+  que **é boleto real** (`_is_boleto_barcode`), o cedente do corpo **sobrepõe** o fornecedor
+  extraído (`[CEDENTE-SSW]`) antes de `_finalize_supplier`; como a resolução prioriza CNPJ, o
+  fornecedor correto é resolvido/criado de forma determinística. **Degrada com segurança**:
+  remetente não-SSW ou corpo sem cedente → nenhum override (comportamento atual). O
+  `process_message` passa `body_text` à função; os reprocessadores históricos
+  (`reprocess_link_emails`) usam o default `body_text=""` (no-op). Testes:
+  `tests/test_ssw_cedente.py`. Correção pontual do id 528 aplicada em 2026-07-14 (fornecedor →
+  CAMPINENSE TRANSPORTE DE CARGAS LTDA, sk 1278; nº doc → `0324348`).
+
 **Override de GUIA TRIBUTÁRIA pelo ACRÔNIMO no ASSUNTO (não regredir):** guias estaduais
 são visualmente quase idênticas (DARE × GARE × GNRE) e o Claude do `extract_pdf.py` troca
 uma pela outra (caso real: id 326, assunto "PAGAMENTO DARE - REF. T05S1" extraído do
