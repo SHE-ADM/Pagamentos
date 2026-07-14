@@ -33,6 +33,7 @@ vi.mock('../../services/suppliers', () => ({
   getSupplier: (sk: number) => getSupplierMock(sk),
 }));
 
+import type { FinancialAccountControl } from '@sheild/shared';
 import ContaForm from './ContaForm';
 
 function setup() {
@@ -94,6 +95,39 @@ describe('ContaForm', () => {
     expect(cc).toHaveAttribute('data-default-label', 'Logística');
     await waitFor(() => expect(ca).toHaveAttribute('data-value', '10'));
     expect(ca).toHaveAttribute('data-default-label', 'Frete sobre vendas');
+  });
+
+  it('re-semeia a classificação ao TROCAR o fornecedor no modo edição (não re-semeia no mount)', async () => {
+    getSupplierMock.mockReset();
+    getSupplierMock.mockResolvedValue({
+      sk_supplier: 1,
+      cost_center_id: 19,
+      chart_account_id: 152,
+      cost_center: { cost_center_code: 'CC19', cost_center_description: 'Compras' },
+      chart_account: { account_code: 'AC152', account_description: 'Mercadorias para Revenda' },
+    });
+    // Conta gravada sob um fornecedor SEM classificação (0/0) — caso do boleto securitizado.
+    const conta = {
+      sk_supplier: 99,
+      cost_center_id: 0,
+      chart_account_id: 0,
+      supplier: { trade_name: 'SB CREDITO', legal_name: null, cnpj: null, cpf: null },
+    } as unknown as FinancialAccountControl;
+    render(<ContaForm mode="edit" defaultValues={conta} onSubmit={vi.fn().mockResolvedValue(undefined)} />);
+
+    // No mount da edição: mantém a classificação da própria conta (0/0 → vazio), SEM buscar o fornecedor.
+    const cc = screen.getByLabelText('Centro de custo');
+    expect(cc).toHaveAttribute('data-value', '');
+    expect(getSupplierMock).not.toHaveBeenCalled();
+
+    // Troca o fornecedor (stub → sk=1) → re-semeia com o default do NOVO fornecedor.
+    await userEvent.click(screen.getByRole('button', { name: 'Fornecedor' }));
+    await waitFor(() => expect(getSupplierMock).toHaveBeenCalledWith(1));
+    await waitFor(() => expect(cc).toHaveAttribute('data-value', '19'));
+    expect(cc).toHaveAttribute('data-default-label', 'Compras');
+    const ca = screen.getByLabelText('Plano de contas');
+    await waitFor(() => expect(ca).toHaveAttribute('data-value', '152'));
+    expect(ca).toHaveAttribute('data-default-label', 'Mercadorias para Revenda');
   });
 
   it('submete com fornecedor, valor e enums preenchidos', async () => {
