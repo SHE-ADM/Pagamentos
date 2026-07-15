@@ -1,6 +1,7 @@
 export * from './auth.schema';
 export * from './supplier.schema';
 export * from './financial-account-control.schema';
+export * from './financial-account-attachment.schema';
 export * from './cost-center.schema';
 export * from './chart-account.schema';
 export * from './chart-account-group.schema';

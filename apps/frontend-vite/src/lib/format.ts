@@ -24,6 +24,18 @@ export const fmtDateTime = (iso: string | null): string =>
 export const fmtMoney = (v: number | null): string =>
   v == null ? '—' : Number(v).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
 
+/**
+ * Bytes → tamanho legível (B / KB / MB), com vírgula decimal do pt-BR.
+ * Base 1024 (o que o SO e o Storage reportam). '—' quando não informado.
+ */
+export const fmtBytes = (bytes: number | null | undefined): string => {
+  if (bytes == null || bytes < 0) return '—';
+  if (bytes < 1024) return `${bytes} B`;
+  const kb = bytes / 1024;
+  if (kb < 1024) return `${kb.toLocaleString('pt-BR', { maximumFractionDigits: 0 })} KB`;
+  return `${(kb / 1024).toLocaleString('pt-BR', { maximumFractionDigits: 1 })} MB`;
+};
+
 /** CNPJ de 14 dígitos → 00.000.000/0000-00. Devolve o original (ou '—') fora do formato. */
 export const fmtCnpj = (c: string | null): string =>
   c?.length === 14

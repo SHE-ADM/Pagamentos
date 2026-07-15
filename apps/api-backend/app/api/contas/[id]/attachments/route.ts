@@ -1,19 +1,18 @@
 import type { NextRequest } from 'next/server';
 import { ok, fail, failFromError } from '@/lib/response';
 import { requireAuth, getAuthenticatedUser, canSeeConta } from '@/lib/auth';
-import { contaService } from '@/lib/contas';
+import { contaAttachmentService } from '@/lib/conta-attachments';
 
-// /api/contas/:id — GET (por id) + PATCH (atualização parcial).
-// SEM DELETE: a "remoção" é PATCH { status: 'cancelado' } (sem hard-delete).
+// /api/contas/:id/attachments — GET (lista) + POST (registra o anexo já enviado ao Storage).
+// O POST é o passo 3 do fluxo de upload (ver lib/conta-attachments.ts): os BYTES não passam
+// por aqui — o browser os envia direto ao Storage com a URL assinada de /attachments/upload-url.
 //
-// `canSeeConta` nas duas: o service lê/escreve por service_role, que IGNORA a RLS da 076 —
-// sem o guard, um usuário de grupo restrito que forçasse um id alheio leria (e editaria) a
-// conta de outro, apesar de a tela já a esconder. Quem não pode VER também não pode EDITAR.
+// `canSeeConta` em TODA rota: o service lê por service_role (ignora RLS), então sem o guard um
+// usuário de grupo restrito receberia os anexos — e os `storage_key` — de conta alheia.
 export const dynamic = 'force-dynamic';
 
 type Context = { params: Promise<{ id: string }> };
 
-// id é a PK BIGINT — aceitar só inteiro positivo; caso contrário 400.
 function parseId(raw: string): number | null {
   const n = Number(raw);
   if (!Number.isInteger(n) || n <= 0) return null;
@@ -21,7 +20,7 @@ function parseId(raw: string): number | null {
 }
 
 function mapError(e: unknown): Response {
-  return failFromError(e, 'contas');
+  return failFromError(e, 'conta-attachments');
 }
 
 export async function GET(req: NextRequest, ctx: Context) {
@@ -34,14 +33,14 @@ export async function GET(req: NextRequest, ctx: Context) {
   try {
     // 404 (não 403) quando não pode ver: 403 revelaria que a conta existe.
     if (!(await canSeeConta(req, id))) return fail('Conta não encontrada', 404);
-    return ok(await contaService.getById(id));
+    return ok(await contaAttachmentService.list(id));
   } catch (e) {
     return mapError(e);
   }
 }
 
-export async function PATCH(req: NextRequest, ctx: Context) {
-  // Autoria (Etapa 2): precisamos do UUID do editor para carimbar updated_by/status_changed_by.
+export async function POST(req: NextRequest, ctx: Context) {
+  // uploaded_by = autor do anexo (define quem pode removê-lo depois).
   const user = await getAuthenticatedUser(req);
   if (!user) return fail('Autenticação necessária', 401);
 
@@ -57,7 +56,7 @@ export async function PATCH(req: NextRequest, ctx: Context) {
 
   try {
     if (!(await canSeeConta(req, id))) return fail('Conta não encontrada', 404);
-    return ok(await contaService.update(id, body ?? {}, user.id));
+    return ok(await contaAttachmentService.register(id, body ?? {}, user.id), undefined, 201);
   } catch (e) {
     return mapError(e);
   }

@@ -33,6 +33,8 @@ class FakeControl:
 
     def __init__(self):
         self.financial_calls = []
+        self.attachment_calls = []
+        self.attachment_owners = []
         self.error_calls = []
 
     def upload_attachment(self, pdf_path):
@@ -43,7 +45,17 @@ class FakeControl:
 
     def register_financial(self, payload):
         self.financial_calls.append(payload)
+        return len(self.financial_calls)  # id da conta (migration 079) — truthy, como o real
+
+    def register_attachment(self, account_id, file_name, size_bytes=0, uploaded_by=None):
+        self.attachment_calls.append((account_id, file_name))
+        self.attachment_owners.append(uploaded_by)
         return True
+
+    def resolve_user(self, sender_email):
+        # Espelha o real: resolve o dono pelo remetente (a RPC devolve o sentinela quando
+        # nao casa). O anexo do pipeline herda esse mesmo dono.
+        return f"uuid-de-{sender_email}" if sender_email else None
 
     def register_error(self, email_rec, error_type, error_message, raw_payload=None):
         self.error_calls.append((error_type, error_message))
@@ -134,6 +146,9 @@ class ExtractAndStoreFaturaBoletoTest(unittest.TestCase):
         self.assertEqual(ctrl.financial_calls[0]["barcode"], BOLETO_REAL)
         self.assertEqual(ctrl.error_calls, [])         # fatura ignorada, nao e erro
         self.assertFalse(nonpayable)                    # houve pagavel (o boleto)
+        # O anexo e vinculado a conta (migration 079) — so o do boleto, que virou conta;
+        # o relatorio foi ao Storage no passo 1, mas nao gerou conta a que se vincular.
+        self.assertEqual(ctrl.attachment_calls, [(1, "boleto.pdf")])
 
     def test_ordem_inversa_boleto_primeiro(self):
         # Independencia de ordem: boleto vindo ANTES da fatura tambem grava so o boleto.
@@ -161,6 +176,8 @@ class ExtractAndStoreFaturaBoletoTest(unittest.TestCase):
         }
         ctrl, saved, _ = self._run(["boleto1.pdf", "boleto2.pdf"], rows)
         self.assertEqual(saved, 2)
+        # Cada conta leva o SEU anexo (1:N por conta, nao um anexo para as duas).
+        self.assertEqual(ctrl.attachment_calls, [(1, "boleto1.pdf"), (2, "boleto2.pdf")])
 
     def test_dois_boletos_valores_distintos_um_sem_barcode(self):
         # Caso LMED: 2 boletos ESCANEADOS, o Vision leu a linha digitavel de um so.
@@ -186,6 +203,25 @@ class ExtractAndStoreFaturaBoletoTest(unittest.TestCase):
         ctrl, saved, _ = self._run(["boleto.pdf", "fatura.pdf"], rows)
         self.assertEqual(saved, 1)
         self.assertEqual(ctrl.financial_calls[0]["barcode"], BOLETO_REAL)
+        # A fatura ignorada NAO gera vinculo de anexo (nao ha conta a que vincular).
+        self.assertEqual(ctrl.attachment_calls, [(1, "boleto.pdf")])
+
+    def test_anexo_do_pipeline_herda_o_dono_da_conta(self):
+        # Regressao: o call site usava payload.get("created_by"), que e SEMPRE None —
+        # register_financial resolve o dono numa COPIA local do payload. O anexo caia no
+        # sentinela, divergindo do backfill da 079 (que gravou o created_by real).
+        rows = {"boleto.pdf": _row("boleto.pdf", BOLETO_REAL)}
+        ctrl, saved, _ = self._run(["boleto.pdf"], rows)
+        self.assertEqual(saved, 1)
+        self.assertEqual(ctrl.attachment_owners, ["uuid-de-padariabelga@gmail.com"])
+
+    def test_conta_nao_criada_nao_vincula_anexo(self):
+        # Linha sem valor → nao vira conta (erro 'sem_valor') → nenhum anexo vinculado.
+        # O arquivo ja foi ao Storage no passo 1; o VINCULO exige o id de uma conta.
+        rows = {"lixo.pdf": _row("lixo.pdf", None, doc_type="outro", amount=None)}
+        ctrl, saved, _ = self._run(["lixo.pdf"], rows)
+        self.assertEqual(saved, 0)
+        self.assertEqual(ctrl.attachment_calls, [])
 
 
 if __name__ == "__main__":

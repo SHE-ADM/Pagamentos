@@ -85,16 +85,16 @@ class RegisterFinancialCreatedByTest(unittest.TestCase):
             if "/rpc/resolve_user_for_account" in req.full_url:
                 return _Resp(UUID)
             posted["body"] = json.loads(req.data.decode())  # INSERT em financial_account_control
-            return _Resp({})
+            return _Resp([{"id": 42}])  # return=representation → lista com a linha gravada
 
         with mock.patch.object(R.urllib.request, "urlopen", fake_urlopen):
-            ok = ctrl.register_financial({
+            account_id = ctrl.register_financial({
                 "gmail_message_id": "<m1>", "sk_supplier": 1, "amount": 100,
                 "sender_email": "ester@otimotex.com.br", "due_date": "2026-07-10",
                 "status": "pendente",
             })
 
-        self.assertTrue(ok)
+        self.assertEqual(account_id, 42)
         self.assertEqual(posted["body"]["created_by"], UUID)
 
     def test_respeita_created_by_ja_presente(self):
@@ -105,16 +105,16 @@ class RegisterFinancialCreatedByTest(unittest.TestCase):
             if "/rpc/" in req.full_url:
                 raise AssertionError("não deve resolver usuário quando created_by já veio")
             posted["body"] = json.loads(req.data.decode())
-            return _Resp({})
+            return _Resp([{"id": 43}])
 
         with mock.patch.object(R.urllib.request, "urlopen", fake_urlopen):
-            ok = ctrl.register_financial({
+            account_id = ctrl.register_financial({
                 "gmail_message_id": "<m2>", "sk_supplier": 1, "amount": 100,
                 "sender_email": "ester@otimotex.com.br", "created_by": UUID,
                 "due_date": "2026-07-10", "status": "pendente",
             })
 
-        self.assertTrue(ok)
+        self.assertEqual(account_id, 43)
         self.assertEqual(posted["body"]["created_by"], UUID)
 
 

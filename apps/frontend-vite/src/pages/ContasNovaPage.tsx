@@ -5,6 +5,7 @@
 import { useState, useEffect } from 'react';
 import type { FinancialAccountControlCreate } from '@sheild/shared';
 import { createConta } from '../services/contas';
+import { uploadContaAttachments } from '../services/contaAttachments';
 import { getErrorMessage } from '../lib/getErrorMessage';
 import ContaForm from '../components/organisms/ContaForm';
 import Alert from '../components/atoms/Alert';
@@ -15,19 +16,52 @@ export default function ContasNovaPage() {
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  // Falha PARCIAL (conta criada, algum anexo não subiu) não é erro nem sucesso limpo:
+  // banner próprio, para não mentir que deu tudo certo nem sugerir que a conta se perdeu.
+  const [warning, setWarning] = useState<string | null>(null);
+  const [progress, setProgress] = useState<{ done: number; total: number } | null>(null);
   const [formKey, setFormKey] = useState(0); // remonta o form p/ limpar após sucesso
 
-  const handleSubmit = async (data: FinancialAccountControlCreate) => {
+  // Devolve ao ContaForm a fila que deve PERMANECER (ver o contrato de `onSubmit` lá).
+  const handleSubmit = async (data: FinancialAccountControlCreate, files: File[]): Promise<File[] | void> => {
     setSubmitting(true);
     setError(null);
     setNotice(null);
+    setWarning(null);
     try {
+      // A conta vem PRIMEIRO: o upload precisa do id. Enviar antes exigiria uma área de
+      // staging e um coletor de órfãos — aqui, abandonar o formulário não deixa lixo.
       const conta = await createConta(data);
-      setNotice(`Conta lançada com sucesso (id ${conta.id}).`);
+
+      if (files.length) {
+        setProgress({ done: 0, total: files.length });
+        const { failed } = await uploadContaAttachments(conta.id, files, (done, total) =>
+          setProgress({ done, total }),
+        );
+        setProgress(null);
+        if (failed.length) {
+          // A conta EXISTE — dizer só "erro" faria o usuário lançá-la de novo, duplicando.
+          // O form é remontado (fila zerada): reenviar aqui recriaria a conta, então o
+          // caminho de recuperação é a edição em /consulta, não este formulário.
+          setWarning(
+            `Conta lançada (id ${conta.id}), mas ${failed.length} anexo(s) não foram enviados: ` +
+              `${failed.map((f) => f.file.name).join(', ')}. Anexe pela edição da conta em Gestão de contas.`,
+          );
+          setFormKey((k) => k + 1);
+          return;
+        }
+      }
+
+      const suffix = files.length ? ` com ${files.length} anexo(s)` : '';
+      setNotice(`Conta lançada com sucesso (id ${conta.id})${suffix}.`);
       setFormKey((k) => k + 1);
     } catch (e) {
+      // A conta NÃO foi criada (o erro é engolido aqui, não sobe ao form): devolver a fila
+      // preserva os arquivos já escolhidos para o usuário corrigir e submeter de novo.
       setError(getErrorMessage(e));
+      return files;
     } finally {
+      setProgress(null);
       setSubmitting(false);
     }
   };
@@ -50,6 +84,16 @@ export default function ContasNovaPage() {
         {notice && (
           <Alert variant="success" className="mb-4 max-w-3xl mx-auto">
             {notice}
+          </Alert>
+        )}
+        {warning && (
+          <Alert variant="warning" className="mb-4 max-w-3xl mx-auto">
+            {warning}
+          </Alert>
+        )}
+        {progress && (
+          <Alert variant="info" className="mb-4 max-w-3xl mx-auto">
+            Enviando anexos… ({progress.done}/{progress.total})
           </Alert>
         )}
         <div className="card p-6 max-w-3xl mx-auto">

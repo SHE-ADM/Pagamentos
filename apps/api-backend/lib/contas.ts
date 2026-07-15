@@ -38,7 +38,18 @@ const SELECT_WITH_SUPPLIER =
   'subgroup:financial_chart_of_account_subgroup(subgroup_code,subgroup_description)),' +
   // Dimensão `status` (via FK status_id) — nome da situação para exibição (status_id é a
   // fonte única; a coluna `status` texto está em remoção faseada).
-  'status_dim:status(status_name,status_short_name)';
+  'status_dim:status(status_name,status_short_name),' +
+  // Anexos (1:N — migration 079): e-mail (origin='pipeline') + upload do usuário ('manual').
+  // O soft-deletado é excluído por ATTACHMENTS_ACTIVE_FILTER (ver abaixo) — obrigatório,
+  // pois este client é service_role e ignora a policy que o esconderia.
+  'attachments:financial_account_attachment(id,account_id,storage_key,file_name,mime_type,size_bytes,origin,uploaded_by,created_at)';
+
+// Filtro de RECURSO EMBUTIDO do PostgREST (`attachments.deleted_at=is.null`): remove o anexo
+// soft-deletado de DENTRO de cada conta, sem descartar contas (diferente de `!inner`) — conta
+// sem anexo continua vindo, com `attachments: []`. Vale também no retorno de INSERT/UPDATE
+// (`return=representation`), que é o que o grid de /consulta mescla in-place.
+const ATTACHMENTS_DELETED_AT = 'attachments.deleted_at';
+
 const DEFAULT_LIMIT = 20;
 const MAX_LIMIT = 100;
 
@@ -117,7 +128,8 @@ const contaRepository = {
       .select(SELECT_WITH_SUPPLIER, { count: 'exact' })
       // Contas canceladas ficam fora da lista por padrão (mesmo critério de /consulta).
       // Por status_id (fonte única) — a coluna `status` texto está em remoção faseada.
-      .neq('status_id', STATUS_ID_CANCELADO);
+      .neq('status_id', STATUS_ID_CANCELADO)
+      .is(ATTACHMENTS_DELETED_AT, null);
 
     if (params.search) {
       const term = sanitizeTerm(params.search);
@@ -135,17 +147,33 @@ const contaRepository = {
   },
 
   findById(id: number) {
-    return getSupabaseAdmin().from(TABLE).select(SELECT_WITH_SUPPLIER).eq('id', id).maybeSingle();
+    return getSupabaseAdmin()
+      .from(TABLE)
+      .select(SELECT_WITH_SUPPLIER)
+      .eq('id', id)
+      .is(ATTACHMENTS_DELETED_AT, null)
+      .maybeSingle();
   },
 
   // `created_by` é carimbado pelo servidor (UUID do usuário logado) — não vem do corpo.
   create(payload: FinancialAccountControlCreate & { created_by?: string }) {
-    return getSupabaseAdmin().from(TABLE).insert(payload).select(SELECT_WITH_SUPPLIER).single();
+    return getSupabaseAdmin()
+      .from(TABLE)
+      .insert(payload)
+      .select(SELECT_WITH_SUPPLIER)
+      .is(ATTACHMENTS_DELETED_AT, null)
+      .single();
   },
 
   // `updated_by` é carimbado pelo servidor (UUID do usuário logado) — não vem do corpo.
   update(id: number, payload: FinancialAccountControlUpdate & { updated_by?: string }) {
-    return getSupabaseAdmin().from(TABLE).update(payload).eq('id', id).select(SELECT_WITH_SUPPLIER).maybeSingle();
+    return getSupabaseAdmin()
+      .from(TABLE)
+      .update(payload)
+      .eq('id', id)
+      .select(SELECT_WITH_SUPPLIER)
+      .is(ATTACHMENTS_DELETED_AT, null)
+      .maybeSingle();
   },
 };
 

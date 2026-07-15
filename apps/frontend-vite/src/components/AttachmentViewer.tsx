@@ -16,13 +16,21 @@ const BUCKET = 'attachments';
 const SIGNED_URL_TTL = 300; // segundos de validade da URL assinada
 
 interface AttachmentViewerProps {
+  /** Chave CRUA do objeto no bucket. Pipeline: nome flat. Manual: `manual/{id}/…`. */
   sourceFile: string;
+  /**
+   * Nome amigável no cabeçalho. Sem isto cairia a chave crua, que para anexo manual é
+   * ruído (`manual/512/20260715T120000Z_a1b2c3d4_Boleto.pdf`). Default: a própria chave —
+   * preserva o comportamento de quem passa só `sourceFile`.
+   */
+  title?: string;
   onClose: () => void;
 }
 
 type LoadState = 'loading' | 'ok' | 'notfound';
 
-export default function AttachmentViewer({ sourceFile, onClose }: Readonly<AttachmentViewerProps>) {
+export default function AttachmentViewer({ sourceFile, title, onClose }: Readonly<AttachmentViewerProps>) {
+  const label = title ?? sourceFile;
   const [state, setState] = useState<LoadState>('loading');
   const [url, setUrl] = useState<string | null>(null);
   const [downloadUrl, setDownloadUrl] = useState<string | null>(null);
@@ -115,13 +123,20 @@ export default function AttachmentViewer({ sourceFile, onClose }: Readonly<Attac
     return (
       <iframe
         src={url ?? ''}
-        title={sourceFile}
+        title={label}
         referrerPolicy="no-referrer"
         className="h-full w-full border-0"
       />
     );
   }
 
+  // Os botões abaixo contêm o próprio clique (`stopPropagation`) — NÃO REGREDIR. O viewer é
+  // usado dentro do painel de detalhe de /consulta, isto é, dentro de um <tr> cujo onClick
+  // alterna a linha: sem isso, fechar/baixar o anexo fecharia o painel junto.
+  // Um `createPortal` para o body NÃO resolveria: o React propaga o evento pela árvore de
+  // COMPONENTES, não pela do DOM — o clique chegaria ao <tr> mesmo com o dialog fora dele
+  // (verificado em teste). E `onClick` no próprio <dialog> seria handler em elemento
+  // não-interativo (S1082). Conter no botão é o padrão do projeto (ver Consulta.tsx).
   return (
     <dialog
       ref={dialogRef}
@@ -130,22 +145,38 @@ export default function AttachmentViewer({ sourceFile, onClose }: Readonly<Attac
       className="h-[90vh] w-full max-w-5xl flex-col overflow-hidden rounded-xl border-0 bg-white p-0 shadow-lg open:flex backdrop:bg-black/50"
     >
       <div className="flex items-center gap-3 border-b border-slate-200 px-4 py-3">
-        <p id={titleId} className="flex-1 truncate text-sm font-medium text-slate-700" title={sourceFile}>
-          {sourceFile}
+        <p id={titleId} className="flex-1 truncate text-sm font-medium text-slate-700" title={label}>
+          {label}
         </p>
         {state === 'ok' && url && (
           <>
-            <a href={downloadUrl ?? url} download className="btn" title="Baixar o PDF">
+            <a
+              href={downloadUrl ?? url}
+              download
+              className="btn"
+              title="Baixar o PDF"
+              onClick={(e) => e.stopPropagation()}
+            >
               <Download size={14} /> Baixar
             </a>
-            <a href={url} target="_blank" rel="noopener noreferrer" className="btn" title="Abrir em nova aba">
+            <a
+              href={url}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="btn"
+              title="Abrir em nova aba"
+              onClick={(e) => e.stopPropagation()}
+            >
               <ExternalLink size={14} /> Nova aba
             </a>
           </>
         )}
         <button
           type="button"
-          onClick={onClose}
+          onClick={(e) => {
+            e.stopPropagation();
+            onClose();
+          }}
           aria-label="Fechar"
           title="Fechar"
           className="flex h-8 w-8 items-center justify-center rounded-full text-slate-500 hover:bg-slate-100 hover:text-slate-600 transition-colors"

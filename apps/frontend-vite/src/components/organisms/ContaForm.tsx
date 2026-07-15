@@ -10,6 +10,7 @@ import {
   financialAccountControlCreateSchema,
   DOCUMENT_TYPES,
   PAYMENT_METHODS,
+  type FinancialAccountAttachment,
   type FinancialAccountControl,
   type FinancialAccountControlCreate,
 } from '@sheild/shared';
@@ -18,6 +19,8 @@ import Alert from '../atoms/Alert';
 import SupplierSelect from '../molecules/SupplierSelect';
 import CostCenterSelect from '../molecules/CostCenterSelect';
 import ChartAccountSelect from '../molecules/ChartAccountSelect';
+import AttachmentPicker from '../molecules/AttachmentPicker';
+import ContaAttachments from './ContaAttachments';
 import { getSupplier } from '../../services/suppliers';
 
 // Opções dos selects de enum ordenadas alfabeticamente (pt-BR) — os valores são os
@@ -40,10 +43,27 @@ interface ContaFormValues {
 interface ContaFormProps {
   mode: 'create' | 'edit';
   defaultValues?: FinancialAccountControl;
-  onSubmit: (data: FinancialAccountControlCreate) => Promise<void>;
+  /**
+   * Recebe também a FILA de anexos escolhidos, que o pai envia DEPOIS de gravar a conta
+   * (o upload precisa do id, que na inclusão só existe após o POST). O form não sobe
+   * arquivo: mantê-lo declarativo é o que permite testar submit e fila juntos.
+   *
+   * @returns os arquivos que devem PERMANECER na fila — normalmente os que NÃO subiram.
+   *   `undefined`/`void` esvazia a fila (sucesso). É isto que impede o 2º submit de
+   *   reenviar o que já subiu e **DUPLICAR** o anexo: cada upload gera uma `storage_key`
+   *   nova (timestamp + aleatório), então o UNIQUE do banco não deduplicaria. Importa no
+   *   modal de edição, que NÃO remonta e fica aberto quando um upload falha.
+   *
+   *   O pai reporta os próprios erros por `submitError` (padrão do projeto) e devolve a
+   *   fila para não perder os arquivos escolhidos. Se ainda assim lançar, a fila fica
+   *   intacta — o `setFiles` só roda depois do `await`.
+   */
+  onSubmit: (data: FinancialAccountControlCreate, pendingFiles: File[]) => Promise<File[] | void>;
   onCancel?: () => void;
   submitError?: string | null;
   submitting?: boolean;
+  /** Anexos já salvos, para o pai refletir a remoção na sua cópia da conta (modo edit). */
+  onAttachmentsChanged?: (attachments: FinancialAccountAttachment[]) => void;
 }
 
 // Data corrente no formato YYYY-MM-DD (local) — default de emissão/vencimento ao
@@ -97,7 +117,15 @@ const chartAccountDefaultLabel = (c?: ClassificationSource): string | undefined 
   return c.chart_account?.account_description ?? c.chart_account?.account_code ?? `#${c.chart_account_id}`;
 };
 
-export default function ContaForm({ mode, defaultValues, onSubmit, onCancel, submitError, submitting = false }: Readonly<ContaFormProps>) {
+export default function ContaForm({
+  mode,
+  defaultValues,
+  onSubmit,
+  onCancel,
+  submitError,
+  submitting = false,
+  onAttachmentsChanged,
+}: Readonly<ContaFormProps>) {
   const {
     register,
     handleSubmit,
@@ -117,6 +145,10 @@ export default function ContaForm({ mode, defaultValues, onSubmit, onCancel, sub
   // de centro/plano são CONTROLADOS (espelham `value`), então refletem o novo valor/rótulo
   // sozinhos ao atualizar costCenterId/chartAccountId — sem remonte por `key`.
   const [prefill, setPrefill] = useState<ClassificationSource | null>(null);
+  // Fila de anexos a enviar: fica em MEMÓRIA e sobe só depois que o pai gravar a conta
+  // (na inclusão o id só existe após o POST; no modo edição, subir ao escolher deixaria o
+  // arquivo órfão se o usuário cancelasse o modal).
+  const [files, setFiles] = useState<File[]>([]);
   // Descarta respostas obsoletas de getSupplier quando o fornecedor é trocado em sequência.
   const supplierReqRef = useRef(0);
 
@@ -197,7 +229,12 @@ export default function ContaForm({ mode, defaultValues, onSubmit, onCancel, sub
     }
 
     if (!ok || !parsed.success) return;
-    await onSubmit(parsed.data);
+    // A fila vai junto: quem grava a conta é o pai, e só ele tem o id necessário ao upload.
+    // O retorno diz o que SOBROU (os que não subiram) — sem isso, um 2º submit no modal
+    // (que fica aberto na falha parcial) reenviaria os já enviados e os duplicaria.
+    // Exceção do onSubmit não chega aqui: a fila fica intacta para nova tentativa.
+    const remaining = await onSubmit(parsed.data, files);
+    setFiles(remaining ?? []);
   });
 
   // Fonte dos rótulos dos selects de classificação: depois que o usuário escolhe/troca o
@@ -293,6 +330,26 @@ export default function ContaForm({ mode, defaultValues, onSubmit, onCancel, sub
           {...register('additional_info')}
         />
       </label>
+
+      {/* Anexos já salvos — só na edição (na inclusão a conta ainda não existe). O de
+          e-mail aparece com selo e sem lixeira; remover é imediato, com confirmação. */}
+      {mode === 'edit' && defaultValues && (
+        <ContaAttachments
+          accountId={defaultValues.id}
+          items={defaultValues.attachments}
+          legacySourceFile={defaultValues.source_file}
+          onChanged={onAttachmentsChanged}
+          title="Anexos da conta"
+        />
+      )}
+
+      {/* Fila de novos anexos — nos DOIS modos; sobe após o pai gravar a conta. */}
+      <AttachmentPicker
+        value={files}
+        onChange={setFiles}
+        disabled={submitting}
+        label={mode === 'edit' ? 'Adicionar anexos' : 'Anexos'}
+      />
 
       <div className="flex justify-end gap-2 pt-1">
         {onCancel && (

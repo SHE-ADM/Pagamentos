@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { chartAccountGroupEmbeddedSchema } from './chart-account-group.schema';
 import { chartAccountSubgroupEmbeddedSchema } from './chart-account-subgroup.schema';
+import { financialAccountAttachmentEmbeddedSchema } from './financial-account-attachment.schema';
 
 // Schema da tabela `financial_account_control` — controle central de contas a
 // pagar. Uma linha por documento financeiro, alimentada por duas origens:
@@ -289,6 +290,13 @@ export const financialAccountControlSchema = z.object({
   // Dimensão `status` embutida — presente quando o select inclui status_dim:status(...).
   // Fonte do nome da situação para exibição (badge/CSV/detalhe).
   status_dim: statusDimEmbeddedSchema.optional(),
+
+  // Anexos embutidos (1:N — migration 079) — presentes quando o select inclui o alias
+  // attachments:financial_account_attachment(...). Reúne as DUAS origens: o documento que
+  // veio do e-mail (origin='pipeline', espelha source_file) e os arquivos enviados pelo
+  // usuário ('manual'). Só de LEITURA: anexo é gravado pelas rotas dedicadas
+  // (/api/contas/:id/attachments), nunca pelo corpo do POST/PATCH da conta.
+  attachments: z.array(financialAccountAttachmentEmbeddedSchema).optional(),
 });
 
 // ── Entrada (gravação pelo pipeline/API) ────────────────────────────────────
@@ -314,6 +322,9 @@ export const financialAccountControlInputSchema = financialAccountControlSchema.
   cost_center: true,
   chart_account: true,
   status_dim: true,
+  // Anexos entram só pelas rotas dedicadas (/api/contas/:id/attachments) — o embed é de
+  // leitura e nunca é gravável pelo corpo da conta (mesma razão de supplier/status_dim).
+  attachments: true,
 });
 
 // ── Edição MANUAL (base do CRUD — POST/PATCH /api/contas) ────────────────────

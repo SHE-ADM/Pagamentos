@@ -10,7 +10,6 @@ import {
   CheckCircle2,
   Search,
   X,
-  Eye,
   Pencil,
   Info,
   type LucideIcon,
@@ -45,9 +44,10 @@ import { suspendIdleLogout, resumeIdleLogout } from '../hooks/useIdleLogout';
 import { getErrorMessage } from '../lib/getErrorMessage';
 import Alert from '../components/atoms/Alert';
 import ExpandableText from '../components/ExpandableText';
-import AttachmentViewer from '../components/AttachmentViewer';
 import DataGrid from '../components/organisms/DataGrid';
 import ContaForm from '../components/organisms/ContaForm';
+import ContaAttachments from '../components/organisms/ContaAttachments';
+import { uploadContaAttachments, type UploadOutcome } from '../services/contaAttachments';
 import { getConsultaColumns, STATUS_OPTIONS, type ToggleFlag, type StatusChangeCallback } from '../hooks/useGridColumns';
 import { fmtDate, fmtDateTime, fmtMoney, fmtCnpj, fmtCostCenter, fmtChartAccount } from '../lib/format';
 import { csvCell } from '../lib/csv';
@@ -228,11 +228,12 @@ export default function Consulta() {
   // Diretório id→e-mail (view app_user) para exibir o AUTOR no detalhe (migration 077).
   const [appUsers, setAppUsers] = useState<Record<string, string>>({});
   const userEmail = (id: string | null): string => (id ? (appUsers[id] ?? id) : '—');
-  const [viewing, setViewing] = useState<string | null>(null);
   // Edição de conta (modal com ContaForm → PATCH /api/contas/:id).
   const [editing, setEditing] = useState<FinancialAccountControl | null>(null);
   const [editSubmitting, setEditSubmitting] = useState(false);
   const [editError, setEditError] = useState<string | null>(null);
+  // Conta salva mas algum anexo falhou — nem erro (a conta foi gravada) nem sucesso limpo.
+  const [editWarning, setEditWarning] = useState<string | null>(null);
   const editDialogRef = useRef<HTMLDialogElement>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -417,22 +418,62 @@ export default function Consulta() {
   }, [refreshStats]);
 
   // Salva a edição da conta via Next API (PATCH) e recarrega o grid + KPIs.
-  const handleEditSubmit = async (data: FinancialAccountControlCreate) => {
+  // Devolve ao ContaForm os anexos que NÃO subiram (a fila que deve permanecer) — ver o
+  // contrato de `onSubmit` no ContaForm.
+  const handleEditSubmit = async (data: FinancialAccountControlCreate, files: File[]): Promise<File[] | void> => {
     if (!editing) return;
     setEditSubmitting(true);
     setEditError(null);
+    setEditWarning(null);
     try {
       const updated = await updateConta(editing.id, data);
-      setEditing(null);
+
+      // Anexos novos sobem só agora (mesmo caminho da inclusão: nada é enviado antes de a
+      // gravação da conta ter dado certo).
+      const outcome: UploadOutcome = files.length
+        ? await uploadContaAttachments(updated.id, files)
+        : { saved: [], failed: [] };
+      const { saved, failed } = outcome;
+
+      // A resposta do PATCH foi montada ANTES destes uploads: sem juntar `saved` aqui, os
+      // anexos novos só apareceriam num refresh (o grid mescla in-place, sem refetch).
+      const merged = { ...updated, attachments: [...(updated.attachments ?? []), ...saved] };
+
       // Atualiza a linha no lugar (preserva a posição de rolagem do scroll infinito).
-      setRows((prev) => prev.map((r) => (r.id === updated.id ? updated : r)));
-      setSel((s) => (s && s.id === updated.id ? updated : s));
+      setRows((prev) => prev.map((r) => (r.id === merged.id ? merged : r)));
+      setSel((s) => (s && s.id === merged.id ? merged : s));
       void refreshStats();
+
+      if (failed.length) {
+        // Modal FICA aberto: a conta foi salva, mas o usuário precisa ver o que faltou.
+        // `setEditing(merged)` é essencial: sem ele a lista "Anexos da conta" do modal
+        // continuaria sem os que ACABARAM de subir, e o usuário reanexaria tudo.
+        setEditing(merged);
+        setEditWarning(
+          `Conta salva, mas ${failed.length} anexo(s) não foram enviados: ` +
+            `${failed.map((f) => f.file.name).join(', ')}. Clique em salvar novamente para tentar só eles.`,
+        );
+        // Só os que falharam continuam na fila — reenviar os que já subiram os DUPLICARIA.
+        return failed.map((f) => f.file);
+      }
+
+      setEditing(null);
     } catch (e) {
+      // A conta não foi gravada: preserva a fila para o usuário corrigir e tentar de novo.
       setEditError(getErrorMessage(e));
+      return files;
     } finally {
       setEditSubmitting(false);
     }
+  };
+
+  // Reflete no grid a remoção de um anexo feita pelo modal (sem refetch).
+  const handleAttachmentsChanged = (attachments: FinancialAccountControl['attachments']) => {
+    if (!editing) return;
+    const id = editing.id;
+    setEditing((c) => (c ? { ...c, attachments } : c));
+    setRows((prev) => prev.map((r) => (r.id === id ? { ...r, attachments } : r)));
+    setSel((s) => (s && s.id === id ? { ...s, attachments } : s));
   };
 
   // Abre/fecha o <dialog> nativo de edição (foco/trap/Esc; try/catch p/ jsdom).
@@ -927,6 +968,7 @@ export default function Consulta() {
                                 onClick={(e) => {
                                   e.stopPropagation();
                                   setEditError(null);
+                                  setEditWarning(null);
                                   setEditing(r);
                                 }}
                                 className="btn btn-primary"
@@ -934,18 +976,21 @@ export default function Consulta() {
                               >
                                 <Pencil size={14} /> Editar conta
                               </button>
-                              {r.source_file && (
-                                <button
-                                  onClick={(e) => {
-                                    e.stopPropagation();
-                                    setViewing(r.source_file);
-                                  }}
-                                  className="btn"
-                                  title="Ver o PDF anexado"
-                                >
-                                  <Eye size={14} /> Ver anexo
-                                </button>
-                              )}
+                            </div>
+                            {/* Anexos (N) — e-mail + enviados pelo usuário, no mesmo padrão.
+                                Substituiu o botão único "Ver anexo" (era 1 arquivo só, o do
+                                e-mail). Sem lixeira aqui: a remoção é feita pelo modal de
+                                edição. Quem contém o clique para não alternar a linha do <tr>
+                                são os próprios botões (AttachmentList/AttachmentViewer), como
+                                fazem os botões acima — não um <div> wrapper com onClick, que
+                                seria um elemento não-interativo com handler (S1082). */}
+                            <div className="mb-3">
+                              <ContaAttachments
+                                accountId={r.id}
+                                items={r.attachments}
+                                legacySourceFile={r.source_file}
+                                canRemove={false}
+                              />
                             </div>
                             <dl className="grid grid-cols-2 rounded-lg overflow-hidden border border-slate-100">
                               {(
@@ -1029,7 +1074,6 @@ export default function Consulta() {
         </div>
       </div>
 
-      {viewing && <AttachmentViewer sourceFile={viewing} onClose={() => setViewing(null)} />}
 
       {editing && (
         <dialog
@@ -1040,6 +1084,11 @@ export default function Consulta() {
         >
           <div className="p-4">
             <h2 className="mb-3 text-base font-semibold text-gray-900">Editar conta</h2>
+            {editWarning && (
+              <Alert variant="warning" className="mb-3">
+                {editWarning}
+              </Alert>
+            )}
             <ContaForm
               mode="edit"
               defaultValues={editing}
@@ -1047,6 +1096,7 @@ export default function Consulta() {
               onCancel={() => setEditing(null)}
               submitError={editError}
               submitting={editSubmitting}
+              onAttachmentsChanged={handleAttachmentsChanged}
             />
           </div>
         </dialog>
