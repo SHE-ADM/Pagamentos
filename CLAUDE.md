@@ -293,6 +293,19 @@ era **permanentemente sem anexo**: `source_file` é uma coluna só e é bloquead
   Serviço em `services/contaAttachments.ts` (**não** usa o `call()` de `contas.ts`, que fixa
   `Content-Type: application/json`); `uploadContaAttachments` é **sequencial** (progresso honesto
   "2/3", falha isolada) e **NÃO lança** — devolve `{saved, failed}`.
+- **Contenção do clique — nos BOTÕES, nunca num wrapper (não regredir):** no painel de detalhe de
+  `/consulta` a lista e o viewer ficam **dentro do `<tr>`**, cujo `onClick` alterna a linha — sem
+  conter, abrir/fechar/baixar um anexo **fecharia o próprio painel**. Quem chama `stopPropagation`
+  são os botões/links do `AttachmentList`, da confirmação de remoção e do `AttachmentViewer`
+  (Fechar/Baixar/Nova aba) — todos interativos, como já faziam os botões do detalhe. **Duas saídas
+  que NÃO servem:** (a) `<div onClick={stopPropagation}>` em volta — handler em elemento
+  não-interativo, reprovado pelo **SonarCloud** (S1082, quality gate); pôr um `onKeyDown` ao lado só
+  para calar a regra seria código morto (o `<tr>` do DataGrid só tem `onClick`, e Enter/Espaço num
+  `<button>` já gera um `click`, que é contido); (b) **`createPortal` para o body NÃO resolve** — o
+  React propaga o evento pela árvore de **COMPONENTES**, não pela do DOM, então o clique alcança o
+  `<tr>` mesmo com o `<dialog>` fora dele (verificado em teste; o `showModal` põe o dialog no top
+  layer só VISUALMENTE). Os testes travam o COMPORTAMENTO ("o clique não alcança o ancestral"), não
+  o mecanismo.
 - **Fallback `legacySourceFile` (não regredir):** o registro no reader é **não-fatal**, então uma
   conta pode ter `source_file` e nenhuma linha. Sem o fallback o anexo do e-mail sumiria da tela —
   regressão contra o antigo botão "Ver anexo", que o painel de detalhe de `/consulta` substituiu pela
@@ -732,6 +745,11 @@ perguntar**. PRs seguem de `Features` → `main` (ver "GIT STRATEGY" do workspac
 
 ### 5 — Lint limpo e análise estática
 
+> **O `npm run lint` verde NÃO garante o PR verde:** o ESLint local e o **SonarCloud** do CI têm
+> conjuntos de regras DIFERENTES, e o Sonar **reprova o merge** (quality gate). Ex. real: o
+> `<div onClick={…}>` do PR #129 passou no lint e foi barrado pelo Sonar (S1082).
+> Ver "SonarCloud no CI" abaixo.
+
 - **`npm run lint` na raiz deve passar com 0 erros e 0 warnings** em todos os workspaces
   (cobre `frontend-vite`, `api-backend`, `portal-next` **e `packages/shared`** — cada um com
   seu `eslint.config.mjs`). O `packages/shared` usa flat config type-aware **sem React**
@@ -799,7 +817,23 @@ perguntar**. PRs seguem de `Features` → `main` (ver "GIT STRATEGY" do workspac
   >15 (S3776 — extrair helpers, ex.: o laço de `reprocess_link_emails.py` virou
   `_process_row`/`_first_pdf`/`_store_pdf`); `logging.exception()` em vez de `logging.error()`
   dentro de `except` (S8572); e f-string sem campo de substituição (S3457 — usar string
-  normal).
+  normal). Mais um recorrente, achado no PR #129: **handler de clique em elemento
+  NÃO-INTERATIVO** (S1082 — `<div onClick={…}>`, `<dialog onClick={…}>`); a saída é pôr o
+  handler no `<button>`/`<a>`, não adicionar um `onKeyDown` inútil ao lado (ver "Contenção do
+  clique" em "Anexos de conta").
+- **SonarCloud no CI — BARRA o PR (não é só a IDE):** além do SonarLint local, o repositório tem
+  a integração **SonarCloud** (projeto `SHE-ADM_email-financeiro`), que roda a cada PR e **reprova
+  o merge** pelo quality gate — o `npm run lint` local passa e o PR fica vermelho assim mesmo. A
+  condição que mais morde é **`new_reliability_rating > 1`**: UM único BUG no código novo (mesmo
+  MINOR) já reprova. Não há workflow em `.github/workflows/` (é o app do GitHub); consulte o
+  motivo pela API pública, sem token:
+  ```bash
+  node -e "fetch('https://sonarcloud.io/api/qualitygates/project_status?projectKey=SHE-ADM_email-financeiro&pullRequest=<N>').then(r=>r.json()).then(j=>console.log(JSON.stringify(j.projectStatus,null,1)))"
+  node -e "fetch('https://sonarcloud.io/api/issues/search?componentKeys=SHE-ADM_email-financeiro&pullRequest=<N>&types=BUG&resolved=false').then(r=>r.json()).then(j=>j.issues.forEach(i=>console.log(i.component,i.line,i.message)))"
+  ```
+  (o `curl` do Git Bash falha no TLS do sonarcloud.io — use `node -e` com `fetch`.) Antes de
+  concluir que é ruído, confira se PRs anteriores passavam (`gh pr view <N> --json
+  statusCheckRollup`): se passavam, o achado é seu.
 
 ### 6 — Acessibilidade (WCAG 2.1 AA)
 
@@ -1194,7 +1228,7 @@ apps/frontend-vite/src/components/
 │   ├── dataGrid.variants.ts   # cva por slot (header/row/cell/skeleton/empty/footer/pin/resize/grip/densidade/wrap) default|silver
 │   └── dataGrid.rows.ts       # buildRenderItems (achata linhas→itens row/second/footer/detail p/ virtualização)
 ├── AuthLayout.tsx             # (gradient) wrapper full-page para Forgot/Reset
-├── AttachmentViewer.tsx       # visualizador de PDF (signed URL do Storage) em <dialog> nativo (showModal: role/foco/trap/Esc nativos) + iframe SEM sandbox — o viewer PDF do Chrome (PDFium) não renderiza em iframe sandboxed, nem com allow-scripts (S5-1 introduziu e quebrou o boleto; revertido). NÃO reintroduzir sandbox; ver comentário no componente. `sourceFile` = chave CRUA do objeto (pipeline: nome flat; manual: `manual/{id}/…`); prop opcional `title` = nome amigável no cabeçalho (sem ela cairia a chave crua)
+├── AttachmentViewer.tsx       # visualizador de PDF (signed URL do Storage) em <dialog> nativo (showModal: role/foco/trap/Esc nativos) + iframe SEM sandbox — o viewer PDF do Chrome (PDFium) não renderiza em iframe sandboxed, nem com allow-scripts (S5-1 introduziu e quebrou o boleto; revertido). NÃO reintroduzir sandbox; ver comentário no componente. `sourceFile` = chave CRUA do objeto (pipeline: nome flat; manual: `manual/{id}/…`); prop opcional `title` = nome amigável no cabeçalho (sem ela cairia a chave crua). Os botões (Fechar/Baixar/Nova aba) contêm o próprio clique — é montado dentro do <tr> de /consulta (ver "Contenção do clique")
 ├── Layout.tsx (+ Layout.test.tsx)   # sidebar; navLink = cva local (estado active); menu em 5 grupos (ver abaixo)
 ├── ProtectedRoute.tsx
 ├── ErrorBoundary.tsx          # boundary raiz (main.tsx): chunk lazy obsoleto → auto-reload; runtime → fallback "Recarregar" (+ teste/a11y)
