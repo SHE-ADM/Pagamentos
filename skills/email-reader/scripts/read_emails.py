@@ -353,16 +353,22 @@ class SupabaseControl:
             log.error(f"Falha ao gravar erro no Supabase: {e}")
             return False
 
-    def register_financial(self, payload: dict) -> bool:
+    def register_financial(self, payload: dict):
         """UPSERT de uma conta extraida em financial_account_control (service_role).
 
         Deduplica/atualiza por gmail_message_id. A situacao e gravada por status_id (FONTE
         UNICA): _apply_status_id traduz o `status` texto do payload -> status_id e remove o
         texto. 'pendente' cai no DEFAULT 3 do banco; a trigger id-primaria (068) recalcula
         'a vencer'/'vencido' por due_date x extracted_at quando em aberto (preserva 'falha').
+
+        Retorna o ID da conta gravada (int) ou None em falha. O id e necessario para
+        registrar o anexo em financial_account_attachment (migration 079), que so pode ser
+        feito DEPOIS da conta existir. Como o id (IDENTITY, comeca em 1) e sempre truthy e
+        None e falsy, os call sites no formato `if ctrl.register_financial(payload):`
+        continuam valendo sem alteracao.
         """
         if not self._available:
-            return False
+            return None
         try:
             payload = dict(payload)   # copia — nao muta o dict do chamador ao traduzir status
             _apply_barcode_due_date(payload)  # rede de seguranca: vencimento pelo fator do barcode
@@ -375,21 +381,28 @@ class SupabaseControl:
                 if owner:
                     payload["created_by"] = owner
             data = json.dumps(payload).encode()
+            # return=representation + select=id: devolve a linha GRAVADA (no upsert, a linha
+            # MESCLADA), entao o id sai correto tambem no reprocessamento de um e-mail ja visto.
             req = urllib.request.Request(
-                f"{self.base}/rest/v1/financial_account_control?on_conflict=gmail_message_id",
+                f"{self.base}/rest/v1/financial_account_control"
+                f"?on_conflict=gmail_message_id&select=id",
                 data=data,
-                headers={**self.headers, "Prefer": "resolution=merge-duplicates"},
+                headers={
+                    **self.headers,
+                    "Prefer": "resolution=merge-duplicates,return=representation",
+                },
                 method="POST"
             )
-            urllib.request.urlopen(req, timeout=10)
-            return True
+            with urllib.request.urlopen(req, timeout=10) as r:
+                rows = json.loads(r.read() or "[]")
+            return rows[0]["id"] if rows else None
         except urllib.error.HTTPError as e:
             body = e.read().decode()
             log.error(f"Erro ao gravar conta no Supabase: {e.code} {body[:200]}")
-            return False
+            return None
         except Exception as e:
             log.error(f"Erro ao gravar conta no Supabase: {e}")
-            return False
+            return None
 
     def unique_invoice_number(self, base: str) -> str:
         """Retorna o proximo invoice_number unico baseado em base.
@@ -461,6 +474,53 @@ class SupabaseControl:
             return False
         except Exception as e:
             log.warning(f"Falha ao subir anexo {pdf_path.name}: {e}")
+            return False
+
+    def register_attachment(self, account_id: int, file_name: str,
+                            size_bytes: int = 0, uploaded_by: str | None = None) -> bool:
+        """Vincula o anexo ja publicado no Storage a uma conta (migration 079).
+
+        Chamado DEPOIS da conta existir (o upload roda antes, quando ainda nao ha id) — e
+        SEMPRE que a conta e criada, mesmo se o upload falhou: a tabela espelha a semantica
+        do source_file (padrao unico com os anexos manuais). Objeto ausente cai no estado
+        'notfound' do visualizador, que ja existe.
+
+        storage_key == file_name: a chave do objeto do pipeline e o nome flat (sem pasta) —
+        diferente do anexo manual, que usa `manual/{conta}/...`.
+
+        Idempotente (on_conflict=account_id,storage_key + ignore-duplicates), para o
+        reprocessamento do mesmo e-mail nao duplicar. NAO-FATAL, igual ao upload: a conta ja
+        esta gravada e e o artefato primario.
+        """
+        if not self._available:
+            return False
+        payload = {
+            "account_id":  account_id,
+            "storage_key": file_name,
+            "file_name":   file_name,
+            "mime_type":   _UPLOAD_CONTENT_TYPES.get(
+                Path(file_name).suffix.lower(), "application/octet-stream"),
+            "size_bytes":  max(0, int(size_bytes or 0)),
+            "origin":      "pipeline",
+        }
+        if uploaded_by:
+            payload["uploaded_by"] = uploaded_by
+        try:
+            req = urllib.request.Request(
+                f"{self.base}/rest/v1/financial_account_attachment"
+                f"?on_conflict=account_id,storage_key",
+                data=json.dumps(payload).encode(),
+                headers={**self.headers, "Prefer": "resolution=ignore-duplicates"},
+                method="POST",
+            )
+            urllib.request.urlopen(req, timeout=10)
+            return True
+        except urllib.error.HTTPError as e:
+            body = e.read().decode(errors="replace")
+            log.warning(f"Falha ao registrar anexo {file_name}: {e.code} {body[:150]}")
+            return False
+        except Exception as e:
+            log.warning(f"Falha ao registrar anexo {file_name}: {e}")
             return False
 
     def find_financial_duplicate(self, payload: dict) -> dict | None:
@@ -609,9 +669,22 @@ class SupabaseControl:
         via RPC resolve_user_for_account (migration 076). A RPC ja devolve o usuario-
         padrao (teste@otimotex.com.br) quando o e-mail nao casa nenhum usuario — mantem
         100% do relacionamento. Em erro/sem e-mail retorna None (o DEFAULT da coluna
-        created_by assume o sentinela)."""
+        created_by assume o sentinela).
+
+        CACHEADO por e-mail (case-insensitive) dentro da instancia: a mesma caixa repete
+        muito o remetente, e o resultado nao muda durante um run. Sem o cache, cada conta
+        gravada pagaria uma RPC — e o vinculo do anexo (register_attachment) pagaria outra.
+        Cache lazy (getattr): a classe tambem e instanciada via __new__ nos testes, sem __init__.
+        """
         if not self._available or not sender_email:
             return None
+        cache = getattr(self, "_user_cache", None)
+        if cache is None:
+            cache = {}
+            self._user_cache = cache
+        key = sender_email.strip().lower()
+        if key in cache:
+            return cache[key]
         body = json.dumps({"p_email": sender_email}).encode()
         try:
             req = urllib.request.Request(
@@ -619,10 +692,12 @@ class SupabaseControl:
                 data=body, headers=self.headers, method="POST",
             )
             with urllib.request.urlopen(req, timeout=10) as r:
-                return json.loads(r.read())  # RPC escalar → UUID (str)
+                owner = json.loads(r.read())  # RPC escalar → UUID (str)
         except Exception as e:
             log.warning(f"Falha ao resolver usuario dono (RPC): {e}")
-            return None
+            return None   # NAO cacheia a falha: o proximo e-mail tenta de novo
+        cache[key] = owner
+        return owner
 
     def supplier_defaults(self, sk_supplier: int) -> tuple[int, int]:
         """Le a classificacao contabil DEFAULT do fornecedor (migration 052) para
@@ -3307,7 +3382,15 @@ def extract_and_store_accounts(saved_pdfs: list, message_id: str,
     # passo 2, que precisa enxergar o e-mail INTEIRO (regra fatura+boleto).
     # ------------------------------------------------------------------
     pending = []  # linhas extraidas de todos os PDFs do e-mail, na ordem de chegada
+    # Tamanho de cada anexo, colhido AQUI (no passo 2 o arquivo pode nao estar mais em
+    # disco) — vai para financial_account_attachment.size_bytes.
+    attachment_sizes = {}
     for pdf_path in saved_pdfs:
+        try:
+            attachment_sizes[pdf_path.name] = pdf_path.stat().st_size
+        except OSError:
+            attachment_sizes[pdf_path.name] = 0
+
         # Publica o PDF no Storage SEMPRE (antes da extracao) — assim o anexo fica
         # disponivel para revisao manual mesmo quando a extracao falha por completo.
         # Nao-fatal: se o upload falhar, a extracao segue normalmente.
@@ -3532,8 +3615,24 @@ def extract_and_store_accounts(saved_pdfs: list, message_id: str,
         if payload.get("invoice_number"):
             payload["invoice_number"] = ctrl.unique_invoice_number(payload["invoice_number"])
 
-        if ctrl.register_financial(payload):
+        new_id = ctrl.register_financial(payload)
+        if new_id:
             accounts_saved += 1
+            # Vincula o anexo a conta recem-criada (migration 079) — so aqui ha id. O
+            # upload ja ocorreu no passo 1; registrar mesmo se ele falhou mantem a tabela
+            # espelhando o source_file (padrao unico com os anexos manuais). Nao-fatal.
+            src = row.get("source_file")
+            if src:
+                # O anexo herda o DONO da conta (igual ao backfill da 079, que usou
+                # created_by). NAO usar payload.get("created_by"): register_financial
+                # resolve o dono numa COPIA local do payload, entao o dict daqui nunca o
+                # recebe e o anexo cairia sempre no sentinela. resolve_user e cacheado,
+                # entao esta chamada nao custa uma RPC extra.
+                ctrl.register_attachment(
+                    new_id, src,
+                    size_bytes=attachment_sizes.get(src, 0),
+                    uploaded_by=payload.get("created_by") or ctrl.resolve_user(payload.get("sender_email")),
+                )
         else:
             ctrl.register_error(
                 ctx, "db_erro",

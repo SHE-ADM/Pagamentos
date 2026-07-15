@@ -37,6 +37,7 @@ class FakeControl:
 
     def __init__(self, dup=None):
         self.financial_calls = []
+        self.attachment_calls = []
         self.error_calls = []
         self.update_calls = []
         self._dup = dup
@@ -49,7 +50,15 @@ class FakeControl:
 
     def register_financial(self, payload):
         self.financial_calls.append(payload)
+        return len(self.financial_calls)  # id da conta (migration 079) — truthy, como o real
+
+    def register_attachment(self, account_id, file_name, size_bytes=0, uploaded_by=None):
+        self.attachment_calls.append((account_id, file_name))
         return True
+
+    def resolve_user(self, sender_email):
+        # Dono da conta pelo remetente (migration 076) — o anexo do pipeline o herda.
+        return f"uuid-de-{sender_email}" if sender_email else None
 
     def register_error(self, email_rec, error_type, error_message, raw_payload=None):
         self.error_calls.append((error_type, error_message))
