@@ -214,6 +214,106 @@ da conta). **Sem botão de exclusão** em nenhuma das telas.
 Cliente Next API em `services/contas.ts` (proxy `/data-api`). Spec/template em
 `docs/prompts/api-contas-crud-spec.md`.
 
+**Anexos de conta (N por conta — `financial_account_attachment`, migration 079):** o usuário anexa
+**vários** arquivos (PDF/imagem) ao **incluir e ao editar** uma conta, no **mesmo bucket
+`attachments`** do pipeline. A tabela é o **PADRÃO ÚNICO** das duas origens — `origin='pipeline'`
+(documento que veio do e-mail, espelha `source_file` via backfill + registro no reader) e
+`origin='manual'` (upload do usuário) —, então o painel lista todos igual. Antes, conta lançada à mão
+era **permanentemente sem anexo**: `source_file` é uma coluna só e é bloqueada no CRUD manual (S3-2).
+
+- **Upload em 2 passos, bytes FORA da Next API** (`lib/conta-attachments.ts`): `POST
+  /api/contas/:id/attachments/upload-url` valida e devolve `{storage_key, signed_url, token}` →
+  o **browser** envia direto ao Storage (`uploadToSignedUrl`) → `POST /api/contas/:id/attachments`
+  registra a linha. Motivo: a Vercel corta o corpo de uma function em ~4,5 MB (foto de celular passa
+  disso) e assim **não** é preciso dar INSERT em `storage.objects` ao papel `authenticated` — quem
+  escreve segue sendo só o `service_role`, via a URL que ele emite. **Limite: 10 MB/arquivo**
+  (`ATTACHMENT_MAX_BYTES`); mimes = `ATTACHMENT_MIME_TYPES` (espelha `_UPLOAD_CONTENT_TYPES` do reader).
+- **A chave é gerada no SERVIDOR** — `manual/{account_id}/{YYYYMMDDTHHMMSSZ}_{rand8}_{nome}.{ext}`
+  (`buildStorageKey`). O prefixo `manual/` torna a colisão com o pipeline **impossível por
+  construção**: o `safe_filename` do reader remove a barra (`[^\w\s-]`), então **nenhuma chave do
+  pipeline contém `/`**. A extensão vem do **mime validado**, não do nome do cliente; o `rand8` evita
+  colisão de mesmo nome/conta/segundo (o reader resolve isso pelo disco, que aqui não existe).
+  `safeFileName` espelha o `safe_filename` do Python (saídas conferidas contra ele no teste).
+  **Se o cliente escolhesse a chave**, pediria autorização para o objeto do pipeline e o
+  sobrescreveria — daí a chave ser do servidor + `createSignedUploadUrl` sem `upsert`.
+- **Guards do register (a segurança do fluxo — não regredir):** a URL assinada **não valida
+  conteúdo**, então (1) `isOwnManualKey` exige o **FORMATO INTEIRO** da chave gerada pelo servidor
+  (422); (2) o objeto tem de existir (`storage.info()` → 422, mata a linha-fantasma); (3) **grava o
+  `size`/`mimetype` REAIS do `info()`**, não os declarados — fora do limite/allowlist → 422 **+
+  `storage.remove()`** do objeto (ainda não vinculado a conta nenhuma, então limpá-lo não fere a
+  preservação). `info()` devolve **camelCase** (`contentType`/`size`) — o storage-js camelizA no
+  runtime (`recursiveToCamel`).
+- **PATH TRAVERSAL — por que o guard valida o FORMATO e não só o prefixo (não afrouxar):** o
+  Supabase Storage **NORMALIZA o `..`** (verificado contra o bucket real: `info()` resolve,
+  `createSignedUrl` assina e o download devolve HTTP 200 com os bytes). Um guard
+  `key.startsWith('manual/{id}/')` aceitaria `manual/7/../../ester_HYOSUNG.pdf` (→ objeto do
+  PIPELINE, na raiz) e `manual/7/../8/x.pdf` (→ anexo de OUTRA conta): o usuário registraria na
+  conta dele um objeto alheio **sem subir nada** e o veria pela UI — furando a visibilidade por
+  dono (076) e criando uma linha `origin='manual'` (removível!) para um documento de auditoria.
+  Por isso `isOwnManualKey` casa a regex do formato completo (`ts_rand8_nome.ext`, extensão na
+  allowlist), montada a partir das MESMAS constantes de `buildStorageKey`. Travado em
+  `lib/conta-attachments.test.ts` (7 chaves forjadas + a chave real).
+- **Erro de escrita passa por `mapWriteError` (§3 M-2 — não regredir):** default **500**, não 422.
+  `failFromError` ECOA a mensagem de qualquer status < 500, então um erro inesperado do Postgres
+  em 422 vazaria nome de tabela/constraint (cenário real: `file_name` só com espaços furava o
+  `min(1)` do Zod e batia no CHECK `btrim(...)` → `23514`). Curados: `23505`→409, `23503`→404.
+  O schema também tem `.trim()` antes do `.min(1)`, para o nome vazio morrer na validação.
+- **Remoção = SOFT DELETE** (`deleted_at`/`deleted_by`) — o **objeto FICA no bucket** (política de
+  preservação + policy RESTRICTIVE da 073). Anexo `origin='pipeline'` é **irremovível** (trilha de
+  auditoria → **403**); anexo manual: só o **autor** ou o **grupo Administrador** (`isInAdminGroup`
+  de `lib/auth.ts` — variante booleana de `requireAdminGroup`, pois o autor também pode).
+- **Filtro de `deleted_at` EXPLÍCITO no repository (o bug mais provável desta feature):** a policy
+  esconde o removido do papel `authenticated`, mas a Next API usa **service_role, que ignora a RLS**.
+  Sem `.is('attachments.deleted_at', null)`, o PATCH devolveria anexos removidos e eles
+  **reapareceriam no grid** (que mescla a resposta in-place, sem refetch). O filtro é de **recurso
+  embutido** do PostgREST (não `!inner`): tira o anexo de dentro da conta sem descartar contas —
+  conta sem anexo vem com `attachments: []`. Vale no retorno de INSERT/UPDATE (verificado contra o
+  banco real). O `SELECT_WITH_EMBEDS` do frontend **não** filtra (lê como `authenticated`).
+- **Modo CREATE: os arquivos sobem só DEPOIS do `POST /api/contas` devolver o id** — a fila fica em
+  memória no `ContaForm` (prop `onSubmit(data, pendingFiles)`) e o **pai** faz o flush. A alternativa
+  (staging + `move`) exigiria coletor de órfãos e uma exceção à preservação. **O modo EDIT usa o
+  mesmo caminho** (subir ao escolher deixaria órfão se o modal fosse cancelado). Trade-off assumido:
+  upload que falha deixa a conta sem aquele anexo → `Alert variant="warning"` **nomeando os
+  arquivos** (dizer só "erro" faria o usuário relançar a conta e duplicá-la).
+- **`onSubmit` DEVOLVE a fila que resta (não regredir — duplicava anexo):** o retorno de
+  `onSubmit(data, files)` é `File[] | void` = os arquivos que **permanecem** na fila (`undefined`
+  esvazia; **lançar** preserva tudo). Sem isso, na falha parcial — em que o modal de `/consulta`
+  **fica aberto** e o form **não remonta** — um 2º submit reenviava a fila INTEIRA e **duplicava o
+  que já subiu** (cada upload gera `storage_key` nova, então o UNIQUE não deduplica), e o próprio
+  aviso "tente novamente" levava a isso. Hoje: `Consulta.handleEditSubmit` devolve só os que
+  falharam **e** faz `setEditing(merged)` (senão a lista do modal não mostraria os recém-salvos);
+  `ContasNovaPage` devolve `files` quando a CONTA falha (o erro é engolido lá, não sobe ao form).
+- **Frontend:** `atoms/FileInputButton` (input file real + `sr-only` → teclado/leitor de tela de
+  graça) · `molecules/AttachmentPicker` (fila controlada, valida mime/tamanho/duplicata no cliente —
+  conveniência; quem manda é o backend) · `molecules/AttachmentList` (apresentacional pura, serve
+  fila e salvos) · `organisms/ContaAttachments` (lista/viewer/remoção). **Assimetria deliberada:**
+  adicionar é rascunho (efetiva no submit); **remover é imediato**, com confirmação. O
+  `AttachmentViewer` ganhou a prop opcional **`title`** (nome amigável — sem ela o cabeçalho mostraria
+  a chave crua `manual/512/2026…_Boleto.pdf`); segue recebendo a **chave crua** em `sourceFile`.
+  Serviço em `services/contaAttachments.ts` (**não** usa o `call()` de `contas.ts`, que fixa
+  `Content-Type: application/json`); `uploadContaAttachments` é **sequencial** (progresso honesto
+  "2/3", falha isolada) e **NÃO lança** — devolve `{saved, failed}`.
+- **Fallback `legacySourceFile` (não regredir):** o registro no reader é **não-fatal**, então uma
+  conta pode ter `source_file` e nenhuma linha. Sem o fallback o anexo do e-mail sumiria da tela —
+  regressão contra o antigo botão "Ver anexo", que o painel de detalhe de `/consulta` substituiu pela
+  lista (`ContaAttachments` com `canRemove={false}` — a remoção é pelo modal de edição). A condição é
+  **"não há anexo de ORIGEM PIPELINE"**, não "não há anexo nenhum": com `rows.length === 0` o boleto
+  do e-mail sumia assim que o usuário anexasse **um** arquivo manual — a mesma regressão, reintroduzida
+  pela porta dos fundos. O item legado entra ANTES dos demais na lista.
+- **Pipeline (`read_emails.py`):** `register_financial` passou a devolver **`int | None`** (o id da
+  conta) em vez de bool — via `Prefer: return=representation` + `select=id`; os call sites
+  `if ctrl.register_financial(...)` seguem válidos (id é truthy, None falsy). O vínculo é feito no
+  **Passo 2**, após a conta existir (`register_attachment`, idempotente por
+  `on_conflict=account_id,storage_key` + `ignore-duplicates`, **não-fatal**) — no Passo 1 não há id, e
+  a conta pode nem ser criada. Registra **sempre que a conta é criada**, mesmo se o upload falhou (a
+  tabela espelha o `source_file`); `storage_key == file_name` (nome flat). O anexo herda o **dono** da
+  conta via `ctrl.resolve_user(sender_email)` — **NÃO** use `payload.get("created_by")`:
+  `register_financial` resolve o dono numa **cópia local** do payload, então o dict do call site nunca
+  o recebe e todo anexo cairia no sentinela, divergindo do backfill (que gravou o dono real).
+  `resolve_user` é **cacheado por e-mail** na instância (a mesma caixa repete o remetente; a falha
+  NÃO é cacheada). **Deploy: copiar só `read_emails.py`** (o `extract_pdf.py` não muda; sem `.env`; a
+  079 já rodou na base compartilhada).
+
 **CRUD de centros de custo (`apps/api-backend/lib/cost-centers.ts` + `app/api/cost-centers/**`):** CRUD
 do cadastro `financial_cost_center` (grupo **Tabelas** da sidebar, página **`/tabelas/centros-de-custo`**
 → `pages/CostCentersPage.tsx`). PK `cost_center_id` é **SMALLINT IDENTITY ALWAYS** (gerada pelo banco,
@@ -438,6 +538,15 @@ controlado pelo servidor/Admin API; ver §1 A-1 da auditoria de segurança); (2)
 (`user_profile.group_id = 1`, migration 065; ver "Hard delete dos cadastros"). Fora dessas duas, não
 há segregação de papéis no CRUD — se um projeto precisar de mais, abrir tarefa dedicada (RBAC
 completo desenhado em `docs/design/permissoes-por-grupo.md`).
+
+> **Recorte importante — "confiável" NÃO é "vê e edita tudo" (não confundir).** O modelo acima é
+> sobre **papel/função**: nenhum CRUD é reservado a um cargo. Já a **visibilidade por LINHA** é uma
+> dimensão à parte e ATIVA: o grupo com `user_group.sees_only_own_accounts` (hoje só o **Comercial**)
+> só **vê** — e portanto só **edita** — as contas em que é dono, os e-mails/erros de que é remetente
+> e os anexos correspondentes. A regra é imposta no BANCO (RLS 076/078/079/**080** no Storage e
+> **081** no UPDATE) e na Next API (`canSeeConta`), não na tela. Os demais grupos (Financeiro,
+> Diretor, Administrador…) veem e editam livremente a conta de qualquer usuário, anexos inclusos —
+> como o modelo single-org prevê. Ver "Visibilidade de contas por dono".
 **Cadastro de operadores:** crie no **Supabase Dashboard** (Authentication → Users → Add user,
 com "Auto Confirm User"); operador comum **não** precisa de papel/`app_metadata` — só o usuário
 que for criar outros via API precisa de `app_metadata.role: "admin"`. RLS (migrations 056/057)
@@ -513,15 +622,83 @@ REST direta (`authenticated` → `auth.uid()`); Next API PATCH (`contaService.up
 < `trg_fe_*`), então vê o `status_id` do humano, não o recálculo automático por vencimento.
 **Exibição:** o card de detalhe de `/consulta` mostra **Criado por / Última edição por / Situação
 alterada por** (e-mail resolvido pela view **`public.app_user`** via `getAppUsers()` — diretório
-id→e-mail, grant `authenticated`, usuários internos). `created_by`/`updated_by`/`status_changed_by`/
-`status_changed_at` estão no schema de LEITURA de `@sheild/shared` (nunca no input — carimbados pelo
-servidor/trigger).
+id→e-mail, grant de **SELECT** para `authenticated`, usuários internos; a ESCRITA foi revogada na
+081 — a view rodava como owner e era auto-atualizável, então o grant default virava escrita em
+`auth.users`: ver "ESCALADA DE PRIVILÉGIO pela view `app_user`"). `created_by`/`updated_by`/
+`status_changed_by`/`status_changed_at` estão no schema de LEITURA de `@sheild/shared` (nunca no
+input — carimbados pelo servidor/trigger).
+
+**Visibilidade do STORAGE por dono (migration 080 — não regredir):** a regra "grupo restrito só vê
+as contas em que é dono" vale **também para o bucket** (decisão do usuário, 2026-07-15). A policy da
+021 era `USING (bucket_id = 'attachments')` — sem filtro de dono; ela nasceu antes da visibilidade
+por grupo, e a 076/079 restringiram conta/anexo mas o bucket ficou aberto. **Verificado com o papel
+`authenticated` real:** ester (Comercial) via 36 contas / 26 anexos pela tela e **565 objetos** no
+Storage — e a chave é obtível (`GET /api/contas/:id` devolve `source_file`; `/attachments` devolve
+`storage_key`; ambas via service_role, que ignora a RLS). A 080 libera o objeto só quando existe
+uma linha **visível para o próprio usuário** — `EXISTS` em `financial_account_attachment.storage_key`
+**OU** em `financial_account_control.source_file`. As subconsultas são avaliadas como `authenticated`,
+então a RLS da 076/079 se aplica DENTRO delas: a policy **herda a regra sem duplicar o predicado de
+dono** (visível no `EXPLAIN`: o filtro `auth_group_sees_only_own() OR created_by = …` aparece dentro
+do SubPlan). Resultado: Comercial 565→**20** objetos (**0** de contas alheias), Financeiro 565→**233**
+(nenhum a menos); `service_role` inalterado.
+- **Os DOIS `EXISTS` são necessários:** o de `source_file` cobre o anexo do e-mail cuja linha não
+  existe (o registro no reader é NÃO-FATAL) — é o fallback `legacySourceFile` da UI. Sem ele, esse
+  anexo pararia de abrir.
+- **332 dos 565 objetos ficam invisíveis pela API** (não casam nenhuma linha: PDF que subiu no Passo
+  1 e cuja conta nunca foi criada — CT-e ignorado, extração falhou, não-pagável). Já eram
+  inalcançáveis pela UI, e o pipeline (`service_role`) segue enxergando para reprocessar.
+- **Índice `ix_fac_source_file`** (parcial, `WHERE source_file IS NOT NULL`): a policy roda a CADA
+  download; sem ele o `EXISTS` viraria seq scan em `financial_account_control`. O lado do anexo usa
+  o `ix_faa_storage_key` da 079. Medido: ~3,7 ms com os dois índices em uso.
+
+**`canSeeConta` — a Next API respeita a visibilidade por dono (`lib/auth.ts` — não regredir):** a
+Next API lê/escreve com **service_role, que IGNORA a RLS**, então um usuário de grupo restrito que
+forçasse um id alheio recebia (e editava) a conta de outro, embora a tela e o Storage (080) já a
+escondessem. `canSeeConta(req, id)` faz a checagem com o **token do próprio usuário** (chave anon +
+`setHeader('Authorization')` na query) — a regra fica ONDE já está, na policy da 076, em vez de
+reimplementada em TS (2ª fonte de verdade fadada a divergir); quando o blueprint trouxer novas
+dimensões (empresa/centro/plano), o guard as herda de graça. Aplicado em **`GET`/`PATCH`
+/api/contas/:id** e nas **3 rotas de anexo** (`GET`/`POST` attachments, `POST` upload-url, `DELETE`
+attachments/:attId). Responde **404, não 403** — 403 revelaria que a conta existe. Regra: **quem não
+pode VER não pode EDITAR**. O `upload-url` sem o guard entregaria uma credencial de ESCRITA no
+Storage para a conta de outro.
+
+**Escrita direta por `authenticated` — RLS alinhada à visibilidade (migration 081 — não regredir):**
+o frontend escreve DIRETO no PostgREST (sem passar pela Next API, logo sem `canSeeConta`) em dois
+pontos: a curadoria inline de `/consulta` (`has_invoice`/`has_bank_slip`/`status_id`) e o "revisado"
+de `/emails` (`reviewed_at`). Aí quem manda é a RLS — e as duas policies de UPDATE eram
+**`USING (true)`**: um usuário de grupo restrito alterava a curadoria de QUALQUER conta por um PATCH
+forjado por id (verificado: ester conseguia marcar NF nas 407 contas; agora **0** alheias). A 081
+troca o predicado pelo **mesmo do SELECT** (076 em `financial_account_control`; 078 —
+`lower(sender_email) = lower(auth.email())` — em `email_control`), com `WITH CHECK` idêntico.
+- **A curadoria por CLIQUE continua funcionando** (requisito do usuário): o predicado é o mesmo do
+  SELECT, então o usuário edita exatamente as linhas que a tela mostra. Verificado: ester marca
+  NF/BOL/situação nas **36** contas dela e em **0** alheias; barbara (Financeiro, irrestrita) segue
+  editando as **412**. `/emails`: 31 próprios × 0 alheios.
+- **Os GRANTs por coluna (030/033/068) são intocados** e continuam sendo o que limita o QUE é
+  gravável (`has_invoice`/`has_bank_slip`/`status_id`; `reviewed_at`). Um `REVOKE UPDATE` nessas
+  duas tabelas os derrubaria e quebraria a curadoria — por isso a 081 revoga só `INSERT, DELETE`
+  ali (e é por isso que a 057 não as tocou).
+
+**ESCALADA DE PRIVILÉGIO pela view `app_user` — FECHADA (migration 081; a mais grave até aqui):**
+a view da 077 (`SELECT id, email FROM auth.users`) tem `security_invoker = false` — roda como o
+OWNER e ignora a RLS de `auth.users`, o que é **necessário** para o `/consulta` resolver o e-mail do
+autor. O problema era o outro lado: view simples é **auto-atualizável** (`is_updatable = YES`) e o
+Supabase concede grants DEFAULT de escrita ao papel. Verificado com o papel `authenticated` real —
+ester (Comercial, o grupo MAIS restrito) rodou
+`UPDATE public.app_user SET email='invadido@…' WHERE email='ricardo@sheild.com.br'` e alterou **1
+linha em `auth.users`**: qualquer usuário logado podia trocar o e-mail de qualquer outro (inclusive
+do Administrador) e tomar a conta via "esqueci minha senha". O `DELETE` só não passou por uma FK
+acidental (`status_changed_by`) — usuário sem contas seria apagável. Fix: `REVOKE INSERT, UPDATE,
+DELETE ON public.app_user FROM authenticated, anon` (a view é read-only por natureza; o
+`security_invoker=false` PERMANECE, senão o autor some da tela — `auth.users` não tem policy para
+`authenticated`). Verificado: `42501 permission denied for view app_user`, e a leitura segue (12
+usuários). **Lição:** toda VIEW nova sobre `auth.*`/dado sensível precisa de REVOKE explícito de
+escrita — o default do Supabase é permissivo e a RLS da tabela-base NÃO protege uma view
+`security_invoker = false`.
 
 **Escala futura (fora das Etapas 1–2):** `auth_is_admin()` (bypass por papel) e as dimensões de
-visibilidade do blueprint (`docs/design/permissoes-por-grupo.md`: empresa/centro/plano). Hardening
-opcional: alinhar a policy de UPDATE (`authenticated_update_financial_flags`, hoje `USING(true)`) à
-visibilidade por dono para usuários restritos (hoje a UI já não mostra a linha, mas um PATCH forjado
-por id contornaria).
+visibilidade do blueprint (`docs/design/permissoes-por-grupo.md`: empresa/centro/plano).
 
 **Erros 5xx não vazam detalhe interno (segurança §3 M-2):** os route handlers de CRUD usam
 `failFromError(e, '<tag>')` (`lib/response.ts`) — erro com `status` 4xx ecoa a mensagem
@@ -902,6 +1079,24 @@ py -3 scripts\reprocess_cte_accounts.py --dry-run   # lista o que faria
 py -3 scripts\reprocess_cte_accounts.py             # re-rotula + exclui
 ```
 
+Limpar do bucket os **objetos ÓRFÃOS** — os que nenhuma linha referencia. `upload_attachment`
+publica TODO PDF no Passo 1, **antes** de saber se ele vira conta; quando não vira (CT-e/NF-e
+`ignorado`, fatura cujo boleto virou a conta, confirmação de pagamento, **dedup** de cobrança
+repetida), o objeto fica sem `financial_account_attachment.storage_key` nem
+`financial_account_control.source_file` — e, desde a **080**, invisível pela API. **PRESERVA** o que
+é trabalho em aberto: e-mail em `pendente`/`falha` e objeto citado em `email_processing_errors`
+(extração falhou — o bucket é a cópia acessível; o original só existe no IMAP). IRREVERSÍVEL — use
+`--dry-run` primeiro; o backup diário (skill `backup-supabase`) cobre o bucket.
+
+```powershell
+py -3 scripts\purge_orphan_attachments.py --dry-run  # lista o que apagaria e o que preserva
+py -3 scripts\purge_orphan_attachments.py            # apaga
+```
+
+> **Aplicado em 2026-07-15:** 571 → **236** objetos (335 removidos, ~41 MB). **3 preservados**
+> (boleto Amil `pendente`, boleto OBER NF 963681 e fatura Correios — `extracao_falhou`). Integridade
+> conferida: **0** anexos e **0** `source_file` ficaram sem objeto.
+
 Reprocessar **UM e-mail específico** pelo **pipeline completo** (Message-ID) — único que
 cobre **anexo e IMAGEM INLINE** (recibo/comprovante colado no corpo, via Vision), que os
 reprocessadores de corpo/link não cobrem. Rebusca o e-mail no IMAP, roda `process_message`,
@@ -965,6 +1160,7 @@ apps/frontend-vite/src/components/
 │   ├── CheckToggle.tsx        # checkbox de curadoria (NF/Boleto) — escreve no banco
 │   ├── SelectCheckbox.tsx     # checkbox de SELEÇÃO de linha (rowSelection) + indeterminate
 │   ├── LabeledSelect.tsx      # (tabelas) <select> rotulado (htmlFor/id + erro) — lookups dos forms de cadastro
+│   ├── FileInputButton.tsx    # (anexos) <input type=file multiple> REAL + sr-only (teclado/leitor de tela nativos)
 │   └── StatusSelectCell.tsx   # (consulta) dropdown inline de situação no grid — altera status_id (STATUS_OPTIONS)
 ├── molecules/
 │   ├── SocialLinksBar.tsx     # (v2) círculos Otimotex/Lebianco/WhatsApp
@@ -975,6 +1171,8 @@ apps/frontend-vite/src/components/
 │   ├── ChartAccountSelect.tsx # (contas + fornecedores) react-select Async — plano de contas (CASCATA: filtrado por centro)
 │   ├── ColumnVisibilityMenu.tsx # (grid) popover mostrar/ocultar + fixar coluna (pin esq/dir)
 │   ├── GridToolbar.tsx        # (grid) barra: colunas + densidade + restaurar + ações de seleção
+│   ├── AttachmentPicker.tsx   # (anexos) fila CONTROLADA de arquivos a enviar — valida mime/tamanho/duplicata no cliente
+│   ├── AttachmentList.tsx     # (anexos) lista apresentacional PURA (serve a fila e os salvos) — ícone/tamanho/selo e-mail
 │   └── SearchInput.tsx        # (cadastros) busca com lupa + botão limpar (X) — usado pelo grupo Tabelas + /fornecedores
 ├── organisms/
 │   ├── LoginForm.tsx          # (v2) estado + validação + supabase.auth.signInWithPassword
@@ -982,7 +1180,8 @@ apps/frontend-vite/src/components/
 │   ├── ResetPasswordForm.tsx  # (gradient) updateUser + signOut + redirect (fluxo "esqueci a senha")
 │   ├── ChangePasswordForm.tsx # (auth) troca obrigatória no 1º acesso — updateUser + marca password_changed (sem deslogar)
 │   ├── ResendErrosAction.tsx  # (cobrança) barra de seleção "Reenviar e-mails (N)" + confirmação inline + poll de progresso
-│   ├── ContaForm.tsx          # (contas) form criar/editar conta — supplier/centro/plano + cascata
+│   ├── ContaForm.tsx          # (contas) form criar/editar conta — supplier/centro/plano + cascata; onSubmit(data, pendingFiles) — a fila de anexos sobe no PAI, após gravar a conta
+│   ├── ContaAttachments.tsx   # (anexos) anexos SALVOS de uma conta — lista + viewer + soft delete (com confirmação); fallback legacySourceFile
 │   ├── SupplierForm.tsx       # (fornecedores) form criar/editar fornecedor — inclui classificação default (centro/plano em cascata)
 │   ├── CostCenterForm.tsx     # (tabelas) form criar/editar centro de custo — código + descrição
 │   ├── BankForm.tsx           # (tabelas) form de banco — código(3) + nome
@@ -995,7 +1194,7 @@ apps/frontend-vite/src/components/
 │   ├── dataGrid.variants.ts   # cva por slot (header/row/cell/skeleton/empty/footer/pin/resize/grip/densidade/wrap) default|silver
 │   └── dataGrid.rows.ts       # buildRenderItems (achata linhas→itens row/second/footer/detail p/ virtualização)
 ├── AuthLayout.tsx             # (gradient) wrapper full-page para Forgot/Reset
-├── AttachmentViewer.tsx       # visualizador de PDF (signed URL do Storage) em <dialog> nativo (showModal: role/foco/trap/Esc nativos) + iframe SEM sandbox — o viewer PDF do Chrome (PDFium) não renderiza em iframe sandboxed, nem com allow-scripts (S5-1 introduziu e quebrou o boleto; revertido). NÃO reintroduzir sandbox; ver comentário no componente
+├── AttachmentViewer.tsx       # visualizador de PDF (signed URL do Storage) em <dialog> nativo (showModal: role/foco/trap/Esc nativos) + iframe SEM sandbox — o viewer PDF do Chrome (PDFium) não renderiza em iframe sandboxed, nem com allow-scripts (S5-1 introduziu e quebrou o boleto; revertido). NÃO reintroduzir sandbox; ver comentário no componente. `sourceFile` = chave CRUA do objeto (pipeline: nome flat; manual: `manual/{id}/…`); prop opcional `title` = nome amigável no cabeçalho (sem ela cairia a chave crua)
 ├── Layout.tsx (+ Layout.test.tsx)   # sidebar; navLink = cva local (estado active); menu em 5 grupos (ver abaixo)
 ├── ProtectedRoute.tsx
 ├── ErrorBoundary.tsx          # boundary raiz (main.tsx): chunk lazy obsoleto → auto-reload; runtime → fallback "Recarregar" (+ teste/a11y)
@@ -1085,7 +1284,8 @@ mecanismo de ocultação por breakpoint.
 
 Tipos compartilhados vêm de `@sheild/shared` (ex.: `FinancialEmail`, `EmailControl`).
 Helpers em `src/lib/`: `getErrorMessage.ts` (erro em strict mode), `format.ts` (formatadores
-de exibição — `fmtDate`/`fmtDateTime`/`fmtMoney`/`fmtCnpj`/`fmtCpf`/`fmtCostCenter`/`fmtChartAccount`;
+de exibição — `fmtDate`/`fmtDateTime`/`fmtMoney`/`fmtCnpj`/`fmtCpf`/`fmtCostCenter`/`fmtChartAccount`/
+`fmtBytes` (tamanho de arquivo B/KB/MB, base 1024 — usado pela lista de anexos);
 **fonte única** consumida por `Consulta`/`Emails`/`Dashboard`/`useGridColumns` — não recriar cópias
 locais), `csv.ts` (`csvCell` — célula CSV segura: escapa aspas, remove CRLF e **neutraliza
 injeção de fórmula** `= + - @` no export de `/consulta`; segurança §5 M1), `cn.ts` (merge de
@@ -2258,9 +2458,9 @@ faturas SIEG em `ignorado`; o handler A1 (baixar o boleto real) segue como melho
 | Rota | Componente | Tabela |
 |---|---|---|
 | `/emails` | `Emails.tsx` | `email_control` + `financial_account_control` por `message_id` (RLS por remetente p/ grupo restrito — migration 078) |
-| `/consulta` | `Consulta.tsx` | `financial_account_control` (scroll infinito + virtualização, filtros, CSV client-side; RLS por dono p/ grupo restrito — migration 076) |
+| `/consulta` | `Consulta.tsx` | `financial_account_control` (scroll infinito + virtualização, filtros, CSV client-side; RLS por dono p/ grupo restrito — migration 076) + `financial_account_attachment` (painel de detalhe lista os anexos; o modal de edição adiciona/remove — ver "Anexos de conta") |
 | `/erros` | `Erros.tsx` | `email_processing_errors` (RLS por remetente p/ grupo restrito — migration 078) |
-| `/contas` | `ContasNovaPage.tsx` | `financial_account_control` (lançamento manual via `ContaForm`) |
+| `/contas` | `ContasNovaPage.tsx` | `financial_account_control` (lançamento manual via `ContaForm`) + `financial_account_attachment` (anexos enviados após o POST devolver o id — ver "Anexos de conta") |
 | `/fornecedores` | `SuppliersPage.tsx` | `supplier` (CRUD via Next API) |
 | `/tabelas/centros-de-custo` | `CostCentersPage.tsx` | `financial_cost_center` (CRUD via Next API) + grid complementar mestre-detalhe do plano de contas do centro selecionado (`financial_chart_of_account` lançável) |
 | `/tabelas/bancos` | `BanksPage.tsx` | `financial_bank` (CRUD via Next API) |
@@ -2499,11 +2699,40 @@ local/agendada (ver flag `EMAIL_READER_ENABLED` acima e memória [[vercel-deploy
 ## Banco de dados (Supabase)
 
 Migrations em `supabase/migrations/`, aplicadas **manualmente no SQL Editor** em ordem
-numérica (`001` → `078`). **Próxima migration = `079`** (verificar sempre antes de criar nova).
+numérica (`001` → `081`). **Próxima migration = `082`** (verificar sempre antes de criar nova).
 Não há migration automática. (As `059`/`060`/`061`/`063`/`064`/`066`/`067`/
-`068`/`069`/`070`/`071`/**`072`**/**`073`**/**`074`**/**`075`**/**`076`**/**`077`**/**`078`** foram aplicadas **direto via Supabase MCP** nesta
+`068`/`069`/`070`/`071`/**`072`**/**`073`**/**`074`**/**`075`**/**`076`**/**`077`**/**`078`**/**`079`**/**`080`**/**`081`** foram aplicadas **direto via Supabase MCP** nesta
 máquina — o arquivo numerado serve
-de histórico; **não reaplicar** no SQL Editor (todas idempotentes, mas evite re-run). A **078**
+de histórico; **não reaplicar** no SQL Editor (todas idempotentes, mas evite re-run). A **081**
+(**fecha a ESCRITA por `authenticated` no caminho REST direto** — ver "Escrita direta por
+`authenticated`" e "ESCALADA DE PRIVILÉGIO pela view `app_user`"): (a) **CRÍTICO** — `REVOKE
+INSERT/UPDATE/DELETE` na view `app_user`, que era auto-atualizável e rodava como owner: qualquer
+usuário logado alterava `auth.users` (trocar o e-mail do Administrador → tomar a conta pelo "esqueci
+minha senha"); (b) as policies de UPDATE de `financial_account_control` e `email_control` eram
+`USING (true)` → passam a usar o MESMO predicado do SELECT (076/078), preservando a curadoria por
+clique (ester: 36 próprias × 0 alheias; barbara: 412); (c) `REVOKE` dos grants default residuais em
+6 tabelas + `INSERT, DELETE` (nunca `UPDATE` — quebraria os grants por coluna) nas duas da
+curadoria. A **080**
+(**a leitura do BUCKET herda a visibilidade da conta** — ver "Visibilidade do Storage por dono"):
+a policy da 021 era `USING (bucket_id='attachments')` **sem filtro de dono** — o grupo restrito via
+36 contas pela tela mas alcançava os **565 objetos** do bucket pela API do Storage (a chave é
+obtível: `GET /api/contas/:id` devolve `source_file` e `/attachments` o `storage_key`, ambos via
+service_role). Agora o objeto só é liberado se existir uma linha **visível para o próprio usuário**
+(`EXISTS` em `financial_account_attachment.storage_key` OU `financial_account_control.source_file`)
+— as subconsultas rodam como `authenticated`, então a RLS da 076/079 se aplica dentro delas e a
+policy **herda a regra sozinha**. Verificado: Comercial 565→**20** objetos (0 alheios), Financeiro
+565→**233** (não perdeu nenhum). + índice `ix_fac_source_file`. A **079**
+(**anexos MÚLTIPLOS por conta** — ver "Anexos de conta"): cria
+`financial_account_attachment` (1:N → `financial_account_control`, `origin` manual/pipeline, soft
+delete `deleted_at`/`deleted_by`, UNIQUE `(account_id, storage_key)`), RLS SELECT que **herda a
+visibilidade da conta pai** via `EXISTS` (sem duplicar o predicado da 076 — verificado com o papel
+`authenticated` real: Comercial vê 36 contas/26 anexos, Financeiro vê tudo) + **`REVOKE INSERT,
+UPDATE, DELETE` do papel `authenticated`** (o Supabase concede esses grants por DEFAULT em toda
+tabela nova; a RLS já bloqueava, mas o REVOKE é a mesma defesa em profundidade das 056/057 —
+sem ele a tabela ficaria assimétrica com `supplier`/`status`) + backfill dos `source_file` existentes
+como `origin='pipeline'` (na aplicação: 249 linhas / 228 objetos — há menos objetos que contas porque
+um PDF com N boletos gera N contas). `source_file` **permanece** na conta (dedup/auditoria do
+pipeline). A **078**
 (**Etapa 1 estendida a `/emails` e `/erros`** — ver "Visibilidade de contas por dono"): reescreve as
 policies SELECT de `email_control` e `email_processing_errors` (papel `authenticated`) para
 `NOT public.auth_group_sees_only_own() OR lower(sender_email) = lower(auth.email())` — reusa o helper
@@ -2581,7 +2810,14 @@ não resolvia o embed `group` do grid/form de Plano de contas; sem valores órf�
 não falha. A `057` é de **segurança**
 (idempotente, defesa em profundidade): `REVOKE INSERT/UPDATE/DELETE` do papel `authenticated`
 em `supplier`/`status` — o RLS já bloqueava (ambas só têm política de SELECT), isto remove o
-grant default residual para simetria com a `056`; escrita segue só `service_role`. A `056` é de **segurança**
+grant default residual para simetria com a `056`; escrita segue só `service_role`. **O REVOKE do
+grant default é um PADRÃO recorrente deste projeto, não um evento isolado** — o Supabase concede
+INSERT/UPDATE/DELETE ao papel `authenticated` em toda tabela/VIEW nova do schema public, então
+**toda migration que cria objeto novo deve terminar com o REVOKE do que o papel não escreve**
+(056/057 nos cadastros, **079** no anexo, **081** nas 6 tabelas restantes + a view `app_user`,
+onde deixar o default passar era uma escalada de privilégio real). Conferir com
+`information_schema.role_table_grants` (grantee='authenticated', privilege_type in INSERT/UPDATE/
+DELETE) — o esperado é a lista vazia, fora dos grants POR COLUNA intencionais das 030/033/068. A `056` é de **segurança**
 (idempotente): habilita RLS + leitura `authenticated` + **REVOKE de escrita** do papel
 `authenticated` nos cadastros pré-existentes (`company`/`financial_account`/`financial_bank`/
 grupos/subgrupos) e em `audit_log` se existir — fecha o ponto cego de RLS apontado na
@@ -2637,6 +2873,7 @@ internet` ao CHECK de `document_type` e faz backfill — ver "Normalização de 
 | `financial_account_control` | Tabela principal de contas a pagar — uma linha por documento; alimentada pelo pipeline de e-mail **e** por CRUD manual (baixas, consolidações, dashboards). Substitui a antiga `financial_emails` (dropada na migration 020). O fornecedor é referenciado **só pela FK `sk_supplier`** (surrogate key snowflake, NOT NULL — **migration 042**, antes era `supplier_id`) — nome/CNPJ vêm do JOIN com `supplier` (colunas denormalizadas dropadas na **migration 041**). Tem `sender_email` (migration 023; backfill em 025) usado na resolução p/ alinhar `supplier.email`, e `subject` (migration 025) — exibidos/buscados em `/consulta`. **Classificação contábil** (migrations 047/048): `cost_center_id`/`chart_account_id` SMALLINT, NOT NULL DEFAULT 0 (FKs para os cadastros; id 0 = "não informado") — preenchidos no CRUD manual (cascata centro→plano). **Autoria** (migrations 076/077): `created_by` (DONO — base da visibilidade por dono), `updated_by`, `status_changed_by`, `status_changed_at` — UUID → `auth.users`, NOT NULL DEFAULT sentinela `teste@otimotex.com.br`, carimbados pelo servidor/trigger `trg_fac_authorship` (ver "Visibilidade de contas por dono" / "Auditoria de autor") |
 | `financial_cost_center` / `financial_chart_of_account` | **Cadastros de classificação contábil** (pré-existentes, **preservados em limpezas**) usados como lookup no modal de contas. `financial_cost_center` é **gerenciado pelo CRUD de centros de custo** (`/tabelas/centros-de-custo` — PK `cost_center_id` SMALLINT IDENTITY ALWAYS; id 0 = sentinela "não informado", fora do CRUD; ver "CRUD de centros de custo"). `financial_chart_of_account` (também gerenciado pelo **CRUD de Plano de contas** — `/tabelas/plano-de-contas`) tem `cost_center_id` (relaciona o plano ao centro — base da CASCATA), `chart_account_subgroup_id` (FK → subgrupo) e `is_postable` (só os postáveis são lançáveis). Os cadastros `financial_bank`, `financial_account`, `financial_chart_of_account_group` e `financial_chart_of_account_subgroup` também ganharam CRUD próprio (grupo Tabelas — ver "CRUDs dos demais cadastros contábeis"). Lidos via `lib/lookups.ts` (service_role) **e** pelo frontend via embed REST (papel `authenticated`); RLS habilitado com policy de SELECT `TO authenticated` (migration 049 — sem ela o embed voltava null e a UI mostrava `#id`) |
 | `email_processing_errors` | Log de falhas com `raw_payload` JSON. **Visibilidade por REMETENTE (migration 078):** policy SELECT (`authenticated`) filtra por `lower(sender_email)=lower(auth.email())` para grupo com `sees_only_own_accounts` (Comercial) — `/erros` mostra só os erros de que o usuário é remetente; demais veem tudo; `service_role` com bypass |
+| `financial_account_attachment` | **Anexos (N) de uma conta** (migration 079) — PADRÃO ÚNICO das duas origens: `origin='pipeline'` (documento do e-mail; espelha `financial_account_control.source_file`, gravado pelo reader) e `origin='manual'` (upload do usuário no cadastro/edição). `storage_key` = chave CRUA do objeto no bucket `attachments` (pipeline: nome flat; manual: `manual/{conta}/…`). **Soft delete** (`deleted_at`/`deleted_by`) — o objeto FICA no bucket; anexo `pipeline` é irremovível (auditoria → 403). UNIQUE `(account_id, storage_key)`; **não** UNIQUE global (um PDF com N boletos gera N contas que COMPARTILHAM o objeto). RLS SELECT herda a visibilidade da conta pai (076) via `EXISTS`; escrita só `service_role`. Ver "Anexos de conta" |
 | `supplier` | Fornecedores. PK = `sk_supplier` (surrogate key snowflake auto-incremental — **migration 042**); `supplier_id` é **chave de negócio** (NOT NULL UNIQUE, só nesta tabela; = `sk_supplier` nos fornecedores criados pela extração, via trigger de espelho `trg_supplier_mirror_id`, podendo divergir em cargas externas). Auto-criados pelo trigger de resolução, mas **cadastro PRESERVADO** (curadoria manual de `email`/`email2`/`email3`/`email4`) — **nunca truncar** em limpezas (ver "Limpeza / reset de dados"). Reconhecimento por **e-mail** em `email`/`email2`/`email3`/`email4` (migrations 023/027/028) — ver "Auto-resolução de fornecedor". **Soft delete** via `deleted_at` (migration 045) — a baixa pelo CRUD da Next API marca `deleted_at` (nunca hard delete) e é bloqueada quando há contas vinculadas; ver "CRUD de fornecedores (Next API)". **Classificação default** `cost_center_id`/`chart_account_id` (SMALLINT NOT NULL DEFAULT 0 + FKs — migration 052): semeia o lançamento de novas contas e é atualizada pelo write-back do modal; ver "Classificação default do fornecedor — sync bidirecional" |
 | `company` | Empresa pagadora (**cadastro**, tem campo `email`). Auto-resolvida pelo trigger `resolve_company_id` a partir de `payer_cnpj`/`payer_name`. **Preservada em limpezas** (ver abaixo) |
 | `status` | **Dimensão** de situação (`status_id`, `status_name`, `status_short_name`, `has_opened`/`has_closed`/`has_invoiced`). 10 linhas (ids 1..10) = **domínio de `financial_account_control.status_id`** (fonte única — a coluna `status` texto foi removida na 069) + alvo da FK `fk_fac_status`. O nome de exibição da conta vem do embed `status_dim:status(...)`. **Cadastro/configuração — preservar em limpezas** |
@@ -2741,6 +2978,18 @@ pelo CRUD de fornecedores (`/fornecedores`); ver "Classificação default do for
 bidirecional". O write-back do modal de contas (`setSupplierClassification`) **permanece** como
 caminho paralelo de gravação.
 
+**Anexos no schema (migration 079):** `financial-account-attachment.schema.ts` traz o domínio
+(`ATTACHMENT_MIME_TYPES` — espelha `_UPLOAD_CONTENT_TYPES` do reader; `ATTACHMENT_MIME_TO_EXT`;
+`ATTACHMENT_ORIGINS`; `ATTACHMENT_MAX_BYTES` = 10 MB) + `financialAccountAttachmentSchema` (leitura)
+e as duas entradas do upload em 2 passos: `attachmentUploadRequestSchema` (`file_name`/`mime_type`/
+`size_bytes` — o que o cliente DECLARA, só um pré-filtro) e `attachmentRegisterSchema` (+
+`storage_key`). `financialAccountControlSchema` ganhou o embed de leitura
+`attachments: z.array(...).optional()`, presente quando o select usa o alias
+`attachments:financial_account_attachment(...)`; ele entra no `.omit()` do
+`financialAccountControlInputSchema` (junto de `supplier`/`cost_center`/`chart_account`/`status_dim`)
+— **anexo NUNCA é gravável pelo corpo da conta**, só pelas rotas dedicadas, o que mantém a regra
+**S3-2** intacta.
+
 **Schema base vs. criação manual:** `amount` é `nullable` no schema base (o pipeline pode
 gravar sem valor → vira erro `sem_valor`, não cria conta). A criação manual via `POST /api/contas`
 usa `financialAccountControlCreateSchema` e a edição via `PATCH` usa
@@ -2782,6 +3031,12 @@ um check verde ao lado do badge de status (compartilhado entre usuários). **Exc
 **grant restrito às colunas** `has_invoice`/`has_bank_slip` (`GRANT UPDATE (has_invoice,
 has_bank_slip)`) — flags de curadoria "Tem NF ?"/"Tem Boleto" editadas como checkbox
 (`CheckToggle`) no grid de `/consulta` via `setFinancialAccountFlag` (update otimista).
+**São DUAS travas independentes, não uma (migration 081 — não confundir):** o GRANT por coluna diz
+QUAIS COLUNAS podem ser escritas; o predicado da policy diz QUAIS LINHAS. As duas policies de UPDATE
+eram `USING (true)` (= qualquer linha) e passaram a usar o MESMO predicado do SELECT (076/078), de
+modo que o usuário só edita o que a tela lhe mostra. Ao mexer em grant aqui, **nunca** faça `REVOKE
+UPDATE` nessas duas tabelas: derruba os grants por coluna e quebra a curadoria inline — a 081 revoga
+só `INSERT, DELETE` (ver "Escrita direta por `authenticated`").
 **Baixa automática no ATO da edição (não regredir):** ao marcar a 2ª flag (NF ou BOL) de
 uma conta com **vencimento <= hoje** e **situação em aberto** (`status_id ∈ {1,2,3}`), o
 `handleToggleFlag` de `Consulta.tsx` dispara também `setFinancialAccountStatus(id,
@@ -2816,6 +3071,9 @@ cadastro/configuração** — não são alimentadas pelo pipeline e nunca devem 
 `financial_account_control`, `email_processing_errors`, `audit_log` — e, para os testes da
 cobrança de vencidos, `cobranca_envios_log` + `cobranca_erros_log` — mais o
 bucket **`attachments`** do Storage e o cache local (`data/pdfs_inbox`, `data/csv_output`).
+`financial_account_attachment` **não precisa entrar na lista**: a FK
+`account_id → financial_account_control(id)` é `ON DELETE CASCADE`, então o `TRUNCATE … CASCADE`
+da tabela de contas já a esvazia junto (é dado do pipeline, não cadastro — pode ir).
 `supplier` **não** é mais alvo: embora seja auto-criado pelo trigger, acumula curadoria
 manual (e-mails `email2`/`email3`/`email4`) que seria perdida na truncagem; no
 reprocessamento o `resolve_supplier_id` reutiliza os fornecedores existentes (casa por
@@ -3169,6 +3427,20 @@ lê os arquivos do disco.
 > print(hasattr(R.SupabaseControl,'resolve_user'))"`
 > **Etapa 2 (auditoria de autor, migration 077) NÃO muda o Python** — só migration (já aplicada) +
 > Next API/frontend (Vercel). A cópia pendente do `read_emails.py` é só a da Etapa 1 (mesma).
+
+> **DEPLOY 2026-07-15 — vínculo do anexo do e-mail (PENDENTE de cópia p/ prod):** a migration 079
+> (anexos múltiplos) faz o reader REGISTRAR em `financial_account_attachment` o anexo que já sobe ao
+> Storage. Deploy = copiar **só** `read_emails.py` (`register_financial` agora devolve o **id** da
+> conta via `return=representation`, + `SupabaseControl.register_attachment` + o vínculo no Passo 2;
+> `extract_pdf.py` NÃO muda). **Sem `.env`, sem dependência nova.** A **migration 079** já rodou na
+> Supabase compartilhada (tabela + RLS + backfill dos `source_file` históricos) → **vale para prod sem
+> passo de banco**. Next API/frontend saem pelo Vercel no merge. **Degrada com segurança:** o registro
+> é não-fatal e a UI tem o fallback `legacySourceFile`, então produção com o `read_emails.py` ANTIGO
+> segue funcionando (só não cria a linha do anexo para contas novas). Esta cópia **substitui** a
+> pendência de 2026-07-10 (Etapa 1) — o mesmo arquivo carrega as duas. Validação (esperado
+> `True True`):
+> `py -3 -c "import sys; sys.path.insert(0,'skills/email-reader/scripts'); import read_emails as R;
+> print(hasattr(R.SupabaseControl,'register_attachment'), hasattr(R.SupabaseControl,'resolve_user'))"`
 
 ### Deploy manual da Cobrança de vencidos (envios) em produção (caso específico — não regredir)
 
