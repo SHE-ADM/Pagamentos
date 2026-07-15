@@ -110,6 +110,42 @@ async function getUserGroupId(userId: string): Promise<number> {
   return data?.group_id ?? 0;
 }
 
+// Pertence ao grupo Administrador? Variante BOOLEANA de requireAdminGroup, para quando o
+// grupo não é um porteiro de rota e sim parte da regra (ex.: remover anexo manual de OUTRO
+// usuário — o autor também pode, então não cabe um 403 antecipado). Lança em falha de query.
+export async function isInAdminGroup(userId: string): Promise<boolean> {
+  return (await getUserGroupId(userId)) === ADMIN_GROUP_ID;
+}
+
+/**
+ * A conta é VISÍVEL para quem fez a requisição?
+ *
+ * A Next API lê tudo com `service_role`, que IGNORA a RLS — então um usuário de grupo restrito
+ * (`user_group.sees_only_own_accounts`, hoje o Comercial) que forçasse um id alheio recebia a
+ * conta e os `storage_key` dos anexos dela, embora a tela e o Storage (migration 080) já a
+ * escondessem. Este guard fecha isso.
+ *
+ * Checa com o **token do próprio usuário** (chave anon) de propósito: a regra fica ONDE já
+ * está — na policy da migration 076 — em vez de reimplementada em TS, o que criaria uma segunda
+ * fonte de verdade fadada a divergir. Quando o blueprint de permissões trouxer novas dimensões
+ * (empresa/centro/plano), este guard as herda de graça.
+ *
+ * @returns true se a conta existe E o usuário pode vê-la. O caller responde **404** (não 403)
+ *   quando false — 403 revelaria que a conta existe.
+ */
+export async function canSeeConta(req: Request, accountId: number): Promise<boolean> {
+  const token = getBearerToken(req);
+  if (!token) return false;
+  const { data, error } = await getAnonClient()
+    .from('financial_account_control')
+    .select('id')
+    .eq('id', accountId)
+    .setHeader('Authorization', `Bearer ${token}`)
+    .maybeSingle();
+  if (error) throw new Error(error.message);
+  return !!data;
+}
+
 // Porteiro do GRUPO ADMINISTRADOR (user_profile.group_id = 1): 401 sem sessão válida,
 // 403 quando autenticado mas fora do grupo, null quando pode prosseguir. É a trava REAL
 // do hard delete dos cadastros — o gate de UI (isAdminGroup) é só cosmético.

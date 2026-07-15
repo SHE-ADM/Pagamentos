@@ -1,10 +1,14 @@
 import type { NextRequest } from 'next/server';
 import { ok, fail, failFromError } from '@/lib/response';
-import { requireAuth, getAuthenticatedUser } from '@/lib/auth';
+import { requireAuth, getAuthenticatedUser, canSeeConta } from '@/lib/auth';
 import { contaService } from '@/lib/contas';
 
 // /api/contas/:id — GET (por id) + PATCH (atualização parcial).
 // SEM DELETE: a "remoção" é PATCH { status: 'cancelado' } (sem hard-delete).
+//
+// `canSeeConta` nas duas: o service lê/escreve por service_role, que IGNORA a RLS da 076 —
+// sem o guard, um usuário de grupo restrito que forçasse um id alheio leria (e editaria) a
+// conta de outro, apesar de a tela já a esconder. Quem não pode VER também não pode EDITAR.
 export const dynamic = 'force-dynamic';
 
 type Context = { params: Promise<{ id: string }> };
@@ -28,6 +32,8 @@ export async function GET(req: NextRequest, ctx: Context) {
   if (id === null) return fail('Identificador de conta inválido', 400);
 
   try {
+    // 404 (não 403) quando não pode ver: 403 revelaria que a conta existe.
+    if (!(await canSeeConta(req, id))) return fail('Conta não encontrada', 404);
     return ok(await contaService.getById(id));
   } catch (e) {
     return mapError(e);
@@ -50,6 +56,7 @@ export async function PATCH(req: NextRequest, ctx: Context) {
   }
 
   try {
+    if (!(await canSeeConta(req, id))) return fail('Conta não encontrada', 404);
     return ok(await contaService.update(id, body ?? {}, user.id));
   } catch (e) {
     return mapError(e);
