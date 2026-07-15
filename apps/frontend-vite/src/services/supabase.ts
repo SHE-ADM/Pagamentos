@@ -209,7 +209,14 @@ const SELECT_WITH_EMBEDS =
   'subgroup:financial_chart_of_account_subgroup(subgroup_code,subgroup_description)),' +
   // Dimensão `status` (via FK status_id) — fonte do NOME da situação para exibição
   // (a coluna `status` texto está em remoção faseada; status_id é a fonte única).
-  'status_dim:status(status_name,status_short_name)';
+  'status_dim:status(status_name,status_short_name),' +
+  // Anexos (1:N — migration 079): e-mail (origin='pipeline') + upload do usuário ('manual').
+  // Espelha o SELECT_WITH_SUPPLIER da Next API (apps/api-backend/lib/contas.ts) — a resposta
+  // de POST/PATCH de lá é mesclada IN-PLACE nestas linhas; se um dos dois SELECTs não
+  // trouxer os anexos, a lista do detalhe fica inconsistente até o refresh.
+  // O soft-deletado já é excluído pela POLICY de SELECT (papel `authenticated`), então aqui
+  // não é preciso filtro — diferente da Next API, que usa service_role e ignora a RLS.
+  'attachments:financial_account_attachment(id,account_id,storage_key,file_name,mime_type,size_bytes,origin,uploaded_by,created_at)';
 
 interface FinancialAccountControlFilters {
   supplier?: string;

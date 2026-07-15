@@ -147,4 +147,138 @@ describe('ContaForm', () => {
       additional_info: 'pagar via portal',
     });
   });
+
+  // ── Anexos ────────────────────────────────────────────────────────────────
+  // O form NÃO sobe arquivo: entrega a fila ao pai, que grava a conta primeiro (o
+  // upload precisa do id) e só então envia os bytes.
+  async function preencheMinimo() {
+    await userEvent.click(screen.getByRole('button', { name: 'Fornecedor' }));
+    await userEvent.type(screen.getByLabelText('Valor (R$)'), '100');
+    await userEvent.selectOptions(screen.getByLabelText('Tipo de documento'), 'boleto');
+    await userEvent.selectOptions(screen.getByLabelText('Tipo de pagamento'), 'pix');
+  }
+
+  it('oferece o seletor de anexos na INCLUSÃO', () => {
+    setup();
+    expect(screen.getByLabelText('Anexar arquivos')).toBeInTheDocument();
+  });
+
+  it('entrega a fila de anexos ao onSubmit (2º parâmetro)', async () => {
+    const { onSubmit } = setup();
+    await preencheMinimo();
+    await userEvent.upload(
+      screen.getByLabelText('Anexar arquivos'),
+      new File(['x'], 'boleto.pdf', { type: 'application/pdf' }),
+    );
+    await userEvent.click(screen.getByRole('button', { name: 'Lançar conta' }));
+
+    await waitFor(() => expect(onSubmit).toHaveBeenCalled());
+    const files = onSubmit.mock.calls[0][1] as File[];
+    expect(files.map((f) => f.name)).toEqual(['boleto.pdf']);
+  });
+
+  it('sem anexo escolhido, entrega uma fila vazia', async () => {
+    const { onSubmit } = setup();
+    await preencheMinimo();
+    await userEvent.click(screen.getByRole('button', { name: 'Lançar conta' }));
+    await waitFor(() => expect(onSubmit).toHaveBeenCalled());
+    expect(onSubmit.mock.calls[0][1]).toEqual([]);
+  });
+
+  // ── Fila entre submits (o form NÃO remonta no modal de edição) ─────────────
+  // Regressão coberta: o 2º submit reenviava a fila INTEIRA e duplicava o que já subiu —
+  // cada upload gera storage_key nova, então o UNIQUE do banco não deduplica.
+  it('não reenvia no 2º submit os anexos que o pai deu por enviados', async () => {
+    const onSubmit = vi.fn().mockResolvedValue(undefined); // undefined = fila esvaziada
+    render(<ContaForm mode="create" onSubmit={onSubmit} />);
+    await preencheMinimo();
+    await userEvent.upload(
+      screen.getByLabelText('Anexar arquivos'),
+      new File(['x'], 'ja_subiu.pdf', { type: 'application/pdf' }),
+    );
+    await userEvent.click(screen.getByRole('button', { name: 'Lançar conta' }));
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1));
+
+    await userEvent.click(screen.getByRole('button', { name: 'Lançar conta' }));
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(2));
+    expect(onSubmit.mock.calls[1][1]).toEqual([]); // 2º submit: fila vazia
+  });
+
+  it('falha PARCIAL: mantém na fila só o que o pai devolveu', async () => {
+    const falhou = new File(['x'], 'falhou.pdf', { type: 'application/pdf' });
+    // O pai devolve os que NÃO subiram; o que subiu sai da fila.
+    const onSubmit = vi.fn().mockResolvedValue([falhou]);
+    render(<ContaForm mode="create" onSubmit={onSubmit} />);
+    await preencheMinimo();
+    await userEvent.upload(screen.getByLabelText('Anexar arquivos'), [
+      new File(['x'], 'subiu.pdf', { type: 'application/pdf' }),
+      falhou,
+    ]);
+    await userEvent.click(screen.getByRole('button', { name: 'Lançar conta' }));
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1));
+    expect((onSubmit.mock.calls[0][1] as File[]).map((f) => f.name)).toEqual(['subiu.pdf', 'falhou.pdf']);
+
+    // A lista mostra só o que sobrou…
+    await waitFor(() => expect(screen.queryByText('subiu.pdf')).not.toBeInTheDocument());
+    expect(screen.getByText('falhou.pdf')).toBeInTheDocument();
+
+    // …e o 2º submit reenvia SÓ ele (não duplica o que já subiu).
+    await userEvent.click(screen.getByRole('button', { name: 'Lançar conta' }));
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(2));
+    expect((onSubmit.mock.calls[1][1] as File[]).map((f) => f.name)).toEqual(['falhou.pdf']);
+  });
+
+  // O caso "onSubmit LANÇA" não é testado de propósito: os dois pais capturam os próprios
+  // erros e reportam por `submitError` (padrão do projeto — ver SuppliersPage/SupplierForm),
+  // então nenhum produz esse cenário. Forçá-lo aqui só criaria uma promise rejeitada
+  // escapando do handler do <form> (unhandled rejection), que polui o runner e derruba
+  // outros arquivos em cascata. A garantia continua valendo por construção: o `setFiles`
+  // vem DEPOIS do `await`, então uma exceção deixa a fila intacta.
+  it('devolver a fila preserva os anexos quando o PAI reporta erro sem lançar', async () => {
+    // É assim que ContasNovaPage sinaliza "a conta não foi criada": engole o erro, mostra
+    // a mensagem e devolve a fila — os arquivos escolhidos não podem se perder.
+    const onSubmit = vi.fn((_d: unknown, files: File[]) => Promise.resolve(files));
+    render(<ContaForm mode="create" onSubmit={onSubmit} />);
+    await preencheMinimo();
+    await userEvent.upload(
+      screen.getByLabelText('Anexar arquivos'),
+      new File(['x'], 'boleto.pdf', { type: 'application/pdf' }),
+    );
+    await userEvent.click(screen.getByRole('button', { name: 'Lançar conta' }));
+    await waitFor(() => expect(onSubmit).toHaveBeenCalled());
+    expect(screen.getByText('boleto.pdf')).toBeInTheDocument(); // segue anexado
+  });
+
+  it('na INCLUSÃO não mostra anexos salvos (a conta ainda não existe)', () => {
+    setup();
+    expect(screen.queryByText('Anexos da conta')).not.toBeInTheDocument();
+  });
+
+  it('na EDIÇÃO mostra os anexos salvos da conta + o seletor de novos', () => {
+    const conta = {
+      id: 7,
+      sk_supplier: 1,
+      cost_center_id: 0,
+      chart_account_id: 0,
+      source_file: null,
+      attachments: [
+        {
+          id: 1,
+          account_id: 7,
+          storage_key: 'manual/7/x.pdf',
+          file_name: 'ja_salvo.pdf',
+          mime_type: 'application/pdf',
+          size_bytes: 10,
+          origin: 'manual',
+          uploaded_by: 'u1',
+          created_at: '2026-07-15T12:00:00Z',
+        },
+      ],
+    } as unknown as FinancialAccountControl;
+    render(<ContaForm mode="edit" defaultValues={conta} onSubmit={vi.fn().mockResolvedValue(undefined)} />);
+
+    expect(screen.getByText('Anexos da conta')).toBeInTheDocument();
+    expect(screen.getByText('ja_salvo.pdf')).toBeInTheDocument();
+    expect(screen.getByLabelText('Anexar arquivos')).toBeInTheDocument();
+  });
 });

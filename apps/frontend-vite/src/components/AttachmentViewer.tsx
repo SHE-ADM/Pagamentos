@@ -16,13 +16,21 @@ const BUCKET = 'attachments';
 const SIGNED_URL_TTL = 300; // segundos de validade da URL assinada
 
 interface AttachmentViewerProps {
+  /** Chave CRUA do objeto no bucket. Pipeline: nome flat. Manual: `manual/{id}/…`. */
   sourceFile: string;
+  /**
+   * Nome amigável no cabeçalho. Sem isto cairia a chave crua, que para anexo manual é
+   * ruído (`manual/512/20260715T120000Z_a1b2c3d4_Boleto.pdf`). Default: a própria chave —
+   * preserva o comportamento de quem passa só `sourceFile`.
+   */
+  title?: string;
   onClose: () => void;
 }
 
 type LoadState = 'loading' | 'ok' | 'notfound';
 
-export default function AttachmentViewer({ sourceFile, onClose }: Readonly<AttachmentViewerProps>) {
+export default function AttachmentViewer({ sourceFile, title, onClose }: Readonly<AttachmentViewerProps>) {
+  const label = title ?? sourceFile;
   const [state, setState] = useState<LoadState>('loading');
   const [url, setUrl] = useState<string | null>(null);
   const [downloadUrl, setDownloadUrl] = useState<string | null>(null);
@@ -115,7 +123,7 @@ export default function AttachmentViewer({ sourceFile, onClose }: Readonly<Attac
     return (
       <iframe
         src={url ?? ''}
-        title={sourceFile}
+        title={label}
         referrerPolicy="no-referrer"
         className="h-full w-full border-0"
       />
@@ -130,8 +138,8 @@ export default function AttachmentViewer({ sourceFile, onClose }: Readonly<Attac
       className="h-[90vh] w-full max-w-5xl flex-col overflow-hidden rounded-xl border-0 bg-white p-0 shadow-lg open:flex backdrop:bg-black/50"
     >
       <div className="flex items-center gap-3 border-b border-slate-200 px-4 py-3">
-        <p id={titleId} className="flex-1 truncate text-sm font-medium text-slate-700" title={sourceFile}>
-          {sourceFile}
+        <p id={titleId} className="flex-1 truncate text-sm font-medium text-slate-700" title={label}>
+          {label}
         </p>
         {state === 'ok' && url && (
           <>

@@ -27,6 +27,35 @@ describe('AttachmentViewer', () => {
     expect(iframe?.getAttribute('referrerpolicy')).toBe('no-referrer');
   });
 
+  it('aceita chave com PASTA (anexo manual) e assina a chave crua', async () => {
+    createSignedUrl.mockResolvedValue({ data: { signedUrl: 'https://sb/sign/x?token=x' }, error: null });
+    const key = 'manual/512/20260715T120000Z_a1b2c3d4_Boleto_Julho.pdf';
+    const { container } = render(<AttachmentViewer sourceFile={key} onClose={vi.fn()} />);
+
+    await waitFor(() => expect(container.querySelector('iframe')).not.toBeNull());
+    // A chave vai INTEIRA ao Storage (a barra é pasta virtual, não separador a tratar).
+    expect(createSignedUrl).toHaveBeenCalledWith(key, expect.any(Number));
+  });
+
+  it('prop `title` exibe o nome amigável em vez da chave crua', async () => {
+    createSignedUrl.mockResolvedValue({ data: { signedUrl: 'https://sb/sign/x?token=x' }, error: null });
+    const key = 'manual/512/20260715T120000Z_a1b2c3d4_Boleto_Julho.pdf';
+    const { container } = render(<AttachmentViewer sourceFile={key} title="Boleto Julho.pdf" onClose={vi.fn()} />);
+
+    await waitFor(() => expect(container.querySelector('iframe')).not.toBeNull());
+    expect(screen.getByText('Boleto Julho.pdf')).toBeInTheDocument();
+    expect(screen.queryByText(key)).not.toBeInTheDocument();
+    expect(container.querySelector('iframe')?.getAttribute('title')).toBe('Boleto Julho.pdf');
+  });
+
+  it('sem `title`, o cabeçalho mostra a chave (comportamento preservado)', async () => {
+    createSignedUrl.mockResolvedValue({ data: { signedUrl: 'https://sb/sign/x?token=x' }, error: null });
+    const { container } = render(<AttachmentViewer sourceFile="nota.pdf" onClose={vi.fn()} />);
+
+    await waitFor(() => expect(container.querySelector('iframe')).not.toBeNull());
+    expect(screen.getByText('nota.pdf')).toBeInTheDocument();
+  });
+
   it('chama onClose ao clicar no botão fechar', async () => {
     createSignedUrl.mockResolvedValue({ data: { signedUrl: 'https://sb/sign/a.pdf?token=x' }, error: null });
     const onClose = vi.fn();
