@@ -27,6 +27,26 @@ describe('AttachmentViewer', () => {
     expect(iframe?.getAttribute('referrerpolicy')).toBe('no-referrer');
   });
 
+  // NÃO REGREDIR: o viewer é usado dentro do painel de detalhe de /consulta, ou seja, dentro de
+  // um <tr> cujo onClick alterna a linha — fechar/baixar o anexo fecharia o painel junto.
+  // `createPortal` NÃO resolveria: o React propaga o evento pela árvore de COMPONENTES, não pela
+  // do DOM, então o clique chegaria ao ancestral mesmo com o dialog no body (testado). Quem
+  // contém são os botões/links, que são interativos (um handler no <dialog> viraria S1082).
+  it('o clique nos botões NÃO vaza para o ancestral (não alterna a linha do grid)', async () => {
+    createSignedUrl.mockResolvedValue({ data: { signedUrl: 'https://sb/sign/x?token=x' }, error: null });
+    const onAncestorClick = vi.fn();
+    render(
+      <section onClick={onAncestorClick}>
+        <AttachmentViewer sourceFile="a.pdf" onClose={vi.fn()} />
+      </section>,
+    );
+
+    await waitFor(() => expect(document.querySelector('iframe')).not.toBeNull());
+    fireEvent.click(screen.getByTitle('Fechar'));
+    fireEvent.click(screen.getByTitle('Baixar o PDF'));
+    expect(onAncestorClick).not.toHaveBeenCalled();
+  });
+
   it('aceita chave com PASTA (anexo manual) e assina a chave crua', async () => {
     createSignedUrl.mockResolvedValue({ data: { signedUrl: 'https://sb/sign/x?token=x' }, error: null });
     const key = 'manual/512/20260715T120000Z_a1b2c3d4_Boleto_Julho.pdf';

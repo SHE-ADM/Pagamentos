@@ -130,17 +130,18 @@ export default function AttachmentViewer({ sourceFile, title, onClose }: Readonl
     );
   }
 
+  // Os botões abaixo contêm o próprio clique (`stopPropagation`) — NÃO REGREDIR. O viewer é
+  // usado dentro do painel de detalhe de /consulta, isto é, dentro de um <tr> cujo onClick
+  // alterna a linha: sem isso, fechar/baixar o anexo fecharia o painel junto.
+  // Um `createPortal` para o body NÃO resolveria: o React propaga o evento pela árvore de
+  // COMPONENTES, não pela do DOM — o clique chegaria ao <tr> mesmo com o dialog fora dele
+  // (verificado em teste). E `onClick` no próprio <dialog> seria handler em elemento
+  // não-interativo (S1082). Conter no botão é o padrão do projeto (ver Consulta.tsx).
   return (
     <dialog
       ref={dialogRef}
       aria-labelledby={titleId}
       onCancel={onClose}
-      // Um modal não pode deixar seus cliques vazarem para a árvore atrás: o viewer é
-      // renderizado DENTRO do painel de detalhe de /consulta (logo, dentro do <tr>), cujo
-      // onClick alterna a linha — fechar o viewer fecharia o painel junto. O `showModal` o põe
-      // no top layer VISUALMENTE, mas o evento segue subindo pelo DOM. Não afeta o listener de
-      // backdrop (está no mesmo elemento; stopPropagation só corta ancestrais).
-      onClick={(e) => e.stopPropagation()}
       className="h-[90vh] w-full max-w-5xl flex-col overflow-hidden rounded-xl border-0 bg-white p-0 shadow-lg open:flex backdrop:bg-black/50"
     >
       <div className="flex items-center gap-3 border-b border-slate-200 px-4 py-3">
@@ -149,17 +150,33 @@ export default function AttachmentViewer({ sourceFile, title, onClose }: Readonl
         </p>
         {state === 'ok' && url && (
           <>
-            <a href={downloadUrl ?? url} download className="btn" title="Baixar o PDF">
+            <a
+              href={downloadUrl ?? url}
+              download
+              className="btn"
+              title="Baixar o PDF"
+              onClick={(e) => e.stopPropagation()}
+            >
               <Download size={14} /> Baixar
             </a>
-            <a href={url} target="_blank" rel="noopener noreferrer" className="btn" title="Abrir em nova aba">
+            <a
+              href={url}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="btn"
+              title="Abrir em nova aba"
+              onClick={(e) => e.stopPropagation()}
+            >
               <ExternalLink size={14} /> Nova aba
             </a>
           </>
         )}
         <button
           type="button"
-          onClick={onClose}
+          onClick={(e) => {
+            e.stopPropagation();
+            onClose();
+          }}
           aria-label="Fechar"
           title="Fechar"
           className="flex h-8 w-8 items-center justify-center rounded-full text-slate-500 hover:bg-slate-100 hover:text-slate-600 transition-colors"
