@@ -135,6 +135,12 @@ export default function AttachmentViewer({ sourceFile, title, onClose }: Readonl
       ref={dialogRef}
       aria-labelledby={titleId}
       onCancel={onClose}
+      // Um modal não pode deixar seus cliques vazarem para a árvore atrás: o viewer é
+      // renderizado DENTRO do painel de detalhe de /consulta (logo, dentro do <tr>), cujo
+      // onClick alterna a linha — fechar o viewer fecharia o painel junto. O `showModal` o põe
+      // no top layer VISUALMENTE, mas o evento segue subindo pelo DOM. Não afeta o listener de
+      // backdrop (está no mesmo elemento; stopPropagation só corta ancestrais).
+      onClick={(e) => e.stopPropagation()}
       className="h-[90vh] w-full max-w-5xl flex-col overflow-hidden rounded-xl border-0 bg-white p-0 shadow-lg open:flex backdrop:bg-black/50"
     >
       <div className="flex items-center gap-3 border-b border-slate-200 px-4 py-3">

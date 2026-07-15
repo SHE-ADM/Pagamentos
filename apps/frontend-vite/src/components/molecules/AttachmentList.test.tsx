@@ -54,4 +54,21 @@ describe('AttachmentList', () => {
     render(<AttachmentList items={[item()]} onRemove={vi.fn()} busy />);
     expect(screen.getByRole('button', { name: 'Remover boleto.pdf' })).toBeDisabled();
   });
+
+  // No painel de detalhe de /consulta a lista fica DENTRO do <tr>, cujo onClick alterna a
+  // linha — sem conter o clique, abrir/remover um anexo fecharia o próprio painel.
+  it('o clique nos botões NÃO vaza para o ancestral (não alterna a linha do grid)', async () => {
+    const onAncestorClick = vi.fn();
+    // O ancestral é um <table>/<tr> no app; aqui um wrapper com onClick basta para provar a
+    // contenção — o `section` mantém o DOM válido (a lista é <ul>) sem handler em elemento
+    // não-interativo no código de produção.
+    render(
+      <section onClick={onAncestorClick}>
+        <AttachmentList items={[item()]} onView={vi.fn()} onRemove={vi.fn()} />
+      </section>,
+    );
+    await userEvent.click(screen.getByRole('button', { name: 'Ver boleto.pdf' }));
+    await userEvent.click(screen.getByRole('button', { name: 'Remover boleto.pdf' }));
+    expect(onAncestorClick).not.toHaveBeenCalled();
+  });
 });

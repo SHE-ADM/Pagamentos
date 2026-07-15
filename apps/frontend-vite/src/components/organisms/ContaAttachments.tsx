@@ -166,15 +166,28 @@ export default function ContaAttachments({
           <p id={confirmId} className="text-sm text-status-warning-fg">
             Remover o anexo &quot;{confirming.name}&quot;?
           </p>
+          {/* stopPropagation pelo mesmo motivo do AttachmentList: no painel de /consulta isto
+              fica dentro do <tr>, cujo onClick alternaria a linha e fecharia o painel. */}
           <div className="flex justify-end gap-2">
-            <button type="button" className="btn" onClick={() => setConfirming(null)} disabled={busy}>
+            <button
+              type="button"
+              className="btn"
+              onClick={(e) => {
+                e.stopPropagation();
+                setConfirming(null);
+              }}
+              disabled={busy}
+            >
               Cancelar
             </button>
             <button
               ref={confirmButtonRef}
               type="button"
               className="btn text-status-error-fg"
-              onClick={() => void handleRemove(confirming)}
+              onClick={(e) => {
+                e.stopPropagation();
+                void handleRemove(confirming);
+              }}
               disabled={busy}
             >
               {busy ? 'Removendo…' : 'Remover'}

@@ -63,10 +63,18 @@ export default function AttachmentList({
               </span>
             )}
             <span className="shrink-0 text-xs text-slate-500">{fmtBytes(item.sizeBytes)}</span>
+            {/* stopPropagation: a ação é encapsulada no botão e não pode vazar para ancestrais
+                — no painel de detalhe de /consulta a lista fica DENTRO do <tr>, cujo onClick
+                alterna a linha (abrir um anexo fecharia o próprio painel). Mesmo padrão dos
+                botões do detalhe (Consulta.tsx). Funciona também no teclado: Enter/Espaço num
+                <button> gera um `click`, que é contido aqui. */}
             {onView && (
               <button
                 type="button"
-                onClick={() => onView(item)}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onView(item);
+                }}
                 className="btn shrink-0"
                 aria-label={`Ver ${item.name}`}
                 title="Ver o anexo"
@@ -77,7 +85,10 @@ export default function AttachmentList({
             {canRemove && (
               <button
                 type="button"
-                onClick={() => onRemove(item)}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onRemove(item);
+                }}
                 disabled={busy}
                 className="btn shrink-0 text-status-error-fg disabled:opacity-50"
                 aria-label={`Remover ${item.name}`}

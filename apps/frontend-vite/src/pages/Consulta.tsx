@@ -980,9 +980,11 @@ export default function Consulta() {
                             {/* Anexos (N) — e-mail + enviados pelo usuário, no mesmo padrão.
                                 Substituiu o botão único "Ver anexo" (era 1 arquivo só, o do
                                 e-mail). Sem lixeira aqui: a remoção é feita pelo modal de
-                                edição. O stopPropagation impede que abrir um anexo alterne a
-                                linha do grid (o clique borbulharia até o <tr>). */}
-                            <div className="mb-3" onClick={(e) => e.stopPropagation()}>
+                                edição. Quem contém o clique para não alternar a linha do <tr>
+                                são os próprios botões (AttachmentList/AttachmentViewer), como
+                                fazem os botões acima — não um <div> wrapper com onClick, que
+                                seria um elemento não-interativo com handler (S1082). */}
+                            <div className="mb-3">
                               <ContaAttachments
                                 accountId={r.id}
                                 items={r.attachments}
