@@ -530,6 +530,9 @@ class SupabaseControl:
         remetente envia o MESMO documento em dois e-mails diferentes (Message-ID
         distintos). Considera duplicata se QUALQUER impressao digital casar:
           1. barcode (linha digitavel / codigo de barras / chave) — definitivo;
+          1b. fornecedor + NOSSO NUMERO — identificador estavel do titulo no banco: a
+             2a via / aviso de vencimento mantem o mesmo nosso numero mesmo mudando
+             VALOR (juros) e VENCIMENTO, combinacao que 1/2/3 deixam passar (ids 323/560);
           2. fornecedor + numero do documento + valor — pega DAS reenviado com
              vencimento diferente (numero da guia identico);
           3. fornecedor + valor + vencimento (+ tipo) — pega o mesmo encargo
@@ -600,6 +603,21 @@ class SupabaseControl:
             return None  # sem fornecedor resolvido — nao deduplica
 
         supplier_clause = f"sk_supplier=eq.{int(sk_supplier)}"
+
+        # 1b. fornecedor + NOSSO NÚMERO — identificador ESTÁVEL do título no banco. Uma
+        # reemissão / 2ª via / aviso de vencimento mantém o MESMO nosso número, mesmo
+        # mudando VALOR (juros) e VENCIMENTO — combinação que as impressões 1/2/3 deixam
+        # passar (barcode difere pelo fator/valor; 2/3 exigem valor/vencimento iguais).
+        # Falha real ids 323/560 (fatura SIEG reemitida: +juros e venc +1 dia → 3 boletos
+        # distintos pela dedup, mas MESMO nosso número 000000091070-8). Escopo por
+        # fornecedor (o nosso número é único por beneficiário/título). Só com nosso número
+        # substancial (>= 8 dígitos, não-zero) para não fundir títulos distintos.
+        nosso = str(payload.get("nosso_numero") or "").strip()
+        if _is_real_nosso_numero(nosso):
+            m = _find([supplier_clause,
+                       f"nosso_numero=eq.{urllib.parse.quote(nosso, safe='')}"])
+            if m:
+                return m
 
         # 2. fornecedor + numero do documento + valor (numero substancial).
         # IGNORA numero SINTETICO (PIX_/{tipo}_{ddmmaa}): ele colide entre boletos
@@ -2563,6 +2581,16 @@ def _is_synthetic_invoice_number(invoice: str | None) -> bool:
     if s.upper().startswith("PIX_"):
         return True
     return bool(_SYNTHETIC_INVOICE_RE.search(s))
+
+
+def _is_real_nosso_numero(nn: str | None) -> bool:
+    """True se `nn` parece um NOSSO NÚMERO real do banco (>= 8 dígitos, não só zeros).
+    O nosso número identifica o TÍTULO no banco e é ESTÁVEL entre reemissões (2ª via /
+    aviso de vencimento mantêm o mesmo), então é chave de dedup imune a mudança de
+    valor (juros) e vencimento. Guarda contra vazio/curto/lixo para não deduplicar
+    títulos distintos por engano."""
+    d = re.sub(r"\D", "", nn or "")
+    return len(d) >= 8 and d.strip("0") != ""
 
 
 def extract_from_email_body(body_text: str, received_at: str, message_id: str,

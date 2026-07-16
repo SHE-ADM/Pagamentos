@@ -1807,15 +1807,33 @@ Email Reader"). A trigger de banco recalcula `a vencer`/`vencido` a partir do `d
 ### Dedup de conteúdo + reemissão (`financial_account_control`)
 
 Além do dedup por `message_id`, `find_financial_duplicate(payload)` evita gravar o
-**mesmo documento** chegado em e-mails diferentes. Casa por 3 impressões: (1) barcode;
-(2) **`sk_supplier`** + `invoice_number` (≥6) + valor — pega **guia/DAS reemitida** com o mesmo
-número e vencimento novo; (3) **`sk_supplier`** + valor + vencimento (**+ tipo só quando o novo
-NÃO tem barcode** — ver abaixo). Quando encontra
+**mesmo documento** chegado em e-mails diferentes. Casa por 4 impressões: (1) barcode;
+(**1b**) **`sk_supplier`** + `nosso_numero` — ver abaixo; (2) **`sk_supplier`** + `invoice_number`
+(≥6) + valor — pega **guia/DAS reemitida** com o mesmo número e vencimento novo; (3) **`sk_supplier`**
++ valor + vencimento (**+ tipo só quando o novo NÃO tem barcode** — ver abaixo). Quando encontra
 duplicata, `extract_and_store_accounts` **não cria outra conta**: se a reemissão tem
 vencimento **mais recente**, chama `update_financial` para atualizar `due_date` + boleto
 (`barcode`, `amount_charged`, `fine_interest`, `other_additions`) na conta existente — uma
 guia paga uma vez, sempre com o boleto válido. A trigger recalcula a situação em `status` no
 UPDATE (só quando em aberto — migration 034).
+
+**Impressão 1b — `sk_supplier` + `nosso_numero` (identificador ESTÁVEL do título — não regredir):**
+o **nosso número** é o identificador do título no banco e a **2ª via / aviso de vencimento MANTÉM o
+mesmo** — mesmo quando a reemissão muda **VALOR (juros) E VENCIMENTO** ao mesmo tempo, combinação que
+faz as impressões 1/2/3 falharem (o barcode difere pelo fator+valor; a 2 exige valor igual; a 3 exige
+valor E vencimento iguais). Falha real **ids 323/560** (fatura SIEG): o aviso de vencimento reemitiu
+com **+juros** (435,18 → 444,01) e **venc +1 dia** (15/07 → 16/07), gerando conta duplicada porque
+NENHUMA das 3 impressões casou — mas o `nosso_numero` `000000091070-8` é idêntico. A 1b roda **após o
+barcode e antes das 2/3** (identificador forte), escopada por fornecedor (o nosso número é único por
+beneficiário/título). Guarda `_is_real_nosso_numero` (**≥8 dígitos, não só zeros**) evita fundir
+títulos distintos por nosso número vazio/curto/lixo. Casada, cai no mesmo caminho de reemissão (atualiza
+o vencimento/boleto da conta existente). Varredura do banco: só **1** grupo duplicado por nosso número
+(323/560) — o 560 foi **hard-deletado** (2026-07-16), 323 preservado. Testes: `tests/test_dup_nosso_numero.py`.
+Este era o bug "aleatório" de duplicidade: só se manifestava quando a reemissão alterava valor **e**
+vencimento juntos. **Deploy:** copiar só `read_emails.py` (sem `.env`/banco). **Limitação conhecida:** a
+1b compara o `nosso_numero` como TEXTO (`=eq.`) — cobre reemissões do mesmo gerador/formato (o caso
+real); variação de formatação do nosso número entre reemissões não é coberta (evolução futura:
+normalizar por dígitos, se surgir).
 
 **Impressão 3 casa por `sk_supplier`+valor+vencimento, INDEPENDENTE do `document_type`
 (robustez cross-e-mail — não regredir):** regra de negócio — **se fornecedor + valor +
@@ -3626,6 +3644,17 @@ lê os arquivos do disco.
 > `('INORGAN INDUSTRIA QUIMICA LTDA', '56879838000151')` ou similar / `True`):
 > `py -3 -c "import sys; sys.path.insert(0,'skills/pdf-contas-pagar/scripts'); import extract_pdf as E;
 > print(hasattr(E,'apply_beneficiario_final'))"`
+
+> **DEPLOY 2026-07-16 — dedup por NOSSO NÚMERO (PENDENTE de cópia p/ prod):** a dedup ganhou a impressão
+> **1b** (`sk_supplier` + `nosso_numero`) para pegar reemissão/2ª via/aviso de vencimento que muda valor
+> (juros) E vencimento — ver "Impressão 1b". Deploy = copiar **só** `read_emails.py` (novos
+> `_is_real_nosso_numero` + impressão 1b em `find_financial_duplicate`; **`extract_pdf.py` NÃO muda**
+> nesta). **Sem `.env`, sem dependência nova, sem passo de banco.** **Degrada com segurança:** a 1b só
+> atua com nosso número real (≥8 díg.); o `read_emails.py` ANTIGO segue funcionando (só não pega esse
+> caso de reemissão). Correção de dados (delete do 560) já valeu para dev+prod (mesma Supabase).
+> Validação (esperado `True`):
+> `py -3 -c "import sys; sys.path.insert(0,'skills/email-reader/scripts'); import read_emails as R;
+> print(hasattr(R,'_is_real_nosso_numero'))"`
 
 ### Deploy manual da Cobrança de vencidos (envios) em produção (caso específico — não regredir)
 
