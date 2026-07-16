@@ -46,7 +46,7 @@ export default function FinancialAccountsPage() {
 
   return (
     <CrudTablePage<FinancialAccount, FinancialAccountCreateInput>
-      title="Contas"
+      title="Contas bancárias"
       subtitle="Tabelas"
       icon={Wallet}
       gridId="tabela-contas"

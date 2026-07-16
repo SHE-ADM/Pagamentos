@@ -130,11 +130,11 @@ export default function Layout({ children }: Readonly<{ children: ReactNode }>) 
           <NavLink to="/tabelas/bancos" onClick={closeNav} className={({ isActive }) => navLink({ active: isActive })}>
             <Landmark size={16} /> Bancos
           </NavLink>
+          <NavLink to="/tabelas/contas" onClick={closeNav} className={({ isActive }) => navLink({ active: isActive })}>
+            <Wallet size={16} /> Contas bancárias
+          </NavLink>
           <NavLink to="/tabelas/centros-de-custo" onClick={closeNav} className={({ isActive }) => navLink({ active: isActive })}>
             <Layers size={16} /> Centro de custos
-          </NavLink>
-          <NavLink to="/tabelas/contas" onClick={closeNav} className={({ isActive }) => navLink({ active: isActive })}>
-            <Wallet size={16} /> Contas
           </NavLink>
           <NavLink to="/tabelas/plano-de-contas" onClick={closeNav} className={({ isActive }) => navLink({ active: isActive })}>
             <BookText size={16} /> Plano de contas
