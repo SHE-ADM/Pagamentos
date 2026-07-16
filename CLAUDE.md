@@ -695,7 +695,10 @@ id→e-mail, grant de **SELECT** para `authenticated`, usuários internos; a ESC
 081 — a view rodava como owner e era auto-atualizável, então o grant default virava escrita em
 `auth.users`: ver "ESCALADA DE PRIVILÉGIO pela view `app_user`"). `created_by`/`updated_by`/
 `status_changed_by`/`status_changed_at` estão no schema de LEITURA de `@sheild/shared` (nunca no
-input — carimbados pelo servidor/trigger).
+input — carimbados pelo servidor/trigger). **"Última edição por" e "Situação alterada por" são
+OMITIDOS quando o autor é o SENTINELA** (`teste@otimotex.com.br` / UUID `fe8d268d-…`, o DEFAULT de
+`updated_by`/`status_changed_by`) — não representam uma edição de um usuário real (`isSentinelAuthor`
+em `Consulta.tsx`, checa por UUID e por e-mail resolvido). "Criado por" permanece sempre.
 
 **Visibilidade do STORAGE por dono (migration 080 — não regredir):** a regra "grupo restrito só vê
 as contas em que é dono" vale **também para o bucket** (decisão do usuário, 2026-07-15). A policy da
