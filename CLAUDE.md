@@ -3174,8 +3174,16 @@ usa `financialAccountControlCreateSchema` e a edição via `PATCH` usa
 `financialAccountControlUpdateSchema`, **ambos derivados de `financialAccountControlManualEditSchema`**
 (S3-2, auditoria de segurança — não regredir): um **`.pick()`** SÓ dos campos do formulário
 (`sk_supplier`, `cost_center_id`, `chart_account_id`, `invoice_number`, `issue_date`, `due_date`,
-`amount`, `document_type`, `payment_method`, `barcode`, `description`, `additional_info`, `status_id`,
-`has_invoice`, `has_bank_slip`). As colunas de **PIPELINE/AUDITORIA** (`gmail_message_id`,
+`amount`, `document_type`, `payment_method`, `barcode`, `description`, `additional_info`, `status_id`).
+**`has_invoice`/`has_bank_slip` FICAM FORA do pick de propósito (não regredir):** elas têm
+`.default(false)` no inputSchema e o **`.partial()` do Zod NÃO remove o default** — se estivessem no
+pick, omiti-las no PATCH (o `ContaForm` não as edita) faria o parse injetar `false` e o UPDATE
+**APAGARIA a curadoria NF/Boleto** (bug real: "Editar conta" zerava NF/BOL). A curadoria é feita
+**exclusivamente** pela rota inline de `/consulta` (`setFinancialAccountFlag`, REST direto com grants
+por coluna — migration 033), nunca pela Next API; fora do pick, o Zod as descarta (strip), então o
+manual CRUD **não pode** tocar NF/Boleto por construção (create → DEFAULT FALSE do banco; update →
+não mexe). `status_id` **entra** no pick e é seguro porque **não tem default Zod** (não é injetado). As
+colunas de **PIPELINE/AUDITORIA** (`gmail_message_id`,
 `source_file`, `extraction_source`, `extracted_at`, `processing_notes`, `email_body_excerpt`,
 `sender_email`, `subject`, `payer_cnpj`/`payer_name`, `nosso_numero`, componentes de boleto) **NÃO são
 graváveis** por POST/PATCH manual — o Zod (strip) as descarta; protege a trilha de auditoria/dedup. O

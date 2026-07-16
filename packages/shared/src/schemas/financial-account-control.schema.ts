@@ -335,6 +335,13 @@ export const financialAccountControlInputSchema = financialAccountControlSchema.
 // componentes de boleto) NÃO são graváveis pela API manual — protege a trilha de
 // auditoria/dedup. O pipeline Python grava via service_role (REST direto), fora
 // destes schemas; o Zod default (strip) descarta silenciosamente campos extras.
+// NOTA (não regredir): has_invoice/has_bank_slip NÃO entram aqui de propósito. Elas têm
+// `.default(false)` no inputSchema e o `.partial()` do Zod NÃO remove o default — então,
+// omitidas no PATCH (o ContaForm não as edita), o parse injetaria `false` e o UPDATE
+// APAGARIA a curadoria NF/Boleto. A curadoria é feita EXCLUSIVAMENTE pela rota inline de
+// /consulta (setFinancialAccountFlag, REST direto com grants por coluna — migration 033),
+// nunca pela Next API. Fora do pick, o Zod as descarta (strip) — o manual CRUD não pode
+// tocar NF/Boleto por construção. status_id NÃO tem default Zod, então não é injetado.
 const financialAccountControlManualEditSchema = financialAccountControlInputSchema.pick({
   sk_supplier: true,
   cost_center_id: true,
@@ -349,8 +356,6 @@ const financialAccountControlManualEditSchema = financialAccountControlInputSche
   description: true,
   additional_info: true,
   status_id: true,
-  has_invoice: true,
-  has_bank_slip: true,
 });
 
 // ── Criação manual (CRUD — POST /api/contas) ─────────────────────────────────

@@ -205,6 +205,18 @@ describe('contaService.update', () => {
     }
     expect(updateArg).toMatchObject({ amount: 200 });
   });
+
+  it('NÃO grava has_invoice/has_bank_slip no PATCH — preserva a curadoria NF/BOL (não regredir)', async () => {
+    // Bug: o ContaForm (editar conta) não envia essas flags; o .default(false) + .partial()
+    // do Zod injetava `false` e o UPDATE APAGAVA a curadoria (editada por outra rota inline).
+    // Agora elas ficam FORA do manualEditSchema → nunca chegam ao UPDATE, mesmo se enviadas.
+    resultQueue.push({ data: { id: 5, amount: 200 }, error: null });
+    await contaService.update(5, { amount: 200, has_invoice: false, has_bank_slip: false });
+    const updateArg = builders[0].update.mock.calls[0][0] as Record<string, unknown>;
+    expect(updateArg).not.toHaveProperty('has_invoice');
+    expect(updateArg).not.toHaveProperty('has_bank_slip');
+    expect(updateArg).toMatchObject({ amount: 200 });
+  });
 });
 
 describe('contaService.remove (hard delete)', () => {
