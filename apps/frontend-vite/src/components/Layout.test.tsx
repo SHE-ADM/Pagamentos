@@ -31,6 +31,16 @@ describe('Layout (sidebar)', () => {
     expect(screen.getByText('conteúdo')).toBeInTheDocument();
   });
 
+  it('mostra "Contas bancárias" no grupo Tabelas, logo abaixo de Bancos', () => {
+    renderLayout();
+    const bancos = screen.getByText('Bancos');
+    const contas = screen.getByText('Contas bancárias');
+    const centro = screen.getByText('Centro de custos');
+    // Ordem no DOM: Bancos → Contas bancárias → Centro de custos.
+    expect(bancos.compareDocumentPosition(contas) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(contas.compareDocumentPosition(centro) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
   it('exibe as iniciais do e-mail e não há mais itens "breve" (Dashboard ativo)', () => {
     renderLayout();
     expect(screen.getByText('SU')).toBeInTheDocument(); // iniciais de "suporte@..."
