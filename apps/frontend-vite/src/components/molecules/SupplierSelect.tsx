@@ -21,6 +21,8 @@ interface SupplierSelectProps {
   label: string;
   error?: string;
   id?: string;
+  /** Foca o seletor ao montar — usado no lançamento em série (após limpar o fornecedor). */
+  autoFocus?: boolean;
 }
 
 const supplierLabel = (s: { trade_name: string | null; legal_name: string | null; cnpj: string | null; sk_supplier: number }): string =>
@@ -34,7 +36,7 @@ async function loadOptions(input: string): Promise<SupplierOption[]> {
   return data.map((s) => ({ value: s.sk_supplier, label: supplierLabel(s) }));
 }
 
-export default function SupplierSelect({ value, defaultLabel, onChange, label, error, id }: Readonly<SupplierSelectProps>) {
+export default function SupplierSelect({ value, defaultLabel, onChange, label, error, id, autoFocus }: Readonly<SupplierSelectProps>) {
   const [selected, setSelected] = useState<SupplierOption | null>(
     value == null ? null : { value, label: defaultLabel ?? `#${value}` },
   );
@@ -68,6 +70,7 @@ export default function SupplierSelect({ value, defaultLabel, onChange, label, e
         inputId={id}
         aria-label={label}
         aria-invalid={shownError ? true : undefined}
+        autoFocus={autoFocus}
         value={selected}
         isClearable
         isLoading={creating}

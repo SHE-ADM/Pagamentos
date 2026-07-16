@@ -10,10 +10,17 @@ vi.mock('../services/contaAttachments', () => ({
   uploadContaAttachments: (...a: unknown[]) => uploadMock(...a),
 }));
 
-// Stub do SupplierSelect (evita o react-select + rede no teste da página).
+// Stub do SupplierSelect (evita o react-select + rede no teste da página). Reflete
+// `value`/`autoFocus` em data-* para asserir a limpeza e o foco no lançamento em série.
 vi.mock('../components/molecules/SupplierSelect', () => ({
-  default: ({ label, onChange }: { label: string; onChange: (sk: number | null) => void }) => (
-    <button type="button" aria-label={label} onClick={() => onChange(1)}>
+  default: ({ label, value, autoFocus, onChange }: { label: string; value: number | null; autoFocus?: boolean; onChange: (sk: number | null) => void }) => (
+    <button
+      type="button"
+      aria-label={label}
+      data-value={value ?? ''}
+      data-autofocus={autoFocus ? 'yes' : 'no'}
+      onClick={() => onChange(1)}
+    >
       {label}
     </button>
   ),
@@ -93,12 +100,17 @@ describe('ContasNovaPage', () => {
     expect(uploadMock).not.toHaveBeenCalled();
   });
 
-  it('após o sucesso, o formulário é limpo (fila de anexos inclusa)', async () => {
+  it('após o sucesso, limpa só o fornecedor (com foco) e a fila de anexos; mantém os demais campos', async () => {
     render(<ContasNovaPage />);
     await lancar(pdf());
     await screen.findByText(/Conta lançada com sucesso/);
-    // O remonte por key descarta a fila junto com os campos.
+    // A fila de anexos é descartada (já subiu)…
     expect(screen.queryByText('boleto.pdf')).not.toBeInTheDocument();
-    expect(screen.getByLabelText('Valor (R$)')).toHaveValue(null);
+    // …o fornecedor é limpo e refocado (lançamento em série)…
+    const fornecedor = screen.getByRole('button', { name: 'Fornecedor' });
+    expect(fornecedor).toHaveAttribute('data-value', '');
+    expect(fornecedor).toHaveAttribute('data-autofocus', 'yes');
+    // …mas os demais campos PERMANECEM (não há mais remonte total do form).
+    expect(screen.getByLabelText('Valor (R$)')).toHaveValue(100);
   });
 });

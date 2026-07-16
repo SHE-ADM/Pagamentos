@@ -2,12 +2,12 @@
 // Página "Cadastro de contas" — lançamento RÁPIDO de contas a pagar via Next API
 // (createConta). A escrita não passa pelo REST direto do Supabase (RLS só-leitura
 // para authenticated); a Next API grava com service_role.
-import { useState, useEffect } from 'react';
+import { useRef, useState, useEffect } from 'react';
 import type { FinancialAccountControlCreate } from '@sheild/shared';
 import { createConta } from '../services/contas';
 import { uploadContaAttachments } from '../services/contaAttachments';
 import { getErrorMessage } from '../lib/getErrorMessage';
-import ContaForm from '../components/organisms/ContaForm';
+import ContaForm, { type ContaFormHandle } from '../components/organisms/ContaForm';
 import Alert from '../components/atoms/Alert';
 
 const NOTICE_DISMISS_MS = 5000; // banner de sucesso some sozinho após este tempo
@@ -20,7 +20,9 @@ export default function ContasNovaPage() {
   // banner próprio, para não mentir que deu tudo certo nem sugerir que a conta se perdeu.
   const [warning, setWarning] = useState<string | null>(null);
   const [progress, setProgress] = useState<{ done: number; total: number } | null>(null);
-  const [formKey, setFormKey] = useState(0); // remonta o form p/ limpar após sucesso
+  // Lançamento em série: após lançar, o form PERMANECE com os demais campos; só o
+  // fornecedor é limpo e refocado (via handle do ContaForm), em vez de remontar tudo.
+  const formRef = useRef<ContaFormHandle>(null);
 
   // Devolve ao ContaForm a fila que deve PERMANECER (ver o contrato de `onSubmit` lá).
   const handleSubmit = async (data: FinancialAccountControlCreate, files: File[]): Promise<File[] | void> => {
@@ -47,14 +49,16 @@ export default function ContasNovaPage() {
             `Conta lançada (id ${conta.id}), mas ${failed.length} anexo(s) não foram enviados: ` +
               `${failed.map((f) => f.file.name).join(', ')}. Anexe pela edição da conta em Gestão de contas.`,
           );
-          setFormKey((k) => k + 1);
+          // A conta EXISTE — segue o lançamento em série (limpa só o fornecedor e foca).
+          formRef.current?.resetSupplier();
           return;
         }
       }
 
       const suffix = files.length ? ` com ${files.length} anexo(s)` : '';
       setNotice(`Conta lançada com sucesso (id ${conta.id})${suffix}.`);
-      setFormKey((k) => k + 1);
+      // Lançamento em série: mantém os campos, limpa só o fornecedor e o refoca.
+      formRef.current?.resetSupplier();
     } catch (e) {
       // A conta NÃO foi criada (o erro é engolido aqui, não sobe ao form): devolver a fila
       // preserva os arquivos já escolhidos para o usuário corrigir e submeter de novo.
@@ -98,7 +102,7 @@ export default function ContasNovaPage() {
         )}
         <div className="card p-6 max-w-3xl mx-auto">
           <ContaForm
-            key={formKey}
+            ref={formRef}
             mode="create"
             onSubmit={handleSubmit}
             submitError={error}
