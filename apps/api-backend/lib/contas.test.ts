@@ -9,7 +9,7 @@ const builders: Record<string, ReturnType<typeof vi.fn>>[] = [];
 
 function makeBuilder(result: QueryResult) {
   const b: Record<string, ReturnType<typeof vi.fn>> & { then?: unknown } = {};
-  for (const m of ['select', 'neq', 'or', 'order', 'range', 'eq', 'is', 'maybeSingle', 'single', 'insert', 'update', 'limit']) {
+  for (const m of ['select', 'neq', 'or', 'order', 'range', 'eq', 'is', 'maybeSingle', 'single', 'insert', 'update', 'delete', 'limit']) {
     b[m] = vi.fn(() => b);
   }
   b.then = (onFulfilled: (v: QueryResult) => unknown, onRejected?: (e: unknown) => unknown) =>
@@ -204,5 +204,29 @@ describe('contaService.update', () => {
       expect(updateArg).not.toHaveProperty(k);
     }
     expect(updateArg).toMatchObject({ amount: 200 });
+  });
+});
+
+describe('contaService.remove (hard delete)', () => {
+  it('devolve o id removido em caso de sucesso', async () => {
+    resultQueue.push({ data: { id: 5 }, error: null });
+    expect(await contaService.remove(5)).toEqual({ id: 5 });
+    expect(builders[0].delete).toHaveBeenCalled();
+    expect(builders[0].eq).toHaveBeenCalledWith('id', 5);
+  });
+
+  it('404 quando a conta não existe (nada removido)', async () => {
+    resultQueue.push({ data: null, error: null });
+    await expect(contaService.remove(9)).rejects.toMatchObject({ status: 404 });
+  });
+
+  it('409 quando uma FK RESTRICT bloqueia a exclusão (23503)', async () => {
+    resultQueue.push({ data: null, error: { code: '23503', message: 'FK violation' } });
+    await expect(contaService.remove(5)).rejects.toMatchObject({ status: 409 });
+  });
+
+  it('500 em erro inesperado do banco', async () => {
+    resultQueue.push({ data: null, error: { code: 'XX000', message: 'boom' } });
+    await expect(contaService.remove(5)).rejects.toMatchObject({ status: 500 });
   });
 });

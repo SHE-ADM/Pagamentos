@@ -1,7 +1,12 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { NextRequest } from 'next/server';
 
-vi.mock('@/lib/auth', () => ({ requireAuth: vi.fn(), getAuthenticatedUser: vi.fn(), canSeeConta: vi.fn() }));
+vi.mock('@/lib/auth', () => ({
+  requireAuth: vi.fn(),
+  getAuthenticatedUser: vi.fn(),
+  canSeeConta: vi.fn(),
+  requireAdminGroup: vi.fn(),
+}));
 vi.mock('@/lib/contas', () => {
   class ContaServiceError extends Error {
     status: number;
@@ -11,18 +16,20 @@ vi.mock('@/lib/contas', () => {
       this.status = status;
     }
   }
-  return { contaService: { getById: vi.fn(), update: vi.fn() }, ContaServiceError };
+  return { contaService: { getById: vi.fn(), update: vi.fn(), remove: vi.fn() }, ContaServiceError };
 });
 
-import { GET, PATCH } from './route';
-import { requireAuth, getAuthenticatedUser, canSeeConta } from '@/lib/auth';
+import { GET, PATCH, DELETE } from './route';
+import { requireAuth, getAuthenticatedUser, canSeeConta, requireAdminGroup } from '@/lib/auth';
 import { contaService, ContaServiceError } from '@/lib/contas';
 
 const requireAuthMock = vi.mocked(requireAuth);
 const getUserMock = vi.mocked(getAuthenticatedUser);
 const canSeeContaMock = vi.mocked(canSeeConta);
+const requireAdminGroupMock = vi.mocked(requireAdminGroup);
 const getByIdMock = vi.mocked(contaService.getById);
 const updateMock = vi.mocked(contaService.update);
+const removeMock = vi.mocked(contaService.remove);
 
 const USER = { id: 'fe8d268d-2bc3-4418-8cae-65e426c3fb4e' };
 const req = {} as NextRequest;
@@ -33,11 +40,14 @@ beforeEach(() => {
   requireAuthMock.mockReset();
   getUserMock.mockReset();
   canSeeContaMock.mockReset();
+  requireAdminGroupMock.mockReset();
   getByIdMock.mockReset();
   updateMock.mockReset();
+  removeMock.mockReset();
   requireAuthMock.mockResolvedValue(null);
   getUserMock.mockResolvedValue(USER as never);
   canSeeContaMock.mockResolvedValue(true); // padrão: a conta é visível para quem pediu
+  requireAdminGroupMock.mockResolvedValue(null); // padrão: usuário É do grupo Administrador
 });
 
 describe('GET /api/contas/:id', () => {
@@ -97,5 +107,33 @@ describe('PATCH /api/contas/:id', () => {
     const res = await PATCH(patchReq(async () => ({ status: 'cancelado' })), ctx('999'));
     expect(res.status).toBe(404);
     expect(updateMock).not.toHaveBeenCalled();
+  });
+});
+
+describe('DELETE /api/contas/:id (hard delete — grupo Administrador)', () => {
+  it('403 quando NÃO é do grupo Administrador — não toca o service', async () => {
+    requireAdminGroupMock.mockResolvedValue(new Response(null, { status: 403 }));
+    const res = await DELETE(req, ctx('5'));
+    expect(res.status).toBe(403);
+    expect(removeMock).not.toHaveBeenCalled();
+  });
+
+  it('400 quando o id é inválido — não toca o service', async () => {
+    const res = await DELETE(req, ctx('abc'));
+    expect(res.status).toBe(400);
+    expect(removeMock).not.toHaveBeenCalled();
+  });
+
+  it('200 e remove quando é do grupo Administrador', async () => {
+    removeMock.mockResolvedValue({ id: 5 } as never);
+    const res = await DELETE(req, ctx('5'));
+    expect(res.status).toBe(200);
+    expect(removeMock).toHaveBeenCalledWith(5);
+  });
+
+  it('404 quando a conta não existe', async () => {
+    removeMock.mockRejectedValue(new ContaServiceError('Conta não encontrada', 404));
+    const res = await DELETE(req, ctx('9'));
+    expect(res.status).toBe(404);
   });
 });
