@@ -210,7 +210,14 @@ só os registros com `additional_info` ganham o rodapé. É distinto de `process
 (auditoria/pipeline, exibido como "Observações") e nunca é tocado pela extração. Na
 **inclusão** (modo `create`), **Emissão e Vencimento já vêm com a data de hoje** (`todayISO()`,
 data local — `toFormValues` só preenche quando não há `defaultValues`; edição mantém os valores
-da conta). **Sem botão de exclusão** em nenhuma das telas.
+da conta). **Lançamento EM SÉRIE (só `/contas`, modo `create`):** após **Lançar conta**, a página
+**NÃO remonta** o form — mantém todos os campos, **limpa apenas o Fornecedor e o refoca** (handle
+`ContaFormHandle.resetSupplier`, chamado por `ContasNovaPage` no sucesso e na falha parcial de
+anexo). O `SupplierSelect` é remontado por `key` (o react-select não espelha `value`) com
+`autoFocus`; os selects de **classificação (centro/plano) PERMANECEM** — só são re-semeados quando o
+usuário escolhe um novo fornecedor (não regredir — ver [[conta-form-classification-selects]]). A
+fila de anexos é descartada (já subiu). O modal de edição de `/consulta` **não** usa esse handle
+(fluxo próprio). **Sem botão de exclusão** em nenhuma das telas.
 Cliente Next API em `services/contas.ts` (proxy `/data-api`). Spec/template em
 `docs/prompts/api-contas-crud-spec.md`.
 

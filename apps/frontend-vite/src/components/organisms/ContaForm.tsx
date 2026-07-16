@@ -4,7 +4,7 @@
 // (@sheild/shared). Fornecedor via react-select (SupplierSelect). Tipo de documento
 // e tipo de pagamento são selects de APENAS CONSULTA (valores pré-definidos dos enums,
 // obrigatórios). O envio (POST/PATCH na Next API) é responsabilidade do pai.
-import { useRef, useState } from 'react';
+import { forwardRef, useImperativeHandle, useRef, useState } from 'react';
 import { useForm } from 'react-hook-form';
 import {
   financialAccountControlCreateSchema,
@@ -66,6 +66,16 @@ interface ContaFormProps {
   onAttachmentsChanged?: (attachments: FinancialAccountAttachment[]) => void;
 }
 
+/** Handle imperativo do ContaForm (uso: lançamento em série na página /contas). */
+export interface ContaFormHandle {
+  /**
+   * Limpa APENAS o fornecedor e foca o seletor, preservando os demais campos — para
+   * lançar contas em série. Não mexe na classificação (centro/plano) já digitada; ela
+   * só é re-semeada quando o usuário ESCOLHE um novo fornecedor (handleSupplierChange).
+   */
+  resetSupplier: () => void;
+}
+
 // Data corrente no formato YYYY-MM-DD (local) — default de emissão/vencimento ao
 // INCLUIR uma conta. Usa a data local (não UTC) para não "voltar um dia" à noite.
 const todayISO = (): string => {
@@ -117,7 +127,7 @@ const chartAccountDefaultLabel = (c?: ClassificationSource): string | undefined 
   return c.chart_account?.account_description ?? c.chart_account?.account_code ?? `#${c.chart_account_id}`;
 };
 
-export default function ContaForm({
+const ContaForm = forwardRef<ContaFormHandle, ContaFormProps>(function ContaForm({
   mode,
   defaultValues,
   onSubmit,
@@ -125,7 +135,7 @@ export default function ContaForm({
   submitError,
   submitting = false,
   onAttachmentsChanged,
-}: Readonly<ContaFormProps>) {
+}, ref) {
   const {
     register,
     handleSubmit,
@@ -135,6 +145,10 @@ export default function ContaForm({
 
   const [skSupplier, setSkSupplier] = useState<number | null>(defaultValues?.sk_supplier ?? null);
   const [supplierError, setSupplierError] = useState<string | null>(null);
+  // `key` do SupplierSelect: incrementar REMONTA só o seletor de fornecedor (limpa o texto
+  // interno do react-select, que não espelha `value`) e dispara o autofoco (key > 0). NÃO
+  // afeta os selects de classificação (centro/plano permanecem — ver [[conta-form-...]]).
+  const [supplierKey, setSupplierKey] = useState(0);
   // Classificação contábil (opcional) — FKs cost_center_id / chart_account_id.
   // id 0 (sentinela "não informado") aparece vazio no select.
   const [costCenterId, setCostCenterId] = useState<number | null>(orNull(defaultValues?.cost_center_id));
@@ -151,6 +165,16 @@ export default function ContaForm({
   const [files, setFiles] = useState<File[]>([]);
   // Descarta respostas obsoletas de getSupplier quando o fornecedor é trocado em sequência.
   const supplierReqRef = useRef(0);
+
+  // Limpa APENAS o fornecedor e foca o seletor (o pai chama após lançar uma conta, para o
+  // próximo lançamento em série). Não navega, não remonta o form nem mexe nos demais campos.
+  useImperativeHandle(ref, () => ({
+    resetSupplier() {
+      setSkSupplier(null);
+      setSupplierError(null);
+      setSupplierKey((k) => k + 1);
+    },
+  }), []);
 
   // Cascata: trocar (ou limpar) o centro de custo zera o plano de contas, que pode não
   // pertencer ao novo centro. O ChartAccountSelect remonta via `key={costCenterId}`.
@@ -246,6 +270,8 @@ export default function ContaForm({
       {submitError && <Alert variant="error">{submitError}</Alert>}
 
       <SupplierSelect
+        key={supplierKey}
+        autoFocus={supplierKey > 0}
         id="conta-supplier"
         label="Fornecedor"
         value={skSupplier}
@@ -363,4 +389,8 @@ export default function ContaForm({
       </div>
     </form>
   );
-}
+});
+
+ContaForm.displayName = 'ContaForm';
+
+export default ContaForm;
