@@ -27,6 +27,14 @@ interface SupplierFormValues {
   email2?: string;
   email3?: string;
   email4?: string;
+  phone_ddd1?: string;
+  phone1?: string;
+  phone_ddd2?: string;
+  phone2?: string;
+  whatsapp1?: string;
+  whatsapp2?: string;
+  pix_key1?: string;
+  pix_key2?: string;
 }
 
 interface SupplierFormProps {
@@ -50,11 +58,20 @@ function toFormValues(s?: Partial<Supplier>): SupplierFormValues {
     email2: s?.email2 ?? '',
     email3: s?.email3 ?? '',
     email4: s?.email4 ?? '',
+    phone_ddd1: s?.phone_ddd1 ?? '',
+    phone1: s?.phone1 ?? '',
+    phone_ddd2: s?.phone_ddd2 ?? '',
+    phone2: s?.phone2 ?? '',
+    whatsapp1: s?.whatsapp1 ?? '',
+    whatsapp2: s?.whatsapp2 ?? '',
+    pix_key1: s?.pix_key1 ?? '',
+    pix_key2: s?.pix_key2 ?? '',
   };
 }
 
 const FIELD_KEYS: (keyof SupplierFormValues)[] = [
   'legal_name', 'trade_name', 'cnpj', 'cpf', 'email', 'email2', 'email3', 'email4',
+  'phone_ddd1', 'phone1', 'phone_ddd2', 'phone2', 'whatsapp1', 'whatsapp2', 'pix_key1', 'pix_key2',
 ];
 
 // '' → omitido: campos opcionais vazios não devem disparar validação de formato.
@@ -77,6 +94,14 @@ const FIELDS: { name: keyof SupplierFormValues; label: string; type?: string }[]
   { name: 'email2', label: 'E-mail 2', type: 'email' },
   { name: 'email3', label: 'E-mail 3', type: 'email' },
   { name: 'email4', label: 'E-mail 4', type: 'email' },
+  { name: 'phone_ddd1', label: 'DDD (fone 1)' },
+  { name: 'phone1', label: 'Telefone 1' },
+  { name: 'phone_ddd2', label: 'DDD (fone 2)' },
+  { name: 'phone2', label: 'Telefone 2' },
+  { name: 'whatsapp1', label: 'WhatsApp 1' },
+  { name: 'whatsapp2', label: 'WhatsApp 2' },
+  { name: 'pix_key1', label: 'Chave PIX 1' },
+  { name: 'pix_key2', label: 'Chave PIX 2' },
 ];
 
 // id 0 = "não informado" (sentinela do banco) → tratado como vazio na UI.

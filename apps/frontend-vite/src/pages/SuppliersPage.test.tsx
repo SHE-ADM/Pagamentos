@@ -26,6 +26,14 @@ const sample: Supplier = {
   deleted_at: null,
   cost_center_id: 0,
   chart_account_id: 0,
+  phone_ddd1: null,
+  phone1: null,
+  phone_ddd2: null,
+  phone2: null,
+  whatsapp1: null,
+  whatsapp2: null,
+  pix_key1: null,
+  pix_key2: null,
 };
 
 const listMock = vi.mocked(listSuppliers);

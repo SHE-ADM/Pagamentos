@@ -778,6 +778,56 @@ class SupabaseControl:
             log.warning(f"Falha no write-back de classificacao do fornecedor {sk_supplier}: {e}")
             return False
 
+    def update_supplier_contact(self, sk_supplier, pix=None, phone=None, whatsapp=None) -> bool:
+        """Write-back de contato (chave PIX / telefone / WhatsApp) no cadastro do
+        fornecedor (PATCH supplier). Logica de 2 slots (mesma do trigger
+        _add_supplier_email, migration 028): o 2o slot so recebe quando o 1o ja esta
+        preenchido e e diferente. Best-effort — falha NAO derruba a gravacao da conta.
+        Pula a OTIMOTEX (sk=1). `phone` e a tupla (ddd, fone)."""
+        if not self._available or not sk_supplier or sk_supplier == OTIMOTEX_SK_SUPPLIER:
+            return False
+        if not (pix or phone or whatsapp):
+            return False
+        try:
+            req = urllib.request.Request(
+                f"{self.base}/rest/v1/supplier?sk_supplier=eq.{int(sk_supplier)}"
+                "&select=pix_key1,pix_key2,phone_ddd1,phone1,phone_ddd2,phone2,"
+                "whatsapp1,whatsapp2&limit=1",
+                headers=self.headers,
+            )
+            with urllib.request.urlopen(req, timeout=10) as r:
+                rows = json.loads(r.read())
+            if not rows:
+                return False
+            row = rows[0]
+            updates: dict = {}
+            if pix:
+                updates.update(_contact_slot_update(
+                    row.get("pix_key1"), row.get("pix_key2"), "pix_key1", "pix_key2", pix))
+            if whatsapp:
+                updates.update(_contact_slot_update(
+                    row.get("whatsapp1"), row.get("whatsapp2"), "whatsapp1", "whatsapp2", whatsapp))
+            if phone:
+                updates.update(_phone_slot_update(row, phone[0], phone[1]))
+            if not updates:
+                return False
+            data = json.dumps(updates).encode()
+            req = urllib.request.Request(
+                f"{self.base}/rest/v1/supplier?sk_supplier=eq.{int(sk_supplier)}",
+                data=data,
+                headers={**self.headers, "Prefer": "return=minimal"},
+                method="PATCH",
+            )
+            urllib.request.urlopen(req, timeout=10)
+            return True
+        except urllib.error.HTTPError as e:
+            log.warning(f"Falha no write-back de contato do fornecedor {sk_supplier}: "
+                        f"{e.code} {e.read().decode(errors='replace')[:150]}")
+            return False
+        except Exception as e:
+            log.warning(f"Falha no write-back de contato do fornecedor {sk_supplier}: {e}")
+            return False
+
     def classification_for_account_code(self, account_code: str) -> tuple[int, int]:
         """Resolve (cost_center_id, chart_account_id) da linha de financial_chart_of_account
         com o `account_code` informado (regra DAM/DUAM: classificacao vem do plano 4.1.06).
@@ -1749,6 +1799,140 @@ def _ns_body(s: str) -> str:
     return unicodedata.normalize("NFD", s).encode("ascii", "ignore").decode().lower()
 
 
+# ── Contatos do fornecedor (telefone / WhatsApp / chave PIX) ────────────────────
+# Detecta contato a partir do CORPO/assunto/descrição do e-mail (decisão: NÃO tocar
+# no prompt do PDF). Gravado no cadastro `supplier` (migration 082) pela extração
+# (apply_contact_writeback) e pelo backfill scripts/backfill_supplier_contacts.py.
+
+# Chave PIX só é capturada com o rótulo "pix" por perto — anti-falso-positivo: um
+# e-mail em assinatura ou o CNPJ do pagador NÃO devem virar chave PIX.
+_PIX_LABEL_RE = re.compile(r"(?i)\bpix\b")
+_PIX_WINDOW = 80  # chars após o rótulo "pix" onde a chave é procurada.
+# Candidatos de chave na janela: e-mail > UUID (aleatória) > dígitos (CPF/CNPJ/tel).
+_PIX_KEY_CAND_RE = re.compile(
+    r"([A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,})"                       # e-mail
+    r"|(\b[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\b)"  # UUID c/ hífen
+    r"|(\b[0-9a-fA-F]{32}\b)"                                                 # UUID sem hífen
+    r"|(\+?\d[\d.\-/()\s]{9,17}\d)"                                           # CPF/CNPJ/telefone
+)
+
+# Telefone: formato distintivo "(DD) NNNNN-NNNN" OU rótulo fone/tel/celular + número.
+_PHONE_PAREN_RE = re.compile(r"\((\d{2})\)\s*(\d{4,5})[-.\s]?(\d{4})")
+_PHONE_LABEL_RE = re.compile(
+    r"(?i)\b(?:telefone|tel|fone|celular|cel)\b\D{0,4}"
+    r"(?:\+?55[\s.-]?)?(\(?\d{2}\)?[\s.-]?)?(\d{4,5})[\s.-]?(\d{4})")
+# WhatsApp: só com rótulo whats/zap por perto (precedência sobre o slot de telefone).
+_WHATS_LABEL_RE = re.compile(
+    r"(?i)\b(?:whats?app|whats|zap)\b\D{0,4}"
+    r"(?:\+?55[\s.-]?)?(\(?\d{2}\)?[\s.-]?)?(\d{4,5})[\s.-]?(\d{4})")
+
+
+def _extract_pix_key(text: str, exclude: "set[str] | None" = None) -> "str | None":
+    """Primeira chave PIX plausível numa janela após um rótulo 'pix'. Retorna a chave
+    normalizada (e-mail/UUID em minúsculas; dígitos sem máscara p/ CPF/CNPJ/telefone)
+    ou None. `exclude` = dígitos que NUNCA viram chave (ex.: CNPJ do pagador/OTIMOTEX,
+    que aparece no bloco reencaminhado do corpo) — evita gravar o identificador do
+    pagador como chave do fornecedor."""
+    if not text:
+        return None
+    exclude = exclude or set()
+    for lab in _PIX_LABEL_RE.finditer(text):
+        window = text[lab.end(): lab.end() + _PIX_WINDOW]
+        for m in _PIX_KEY_CAND_RE.finditer(window):
+            email, uuid_h, uuid_flat, digits = m.groups()
+            if email:
+                return email.lower()
+            if uuid_h or uuid_flat:
+                return (uuid_h or uuid_flat).lower()
+            d = re.sub(r"\D", "", digits or "")
+            if d.startswith("55") and len(d) in (12, 13):  # tira o código do país (+55)
+                d = d[2:]
+            if 10 <= len(d) <= 14 and d not in exclude:
+                return d
+            # candidato excluido/invalido: tenta o proximo na janela (ou proximo rotulo).
+    return None
+
+
+def _norm_ddd_fone(ddd_raw: str, local_raw: str) -> "tuple[str, str] | None":
+    """Normaliza (DDD, fone). DDD ausente/inválido → '11' (requisito). fone deve ter
+    8 ou 9 dígitos; caso contrário retorna None."""
+    ddd = re.sub(r"\D", "", ddd_raw or "")
+    fone = re.sub(r"\D", "", local_raw or "")
+    if len(fone) not in (8, 9):
+        return None
+    if not re.fullmatch(r"[1-9]\d", ddd):  # DDD válido é 11..99
+        ddd = "11"
+    return (ddd, fone)
+
+
+def _extract_whatsapp(text: str) -> "str | None":
+    """Número de WhatsApp rotulado → dígitos DDD+fone (10-11). None se ausente."""
+    m = _WHATS_LABEL_RE.search(text or "")
+    if not m:
+        return None
+    pair = _norm_ddd_fone(m.group(1), (m.group(2) or "") + (m.group(3) or ""))
+    return (pair[0] + pair[1]) if pair else None
+
+
+def _extract_phone(text: str, exclude_digits: "str | None" = None) -> "tuple[str, str] | None":
+    """Primeiro telefone (formato entre parênteses ou rotulado) como (DDD, fone).
+    Pula o número igual a `exclude_digits` (o do WhatsApp, que tem precedência)."""
+    text = text or ""
+    for m in _PHONE_PAREN_RE.finditer(text):
+        pair = _norm_ddd_fone(m.group(1), (m.group(2) or "") + (m.group(3) or ""))
+        if pair and (pair[0] + pair[1]) != exclude_digits:
+            return pair
+    for m in _PHONE_LABEL_RE.finditer(text):
+        pair = _norm_ddd_fone(m.group(1), (m.group(2) or "") + (m.group(3) or ""))
+        if pair and (pair[0] + pair[1]) != exclude_digits:
+            return pair
+    return None
+
+
+def parse_supplier_contacts(text: str, exclude_pix: "set[str] | None" = None) -> dict:
+    """Extrai contato do fornecedor do texto do e-mail. Retorna
+    {'pix': str|None, 'phone': (ddd, fone)|None, 'whatsapp': str|None}.
+    `exclude_pix` = dígitos que nunca viram chave PIX (CNPJ do pagador/OTIMOTEX)."""
+    text = text or ""
+    whats = _extract_whatsapp(text)
+    return {
+        "pix": _extract_pix_key(text, exclude=exclude_pix),
+        "phone": _extract_phone(text, exclude_digits=whats),
+        "whatsapp": whats,
+    }
+
+
+def _contact_slot_update(cur1, cur2, key1, key2, value) -> dict:
+    """Escolhe o slot (1 ou 2) para gravar `value` sem duplicar: slot1 se vazio;
+    slot2 se slot1 já tem OUTRO valor; no-op se já presente ou ambos cheios/difer.
+    Comparação sem espaços, case-insensitive."""
+    if not value:
+        return {}
+    def norm(s):
+        return (s or "").strip().lower()
+    v = norm(value)
+    if norm(cur1) == v or norm(cur2) == v:
+        return {}
+    if not norm(cur1):
+        return {key1: value}
+    if not norm(cur2):
+        return {key2: value}
+    return {}
+
+
+def _phone_slot_update(row: dict, ddd: str, fone: str) -> dict:
+    """Slot de telefone (par DDD+fone): grava no 1º par vazio; no-op se já presente
+    ou ambos os pares cheios."""
+    pairs = (("phone_ddd1", "phone1"), ("phone_ddd2", "phone2"))
+    for dk, fk in pairs:
+        if (row.get(fk) or "").strip() == fone and (row.get(dk) or "").strip() == ddd:
+            return {}
+    for dk, fk in pairs:
+        if not (row.get(fk) or "").strip():
+            return {dk: ddd, fk: fone}
+    return {}
+
+
 def _classify_body_doc_type(body_text: str) -> str:
     """Detecta o tipo de documento tributário a partir do corpo do e-mail.
 
@@ -2141,6 +2325,40 @@ def apply_forced_classification(ctrl, payload: dict, extra_text: str | None = No
     # Write-back so quando a regra pede E o fornecedor nao e a OTIMOTEX (sk=1). Best-effort.
     if write_back and sk_supplier and sk_supplier != OTIMOTEX_SK_SUPPLIER:
         ctrl.update_supplier_classification(sk_supplier, cost_center_id, chart_account_id)
+
+
+def apply_contact_writeback(ctrl, payload: dict, extra_text: str | None = None) -> None:
+    """Detecta chave PIX / telefone / WhatsApp no texto do e-mail e grava no cadastro
+    do fornecedor (write-back, 2 slots). Roda APOS _finalize_supplier (sk_supplier ja
+    setado). Best-effort — NUNCA derruba a gravacao da conta. NAO escreve no payload
+    (financial_account_control nao tem colunas de contato). Textos escaneados: assunto
+    + descricao + corpo (email_body_excerpt/extra_text)."""
+    sk_supplier = payload.get("sk_supplier")
+    if not sk_supplier or sk_supplier == OTIMOTEX_SK_SUPPLIER:
+        return
+    try:
+        parts = [payload.get("subject"), payload.get("description"),
+                 payload.get("email_body_excerpt"), extra_text]
+        text = "\n".join(p for p in parts if p)
+        if not text.strip():
+            return
+        # Nunca gravar o CNPJ do PAGADOR (OTIMOTEX) como chave PIX do fornecedor — o
+        # bloco do pagador vem no corpo reencaminhado e pode ficar perto de "pix".
+        exclude = set()
+        pcnpj = re.sub(r"\D", "", str(payload.get("payer_cnpj") or ""))
+        if len(pcnpj) == 14:
+            exclude.add(pcnpj)
+        own = ctrl.company_cnpj() if hasattr(ctrl, "company_cnpj") else None
+        if own:
+            exclude.add(re.sub(r"\D", "", own))
+        contacts = parse_supplier_contacts(text, exclude_pix=exclude)
+        if any(contacts.values()):
+            ctrl.update_supplier_contact(
+                sk_supplier,
+                pix=contacts["pix"], phone=contacts["phone"], whatsapp=contacts["whatsapp"],
+            )
+    except Exception as e:
+        log.warning(f"Falha ao detectar/gravar contato do fornecedor {sk_supplier}: {e}")
 
 
 # Acronimos/frases de GUIA TRIBUTARIA no ASSUNTO -> document_type canonico (lowercase,
@@ -3561,6 +3779,10 @@ def extract_and_store_accounts(saved_pdfs: list, message_id: str,
         # no supplier (exceto OTIMOTEX). Roda apos finalize (sk/cc/ca ja setados), antes da dedup.
         apply_forced_classification(ctrl, payload)
 
+        # Write-back de contato (chave PIX / telefone / WhatsApp) detectado no texto
+        # do e-mail para o cadastro do fornecedor. Best-effort, nao toca no payload.
+        apply_contact_writeback(ctrl, payload)
+
         # Dedup de conteudo: o mesmo documento ja gravado por outro e-mail
         # (remetente reenvia o mesmo boleto/guia, com Message-ID diferente).
         # Reemissao com vencimento mais novo (mesma guia) → ATUALIZA a conta
@@ -3721,6 +3943,11 @@ def try_extract_from_body(email_rec: dict, body_text: str, received_at: str,
     # Roda no payload base, ANTES do bloco de parcelas — os clones herdam cost_center_id/
     # chart_account_id.
     apply_forced_classification(ctrl, payload, extra_text=body_text)
+
+    # Write-back de contato (chave PIX / telefone / WhatsApp) do corpo do e-mail para
+    # o cadastro do fornecedor. Best-effort, nao toca no payload. Roda no payload base,
+    # antes do bloco de parcelas (o fornecedor ja esta resolvido e e o mesmo dos clones).
+    apply_contact_writeback(ctrl, payload, extra_text=body_text)
 
     # MÚLTIPLOS boletos no corpo (tabela de parcelas com documentos/vencimentos
     # diferentes): cria UMA conta por boleto — NUNCA uma conta somada com o total

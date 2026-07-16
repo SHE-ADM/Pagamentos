@@ -22,6 +22,14 @@ const cpfInput = z
   .transform(stripMask)
   .refine((v) => v.length === 11, 'CPF deve conter 11 dígitos');
 
+// Telefone/WhatsApp: guardados só com dígitos (sem máscara), como cnpj/cpf. O
+// transform aceita "(11) 99999-9999" e grava "11999999999". `''` (limpar) é aceito.
+const digitsMax = (max: number, label: string) =>
+  z
+    .string()
+    .transform(stripMask)
+    .refine((v) => v.length <= max, `${label} deve ter no máximo ${max} dígitos`);
+
 // ── Leitura (linha do banco) ────────────────────────────────────────────────
 
 export const supplierSchema = z.object({
@@ -42,6 +50,15 @@ export const supplierSchema = z.object({
   chart_account_id: z.number().int().default(0),
   cost_center: costCenterEmbeddedSchema.optional(),
   chart_account: chartAccountEmbeddedSchema.optional(),
+  // Contatos (migration 082) — telefone/WhatsApp/chave PIX, 2 slots cada.
+  phone_ddd1: z.string().nullable(),
+  phone1: z.string().nullable(),
+  phone_ddd2: z.string().nullable(),
+  phone2: z.string().nullable(),
+  whatsapp1: z.string().nullable(),
+  whatsapp2: z.string().nullable(),
+  pix_key1: z.string().nullable(),
+  pix_key2: z.string().nullable(),
 });
 
 // Campos editáveis (POST/PATCH). sk_supplier/supplier_id são gerados pelo banco
@@ -60,6 +77,15 @@ const editableFields = {
   email4: z.email('E-mail inválido').optional(),
   cost_center_id: z.number().int().min(0).optional(),
   chart_account_id: z.number().int().min(0).optional(),
+  // Contatos (migration 082) — dígitos sem máscara; pix_key aceita e-mail/UUID.
+  phone_ddd1: digitsMax(2, 'DDD').optional(),
+  phone1: digitsMax(9, 'Telefone').optional(),
+  phone_ddd2: digitsMax(2, 'DDD').optional(),
+  phone2: digitsMax(9, 'Telefone').optional(),
+  whatsapp1: digitsMax(11, 'WhatsApp').optional(),
+  whatsapp2: digitsMax(11, 'WhatsApp').optional(),
+  pix_key1: z.string().trim().max(77, 'Chave PIX muito longa').optional(),
+  pix_key2: z.string().trim().max(77, 'Chave PIX muito longa').optional(),
 };
 
 // ── Criação ─────────────────────────────────────────────────────────────────
