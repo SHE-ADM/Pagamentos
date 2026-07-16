@@ -184,6 +184,22 @@ describe('Consulta', () => {
     expect(screen.getByText('ester@otimotex.com.br')).toBeInTheDocument();
   });
 
+  it('detalhe OMITE "Última edição por"/"Situação alterada por" quando o autor é o sentinela (teste@otimotex)', async () => {
+    const SENTINEL = 'fe8d268d-2bc3-4418-8cae-65e426c3fb4e';
+    // Sentinela NÃO está no diretório → testa o fallback por UUID (isSentinelAuthor).
+    getAppUsers.mockResolvedValue({ 'uuid-a': 'ester@otimotex.com.br' });
+    getFinancialAccountControl.mockResolvedValue({
+      data: [makeRow({ created_by: 'uuid-a', updated_by: SENTINEL, status_changed_by: SENTINEL })],
+      total: 1,
+    });
+    render(<Consulta />);
+    fireEvent.click(await screen.findByText('12345')); // abre o detalhe
+    // "Criado por" (usuário real) permanece; as duas do sentinela somem.
+    expect(await screen.findByText('Criado por')).toBeInTheDocument();
+    expect(screen.queryByText('Última edição por')).not.toBeInTheDocument();
+    expect(screen.queryByText('Situação alterada por')).not.toBeInTheDocument();
+  });
+
   it('hard delete NÃO aparece no detalhe para quem não é do grupo Administrador', async () => {
     getFinancialAccountControl.mockResolvedValue({ data: [makeRow()], total: 1 });
     render(<Consulta />);

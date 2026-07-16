@@ -219,6 +219,12 @@ interface MetricCard {
   onCardClick?: () => void;
 }
 
+// Sentinela: default de created_by/updated_by/status_changed_by quando não há usuário real
+// resolvido (migrations 076/077). "Última edição por" / "Situação alterada por" apontando p/
+// ele não representam uma edição de um usuário de verdade — então não são exibidos.
+const SENTINEL_AUTHOR_EMAIL = 'teste@otimotex.com.br';
+const SENTINEL_AUTHOR_ID = 'fe8d268d-2bc3-4418-8cae-65e426c3fb4e';
+
 export default function Consulta() {
   // Só o GRUPO ADMINISTRADOR vê/executa o hard delete de conta (o backend também impõe
   // via requireAdminGroup — o gate de UI é cosmético). Ver "Hard delete" no CLAUDE.md.
@@ -233,6 +239,10 @@ export default function Consulta() {
   // Diretório id→e-mail (view app_user) para exibir o AUTOR no detalhe (migration 077).
   const [appUsers, setAppUsers] = useState<Record<string, string>>({});
   const userEmail = (id: string | null): string => (id ? (appUsers[id] ?? id) : '—');
+  // Autor é o sentinela? Por UUID (robusto quando o diretório app_user ainda não carregou)
+  // OU pelo e-mail resolvido.
+  const isSentinelAuthor = (id: string | null): boolean =>
+    id === SENTINEL_AUTHOR_ID || userEmail(id) === SENTINEL_AUTHOR_EMAIL;
   // Edição de conta (modal com ContaForm → PATCH /api/contas/:id).
   const [editing, setEditing] = useState<FinancialAccountControl | null>(null);
   const [editSubmitting, setEditSubmitting] = useState(false);
@@ -1103,8 +1113,15 @@ export default function Consulta() {
                                   ['Origem', r.source_file],
                                   ['Observações', r.processing_notes || '—'],
                                   ['Criado por', userEmail(r.created_by)],
-                                  ['Última edição por', userEmail(r.updated_by)],
-                                  ['Situação alterada por', `${userEmail(r.status_changed_by)} · ${fmtDateTime(r.status_changed_at)}`],
+                                  ...(isSentinelAuthor(r.updated_by)
+                                    ? ([] as [string, string | null][])
+                                    : ([['Última edição por', userEmail(r.updated_by)]] as [string, string | null][])),
+                                  ...(isSentinelAuthor(r.status_changed_by)
+                                    ? ([] as [string, string | null][])
+                                    : ([[
+                                        'Situação alterada por',
+                                        `${userEmail(r.status_changed_by)} · ${fmtDateTime(r.status_changed_at)}`,
+                                      ]] as [string, string | null][])),
                                 ] as [string, string | null][]
                               ).map(([k, v], i) => (
                                 <div
