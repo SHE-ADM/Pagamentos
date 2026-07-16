@@ -517,6 +517,35 @@ e a classificação flui nos **dois sentidos**:
   (`financial_account_control`) NÃO é afetada — só o default do fornecedor. Backfill único zerou os
   fornecedores de funcionário já classificados (ex.: "Josefa/Edvaldo/Tania (Funcionário)").
 
+**Contato do fornecedor — telefone / WhatsApp / chave PIX (migration 082):** `supplier` tem
+`phone_ddd1`/`phone1`/`phone_ddd2`/`phone2` (char(2)/varchar(9)), `whatsapp1`/`whatsapp2`
+(varchar(11)) e `pix_key1`/`pix_key2` (varchar(77)) — **2 "slots" por tipo**, todos nullable,
+escrita só por `service_role`. Dois caminhos de preenchimento:
+- **Edição de fornecedores (`/fornecedores`, `SupplierForm`):** campos de texto simples;
+  telefone/WhatsApp gravam só dígitos (strip de máscara no Zod, como cnpj/cpf), `pix_key` aceita
+  e-mail/UUID. Entram em `editableFields` de `@sheild/shared` → fluem para create/update sem
+  mudança no repositório (o `SELECT '*'` já os devolve).
+- **Extração de e-mail (`read_emails.py`):** `parse_supplier_contacts(text, exclude_pix)` detecta
+  do CORPO/assunto/descrição (decisão: NÃO toca no prompt do PDF) — chave PIX **só com rótulo
+  "pix" por perto** (janela de 80 chars, `finditer` que pula candidato excluído; anti-falso-
+  positivo), telefone por formato `(DD) NNNNN-NNNN`/rótulo (**DDD default 11** quando ausente) e
+  WhatsApp por rótulo (**precede** o slot de telefone via `exclude_digits`). `apply_contact_writeback`
+  roda após `apply_forced_classification` nos dois choke points (PDF `:3562`, corpo `:3723`),
+  **não** toca no payload da conta, e chama `SupabaseControl.update_supplier_contact` — **lógica de
+  2 slots** (espelha o trigger `_add_supplier_email`: preenche o slot 1; o 2 só quando o 1 tem
+  OUTRO valor; no-op se já presente ou ambos cheios). Best-effort (falha loga, não derruba a
+  conta); **pula OTIMOTEX (sk=1)**. O **CNPJ do pagador** (`payer_cnpj` + `company_cnpj()`) é
+  **excluído** das chaves PIX — o bloco do pagador vem no corpo reencaminhado e pode ficar perto de
+  "pix". WhatsApp É auto-detectado (além de editável no form). Testes:
+  `tests/test_supplier_contacts.py` (parser + slots + guards).
+- **Backfill retroativo:** `scripts/backfill_supplier_contacts.py` (`--dry-run`) varre todas as
+  contas, agrupa por `sk_supplier` e grava com a mesma lógica de slot (idempotente; exclui o
+  `company_cnpj()`). **Aplicado em 2026-07-16** (31 fornecedores; re-run reporta 0 mudanças).
+- **Deploy:** copiar só `read_emails.py` (o `extract_pdf.py` NÃO muda — detecção é só do corpo); a
+  migration 082 já vale para dev+prod (mesma Supabase). Validar: `py -3 -c "import sys;
+  sys.path.insert(0,'skills/email-reader/scripts'); import read_emails as R;
+  print(hasattr(R,'parse_supplier_contacts'), hasattr(R.SupabaseControl,'update_supplier_contact'))"`.
+
 **Usuários / autenticação (`apps/api-backend/lib/users.ts` + `app/api/users|auth/**`):** sobre
 o **Supabase Auth** — sem tabela própria, sem JWT customizado, sem bcrypt (regras de
 `auth-specs.md`). `POST /api/users` cria usuário (**admin-only**, via `auth.admin.createUser`
@@ -904,6 +933,21 @@ Alvo: **WCAG 2.1 Nível AA** em todas as telas. Regras práticas:
 
 ---
 
+## Padrão de execução e robustez técnica
+
+**Fonte completa: [docs/padrao-execucao.md](docs/padrao-execucao.md)** — ler antes de reportar
+qualquer rotina como concluída. Não afirmar "está tudo ok" sem ter executado a verificação.
+
+Resumo dos gates (detalhe no doc): **aceite** — nulos/vazios/edge cases explícitos, controle
+transacional (commit/rollback, sem recurso vazado), exceção com log/rastreabilidade (nunca
+`except`/`catch` vazio), validação de contratos (Zod é fonte única), e checagem de regressão
+(`npm test`/`pytest`). **Padrões por stack** — Python, TS/React 19/Next 16, PostgreSQL/Supabase,
+Firebird 5 (`fdb`), DW/ETL idempotente e PowerShell. **Fechamento** — autorrevisão adversarial
+("o que quebra isto?") + escopo reforçado em alto risco (migrations, transação, ETL, concorrência,
+deploy manual — nunca `deploy-prod.ps1` sem pedido).
+
+---
+
 ## Autenticação (Supabase Auth)
 
 O acesso às rotas internas (`/emails`, `/consulta`, `/erros`) exige login.
@@ -1131,6 +1175,15 @@ py -3 scripts\purge_orphan_attachments.py            # apaga
 > (boleto Amil `pendente`, boleto OBER NF 963681 e fatura Correios — `extracao_falhou`). Integridade
 > conferida: **0** anexos e **0** `source_file` ficaram sem objeto.
 
+Preencher **contato do fornecedor** (telefone/WhatsApp/chave PIX) em `supplier` a partir do texto
+já gravado nas contas (ver "Contato do fornecedor"). Agrupa por `sk_supplier`, lógica de 2 slots,
+idempotente. Aplicado em 2026-07-16 (31 fornecedores):
+
+```powershell
+py -3 scripts\backfill_supplier_contacts.py --dry-run   # lista o que gravaria
+py -3 scripts\backfill_supplier_contacts.py             # grava
+```
+
 Reprocessar **UM e-mail específico** pelo **pipeline completo** (Message-ID) — único que
 cobre **anexo e IMAGEM INLINE** (recibo/comprovante colado no corpo, via Vision), que os
 reprocessadores de corpo/link não cobrem. Rebusca o e-mail no IMAP, roda `process_message`,
@@ -1216,7 +1269,7 @@ apps/frontend-vite/src/components/
 │   ├── ResendErrosAction.tsx  # (cobrança) barra de seleção "Reenviar e-mails (N)" + confirmação inline + poll de progresso
 │   ├── ContaForm.tsx          # (contas) form criar/editar conta — supplier/centro/plano + cascata; onSubmit(data, pendingFiles) — a fila de anexos sobe no PAI, após gravar a conta
 │   ├── ContaAttachments.tsx   # (anexos) anexos SALVOS de uma conta — lista + viewer + soft delete (com confirmação); fallback legacySourceFile
-│   ├── SupplierForm.tsx       # (fornecedores) form criar/editar fornecedor — inclui classificação default (centro/plano em cascata)
+│   ├── SupplierForm.tsx       # (fornecedores) form criar/editar fornecedor — classificação default (centro/plano cascata) + contatos (telefone/WhatsApp/chave PIX, 2 slots)
 │   ├── CostCenterForm.tsx     # (tabelas) form criar/editar centro de custo — código + descrição
 │   ├── BankForm.tsx           # (tabelas) form de banco — código(3) + nome
 │   ├── FinancialAccountForm.tsx # (tabelas) form de conta — descrição/banco/situação(lookups) + saldo
@@ -2733,8 +2786,11 @@ local/agendada (ver flag `EMAIL_READER_ENABLED` acima e memória [[vercel-deploy
 ## Banco de dados (Supabase)
 
 Migrations em `supabase/migrations/`, aplicadas **manualmente no SQL Editor** em ordem
-numérica (`001` → `081`). **Próxima migration = `082`** (verificar sempre antes de criar nova).
-Não há migration automática. (As `059`/`060`/`061`/`063`/`064`/`066`/`067`/
+numérica (`001` → `082`). **Próxima migration = `083`** (verificar sempre antes de criar nova).
+Não há migration automática. A **082** adiciona as colunas de CONTATO em `supplier`
+(telefone/WhatsApp/chave PIX, 2 slots cada — ver "Contato do fornecedor"); aplicada **via psql**
+(`SUPABASE_DB_URL` + `:5432/postgres`, com o Supabase MCP indisponível na sessão), idempotente
+(`ADD COLUMN IF NOT EXISTS` + REVOKE de escrita do papel `authenticated`). (As `059`/`060`/`061`/`063`/`064`/`066`/`067`/
 `068`/`069`/`070`/`071`/**`072`**/**`073`**/**`074`**/**`075`**/**`076`**/**`077`**/**`078`**/**`079`**/**`080`**/**`081`** foram aplicadas **direto via Supabase MCP** nesta
 máquina — o arquivo numerado serve
 de histórico; **não reaplicar** no SQL Editor (todas idempotentes, mas evite re-run). A **081**
@@ -2908,7 +2964,7 @@ internet` ao CHECK de `document_type` e faz backfill — ver "Normalização de 
 | `financial_cost_center` / `financial_chart_of_account` | **Cadastros de classificação contábil** (pré-existentes, **preservados em limpezas**) usados como lookup no modal de contas. `financial_cost_center` é **gerenciado pelo CRUD de centros de custo** (`/tabelas/centros-de-custo` — PK `cost_center_id` SMALLINT IDENTITY ALWAYS; id 0 = sentinela "não informado", fora do CRUD; ver "CRUD de centros de custo"). `financial_chart_of_account` (também gerenciado pelo **CRUD de Plano de contas** — `/tabelas/plano-de-contas`) tem `cost_center_id` (relaciona o plano ao centro — base da CASCATA), `chart_account_subgroup_id` (FK → subgrupo) e `is_postable` (só os postáveis são lançáveis). Os cadastros `financial_bank`, `financial_account`, `financial_chart_of_account_group` e `financial_chart_of_account_subgroup` também ganharam CRUD próprio (grupo Tabelas — ver "CRUDs dos demais cadastros contábeis"). Lidos via `lib/lookups.ts` (service_role) **e** pelo frontend via embed REST (papel `authenticated`); RLS habilitado com policy de SELECT `TO authenticated` (migration 049 — sem ela o embed voltava null e a UI mostrava `#id`) |
 | `email_processing_errors` | Log de falhas com `raw_payload` JSON. **Visibilidade por REMETENTE (migration 078):** policy SELECT (`authenticated`) filtra por `lower(sender_email)=lower(auth.email())` para grupo com `sees_only_own_accounts` (Comercial) — `/erros` mostra só os erros de que o usuário é remetente; demais veem tudo; `service_role` com bypass |
 | `financial_account_attachment` | **Anexos (N) de uma conta** (migration 079) — PADRÃO ÚNICO das duas origens: `origin='pipeline'` (documento do e-mail; espelha `financial_account_control.source_file`, gravado pelo reader) e `origin='manual'` (upload do usuário no cadastro/edição). `storage_key` = chave CRUA do objeto no bucket `attachments` (pipeline: nome flat; manual: `manual/{conta}/…`). **Soft delete** (`deleted_at`/`deleted_by`) — o objeto FICA no bucket; anexo `pipeline` é irremovível (auditoria → 403). UNIQUE `(account_id, storage_key)`; **não** UNIQUE global (um PDF com N boletos gera N contas que COMPARTILHAM o objeto). RLS SELECT herda a visibilidade da conta pai (076) via `EXISTS`; escrita só `service_role`. Ver "Anexos de conta" |
-| `supplier` | Fornecedores. PK = `sk_supplier` (surrogate key snowflake auto-incremental — **migration 042**); `supplier_id` é **chave de negócio** (NOT NULL UNIQUE, só nesta tabela; = `sk_supplier` nos fornecedores criados pela extração, via trigger de espelho `trg_supplier_mirror_id`, podendo divergir em cargas externas). Auto-criados pelo trigger de resolução, mas **cadastro PRESERVADO** (curadoria manual de `email`/`email2`/`email3`/`email4`) — **nunca truncar** em limpezas (ver "Limpeza / reset de dados"). Reconhecimento por **e-mail** em `email`/`email2`/`email3`/`email4` (migrations 023/027/028) — ver "Auto-resolução de fornecedor". **Soft delete** via `deleted_at` (migration 045) — a baixa pelo CRUD da Next API marca `deleted_at` (nunca hard delete) e é bloqueada quando há contas vinculadas; ver "CRUD de fornecedores (Next API)". **Classificação default** `cost_center_id`/`chart_account_id` (SMALLINT NOT NULL DEFAULT 0 + FKs — migration 052): semeia o lançamento de novas contas e é atualizada pelo write-back do modal; ver "Classificação default do fornecedor — sync bidirecional" |
+| `supplier` | Fornecedores. PK = `sk_supplier` (surrogate key snowflake auto-incremental — **migration 042**); `supplier_id` é **chave de negócio** (NOT NULL UNIQUE, só nesta tabela; = `sk_supplier` nos fornecedores criados pela extração, via trigger de espelho `trg_supplier_mirror_id`, podendo divergir em cargas externas). Auto-criados pelo trigger de resolução, mas **cadastro PRESERVADO** (curadoria manual de `email`/`email2`/`email3`/`email4`) — **nunca truncar** em limpezas (ver "Limpeza / reset de dados"). Reconhecimento por **e-mail** em `email`/`email2`/`email3`/`email4` (migrations 023/027/028) — ver "Auto-resolução de fornecedor". **Soft delete** via `deleted_at` (migration 045) — a baixa pelo CRUD da Next API marca `deleted_at` (nunca hard delete) e é bloqueada quando há contas vinculadas; ver "CRUD de fornecedores (Next API)". **Classificação default** `cost_center_id`/`chart_account_id` (SMALLINT NOT NULL DEFAULT 0 + FKs — migration 052): semeia o lançamento de novas contas e é atualizada pelo write-back do modal; ver "Classificação default do fornecedor — sync bidirecional". **Contatos** (migration 082): `phone_ddd1`/`phone1`/`phone_ddd2`/`phone2` (char(2)/varchar(9)), `whatsapp1`/`whatsapp2` (varchar(11)), `pix_key1`/`pix_key2` (varchar(77)) — 2 slots por tipo, preenchidos pelo form e pela extração (write-back com lógica de 2 slots); ver "Contato do fornecedor" |
 | `company` | Empresa pagadora (**cadastro**, tem campo `email`). Auto-resolvida pelo trigger `resolve_company_id` a partir de `payer_cnpj`/`payer_name`. **Preservada em limpezas** (ver abaixo) |
 | `status` | **Dimensão** de situação (`status_id`, `status_name`, `status_short_name`, `has_opened`/`has_closed`/`has_invoiced`). 10 linhas (ids 1..10) = **domínio de `financial_account_control.status_id`** (fonte única — a coluna `status` texto foi removida na 069) + alvo da FK `fk_fac_status`. O nome de exibição da conta vem do embed `status_dim:status(...)`. **Cadastro/configuração — preservar em limpezas** |
 | `user_group` | **Catálogo de grupos de usuário** (migration 063 — fundação de permissões por grupo). `group_id` IDENTITY ALWAYS PK, `group_name` VARCHAR(30) DEFAULT ''; **id 0 = sentinela "não informado"**. RLS read `authenticated`/write `service_role`. **Editado SÓ via Supabase** (sem CRUD no app); o usuário pretende acrescentar campos. A atribuição por usuário e o RBAC completo (`user_profile`/`permission`/`group_*`) estão **desenhados, não implementados** — ver "Grupos de usuário" na seção de papéis e `docs/design/permissoes-por-grupo.md`. **Cadastro/configuração — preservar em limpezas** |
@@ -3475,6 +3531,20 @@ lê os arquivos do disco.
 > `True True`):
 > `py -3 -c "import sys; sys.path.insert(0,'skills/email-reader/scripts'); import read_emails as R;
 > print(hasattr(R.SupabaseControl,'register_attachment'), hasattr(R.SupabaseControl,'resolve_user'))"`
+
+> **DEPLOY 2026-07-16 — contato do fornecedor na extração (PENDENTE de cópia p/ prod):** o reader passa
+> a detectar telefone/WhatsApp/chave PIX no corpo e gravar em `supplier` (write-back, 2 slots — ver
+> "Contato do fornecedor"). Deploy = copiar **só** `read_emails.py` (novos `parse_supplier_contacts`,
+> `apply_contact_writeback`, `SupabaseControl.update_supplier_contact`; `extract_pdf.py` NÃO muda —
+> detecção é só do corpo). **Sem `.env`, sem dependência nova.** A **migration 082** (8 colunas +
+> REVOKE) já rodou na Supabase compartilhada → **vale para prod sem passo de banco**. Next API/frontend
+> (form) saem pelo Vercel no merge. **Degrada com segurança:** o write-back é best-effort e não toca no
+> payload da conta, então o `read_emails.py` ANTIGO segue funcionando (só não popula os contatos). Como
+> os deltas de `read_emails.py` são cumulativos, esta cópia **carrega junto** as pendências anteriores
+> (Etapa 1 `created_by` de 2026-07-10 e vínculo de anexo de 2026-07-15). Validação (esperado
+> `True True`):
+> `py -3 -c "import sys; sys.path.insert(0,'skills/email-reader/scripts'); import read_emails as R;
+> print(hasattr(R,'parse_supplier_contacts'), hasattr(R.SupabaseControl,'update_supplier_contact'))"`
 
 ### Deploy manual da Cobrança de vencidos (envios) em produção (caso específico — não regredir)
 

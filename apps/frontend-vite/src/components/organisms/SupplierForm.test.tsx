@@ -66,6 +66,31 @@ describe('SupplierForm', () => {
     );
   });
 
+  it('renderiza e submete os campos de contato (telefone/WhatsApp/PIX) com strip de máscara', async () => {
+    const { onSubmit } = setup();
+    expect(screen.getByLabelText('DDD (fone 1)')).toBeInTheDocument();
+    expect(screen.getByLabelText('Telefone 1')).toBeInTheDocument();
+    expect(screen.getByLabelText('WhatsApp 1')).toBeInTheDocument();
+    expect(screen.getByLabelText('Chave PIX 1')).toBeInTheDocument();
+
+    await userEvent.type(screen.getByLabelText('Nome fantasia'), 'ACME');
+    await userEvent.type(screen.getByLabelText('DDD (fone 1)'), '(11)');
+    await userEvent.type(screen.getByLabelText('Telefone 1'), '99999-9999');
+    await userEvent.type(screen.getByLabelText('Chave PIX 1'), 'financeiro@acme.com.br');
+    await userEvent.click(screen.getByRole('button', { name: 'Cadastrar' }));
+
+    await waitFor(() =>
+      expect(onSubmit).toHaveBeenCalledWith({
+        trade_name: 'ACME',
+        phone_ddd1: '11',
+        phone1: '999999999',
+        pix_key1: 'financeiro@acme.com.br',
+        cost_center_id: 0,
+        chart_account_id: 0,
+      }),
+    );
+  });
+
   it('valida o formato de e-mail', async () => {
     const { onSubmit } = setup();
     await userEvent.type(screen.getByLabelText('Nome fantasia'), 'ACME');

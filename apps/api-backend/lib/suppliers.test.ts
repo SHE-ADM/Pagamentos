@@ -146,4 +146,26 @@ describe('supplierCreateSchema / supplierUpdateSchema', () => {
   it('rejeita classificação negativa', () => {
     expect(supplierUpdateSchema.safeParse({ cost_center_id: -1 }).success).toBe(false);
   });
+
+  it('strip de máscara no telefone/WhatsApp → só dígitos', () => {
+    const r = supplierUpdateSchema.safeParse({
+      phone_ddd1: '(11)', phone1: '99999-9999', whatsapp1: '(11) 98888-7777',
+    });
+    expect(r.success).toBe(true);
+    if (r.success) {
+      expect(r.data.phone_ddd1).toBe('11');
+      expect(r.data.phone1).toBe('999999999');
+      expect(r.data.whatsapp1).toBe('11988887777');
+    }
+  });
+
+  it('aceita chave PIX (e-mail/UUID) sem strip', () => {
+    const r = supplierUpdateSchema.safeParse({ pix_key1: 'financeiro@acme.com.br' });
+    expect(r.success).toBe(true);
+    if (r.success) expect(r.data.pix_key1).toBe('financeiro@acme.com.br');
+  });
+
+  it('rejeita telefone com dígitos demais', () => {
+    expect(supplierUpdateSchema.safeParse({ phone1: '1234567890' }).success).toBe(false);
+  });
 });
