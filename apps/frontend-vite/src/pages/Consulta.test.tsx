@@ -41,6 +41,20 @@ vi.mock('../hooks/useIdleLogout', () => ({
   resumeIdleLogout: vi.fn(),
 }));
 
+// useAuth: o hard delete de conta só aparece para o grupo Administrador (mutável por teste).
+const authState = { isAdminGroup: false };
+vi.mock('../contexts/AuthContext', () => ({
+  useAuth: () => ({ isAdminGroup: authState.isAdminGroup }),
+}));
+
+// Cliente do CRUD de contas — mockado para o hard delete (e a edição, importada junto).
+const deleteContaMock = vi.fn();
+const updateContaMock = vi.fn();
+vi.mock('../services/contas', () => ({
+  deleteConta: (...a: unknown[]) => deleteContaMock(...a),
+  updateConta: (...a: unknown[]) => updateContaMock(...a),
+}));
+
 import Consulta from './Consulta';
 
 // Linha mínima para os testes de grid — só os campos lidos pelas colunas.
@@ -65,6 +79,9 @@ const makeRow = (over: Partial<FinancialAccountControl> = {}): FinancialAccountC
 
 describe('Consulta', () => {
   beforeEach(() => {
+    authState.isAdminGroup = false;
+    deleteContaMock.mockReset();
+    updateContaMock.mockReset();
     getFinancialAccountControl.mockResolvedValue({ data: [], total: 0 });
     getFinancialStats.mockResolvedValue({
       totalRecords: 0,
@@ -165,6 +182,32 @@ describe('Consulta', () => {
     expect(screen.getByText('Situação alterada por')).toBeInTheDocument();
     // Autor resolvido por e-mail via getAppUsers (criado por = ester).
     expect(screen.getByText('ester@otimotex.com.br')).toBeInTheDocument();
+  });
+
+  it('hard delete NÃO aparece no detalhe para quem não é do grupo Administrador', async () => {
+    getFinancialAccountControl.mockResolvedValue({ data: [makeRow()], total: 1 });
+    render(<Consulta />);
+    fireEvent.click(await screen.findByText('12345')); // abre o detalhe
+    expect(await screen.findByRole('button', { name: /Editar conta/ })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /Excluir conta/ })).not.toBeInTheDocument();
+  });
+
+  it('grupo Administrador: confirma e exclui (deleteConta) — a linha some do grid', async () => {
+    const user = userEvent.setup();
+    authState.isAdminGroup = true;
+    deleteContaMock.mockResolvedValue(1);
+    getFinancialAccountControl.mockResolvedValue({ data: [makeRow()], total: 1 });
+    render(<Consulta />);
+
+    fireEvent.click(await screen.findByText('12345')); // abre o detalhe
+    await user.click(await screen.findByRole('button', { name: /Excluir conta/ }));
+    // Confirmação inline antes de excluir (irreversível).
+    expect(screen.getByText('Excluir permanentemente?')).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: /^Excluir$/ }));
+
+    expect(deleteContaMock).toHaveBeenCalledWith(1);
+    // A conta some do grid (o Nº do documento deixa de ser exibido).
+    await waitFor(() => expect(screen.queryByText('12345')).not.toBeInTheDocument());
   });
 
   it('baixa automática: marcar a 2ª flag em conta vencida e em aberto muda a situação para "pago"', async () => {

@@ -18,6 +18,11 @@ vi.mock('../services/supabase', () => ({
   getAppUsers: vi.fn(() => Promise.resolve({})),
 }));
 
+// Consulta usa useAuth (gate do hard delete). Sem provider no teste → mock.
+vi.mock('../contexts/AuthContext', () => ({
+  useAuth: () => ({ isAdminGroup: false }),
+}));
+
 import Consulta from './Consulta';
 
 describe('Consulta — acessibilidade (WCAG AA)', () => {

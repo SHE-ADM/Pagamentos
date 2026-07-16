@@ -1,10 +1,11 @@
 import type { NextRequest } from 'next/server';
 import { ok, fail, failFromError } from '@/lib/response';
-import { requireAuth, getAuthenticatedUser, canSeeConta } from '@/lib/auth';
+import { requireAuth, getAuthenticatedUser, canSeeConta, requireAdminGroup } from '@/lib/auth';
 import { contaService } from '@/lib/contas';
 
-// /api/contas/:id — GET (por id) + PATCH (atualização parcial).
-// SEM DELETE: a "remoção" é PATCH { status: 'cancelado' } (sem hard-delete).
+// /api/contas/:id — GET (por id) + PATCH (atualização parcial) + DELETE (hard delete).
+// A "remoção" PADRÃO é PATCH { status_id: <cancelado> }; o HARD DELETE físico é uma
+// exceção restrita ao GRUPO ADMINISTRADOR (requireAdminGroup → 403 fora do grupo).
 //
 // `canSeeConta` nas duas: o service lê/escreve por service_role, que IGNORA a RLS da 076 —
 // sem o guard, um usuário de grupo restrito que forçasse um id alheio leria (e editaria) a
@@ -58,6 +59,24 @@ export async function PATCH(req: NextRequest, ctx: Context) {
   try {
     if (!(await canSeeConta(req, id))) return fail('Conta não encontrada', 404);
     return ok(await contaService.update(id, body ?? {}, user.id));
+  } catch (e) {
+    return mapError(e);
+  }
+}
+
+// HARD DELETE físico — restrito ao GRUPO ADMINISTRADOR (requireAdminGroup → 403 fora do
+// grupo). O grupo Administrador não tem restrição de visibilidade (vê tudo), então o gate
+// de grupo já é suficiente — não precisa de canSeeConta. Exceção à regra de preservação;
+// o caminho padrão de "remoção" continua sendo PATCH { status_id: <cancelado> }.
+export async function DELETE(req: NextRequest, ctx: Context) {
+  const denied = await requireAdminGroup(req);
+  if (denied) return denied;
+
+  const id = parseId((await ctx.params).id);
+  if (id === null) return fail('Identificador de conta inválido', 400);
+
+  try {
+    return ok(await contaService.remove(id));
   } catch (e) {
     return mapError(e);
   }

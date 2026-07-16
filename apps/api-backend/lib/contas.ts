@@ -175,6 +175,19 @@ const contaRepository = {
       .is(ATTACHMENTS_DELETED_AT, null)
       .maybeSingle();
   },
+
+  // HARD DELETE físico — usado só pela rota DELETE (restrita ao grupo Administrador).
+  // As linhas de financial_account_attachment somem por CASCADE (FK ON DELETE CASCADE);
+  // os objetos no bucket viram órfãos (limpos pelo purge_orphan_attachments). Devolve a
+  // linha removida (só `id`) — vazio => a conta não existia (404).
+  hardDelete(id: number) {
+    return getSupabaseAdmin()
+      .from(TABLE)
+      .delete()
+      .eq('id', id)
+      .select('id')
+      .maybeSingle();
+  },
 };
 
 // Write-back da classificação para o fornecedor (item 2 do plano): ao salvar a
@@ -263,5 +276,24 @@ export const contaService = {
     const conta = data as unknown as FinancialAccountControl;
     await writeBackSupplierClassification(conta);
     return conta;
+  },
+
+  /**
+   * HARD DELETE de uma conta (físico, irreversível). Restrito ao GRUPO ADMINISTRADOR
+   * no handler (`requireAdminGroup`). Exceção deliberada à regra de preservação — o
+   * cancelamento (PATCH `status_id=cancelado`) segue como caminho padrão para os demais.
+   * @throws {ContaServiceError} 404 (inexistente), 409 (FK que bloqueia) ou 500.
+   */
+  async remove(id: number): Promise<{ id: number }> {
+    const { data, error } = await contaRepository.hardDelete(id);
+    if (error) {
+      // 23503 = alguma FK RESTRICT referenciando a conta (anexos são CASCADE, não caem aqui).
+      if ((error as { code?: string }).code === '23503') {
+        throw new ContaServiceError('Conta vinculada a outros registros — não pode ser excluída', 409);
+      }
+      throw new ContaServiceError(error.message, 500);
+    }
+    if (!data) throw new ContaServiceError('Conta não encontrada', 404);
+    return { id: (data as { id: number }).id };
   },
 };

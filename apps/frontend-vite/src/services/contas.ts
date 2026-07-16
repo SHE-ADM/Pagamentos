@@ -43,3 +43,10 @@ export async function updateConta(id: number, input: FinancialAccountControlUpda
   const body = await call<FinancialAccountControl>(`/contas/${id}`, { method: 'PATCH', body: JSON.stringify(input) });
   return body.data as FinancialAccountControl;
 }
+
+// HARD DELETE físico — restrito ao GRUPO ADMINISTRADOR (o backend impõe via requireAdminGroup;
+// a UI só oferece a ação para esse grupo). Irreversível. Devolve o id removido.
+export async function deleteConta(id: number): Promise<number> {
+  const body = await call<{ id: number }>(`/contas/${id}`, { method: 'DELETE' });
+  return (body.data as { id: number }).id;
+}

@@ -177,8 +177,25 @@ allowlist `SORTABLE_COLUMNS`); CNPJ/CPF ordena por `cnpj`.
 **CRUD de contas (`apps/api-backend/lib/contas.ts` + `app/api/contas/**`):** CRUD da tabela
 principal `financial_account_control` (PK = **`id`**, não `sk_*`; fornecedor pela FK obrigatória
 `sk_supplier`). `GET /api/contas` (paginado + `search` por fornecedor/nº doc/assunto/remetente,
-JOIN `supplier`, exclui `cancelado` por padrão) · `GET/PATCH /api/contas/:id` · `POST /api/contas`.
-**Sem DELETE** (regra de preservação): "remoção" = `PATCH { status_id: <id do cancelado = 9> }`.
+JOIN `supplier`, exclui `cancelado` por padrão) · `GET/PATCH/DELETE /api/contas/:id` · `POST /api/contas`.
+**Remoção PADRÃO = `PATCH { status_id: <id do cancelado = 9> }`** (preservação). **`DELETE` = HARD
+DELETE físico, restrito ao GRUPO ADMINISTRADOR** (`requireAdminGroup` → **403** fora do grupo;
+`contaService.remove` → `contaRepository.hardDelete`) — exceção deliberada à preservação (pedido do
+usuário). **Verificado no banco (não regredir):** a ÚNICA FK que referencia `financial_account_control`
+é `financial_account_attachment.account_id` **ON DELETE CASCADE** (as linhas de anexo caem junto) — não
+há FK RESTRICT/NO ACTION, e **não há trigger de DELETE** (os 4 triggers são só INSERT/UPDATE), então o
+delete é limpo e completo. Os objetos no bucket viram órfãos (limpos por `purge_orphan_attachments`).
+Status: `404` (inexistente) · `409` (FK RESTRICT — defensivo, hoje inalcançável) · `500` NÃO vaza
+detalhe (`ContaServiceError(msg,500)` → `failFromError` genérico + log). **`canSeeConta` é
+DELIBERADAMENTE omitido** (diferente de GET/PATCH): o propósito é o Administrador excluir QUALQUER conta
+— aplicar `canSeeConta` acoplaria a exclusão à visibilidade e BLOQUEARIA um admin restrito; o gate de
+grupo é o modelo correto (admin vê tudo é a invariante single-org). UI: botão **"Excluir conta"** no
+painel de detalhe de `/consulta`, só para o grupo Administrador (`isAdminGroup` do `AuthContext`), com
+**confirmação inline** (irreversível); remove a linha + ajusta `total`/cards ("Valor total"/"Total de
+registros" só descontam quando a conta NÃO era cancelada — esses cards excluem cancelado) + `refreshStats`.
+O gate de UI é cosmético — a autorização é imposta no servidor. Testes: `lib/contas.test.ts`
+(`remove` 404/409/500), `app/api/contas/[id]/route.test.ts` (DELETE 403/400/200/404),
+`Consulta.test.tsx` (botão só p/ admin + fluxo de confirmação → `deleteConta`).
 Validação Zod em `@sheild/shared` — `financialAccountControlCreateSchema` (criação manual exige
 `sk_supplier` + `amount`>0; demais campos opcionais, o banco aplica DEFAULT/NULL; **`status_id` é
 OMITIDO do create** — a conta nasce no DEFAULT 3 do banco (`a vencer`) e a trigger recalcula
@@ -217,9 +234,10 @@ anexo). O `SupplierSelect` é remontado por `key` (o react-select não espelha `
 `autoFocus`; os selects de **classificação (centro/plano) PERMANECEM** — só são re-semeados quando o
 usuário escolhe um novo fornecedor (não regredir — ver [[conta-form-classification-selects]]). A
 fila de anexos é descartada (já subiu). O modal de edição de `/consulta` **não** usa esse handle
-(fluxo próprio). **Sem botão de exclusão** em nenhuma das telas.
-Cliente Next API em `services/contas.ts` (proxy `/data-api`). Spec/template em
-`docs/prompts/api-contas-crud-spec.md`.
+(fluxo próprio). O **`ContaForm`** (inclusão/edição) **não** tem botão de exclusão; o **hard delete**
+existe só no **painel de detalhe de `/consulta`** e só para o **grupo Administrador** (ver "CRUD de
+contas" / "Hard delete dos cadastros"). Cliente Next API em `services/contas.ts` (proxy `/data-api`;
+`deleteConta` faz o `DELETE`). Spec/template em `docs/prompts/api-contas-crud-spec.md`.
 
 **Anexos de conta (N por conta — `financial_account_attachment`, migration 079):** o usuário anexa
 **vários** arquivos (PDF/imagem) ao **incluir e ao editar** uma conta, no **mesmo bucket
@@ -400,8 +418,10 @@ devolve **403** fora do grupo. O gate de UI é só cosmético — a autorizaçã
 **Distinto de `requireAdmin`** (papel `app_metadata.role='admin'`), que segue restrito a
 `POST /api/users` (criar usuário): os dois convivem — papel `role` para gestão de usuários, **grupo**
 para o hard delete. Constante `ADMIN_GROUP_ID = 1` espelhada no backend (`lib/auth.ts`) e no frontend
-(`AuthContext.tsx`). **Escopo (decisão travada):** só os 6 cadastros de Tabelas — `/fornecedores`
-segue **soft delete** e `/consulta` (contas) não tem delete (remoção = `PATCH status_id=<cancelado>`).
+(`AuthContext.tsx`). **Escopo:** os 6 cadastros de Tabelas **e** o hard delete de conta em `/consulta`
+(`DELETE /api/contas/:id` — ver "CRUD de contas"); `/fornecedores` segue **soft delete**. A remoção
+PADRÃO de conta continua sendo `PATCH status_id=<cancelado>` — o hard delete é a exceção do grupo
+Administrador (pedido do usuário).
 Testes: `lib/auth.test.ts` (`requireAdminGroup`: 401/403/500 + grupo 1 segue), `AuthContext.test.tsx`
 (gate por grupo), `CrudTablePage.test.tsx` (lixeira só p/ o grupo Administrador) + os 6 `route.test.ts`
 (mock de `requireAdminGroup`).
@@ -2552,7 +2572,7 @@ faturas SIEG em `ignorado`; o handler A1 (baixar o boleto real) segue como melho
 | Rota | Componente | Tabela |
 |---|---|---|
 | `/emails` | `Emails.tsx` | `email_control` + `financial_account_control` por `message_id` (RLS por remetente p/ grupo restrito — migration 078) |
-| `/consulta` | `Consulta.tsx` | `financial_account_control` (scroll infinito + virtualização, filtros, CSV client-side; RLS por dono p/ grupo restrito — migration 076) + `financial_account_attachment` (painel de detalhe lista os anexos; o modal de edição adiciona/remove — ver "Anexos de conta") |
+| `/consulta` | `Consulta.tsx` | `financial_account_control` (scroll infinito + virtualização, filtros, CSV client-side; RLS por dono p/ grupo restrito — migration 076) + `financial_account_attachment` (painel de detalhe lista os anexos; o modal de edição adiciona/remove — ver "Anexos de conta"). Painel de detalhe: **Editar conta** + **Excluir conta** (hard delete só p/ grupo Administrador — ver "CRUD de contas") |
 | `/erros` | `Erros.tsx` | `email_processing_errors` (RLS por remetente p/ grupo restrito — migration 078) |
 | `/contas` | `ContasNovaPage.tsx` | `financial_account_control` (lançamento manual via `ContaForm`) + `financial_account_attachment` (anexos enviados após o POST devolver o id — ver "Anexos de conta") |
 | `/fornecedores` | `SuppliersPage.tsx` | `supplier` (CRUD via Next API) |

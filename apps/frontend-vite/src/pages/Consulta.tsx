@@ -11,6 +11,7 @@ import {
   Search,
   X,
   Pencil,
+  Trash2,
   Info,
   type LucideIcon,
 } from 'lucide-react';
@@ -39,7 +40,8 @@ import {
 } from '../services/supabase';
 import { startEmailRead, getEmailReadProgress, type ReadProgress } from '../services/emailReader';
 import { EMAIL_READER_ENABLED } from '../lib/featureFlags';
-import { updateConta } from '../services/contas';
+import { updateConta, deleteConta } from '../services/contas';
+import { useAuth } from '../contexts/AuthContext';
 import { suspendIdleLogout, resumeIdleLogout } from '../hooks/useIdleLogout';
 import { getErrorMessage } from '../lib/getErrorMessage';
 import Alert from '../components/atoms/Alert';
@@ -218,6 +220,9 @@ interface MetricCard {
 }
 
 export default function Consulta() {
+  // Só o GRUPO ADMINISTRADOR vê/executa o hard delete de conta (o backend também impõe
+  // via requireAdminGroup — o gate de UI é cosmético). Ver "Hard delete" no CLAUDE.md.
+  const { isAdminGroup } = useAuth();
   const [rows, setRows] = useState<FinancialAccountControl[]>([]);
   const [stats, setStats] = useState<Partial<FinancialStats>>({});
   // Soma de "Valor total" para o filtro aplicado (cards/filtros). null = sem dado ainda.
@@ -235,6 +240,11 @@ export default function Consulta() {
   // Conta salva mas algum anexo falhou — nem erro (a conta foi gravada) nem sucesso limpo.
   const [editWarning, setEditWarning] = useState<string | null>(null);
   const editDialogRef = useRef<HTMLDialogElement>(null);
+  // Hard delete (grupo Administrador): confirmação inline no detalhe. `confirmDelete` = id
+  // da conta com exclusão armada; `deleting` bloqueia o duplo-clique; `deleteError` inline.
+  const [confirmDelete, setConfirmDelete] = useState<number | null>(null);
+  const [deleting, setDeleting] = useState(false);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [f, setF] = useState<ConsultaFilters>(initialFilters);
@@ -474,6 +484,32 @@ export default function Consulta() {
     setEditing((c) => (c ? { ...c, attachments } : c));
     setRows((prev) => prev.map((r) => (r.id === id ? { ...r, attachments } : r)));
     setSel((s) => (s && s.id === id ? { ...s, attachments } : s));
+  };
+
+  // Hard delete FÍSICO da conta (grupo Administrador). Remove a linha, ajusta os totais
+  // localmente e recarrega os KPIs de situação. Irreversível — só é chamado após a
+  // confirmação inline. Recebe a conta (não só o id) para ajustar "Valor total"/"Total
+  // de registros" com precisão (esses cards EXCLUEM cancelado; a trigger já mantém o
+  // status, então basta olhar o status_id da conta removida).
+  const handleDelete = async (conta: FinancialAccountControl) => {
+    setDeleting(true);
+    setDeleteError(null);
+    try {
+      await deleteConta(conta.id);
+      setRows((prev) => prev.filter((r) => r.id !== conta.id));
+      setTotal((t) => Math.max(0, t - 1));
+      if (conta.status_id !== STATUS_ID_CANCELADO) {
+        setFilteredCount((c) => (c == null ? c : Math.max(0, c - 1)));
+        setFilteredValue((v) => (v == null ? v : v - (conta.amount ?? 0)));
+      }
+      setSel((s) => (s && s.id === conta.id ? null : s));
+      setConfirmDelete(null);
+      void refreshStats();
+    } catch (e) {
+      setDeleteError(getErrorMessage(e));
+    } finally {
+      setDeleting(false);
+    }
   };
 
   // Abre/fecha o <dialog> nativo de edição (foco/trap/Esc; try/catch p/ jsdom).
@@ -963,7 +999,7 @@ export default function Consulta() {
                             <p className="text-xs font-semibold text-slate-500 mb-3 uppercase tracking-wide pr-8">
                               Detalhes — {(r.supplier?.trade_name ?? r.supplier?.legal_name) || 'registro'} · {fmtDate(r.due_date)}
                             </p>
-                            <div className="mb-3 flex gap-2">
+                            <div className="mb-3 flex flex-wrap items-center gap-2">
                               <button
                                 onClick={(e) => {
                                   e.stopPropagation();
@@ -976,7 +1012,55 @@ export default function Consulta() {
                               >
                                 <Pencil size={14} /> Editar conta
                               </button>
+
+                              {/* Hard delete — só o grupo Administrador. Confirmação inline
+                                  (irreversível). Os botões contêm o próprio clique (não alternar
+                                  a linha do <tr>). */}
+                              {isAdminGroup &&
+                                (confirmDelete === r.id ? (
+                                  <span className="flex items-center gap-2">
+                                    <span className="text-xs font-medium text-status-error-fg">
+                                      Excluir permanentemente?
+                                    </span>
+                                    <button
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        void handleDelete(r);
+                                      }}
+                                      disabled={deleting}
+                                      className="inline-flex items-center gap-1 rounded-md bg-status-error-fg px-3 py-1.5 text-sm font-medium text-white hover:opacity-90 disabled:opacity-60"
+                                    >
+                                      <Trash2 size={14} /> {deleting ? 'Excluindo…' : 'Excluir'}
+                                    </button>
+                                    <button
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        setConfirmDelete(null);
+                                        setDeleteError(null);
+                                      }}
+                                      disabled={deleting}
+                                      className="btn"
+                                    >
+                                      Cancelar
+                                    </button>
+                                  </span>
+                                ) : (
+                                  <button
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      setDeleteError(null);
+                                      setConfirmDelete(r.id);
+                                    }}
+                                    className="inline-flex items-center gap-1 rounded-md border border-status-error-border px-3 py-1.5 text-sm font-medium text-status-error-fg hover:bg-status-error-bg"
+                                    title="Excluir permanentemente esta conta (grupo Administrador)"
+                                  >
+                                    <Trash2 size={14} /> Excluir conta
+                                  </button>
+                                ))}
                             </div>
+                            {deleteError && confirmDelete === r.id && (
+                              <p className="mb-3 text-xs text-status-error-fg">{deleteError}</p>
+                            )}
                             {/* Anexos (N) — e-mail + enviados pelo usuário, no mesmo padrão.
                                 Substituiu o botão único "Ver anexo" (era 1 arquivo só, o do
                                 e-mail). Sem lixeira aqui: a remoção é feita pelo modal de
