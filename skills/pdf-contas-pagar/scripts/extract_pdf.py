@@ -730,6 +730,70 @@ def extract_supplier_name(text, doc_type):
                     return c[:120]
     return None
 
+# --- Beneficiário Final vence Beneficiário/Cedente (boleto securitizado) ---
+# Em boleto securitizado/factoring, o "Beneficiário"/"Cedente" é a securitizadora/empresa
+# de cobrança e o "Beneficiário Final" é o credor REAL (o fornecedor que vendeu). O
+# fornecedor da conta deve ser o BENEFICIÁRIO FINAL. Override DETERMINÍSTICO (imune à
+# escolha do LLM). Caso de origem: ids 561/562 (MB COBRANCAS LTDA → INORGAN INDUSTRIA
+# QUIMICA LTDA). Só atua quando o rótulo "Beneficiário Final" existe no texto do PDF.
+_BENEF_FINAL_LABEL_RE = re.compile(r'(?i)benefici[aá]rio\s+final')
+_CNPJ_ANY_RE = re.compile(r'\d{2}\.?\d{3}\.?\d{3}/\d{4}-?\d{2}')
+
+def extract_beneficiario_final(text):
+    """(nome, cnpj_digitos) do 'Beneficiário Final' do boleto, ou (None, None). O
+    nome/CNPJ pode estar na MESMA linha do rótulo ou nas 1-2 linhas seguintes."""
+    if not text:
+        return (None, None)
+    lines = text.splitlines()
+    for i, line in enumerate(lines):
+        if "beneficiario final" not in _ns(line):
+            continue
+        m_lab = _BENEF_FINAL_LABEL_RE.search(line)
+        after = line[m_lab.end():] if m_lab else ""
+        window = " ".join(
+            [after.strip()] + [lines[j].strip() for j in range(i + 1, min(i + 3, len(lines)))]
+        ).strip()
+        if not window:
+            continue
+        m = _CNPJ_ANY_RE.search(window)
+        cnpj = re.sub(r"\D", "", m.group(0)) if m else None
+        name_part = window[:m.start()] if m else window
+        # Corta o rótulo 'CNPJ'/'CPF' e a pontuação da cauda do nome.
+        name = re.split(r'(?i)\bcnpj\b|\bcpf\b', name_part)[0].strip(" ,.-:;/")
+        if len(name) >= 4:
+            return (name, cnpj if (cnpj and len(cnpj) == 14) else None)
+    return (None, None)
+
+def apply_beneficiario_final(rec, text):
+    """Beneficiário Final SEMPRE vence Beneficiário/Cedente: sobrescreve o fornecedor
+    extraído (nome + CNPJ) quando o boleto traz 'Beneficiário Final' COM CNPJ. Idempotente
+    e best-effort (não deve derrubar a extração).
+
+    EXIGE o CNPJ do beneficiário final (não regredir): "Beneficiário Final" também aparece
+    como RÓTULO DE COLUNA no cabeçalho de muitos boletos (ex.: "Ag./Cód. Beneficiário Final")
+    — nesses o texto ao lado é lixo/o próprio beneficiário, SEM CNPJ. Exigir CNPJ distingue a
+    securitização REAL (INORGAN: nome + CNPJ juntos) do rótulo de coluna, evitando corromper o
+    fornecedor (revelado pelo backfill: 2 casos reais com CNPJ vs 36 rótulos-de-coluna sem)."""
+    try:
+        name, cnpj = extract_beneficiario_final(text)
+    except Exception:
+        return
+    if not cnpj:  # sem CNPJ do beneficiário final → é rótulo de coluna, não securitização
+        return
+    changed = False
+    if cnpj != rec.get("supplier_cnpj"):
+        rec["supplier_cnpj"] = cnpj
+        rec["supplier_cpf"] = None  # há CNPJ do beneficiário final → não é pessoa física
+        changed = True
+    if name and name != rec.get("supplier_name"):
+        rec["supplier_name"] = name
+        changed = True
+    if changed:
+        note = "Fornecedor = Beneficiário Final do boleto (vence Beneficiário/Cedente)"
+        rec["processing_notes"] = (
+            f"{rec['processing_notes']} | {note}" if rec.get("processing_notes") else note
+        )
+
 def extract_payment_method(text, doc_type):
     if doc_type == "boleto": return "boleto"
     t = text.lower()
@@ -1126,6 +1190,9 @@ def build_record(pdf_path, raw, source):
     # Boleto com PIX: barcode de boleto valido (recuperado aqui via regex/Vision)
     # define o pagamento como boleto, sobrepondo um payment_method='pix' do LLM.
     apply_boleto_barcode_override(rec)
+    # Beneficiário Final vence Beneficiário/Cedente (boleto securitizado): override
+    # determinístico do fornecedor a partir do TEXTO do PDF (imune à escolha do LLM).
+    apply_beneficiario_final(rec, raw)
     return rec
 
 # --- Falha genérica (registro de erro) ---

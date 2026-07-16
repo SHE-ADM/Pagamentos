@@ -1184,6 +1184,17 @@ py -3 scripts\reprocess_cte_accounts.py --dry-run   # lista o que faria
 py -3 scripts\reprocess_cte_accounts.py             # re-rotula + exclui
 ```
 
+Corrigir o fornecedor para o **Beneficiário Final** do boleto securitizado (ver "Beneficiário
+Final vence Beneficiário/Cedente"). Baixa cada PDF `pdf_text`, extrai o beneficiário final e
+re-aponta `sk_supplier` **só quando há CNPJ** (name-only → revisão manual). Aplicado em
+2026-07-16 (561/562 → INORGAN):
+
+```powershell
+py -3 scripts\reprocess_beneficiario_final.py --dry-run          # varre e lista candidatos
+py -3 scripts\reprocess_beneficiario_final.py --dry-run --ids 561,562  # só estes ids
+py -3 scripts\reprocess_beneficiario_final.py                    # aplica
+```
+
 Limpar do bucket os **objetos ÓRFÃOS** — os que nenhuma linha referencia. `upload_attachment`
 publica TODO PDF no Passo 1, **antes** de saber se ele vira conta; quando não vira (CT-e/NF-e
 `ignorado`, fatura cujo boleto virou a conta, confirmação de pagamento, **dedup** de cobrança
@@ -2016,6 +2027,35 @@ Correção em **duas camadas** (defesa em profundidade):
   (`reprocess_link_emails`) usam o default `body_text=""` (no-op). Testes:
   `tests/test_ssw_cedente.py`. Correção pontual do id 528 aplicada em 2026-07-14 (fornecedor →
   CAMPINENSE TRANSPORTE DE CARGAS LTDA, sk 1278; nº doc → `0324348`).
+
+**Beneficiário Final vence Beneficiário/Cedente (boleto securitizado — não regredir):** em boleto
+**securitizado/factoring**, o "Beneficiário"/"Cedente" é a securitizadora/empresa de COBRANÇA e o
+**"Beneficiário Final"** é o credor REAL (o fornecedor que vendeu) — o fornecedor da conta é o
+**BENEFICIÁRIO FINAL**. Falha real (ids 561/562, "BOLETOS INORGAN"): boleto gravado sob **MB COBRANCAS
+LTDA** (CNPJ 45.175.261/0001-80, o Beneficiário) sendo o correto **INORGAN INDUSTRIA QUIMICA LTDA**
+(56.879.838/0001-51, o Beneficiário Final). Correção em `extract_pdf.py`:
+- **Prompt (soft):** já prefere `beneficiario final > beneficiario > cedente` (linha ~152), mas o LLM
+  às vezes escolhe o Beneficiário mais proeminente.
+- **Override DETERMINÍSTICO (robusto — imune ao LLM):** `extract_beneficiario_final(text)` acha o
+  rótulo "Beneficiário Final" no TEXTO do PDF (nome + CNPJ, na mesma linha OU nas 1-2 seguintes) e
+  `apply_beneficiario_final(rec, raw)` **sobrescreve** `supplier_name`/`supplier_cnpj` (e zera
+  `supplier_cpf`), aplicado no fim de `build_record` do caminho **pdf_text** (após o barcode, antes do
+  `return`). Vale para os dois sub-caminhos (LLM e regex fallback). **Vision (`pdf_vision`/
+  `image_vision`) NÃO tem o texto do PDF** (o `raw` é a resposta JSON) → depende do prompt.
+- **EXIGE o CNPJ do beneficiário final (não regredir — o cerne da robustez):** "Beneficiário Final"
+  também aparece como **RÓTULO DE COLUNA** no cabeçalho de MUITOS boletos (ex.: "Ag./Cód. Beneficiário
+  Final") — aí o texto ao lado é lixo/o próprio beneficiário, **sem CNPJ**. A varredura completa
+  achou **2 casos REAIS com CNPJ** (561/562) vs **36 rótulos-de-coluna sem CNPJ** (BRASPRESS, STC,
+  SEVEN EXPRESS…). Por isso o override **só atua quando há CNPJ** ao lado do rótulo (tanto no pipeline
+  quanto no backfill) — o CNPJ é o discriminador entre securitização REAL e rótulo de coluna. Sem
+  isso, o pipeline corromperia o fornecedor dos 36. Testes: `tests/test_beneficiario_final.py` (inclui
+  o caso do rótulo-de-coluna → no-op).
+- **Backfill:** `scripts/reprocess_beneficiario_final.py` (`--dry-run`/`--ids 561,562`) varre as contas
+  `pdf_text` com `source_file`, baixa o PDF do bucket, extrai o beneficiário final (mesmo extractor) e
+  re-aponta `sk_supplier` (resolve/cria via RPC) **só quando o CNPJ difere**; name-only vira revisão
+  manual (logado, não aplicado). Idempotente. **Aplicado em 2026-07-16:** ids 561/562 → INORGAN
+  (sk 944, CNPJ 56.879.838/0001-51); os 36 name-only foram corretamente ignorados. **Deploy:** copiar
+  só `extract_pdf.py` (o `read_emails.py` NÃO muda; sem `.env`/passo de banco).
 
 **Override de GUIA TRIBUTÁRIA pelo ACRÔNIMO no ASSUNTO (não regredir):** guias estaduais
 são visualmente quase idênticas (DARE × GARE × GNRE) e o Claude do `extract_pdf.py` troca
@@ -3572,6 +3612,17 @@ lê os arquivos do disco.
 > `True True`):
 > `py -3 -c "import sys; sys.path.insert(0,'skills/email-reader/scripts'); import read_emails as R;
 > print(hasattr(R,'parse_supplier_contacts'), hasattr(R.SupabaseControl,'update_supplier_contact'))"`
+
+> **DEPLOY 2026-07-16 — Beneficiário Final vence Beneficiário/Cedente (PENDENTE de cópia p/ prod):** em
+> boleto securitizado, o fornecedor passa a ser o **Beneficiário Final** (não o cedente/cobrança) — ver
+> "Beneficiário Final vence Beneficiário/Cedente". Deploy = copiar **só** `extract_pdf.py` (novos
+> `extract_beneficiario_final`/`apply_beneficiario_final` + chamada em `build_record`; **`read_emails.py`
+> NÃO muda** nesta). **Sem `.env`, sem dependência nova, sem passo de banco.** **Degrada com segurança:**
+> o override só atua quando o rótulo "Beneficiário Final" existe no texto do PDF; o `extract_pdf.py`
+> ANTIGO segue funcionando (só não corrige o securitizado). Validação (esperado
+> `('INORGAN INDUSTRIA QUIMICA LTDA', '56879838000151')` ou similar / `True`):
+> `py -3 -c "import sys; sys.path.insert(0,'skills/pdf-contas-pagar/scripts'); import extract_pdf as E;
+> print(hasattr(E,'apply_beneficiario_final'))"`
 
 ### Deploy manual da Cobrança de vencidos (envios) em produção (caso específico — não regredir)
 
