@@ -66,6 +66,7 @@ class _FakeSMTP:
         self.quit_called += 1
 
     def close(self):
+        # Stub: o fake não mantém socket, nada a fechar.
         pass
 
 

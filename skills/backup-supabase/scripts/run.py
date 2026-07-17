@@ -64,7 +64,7 @@ def _dry_run(args: argparse.Namespace) -> int:
                      ",".join(config.db_schemas()))
         except (config.ConfigError, DbBackupError) as e:
             ok = False
-            log.error("Banco: %s", e)
+            log.exception("Banco: %s", e)
 
     if not args.skip_storage:
         try:
@@ -75,7 +75,7 @@ def _dry_run(args: argparse.Namespace) -> int:
                      config.storage_bucket(), total)
         except StorageBackupError as e:
             ok = False
-            log.error("Storage: %s", e)
+            log.exception("Storage: %s", e)
 
     log.info("Retenção configurada: %d dias em %s",
              config.retention_days(), config.output_dir())
@@ -122,7 +122,7 @@ def _run(args: argparse.Namespace) -> int:
         except (config.ConfigError, DbBackupError) as e:
             exit_code = 1
             manifest["errors"].append(f"db: {e}")
-            log.error("Backup do banco FALHOU: %s", e)
+            log.exception("Backup do banco FALHOU: %s", e)
 
     # 2) Storage ------------------------------------------------------------
     if args.skip_storage:
@@ -139,7 +139,7 @@ def _run(args: argparse.Namespace) -> int:
         except StorageBackupError as e:
             exit_code = 1
             manifest["errors"].append(f"storage: {e}")
-            log.error("Backup do Storage FALHOU: %s", e)
+            log.exception("Backup do Storage FALHOU: %s", e)
 
     # 3) Manifesto ----------------------------------------------------------
     manifest["finished_at"] = datetime.now().isoformat(timespec="seconds")

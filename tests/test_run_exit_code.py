@@ -54,6 +54,7 @@ class _Titulo:
 
 class _FakeSession:
     def __init__(self, *_a, **_k):
+        # Stub de sessão: aceita e ignora os argumentos do construtor real.
         pass
 
     def send(self, **_k):

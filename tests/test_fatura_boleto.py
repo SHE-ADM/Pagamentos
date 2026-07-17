@@ -131,7 +131,7 @@ class ExtractAndStoreFaturaBoletoTest(unittest.TestCase):
 
         with patch.object(read_emails, "run_extraction", fake_run_extraction), \
              patch.object(read_emails, "read_extracted_rows", fake_read_rows):
-            csvs_ok, saved_count, nonpayable_only, _att_account = read_emails.extract_and_store_accounts(
+            _, saved_count, nonpayable_only, _att_account = read_emails.extract_and_store_accounts(
                 saved, "<MID>", ctrl, email_rec=dict(REC))
         return ctrl, saved_count, nonpayable_only
 

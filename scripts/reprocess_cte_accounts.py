@@ -32,6 +32,8 @@ load_dotenv(BASE_DIR / ".env")
 sys.path.insert(0, str(BASE_DIR / "skills" / "email-reader" / "scripts"))
 import read_emails as R  # noqa: E402
 
+_PREFER_MINIMAL = "return=minimal"  # header PostgREST reutilizado (S1192)
+
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s",
                     handlers=[logging.StreamHandler(sys.stdout)])
 log = logging.getLogger("reprocess-cte")
@@ -65,14 +67,14 @@ def _patch_account_doc_type(ctrl, fac_id: int, document_type: str) -> None:
     req = urllib.request.Request(
         ctrl.base + f"/rest/v1/financial_account_control?id=eq.{fac_id}",
         data=body, method="PATCH",
-        headers={**ctrl.headers, "Prefer": "return=minimal"})
+        headers={**ctrl.headers, "Prefer": _PREFER_MINIMAL})
     urllib.request.urlopen(req, timeout=15)
 
 
 def _delete_account(ctrl, fac_id: int) -> None:
     req = urllib.request.Request(
         ctrl.base + f"/rest/v1/financial_account_control?id=eq.{fac_id}",
-        method="DELETE", headers={**ctrl.headers, "Prefer": "return=minimal"})
+        method="DELETE", headers={**ctrl.headers, "Prefer": _PREFER_MINIMAL})
     urllib.request.urlopen(req, timeout=15)
 
 
@@ -82,7 +84,7 @@ def _patch_email_ignored(ctrl, message_id: str, note: str) -> None:
     req = urllib.request.Request(
         ctrl.base + f"/rest/v1/email_control?message_id=eq.{mid}",
         data=body, method="PATCH",
-        headers={**ctrl.headers, "Prefer": "return=minimal"})
+        headers={**ctrl.headers, "Prefer": _PREFER_MINIMAL})
     urllib.request.urlopen(req, timeout=15)
 
 

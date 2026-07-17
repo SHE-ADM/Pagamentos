@@ -138,7 +138,7 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     except urllib.error.HTTPError as e:
         detail = e.read().decode("utf-8", "replace")
-        log.error("Falha HTTP %s na baixa automatica: %s", e.code, detail)
+        log.exception("Falha HTTP %s na baixa automatica: %s", e.code, detail)
         return 1
     except Exception:
         log.exception("Falha na baixa automatica")

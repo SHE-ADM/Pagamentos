@@ -71,7 +71,7 @@ class ResolveTaxChartCodeTest(unittest.TestCase):
 
     def test_nivel2_por_document_type(self):
         self.assertEqual(_code("gnre", "ENC: GUIA GNRE ."), "4.4.01")   # GNRE a Recolher
-        self.assertEqual(_code("gare", "GARE ICMS mensal"), "4.1.01")   # GARE = ICMS
+        self.assertEqual(_code("gare", "GARE ICMS mensal"), "4.1.01")   # GARE: guia de ICMS
         self.assertEqual(_code("iss", "boleto"), "4.1.06")
         self.assertEqual(_code("ipva", "IPVA 2026"), "6.4.02")
         self.assertEqual(_code("iptu", "PAGAMENTO IPTU"), "6.4.01")

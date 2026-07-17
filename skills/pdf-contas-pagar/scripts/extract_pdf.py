@@ -1429,9 +1429,9 @@ def _extract_single(pdf_path, force_vision=False):
     except Exception as e:
         # Erro de API (credito/auth/rate-limit) — falha dura, sem regex.
         if _is_api_unavailable(e):
-            log.error(f"  ✗ API Anthropic indisponível ({pdf_path.name}): {e}")
+            log.exception(f"  ✗ API Anthropic indisponível ({pdf_path.name}): {e}")
             return _api_error_record(pdf_path, str(e))
-        log.error(f"  ✗ {pdf_path.name}: {e}")
+        log.exception(f"  ✗ {pdf_path.name}: {e}")
         return _failure_record(pdf_path, str(e))
 
 # --- Extrair UM documento de uma IMAGEM (foto/scan de recibo) ---
@@ -1448,9 +1448,9 @@ def _extract_image(img_path):
         return build_record(img_path, raw, src)
     except Exception as e:
         if _is_api_unavailable(e):
-            log.error(f"  ✗ API Anthropic indisponível ({img_path.name}): {e}")
+            log.exception(f"  ✗ API Anthropic indisponível ({img_path.name}): {e}")
             return _api_error_record(img_path, str(e))
-        log.error(f"  ✗ {img_path.name}: {e}")
+        log.exception(f"  ✗ {img_path.name}: {e}")
         return _failure_record(img_path, str(e))
 
 
@@ -1525,7 +1525,7 @@ def main():
         extract_to_csv(args.input, args.output,
                        batch=args.batch, force_vision=args.force_vision)
     except FileNotFoundError as e:
-        log.error(str(e)); sys.exit(1)
+        log.exception(str(e)); sys.exit(1)
 
 if __name__ == "__main__":
     main()
