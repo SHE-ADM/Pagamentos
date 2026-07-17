@@ -36,6 +36,19 @@ _SIGNATURE_BYTES: bytes | None = (
 _SMTP_TIMEOUT_SECONDS = 30
 
 
+def _secure_tls_context() -> ssl.SSLContext:
+    """Contexto TLS seguro para o STARTTLS do SMTP.
+
+    `create_default_context()` já valida o certificado do servidor e o hostname
+    (verify_mode=CERT_REQUIRED, check_hostname=True). Fixamos o mínimo em TLS 1.2 de
+    forma EXPLÍCITA — defesa em profundidade: rejeita SSLv3/TLS 1.0/1.1 independentemente
+    do default da versão do Python, mesmo contra um relay legado que os aceitasse.
+    """
+    ctx = ssl.create_default_context()
+    ctx.minimum_version = ssl.TLSVersion.TLSv1_2
+    return ctx
+
+
 def _load_smtp_config(company_row: dict | None) -> dict:
     # Remetente: campo `email` da tabela company (financeiro@otimotex.com.br) — o MESMO
     # mailbox usado para recebimento (IMAP). Por isso a senha SMTP reusa `IMAP_PASS` do
@@ -155,7 +168,7 @@ class SmtpSession:
         self.close()
 
     def _connect(self) -> smtplib.SMTP:
-        ctx = ssl.create_default_context()
+        ctx = _secure_tls_context()
         conn = smtplib.SMTP(self._smtp["host"], self._smtp["port"], timeout=_SMTP_TIMEOUT_SECONDS)
         conn.ehlo()
         conn.starttls(context=ctx)
