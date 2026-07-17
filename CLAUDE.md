@@ -651,6 +651,18 @@ não pega) · linha=RLS em `financial_account_control`. Roadmap restante: migrat
 `belongsToGroup`/`requirePermission` em `lib/auth.ts` + menu no `Layout.tsx`. Ler o blueprint antes
 de implementar.
 
+**Vínculo usuário → EMPRESA: NÃO EXISTE — implementado e REVERTIDO em 2026-07-17 (não reimplementar
+sem pedido explícito):** chegou a existir uma migration `084_create_user_company.sql` (tabela N:N
+`user_company` — `user_id` + `sk_company`, RLS, REVOKE, extensão do `handle_new_user` e backfill),
+mais `getUserCompanies()` em `lib/auth.ts` e `skCompanies` no `AuthContext`. **Tudo foi desfeito a
+pedido do usuário** ("não vou mais trabalhar com identificação de company nos usuários"): a tabela
+foi dropada, o `handle_new_user` restaurado à versão da 065 e o código/doc revertidos — verificado
+sem resíduo (0 objetos `user_company` no catálogo; nenhuma referência no repo). O nº **084 ficou
+LIVRE** de novo. **Não "ajude" recriando isso.** Se o tema voltar: o blueprint aprovado
+(`docs/design/permissoes-por-grupo.md`) roteia empresa **pelo GRUPO** (`group_company`; decisão
+travada 1 = "o único vínculo direto do usuário é o grupo") — a tentativa revertida divergia dele ao
+vincular por usuário. Hoje o único vínculo do usuário é `user_profile.group_id`.
+
 **Visibilidade de contas por DONO, por grupo (Etapa 1 APLICADA — migration 076):** primeira
 dimensão de visibilidade por linha efetivamente em produção (independente do blueprint acima, que é
 por empresa/centro/plano). Cada `financial_account_control` tem **`created_by`** (UUID → `auth.users`,
@@ -985,24 +997,51 @@ O acesso às rotas internas (`/emails`, `/consulta`, `/erros`) exige login.
 - **Sem auto-cadastro**: usuários criados apenas pelo admin no Supabase Dashboard
   (`Authentication → Users → Add user`, com "Auto Confirm User" marcado).
   `supabase.auth.signUp()` nunca é chamado pelo frontend.
+- **Alterar o e-mail de um usuário — use a Admin API, NUNCA `UPDATE` em `auth.users`
+  (não regredir):** o e-mail vive em **dois lugares** (`auth.users.email` e
+  `auth.identities.identity_data->>'email'`); um `UPDATE` via SQL atualiza só o primeiro e
+  deixa a identidade inconsistente. O caminho correto é
+  `PUT /auth/v1/admin/users/:id` (ou `auth.admin.updateUserById`) com
+  `{ email, email_confirm: true }` — o `email_confirm` pula a confirmação por link, exigida
+  de outra forma pelo "Secure email change" (ON neste projeto). **Preservado
+  automaticamente:** o `id` (UUID) não muda, então senha, `app_metadata.password_changed`,
+  grupo (`user_profile.group_id`) e a autoria das contas (`created_by`/`updated_by`/
+  `status_changed_by`) sobrevivem intactos. **O que EXIGE atenção** são as duas regras que
+  casam por **TEXTO** do e-mail, não por UUID: (1) a RLS de `/emails` e `/erros`
+  (migration 078) compara `lower(sender_email) = lower(auth.email())` — um usuário de grupo
+  com `sees_only_own_accounts` (hoje só **Comercial**) **perde de vista** os e-mails enviados
+  do endereço antigo; (2) `resolve_user_for_account(sender_email)` deixa de casar o endereço
+  antigo, então contas históricas seguem apontando para o dono já resolvido (o `created_by`
+  é UUID, não muda), mas convém rodar a **re-varredura** descrita em "Visibilidade de contas
+  por dono" se houver linhas com o endereço antigo. Antes de trocar, meça o impacto:
+  `SELECT count(*) FROM email_control WHERE lower(sender_email) = '<e-mail antigo>'` (idem
+  `email_processing_errors` e `financial_account_control`). O usuário passa a **logar com o
+  e-mail novo, com a mesma senha**; peça logout/login para a sessão refletir a mudança.
+  Aplicado em 2026-07-17: `lucas@otimotex.com.br` → `lucas@lebianco.com.br` (grupo Diretor,
+  sem `sees_only_own_accounts` e com 0 linhas casando o endereço antigo → impacto nulo).
 - **Quatro telas** (`apps/frontend-vite/src/pages/auth/`): `LoginPage` → `signInWithPassword`,
   `ForgotPasswordPage` → `resetPasswordForEmail`, `ResetPasswordPage` → `updateUser`,
   `ChangePasswordPage` → `updateUser` (troca obrigatória no 1º acesso).
 - **Troca de senha OBRIGATÓRIA no 1º acesso (`/auth/change-password`):** o usuário criado
   pelo admin entra com uma senha temporária e é forçado a definir a sua própria antes de
-  acessar qualquer rota. Mecânica por **marca POSITIVA** `password_changed` em `user_metadata`
+  acessar qualquer rota. Mecânica por **marca POSITIVA** `password_changed` em **`app_metadata`**
   (`PASSWORD_CHANGED_META_KEY` + helper `mustChangePassword` em `@sheild/shared`): a marca só
   é gravada quando o próprio usuário troca a senha; **ausência da marca = senha ainda é a
   temporária → força a troca**. Cobre QUALQUER caminho de criação (Dashboard **ou**
   `POST /api/users`), pois usuário novo nunca tem a marca. `ProtectedRoute` redireciona para
-  `/auth/change-password` enquanto a marca faltar; `ChangePasswordForm` faz
-  `updateUser({ password, data: { password_changed: true } })` (sem deslogar — segue para
-  `/consulta`; o evento `USER_UPDATED` atualiza o `AuthContext`). **Usuários existentes** (antes
-  desta feature) foram marcados via **backfill** em `auth.users.raw_user_meta_data`
-  (`password_changed: true`) — só usuários NOVOS são forçados. É a diferença para o
-  `ResetPasswordForm` (fluxo "esqueci a senha": vem de link de e-mail e **desloga** ao final).
-  `user_metadata` é client-writable — adequado ao modelo de sessão confiável deste app interno
-  (a troca forçada é higiene de 1º acesso, não barreira contra o próprio usuário).
+  `/auth/change-password` enquanto a marca faltar (lê `user.app_metadata`); `ChangePasswordForm`
+  faz `updateUser({ password })` e, em seguida, **`POST /api/users/me/password-changed`**
+  (`requireAuth` → `userService.markPasswordChanged` via Admin API) + `refreshSession()` —
+  sem deslogar, segue para `/consulta` (o `TOKEN_REFRESHED` atualiza o `AuthContext`). É a
+  diferença para o `ResetPasswordForm` (fluxo "esqueci a senha": vem de link de e-mail e
+  **desloga** ao final).
+  **`app_metadata` é SERVER-CONTROLLED (não regredir — achado S1-1):** só é gravável via Admin
+  API/`service_role`, então o usuário não consegue forjar a marca e pular a troca. **Nunca**
+  voltar a marcar/ler em `user_metadata`, que é client-writable — era exatamente o furo que
+  tornava a "troca obrigatória" cosmética.
+  **Usuários existentes** (anteriores à correção) foram marcados via **backfill** em
+  `auth.users.raw_app_meta_data` (`password_changed: true`) — só usuários NOVOS são forçados;
+  quem ficou com a marca antiga em `raw_user_meta_data` é forçado a trocar uma vez.
   **Criar usuário pelo Dashboard:** Authentication → Users → Add user + "Auto Confirm User";
   NÃO definir `password_changed` no metadata (a ausência é justamente o que força a troca).
 - Estado de sessão: `AuthContext`/`useAuth` (`apps/frontend-vite/src/contexts/AuthContext.tsx`),
@@ -2353,7 +2392,7 @@ passa por `upload_attachment` dentro de `extract_and_store_accounts`, anexo ou l
 - **Lmed/mdnet (portal ScriptCase) — adiado por CAPTCHA (decisão do usuário, 2026-06-17):**
   `srv2.mdnet.com.br/lmedseg/vExternoFatura` pede os "primeiros 3 dígitos do CPF/CNPJ"
   (campo `m_veri`) **e um CAPTCHA com imagem**. O prefixo do CNPJ viria de `company.cnpj`
-  (`company_id=1`, tentar 5 e depois 3 primeiros dígitos), mas o captcha bloqueia o download
+  (`sk_company=1`, tentar 5 e depois 3 primeiros dígitos), mas o captcha bloqueia o download
   automático → fatura fica em `falha` p/ download manual. **Regra de prefixo de CNPJ ainda
   não implementada** — fazer quando houver um portal que peça só o prefixo (sem captcha).
   Detalhes na memória `link-boleto-pipeline`.
@@ -3679,22 +3718,27 @@ lê os arquivos do disco.
 > `py -3 -c "import sys; sys.path.insert(0,'skills/email-reader/scripts'); import read_emails as R;
 > print(hasattr(R,'_is_real_nosso_numero'))"`
 
-> **DEPLOY 2026-07-17 — `sk_company` como chave de relacionamento (migration 083 já aplicada):** a
-> `company` passou a ter `sk_company` (PK IDENTITY, chave única de relacionamento) e
-> `financial_account_control` referencia a empresa por `sk_company` (não mais `company_id`) — ver
-> "Banco de dados" / migration 083. **A migration 083 JÁ foi aplicada** na Supabase compartilhada
-> dev+prod (via psql, 2026-07-17) — **nenhum passo de banco** em produção. Deploy = copiar **DOIS**
-> arquivos Python (ambos passaram a ler `company?sk_company=eq.1` no lugar de `company_id=eq.1`):
-> - `skills/email-reader/scripts/read_emails.py` → `C:\Sheild\API\Pagamentos\skills\email-reader\scripts\`
->   (método `company_cnpj()`; `extract_pdf.py` NÃO muda).
-> - `skills/cobranca-vencidos/scripts/supabase_log.py` → `C:\Sheild\API\Pagamentos\skills\cobranca-vencidos\scripts\`
->   (função `fetch_company_smtp()`).
+> **DEPLOY 2026-07-17 — `sk_company` como chave de relacionamento (CONCLUÍDO — migration + cópia
+> + merge feitos):** a `company` passou a ter `sk_company` (PK IDENTITY, chave única de
+> relacionamento) e `financial_account_control` referencia a empresa por `sk_company` (não mais
+> `company_id`) — ver "Banco de dados" / migration 083. Estado do rollout:
+> - **Migration 083 APLICADA** (via psql, 2026-07-17) na Supabase compartilhada dev+prod →
+>   **nenhum passo de banco** em produção.
+> - **Os 2 arquivos Python COPIADOS** para `C:\Sheild\API\Pagamentos\` (ambos passaram a ler
+>   `company?sk_company=eq.1` no lugar de `company_id=eq.1`):
+>   `skills/email-reader/scripts/read_emails.py` (método `company_cnpj()`; `extract_pdf.py` NÃO
+>   muda) e `skills/cobranca-vencidos/scripts/supabase_log.py` (função `fetch_company_smtp()`).
+> - **Frontend** (getCompanyEmail + schema) publicado pelo Vercel no merge do **PR #139**.
 >
-> **Sem `.env`, sem dependência nova.** **Degrada com segurança:** `company_id` foi preservado
-> (NOT NULL UNIQUE), então o código ANTIGO em produção (que lê `company_id=eq.1`) segue funcionando
-> até a cópia. Frontend (getCompanyEmail + schema) saiu pelo Vercel no merge do PR #139. Validação
-> (esperado o CNPJ da OTIMOTEX e a linha SMTP — exige `.env` carregado):
+> **Sem `.env`, sem dependência nova.** **Degradou com segurança:** `company_id` foi preservado
+> (NOT NULL UNIQUE), então o código ANTIGO seguiu funcionando entre a migration e a cópia.
+> Os dois leitores foram validados contra o banco migrado (CNPJ da OTIMOTEX `47273917000123` e a
+> linha SMTP). Revalidar (exige `.env` carregado):
 > `py -3 -c "import sys; sys.path.insert(0,'skills/email-reader/scripts'); import read_emails as R; print(R.SupabaseControl().company_cnpj())"`
+>
+> **Único item que depende da máquina de PRODUÇÃO:** reabilitar a task
+> `Enable-ScheduledTask -TaskName "Pagamentos - Email Reader" -TaskPath "\Sheild\"` (foi pausada
+> para o rollout). A máquina de dev (SHE-DEV) não a enxerga.
 
 ### Deploy manual da Cobrança de vencidos (envios) em produção (caso específico — não regredir)
 
