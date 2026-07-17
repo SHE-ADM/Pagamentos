@@ -1,6 +1,12 @@
 // src/pages/Dashboard.test.tsx
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, fireEvent } from '@testing-library/react';
+// Lookup do filtro "Empresa" (useCompanyOptions) — evita rede no teste.
+const listCompaniesMock = vi.fn();
+vi.mock('../services/lookups', () => ({
+  listCompanies: () => listCompaniesMock(),
+}));
+
 import Dashboard from './Dashboard';
 import * as supabase from '../services/supabase';
 import type { DashboardData } from '../services/supabase';
@@ -48,14 +54,20 @@ const MOCK: DashboardData = {
 describe('Dashboard', () => {
   beforeEach(() => {
     vi.spyOn(supabase, 'getDashboardData').mockResolvedValue(MOCK);
+    listCompaniesMock.mockReset();
+    listCompaniesMock.mockResolvedValue([
+      { sk_company: 1, trade_name: 'OTIMOTEX' },
+      { sk_company: 2, trade_name: 'LEBIANCO' },
+    ]);
   });
 
   it('abre no mês atual e renderiza os KPIs', async () => {
     render(<Dashboard />);
     expect(await screen.findByText('Total a pagar no mês')).toBeInTheDocument();
     expect(screen.getByText('Vencidas')).toBeInTheDocument();
-    // getDashboardData chamado com o mês corrente, escopo 'month' e sem filtro ('total')
-    expect(supabase.getDashboardData).toHaveBeenCalledWith(new Date().getMonth(), new Date().getFullYear(), 'month', 'total');
+    // Mês corrente, escopo 'month', sem filtro de KPI ('total') e sem empresa (undefined
+    // = TODAS — o 5º argumento).
+    expect(supabase.getDashboardData).toHaveBeenCalledWith(new Date().getMonth(), new Date().getFullYear(), 'month', 'total', undefined);
   });
 
   it('clicar num KPI aplica o filtro e clicar de novo o limpa', async () => {
@@ -65,15 +77,59 @@ describe('Dashboard', () => {
     fireEvent.click(pagos);
     expect(await screen.findByText(/filtrando: Pagos/i)).toBeInTheDocument();
     expect(supabase.getDashboardData).toHaveBeenLastCalledWith(
-      new Date().getMonth(), new Date().getFullYear(), 'month', 'pago',
+      new Date().getMonth(), new Date().getFullYear(), 'month', 'pago', undefined,
     );
     expect(pagos).toHaveAttribute('aria-pressed', 'true');
 
     fireEvent.click(pagos);
     expect(supabase.getDashboardData).toHaveBeenLastCalledWith(
-      new Date().getMonth(), new Date().getFullYear(), 'month', 'total',
+      new Date().getMonth(), new Date().getFullYear(), 'month', 'total', undefined,
     );
     expect(pagos).toHaveAttribute('aria-pressed', 'false');
+  });
+
+  // Filtro de EMPRESA — aplica NA HORA (o dashboard não tem "Buscar") e escopa tudo.
+  it('escolher LEBIANCO recarrega o dashboard com skCompany=2', async () => {
+    render(<Dashboard />);
+    await screen.findByRole('option', { name: 'LEBIANCO' });
+
+    fireEvent.change(screen.getByLabelText('Filtrar por empresa'), { target: { value: '2' } });
+
+    await vi.waitFor(() =>
+      expect(supabase.getDashboardData).toHaveBeenLastCalledWith(
+        new Date().getMonth(), new Date().getFullYear(), 'month', 'total', 2,
+      ),
+    );
+  });
+
+  it('voltar para "Empresa" (vazio) remove o filtro — as duas empresas', async () => {
+    render(<Dashboard />);
+    await screen.findByRole('option', { name: 'LEBIANCO' });
+    const select = screen.getByLabelText('Filtrar por empresa');
+
+    fireEvent.change(select, { target: { value: '2' } });
+    await vi.waitFor(() => expect(supabase.getDashboardData).toHaveBeenLastCalledWith(
+      expect.any(Number), expect.any(Number), 'month', 'total', 2,
+    ));
+
+    fireEvent.change(select, { target: { value: '' } });
+    await vi.waitFor(() => expect(supabase.getDashboardData).toHaveBeenLastCalledWith(
+      expect.any(Number), expect.any(Number), 'month', 'total', undefined,
+    ));
+  });
+
+  it('o filtro de empresa CONVIVE com o filtro de KPI', async () => {
+    render(<Dashboard />);
+    await screen.findByRole('option', { name: 'LEBIANCO' });
+
+    fireEvent.change(screen.getByLabelText('Filtrar por empresa'), { target: { value: '2' } });
+    fireEvent.click(await screen.findByRole('button', { name: /Pagos/i }));
+
+    await vi.waitFor(() =>
+      expect(supabase.getDashboardData).toHaveBeenLastCalledWith(
+        expect.any(Number), expect.any(Number), 'month', 'pago', 2,
+      ),
+    );
   });
 
   it('renderiza ranking e contas prioritárias', async () => {

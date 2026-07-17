@@ -8,6 +8,7 @@ import { RefreshCw, FileText, CheckCircle2, Clock, TrendingUp, AlertCircle, Buil
 import type { LucideIcon } from 'lucide-react';
 import { getDashboardData, type DashboardData, type DashboardScope, type PriorityKind, type KpiFilter } from '../services/supabase';
 import { getErrorMessage } from '../lib/getErrorMessage';
+import { useCompanyOptions } from '../hooks/useCompanyOptions';
 import Alert from '../components/atoms/Alert';
 import StatusBadge from '../components/StatusBadge';
 import { fmtMoney, fmtDate } from '../lib/format';
@@ -59,6 +60,10 @@ export default function Dashboard() {
   const [year, setYear] = useState(() => new Date().getFullYear());
   const [scope, setScope] = useState<DashboardScope>('month');
   const [filter, setFilter] = useState<KpiFilter>('total');
+  // Empresa pagadora — undefined = TODAS. Aplica na hora (o dashboard não tem "Buscar")
+  // e vale para TUDO: KPIs, donuts e o gráfico anual.
+  const [skCompany, setSkCompany] = useState<number | undefined>(undefined);
+  const companyOptions = useCompanyOptions();
   const [data, setData] = useState<DashboardData | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -67,13 +72,13 @@ export default function Dashboard() {
     setLoading(true);
     setError(null);
     try {
-      setData(await getDashboardData(month, year, scope, filter));
+      setData(await getDashboardData(month, year, scope, filter, skCompany));
     } catch (e) {
       setError(getErrorMessage(e));
     } finally {
       setLoading(false);
     }
-  }, [month, year, scope, filter]);
+  }, [month, year, scope, filter, skCompany]);
 
   // Clicar num KPI aplica seu filtro; clicar no mesmo (ou no "Total") limpa.
   const toggleFilter = (f: KpiFilter): void => setFilter((cur) => (cur === f ? 'total' : f));
@@ -115,6 +120,23 @@ export default function Dashboard() {
           </p>
         </div>
         <div className="flex items-center gap-3 flex-wrap justify-end">
+          {/* Empresa pagadora — primeiro dos controles: escopa TUDO (KPIs, donuts e o
+              gráfico anual). Vazio = TODAS. Aplica na hora, como os demais controles. */}
+          <select
+            id="dashboard-company"
+            name="dashboard-company"
+            aria-label="Filtrar por empresa"
+            className="input w-36 text-xs"
+            value={skCompany == null ? '' : String(skCompany)}
+            onChange={(e) => setSkCompany(e.target.value ? Number(e.target.value) : undefined)}
+          >
+            <option value="">Empresa</option>
+            {companyOptions.map((c) => (
+              <option key={c.value} value={c.value}>
+                {c.label}
+              </option>
+            ))}
+          </select>
           {/* Escopo: mês selecionado vs. todas as contas */}
           <div className="inline-flex rounded-md border border-slate-200 bg-slate-50 p-0.5" role="group" aria-label="Escopo do dashboard">
             <button

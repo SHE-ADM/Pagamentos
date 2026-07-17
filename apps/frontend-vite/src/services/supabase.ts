@@ -883,7 +883,13 @@ function matchesKpiFilter(
 // de data nos painéis). O gráfico de movimentações sempre reflete o `year`.
 // `filter` = KPI clicado no topo: os cards mantêm os totais completos, mas TODOS
 // os gráficos passam a refletir só o subconjunto do KPI (limpar = 'total').
-export async function getDashboardData(month: number, year: number, scope: DashboardScope = 'month', filter: KpiFilter = 'total'): Promise<DashboardData> {
+// `skCompany` (opcional): empresa pagadora (1=OTIMOTEX, 2=LEBIANCO); undefined = TODAS.
+// Diferente de /consulta (cujos KPIs gerais são globais), aqui o filtro vale para TUDO —
+// KPIs, donuts e o gráfico anual —, pois no dashboard todo indicador deriva do escopo.
+export async function getDashboardData(month: number, year: number, scope: DashboardScope = 'month', filter: KpiFilter = 'total', skCompany?: number): Promise<DashboardData> {
+  // Filtro de empresa pela FK — aplicado nas DUAS leituras (escopo + ano), senão o
+  // gráfico de movimentações mensais mostraria as duas empresas.
+  const companyFilter = skCompany ? { sk_company: `eq.${skCompany}` } : {};
   const first = new Date(Date.UTC(year, month, 1)).toISOString().slice(0, 10);
   const last = new Date(Date.UTC(year, month + 1, 0)).toISOString().slice(0, 10);
   const todayStr = new Date().toISOString().slice(0, 10);
@@ -896,6 +902,7 @@ export async function getDashboardData(month: number, year: number, scope: Dashb
     query<MonthRow[]>('financial_account_control', {
       select: 'id,amount,status_id,due_date,document_type,payment_method,description,supplier(trade_name,legal_name)',
       status_id: `neq.${STATUS_ID_CANCELADO}`,
+      ...companyFilter,
       ...(scope === 'month' ? { and: `(due_date.gte.${first},due_date.lte.${last})` } : {}),
       limit: scope === 'month' ? 5000 : 20000,
     }),
@@ -903,6 +910,7 @@ export async function getDashboardData(month: number, year: number, scope: Dashb
     query<YearRow[]>('financial_account_control', {
       select: 'amount,status_id,due_date',
       status_id: `neq.${STATUS_ID_CANCELADO}`,
+      ...companyFilter,
       and: `(due_date.gte.${year}-01-01,due_date.lte.${year}-12-31)`,
       limit: 20000,
     }),
