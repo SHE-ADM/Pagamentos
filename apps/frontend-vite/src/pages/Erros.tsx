@@ -25,8 +25,12 @@ const ERROR_TYPES = [
 function rowClass(r: ProcessingError, selectedId: number | undefined): string {
   const selected = selectedId === r.id;
   if (r.error_type === 'erro_api') {
+    // Hover via ANEL (não escurecer o fundo): manter o fundo em bg-status-error-bg (#fef2f2)
+    // garante contraste AA de TODO o texto — o texto vermelho (status-error-fg) sobre o antigo
+    // hover bg-status-error-border (#fecaca) dava só 4,47:1 e o axe reprovava. O anel espelha
+    // o estado selected e dá o feedback de hover sem baixar o contraste.
     return cn(
-      'cursor-pointer bg-status-error-bg hover:bg-status-error-border',
+      'cursor-pointer bg-status-error-bg hover:ring-1 hover:ring-inset hover:ring-status-error-border',
       selected && 'ring-1 ring-inset ring-status-error-border',
     );
   }
