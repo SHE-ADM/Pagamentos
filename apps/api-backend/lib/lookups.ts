@@ -10,6 +10,7 @@ import { getSupabaseAdmin } from './supabase-admin';
 const COST_CENTER_TABLE = 'financial_cost_center';
 const CHART_ACCOUNT_TABLE = 'financial_chart_of_account';
 const STATUS_TABLE = 'status';
+const COMPANY_TABLE = 'company';
 const DEFAULT_LIMIT = 500; // cadastros pequenos (dezenas/centenas) — cabe num fetch.
 const MAX_LIMIT = 1000;
 
@@ -17,6 +18,13 @@ const MAX_LIMIT = 1000;
 export interface StatusOption {
   status_id: number;
   status_name: string | null;
+}
+
+// Linha do cadastro `company` (lookup da empresa pagadora no ContaForm —
+// financial_account_control.sk_company). Hoje 2 linhas: OTIMOTEX (1) e LEBIANCO (2).
+export interface CompanyOption {
+  sk_company: number;
+  trade_name: string | null;
 }
 
 export class LookupServiceError extends Error {
@@ -109,5 +117,23 @@ export const statusService = {
       .order('status_id', { ascending: true });
     if (error) throw new LookupServiceError(error.message, 500);
     return (data ?? []) as StatusOption[];
+  },
+};
+
+export const companyService = {
+  /**
+   * Lista o cadastro `company` (lookup da EMPRESA PAGADORA — alimenta o <select> de
+   * `financial_account_control.sk_company` no ContaForm). Cadastro minúsculo (2 linhas:
+   * OTIMOTEX/LEBIANCO) e só-leitura — sem busca nem paginação, como o statusService.
+   * Ordenado por nome para a lista ficar estável na tela.
+   * @throws {LookupServiceError} 500 em falha do banco.
+   */
+  async list(): Promise<CompanyOption[]> {
+    const { data, error } = await getSupabaseAdmin()
+      .from(COMPANY_TABLE)
+      .select('sk_company,trade_name')
+      .order('trade_name', { ascending: true });
+    if (error) throw new LookupServiceError(error.message, 500);
+    return (data ?? []) as CompanyOption[];
   },
 };

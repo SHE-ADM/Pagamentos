@@ -105,6 +105,15 @@ describe('contaService.create', () => {
     expect(insertArg).toMatchObject({ sk_supplier: 1, amount: 100 });
   });
 
+  it('grava a EMPRESA escolhida pelo usuário (carve-out da S3-2 — o trigger respeita o valor)', async () => {
+    // sk_company é o ÚNICO campo de pagador gravável pelo CRUD manual; payer_cnpj/payer_name
+    // seguem bloqueados (teste acima). O trigger da 084 só resolve quando o valor não vem.
+    resultQueue.push({ data: { id: 12, sk_supplier: 1, sk_company: 2 }, error: null });
+    await contaService.create({ sk_supplier: 1, amount: 100, sk_company: 2 });
+    const insertArg = builders[0].insert.mock.calls[0][0] as Record<string, unknown>;
+    expect(insertArg).toMatchObject({ sk_company: 2 });
+  });
+
   it('carimba created_by = userId no insert (autoria — visibilidade por dono)', async () => {
     resultQueue.push({ data: { id: 12, sk_supplier: 1, amount: 100 }, error: null });
     await contaService.create({ sk_supplier: 1, amount: 100 }, 'fe8d268d-2bc3-4418-8cae-65e426c3fb4e');
@@ -216,6 +225,28 @@ describe('contaService.update', () => {
     expect(updateArg).not.toHaveProperty('has_invoice');
     expect(updateArg).not.toHaveProperty('has_bank_slip');
     expect(updateArg).toMatchObject({ amount: 200 });
+  });
+
+  it('PATCH sem sk_company NÃO toca a empresa — não há default Zod a injetar (não regredir)', async () => {
+    // Espelha o guard de has_invoice acima: `sk_company` entrou no manualEditSchema (o
+    // usuário escolhe a empresa), mas NÃO tem `.default()` — então, omitido, o `.partial()`
+    // não injeta valor e o UPDATE preserva a empresa atual da conta.
+    resultQueue.push({ data: { id: 5, amount: 200 }, error: null });
+    await contaService.update(5, { amount: 200 });
+    const updateArg = builders[0].update.mock.calls[0][0] as Record<string, unknown>;
+    expect(updateArg).not.toHaveProperty('sk_company');
+  });
+
+  it('PATCH grava a empresa escolhida pelo usuário', async () => {
+    resultQueue.push({ data: { id: 5, sk_company: 2 }, error: null });
+    await contaService.update(5, { sk_company: 2 });
+    const updateArg = builders[0].update.mock.calls[0][0] as Record<string, unknown>;
+    expect(updateArg).toMatchObject({ sk_company: 2 });
+  });
+
+  it('sk_company null/0 → 422 (o trigger o resolveria em silêncio; o override exige id válido)', async () => {
+    await expect(contaService.update(5, { sk_company: null })).rejects.toMatchObject({ status: 422 });
+    await expect(contaService.update(5, { sk_company: 0 })).rejects.toMatchObject({ status: 422 });
   });
 });
 

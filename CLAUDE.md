@@ -214,7 +214,14 @@ inline via `POST /api/suppliers`); **tipo de documento e tipo de pagamento** sã
 `PAYMENT_METHOD_OPTIONS` em `ContaForm`). **Classificação contábil** via dois lookups react-select —
 **Centro de custo** (`molecules/CostCenterSelect.tsx`) e **Plano de contas**
 (`molecules/ChartAccountSelect.tsx`), em CASCATA: ver "Lookups de classificação contábil (cascata)".
-Ordem dos campos do form: **Fornecedor → Descrição → Centro de custo → Plano de contas →
+**Empresa pagadora (`sk_company`) é ESCOLHIDA no form** (`LabeledSelect` "Empresa", logo após o
+Fornecedor): 1=OTIMOTEX / 2=LEBIANCO, opções via `GET /api/companies` (`companyService` em
+`lib/lookups.ts`, molde do `statusService`; cliente `listCompanies` em `services/lookups.ts`).
+**Create nasce no default OTIMOTEX** (`SK_COMPANY_DEFAULT`); edição mostra a empresa da conta.
+No **lançamento em série** a empresa **PERMANECE** (o `resetSupplier` não a toca — igual aos
+selects de classificação). Falha no lookup **não trava** o lançamento (fallback OTIMOTEX).
+`sk_company` **é independente do fornecedor** — pode haver conta da LEBIANCO cujo fornecedor é a
+OTIMOTEX. Ordem dos campos do form: **Fornecedor → Empresa → Descrição → Centro de custo → Plano de contas →
 (Tipo de documento + Tipo de pagamento) → (Nº documento + Emissão) → (Valor + Vencimento) →
 Código de barras → Informações adicionais** (os 3 pares na mesma linha; código de barras isolado;
 **Informações adicionais** por último — `<textarea>` de texto livre, coluna
@@ -1434,7 +1441,11 @@ embutido, via sintaxe do PostgREST `alias(coluna)` no `order` — `sortKey: 'sup
 (`financial_cost_center(...)`) é rejeitado pelo PostgREST (400). O `key` dessas colunas de embed no
 `ColumnDef` é sintético (`ColumnDef.key` é `keyof T | (string & {})`; o `accessorFn` só alimenta
 sort/filter client-side, que não usamos — a ordenação é sempre server-side). Ordem das colunas de
-`/consulta`: **… Tipo Pagamento → Plano de contas → Vencimento → Valor → NF → BOL → Situação → Extração**
+A coluna **"Empresa"** (`company.trade_name` via a FK `sk_company`, embed `company(trade_name)`) fica
+**logo APÓS o Fornecedor** — mesma posição no **card de detalhe** e no **ContaForm** (pedido do
+usuário). É ordenável server-side por `company(trade_name)` e **não se confunde com o Fornecedor**:
+pode haver conta da LEBIANCO cujo fornecedor é a OTIMOTEX. Ordem das colunas de
+`/consulta`: **… Emissão → Fornecedor → Empresa → Tipo Documento → Tipo Pagamento → Plano de contas → Vencimento → Valor → NF → BOL → Situação → Extração**
 (`Extração` é a última; **não há mais colunas "Ações" nem "Centro de custo"**). `Extração` (badge
 `extraction_source`) aparece **só** no grid (removida do detalhe e do CSV); contas criadas
 **manualmente** (`extraction_source` nulo) exibem o rótulo **"Criado pelo usuário"** (constante
@@ -3280,8 +3291,17 @@ gravar sem valor → vira erro `sem_valor`, não cria conta). A criação manual
 usa `financialAccountControlCreateSchema` e a edição via `PATCH` usa
 `financialAccountControlUpdateSchema`, **ambos derivados de `financialAccountControlManualEditSchema`**
 (S3-2, auditoria de segurança — não regredir): um **`.pick()`** SÓ dos campos do formulário
-(`sk_supplier`, `cost_center_id`, `chart_account_id`, `invoice_number`, `issue_date`, `due_date`,
-`amount`, `document_type`, `payment_method`, `barcode`, `description`, `additional_info`, `status_id`).
+(`sk_supplier`, **`sk_company`**, `cost_center_id`, `chart_account_id`, `invoice_number`, `issue_date`,
+`due_date`, `amount`, `document_type`, `payment_method`, `barcode`, `description`, `additional_info`,
+`status_id`). **`sk_company` é um CARVE-OUT consciente da S3-2** (a empresa pagadora é escolha do
+usuário no `ContaForm` — antes era só derivada): as demais colunas de pagador (`payer_cnpj`/
+`payer_name`) e todas as de pipeline/auditoria **continuam fora**, e há teste travando isso. O trigger
+da 084 respeita o valor explícito, então **nenhuma migration foi necessária** (a premissa documentada
+na 084 — "o CRUD manual não grava sk_company" — deixou de valer). Como `sk_company` chega do schema de
+leitura como `nullable`, o pick faz `.extend({ sk_company: z.number().int().positive() })`: um `null`
+não daria erro — o trigger o resolveria **em silêncio** para OTIMOTEX, ignorando a intenção do cliente;
+com o override vira **422**. Ele **não tem `.default()`**, então omiti-lo num PATCH preserva a empresa
+atual (mesma garantia do `status_id`).
 **`has_invoice`/`has_bank_slip` FICAM FORA do pick de propósito (não regredir):** elas têm
 `.default(false)` no inputSchema e o **`.partial()` do Zod NÃO remove o default** — se estivessem no
 pick, omiti-las no PATCH (o `ContaForm` não as edita) faria o parse injetar `false` e o UPDATE

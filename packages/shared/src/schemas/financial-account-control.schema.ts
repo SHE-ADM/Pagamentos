@@ -262,9 +262,10 @@ export const financialAccountControlSchema = z.object({
 
   // Pagador (sacado) — sk_company: surrogate key snowflake da empresa pagadora
   // (migration 083; substitui company_id). 1 = OTIMOTEX (default), 2 = LEBIANCO.
-  // Gravada pelo pipeline via regra LEBIANCO (referência a "lebianco" no assunto/corpo/
-  // anexo/remetente); o trigger só resolve por payer_cnpj/name quando o valor não vem
-  // (ex.: CRUD manual → 1) — migration 084. Nunca entra pelo corpo do cliente.
+  // DUAS origens: no pipeline vem da regra LEBIANCO (referência a "lebianco" no assunto/
+  // corpo/anexo/remetente); no CRUD manual é ESCOLHA do usuário (select do ContaForm).
+  // O trigger só resolve por payer_cnpj/name quando o valor não vem (migration 084).
+  // `nullable` reflete a leitura; na ESCRITA é exigido um id válido (ver manualEdit).
   sk_company: z.number().int().nullable(),
   payer_cnpj: z.string().nullable(),
   payer_name: z.string().nullable(),
@@ -325,7 +326,10 @@ export const financialAccountControlSchema = z.object({
 
 export const financialAccountControlInputSchema = financialAccountControlSchema.omit({
   id: true,
-  sk_company: true,
+  // `sk_company` PERMANECE gravável: é a empresa pagadora escolhida pelo usuário no
+  // ContaForm (carve-out consciente da S3-2 — as demais colunas de pagador, payer_cnpj/
+  // payer_name, e as de pipeline/auditoria seguem fora). No pipeline quem a define é a
+  // regra LEBIANCO; o trigger (084) respeita o valor explícito e só resolve quando ausente.
   // A situação é escrita por `status_id` (a coluna `status` texto foi removida — FASE 3).
   // `status_id` PERMANECE no input (entrada de escrita da situação — baixa/cancelamento via PATCH).
   created_at: true,
@@ -360,21 +364,29 @@ export const financialAccountControlInputSchema = financialAccountControlSchema.
 // /consulta (setFinancialAccountFlag, REST direto com grants por coluna — migration 033),
 // nunca pela Next API. Fora do pick, o Zod as descarta (strip) — o manual CRUD não pode
 // tocar NF/Boleto por construção. status_id NÃO tem default Zod, então não é injetado.
-const financialAccountControlManualEditSchema = financialAccountControlInputSchema.pick({
-  sk_supplier: true,
-  cost_center_id: true,
-  chart_account_id: true,
-  invoice_number: true,
-  issue_date: true,
-  due_date: true,
-  amount: true,
-  document_type: true,
-  payment_method: true,
-  barcode: true,
-  description: true,
-  additional_info: true,
-  status_id: true,
-});
+const financialAccountControlManualEditSchema = financialAccountControlInputSchema
+  .pick({
+    sk_supplier: true,
+    sk_company: true,
+    cost_center_id: true,
+    chart_account_id: true,
+    invoice_number: true,
+    issue_date: true,
+    due_date: true,
+    amount: true,
+    document_type: true,
+    payment_method: true,
+    barcode: true,
+    description: true,
+    additional_info: true,
+    status_id: true,
+  })
+  // `sk_company` chega do schema de LEITURA como `nullable` (a coluna é NOT NULL no banco).
+  // Na ESCRITA exigimos um id válido: um `null` explícito NÃO daria erro — o trigger da 084
+  // o resolveria silenciosamente para OTIMOTEX, ignorando a intenção do cliente. Com o
+  // override, `null`/0 vira 422. Não tem `.default()` → o `.partial()` não injeta valor,
+  // então omiti-lo num PATCH preserva a empresa atual (mesma garantia do status_id).
+  .extend({ sk_company: z.number().int().positive('Empresa inválida') });
 
 // ── Criação manual (CRUD — POST /api/contas) ─────────────────────────────────
 // O pipeline de extração pode gravar uma conta sem valor (vira erro 'sem_valor',

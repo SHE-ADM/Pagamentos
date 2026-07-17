@@ -94,13 +94,14 @@ function duplicateMessage(detail: string): string {
 
 // Mapeia erro de escrita para status/mensagem CURADOS (sem vazar detalhe do Postgres).
 // 23505 (UNIQUE) → 409; 23503 (FK) → 422 identificando o campo pela constraint/detalhe
-// (sk_supplier / cost_center_id / chart_account_id / status_id). Espelha o padrão de
-// financial-accounts.ts. Ver achado A1-3.
+// (sk_supplier / sk_company / cost_center_id / chart_account_id / status_id). Espelha o
+// padrão de financial-accounts.ts. Ver achado A1-3.
 function mapWriteError(error: { code?: string; message: string; details?: string }): ContaServiceError {
   if (error.code === '23505') return new ContaServiceError(duplicateMessage(error.details ?? error.message), 409);
   if (error.code === '23503') {
     const detail = `${error.details ?? ''} ${error.message}`;
     if (/supplier/i.test(detail)) return new ContaServiceError('Fornecedor informado não existe', 422);
+    if (/company/i.test(detail)) return new ContaServiceError('Empresa informada não existe', 422);
     if (/cost_center/i.test(detail)) return new ContaServiceError('Centro de custo informado não existe', 422);
     if (/chart_account/i.test(detail)) return new ContaServiceError('Plano de contas informado não existe', 422);
     if (/status/i.test(detail)) return new ContaServiceError('Situação informada não existe', 422);

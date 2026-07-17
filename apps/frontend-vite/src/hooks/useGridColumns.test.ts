@@ -4,7 +4,7 @@ import { getConsultaColumns } from './useGridColumns';
 
 // Colunas de /consulta: metadados puros (sem render de React). O foco aqui é a coluna
 // "Empresa" (company.trade_name via FK sk_company) e a POSIÇÃO pedida pelo usuário —
-// visível após "Emissão" e antes de "Fornecedor".
+// logo APÓS "Fornecedor" (mesma ordem do card de detalhe e do ContaForm).
 
 const columns = () => getConsultaColumns(vi.fn(), vi.fn());
 
@@ -24,14 +24,14 @@ describe('getConsultaColumns — coluna Empresa', () => {
     expect(col?.render?.(row({ company: null }))).toBe('—');
   });
 
-  it('fica DEPOIS de Emissão e ANTES de Fornecedor', () => {
+  it('fica logo DEPOIS de Fornecedor', () => {
     const headers = columns().map((c) => c.header);
     const emissao = headers.indexOf('Emissão');
-    const empresa = headers.indexOf('Empresa');
     const fornecedor = headers.indexOf('Fornecedor');
+    const empresa = headers.indexOf('Empresa');
     expect(emissao).toBeGreaterThanOrEqual(0);
-    expect(empresa).toBe(emissao + 1);
-    expect(fornecedor).toBe(empresa + 1);
+    expect(fornecedor).toBe(emissao + 1);
+    expect(empresa).toBe(fornecedor + 1);
   });
 
   it('ordena server-side pelo embed do PostgREST (mesmo padrão do fornecedor)', () => {

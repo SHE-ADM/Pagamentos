@@ -14,6 +14,15 @@ export interface StatusOption {
   status_name: string | null;
 }
 
+// Linha do cadastro `company` (lookup da empresa pagadora no ContaForm). Espelha o tipo do
+// backend (lib/lookups.ts CompanyOption) — não há schema compartilhado p/ o lookup de empresa
+// (o `companyEmbeddedSchema` do shared é só o embed de leitura, sem o sk). Sem `export`: o
+// consumidor (ContaForm) infere a partir de listCompanies() e nunca nomeia o tipo.
+interface CompanyOption {
+  sk_company: number;
+  trade_name: string | null;
+}
+
 const DATA_API_BASE = (import.meta.env.VITE_DATA_API_URL as string | undefined) ?? '/data-api';
 
 interface ApiEnvelope<T> {
@@ -71,4 +80,9 @@ export function listChartAccountSubgroups(search?: string): Promise<ChartAccount
 
 export function listStatuses(): Promise<StatusOption[]> {
   return call<StatusOption[]>('/statuses');
+}
+
+// Empresas pagadoras (OTIMOTEX/LEBIANCO) — lookup do <select> "Empresa" do ContaForm.
+export function listCompanies(): Promise<CompanyOption[]> {
+  return call<CompanyOption[]>('/companies');
 }

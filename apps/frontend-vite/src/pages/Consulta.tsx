@@ -1090,11 +1090,11 @@ export default function Consulta() {
                               {(
                                 [
                                   ['ID', String(r.id)],
+                                  ['Fornecedor', fmtSupplier(r)],
                                   // Empresa PAGADORA (company.trade_name via FK sk_company) —
-                                  // antes do Fornecedor, espelhando a ordem do grid. São coisas
+                                  // logo APÓS o Fornecedor, espelhando a ordem do grid. São coisas
                                   // distintas: a conta pode ser da LEBIANCO e o fornecedor, OTIMOTEX.
                                   ['Empresa', r.company?.trade_name ?? '—'],
-                                  ['Fornecedor', fmtSupplier(r)],
                                   ['Assunto', r.subject],
                                   ['Remetente', r.sender_email],
                                   ['CNPJ', fmtCnpj(r.supplier?.cnpj ?? null)],
