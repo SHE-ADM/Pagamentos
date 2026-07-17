@@ -62,7 +62,7 @@ const CARD_TONE: Record<string, { fg: string; activeRing: string }> = {
 export default function Emails() {
   const [rows, setRows] = useState<EmailControl[]>([]);
   const [stats, setStats] = useState<Partial<EmailStats>>({});
-  // E-mail da caixa (company.email, company_id=1) — subtítulo do cabeçalho.
+  // E-mail da caixa (company.email, sk_company=1) — subtítulo do cabeçalho.
   const [mailbox, setMailbox] = useState<string | null>(null);
   const [sel, setSel] = useState<EmailControl | null>(null);
   const [loading, setLoading] = useState(false);
@@ -142,7 +142,7 @@ export default function Emails() {
     return () => { active = false; };
   }, [sel]);
 
-  // E-mail da caixa (company.email, company_id=1) — carregado uma vez para o subtítulo.
+  // E-mail da caixa (company.email, sk_company=1) — carregado uma vez para o subtítulo.
   useEffect(() => {
     let active = true;
     getCompanyEmail()

@@ -238,7 +238,7 @@ class SupabaseControl:
             return False
 
     def company_cnpj(self) -> "str | None":
-        """CNPJ (só dígitos) da empresa pagadora (company_id=1) — base das senhas
+        """CNPJ (só dígitos) da empresa pagadora (sk_company=1) — base das senhas
         candidatas de boletos protegidos (CNPJ[:4]/[:5]/[:6]). Cacheado por instância;
         None quando indisponível (o caller simplesmente não tenta descriptografar)."""
         if getattr(self, "_company_cnpj_cache", "__unset__") != "__unset__":
@@ -247,7 +247,7 @@ class SupabaseControl:
         if self._available:
             try:
                 req = urllib.request.Request(
-                    f"{self.base}/rest/v1/company?company_id=eq.1&select=cnpj&limit=1",
+                    f"{self.base}/rest/v1/company?sk_company=eq.1&select=cnpj&limit=1",
                     headers=self.headers,
                 )
                 with urllib.request.urlopen(req, timeout=5) as r:
@@ -255,7 +255,7 @@ class SupabaseControl:
                 if rows and rows[0].get("cnpj"):
                     self._company_cnpj_cache = re.sub(r"\D", "", str(rows[0]["cnpj"])) or None
             except Exception as e:
-                log.warning(f"Falha ao ler CNPJ da empresa (company_id=1): {e}")
+                log.warning(f"Falha ao ler CNPJ da empresa (sk_company=1): {e}")
         return self._company_cnpj_cache
 
     def is_processed(self, message_id: str) -> bool:
