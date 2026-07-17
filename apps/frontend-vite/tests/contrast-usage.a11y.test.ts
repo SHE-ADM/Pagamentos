@@ -38,6 +38,7 @@ const TW: Record<string, string> = {
   'gray-50': '#f9fafb',
   'gray-400': '#9ca3af',
   'gray-500': '#6b7280',
+  'gray-600': '#4b5563',
   'slate-50': '#f8fafc',
   'slate-400': '#94a3b8',
   'slate-500': '#64748b',
@@ -91,6 +92,10 @@ interface Pair {
 // → -600, ink-muted → ink-secondary).
 const COMPLIANT: Pair[] = [
   { fg: 'gray-500', bg: 'white', min: 4.5, where: 'estado vazio/subtítulos/células (Erros, Emails, Forms, ProtectedRoute)' },
+  // Célula source_file da linha erro_api de /erros: sobre o fundo tintado bg-status-error-bg
+  // (#fef2f2) o gray-500 dava ~4,5:1 e o axe em navegador reprovava — subido para gray-600.
+  { fg: 'gray-600', bg: 'status-error-bg', min: 4.5, where: 'nome de arquivo (source_file) na linha erro_api (/erros)' },
+  { fg: 'gray-600', bg: 'status-error-border', min: 4.5, where: 'idem no hover da linha erro_api (bg-status-error-border)' },
   { fg: 'slate-500', bg: 'white', min: 4.5, where: 'subtítulo/labels/botões (Consulta, AttachmentViewer, ColumnVisibilityMenu, GridToolbar)' },
   { fg: 'zinc-500', bg: 'white', min: 4.5, where: 'labels e título do painel de detalhe (/emails)' },
   { fg: 'ink-secondary', bg: 'white', min: 4.5, where: 'StatusBadge vazio "—" + fallback de Suspense (App.tsx)' },

@@ -227,7 +227,7 @@ export default function Erros() {
                       {r.subject || '—'}
                     </td>
                     <td
-                      className="table-cell text-xs font-mono text-gray-500 max-w-[120px] truncate"
+                      className="table-cell text-xs font-mono text-gray-600 max-w-[120px] truncate"
                       title={r.source_file ?? ''}
                     >
                       {r.source_file || '—'}

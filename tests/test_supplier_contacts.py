@@ -118,7 +118,7 @@ class WritebackGuardTest(unittest.TestCase):
     def _ctrl(self, available=True):
         ctrl = R.SupabaseControl.__new__(R.SupabaseControl)  # sem __init__ (sem env/rede)
         ctrl._available = available
-        ctrl.base = "http://x"
+        ctrl.base = "https://x"
         ctrl.key = "k"
         ctrl.headers = {}
         return ctrl
