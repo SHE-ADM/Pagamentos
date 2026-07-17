@@ -16,6 +16,13 @@ As migrations `001 → 061` são aplicadas **manualmente no SQL Editor do Supaba
 > `064` = adiciona `financial_account_control.additional_info` TEXT (nullable) — texto livre do
 > usuário no cadastro de contas (ContaForm), exibido no card de detalhe de `/consulta`.
 
+> **`084_sk_company_lebianco_rule.sql` (idempotente)** — empresa pagadora pela **regra LEBIANCO**:
+> (1) `trg_fe_resolve_company()` passa a resolver **só quando `NEW.sk_company IS NULL`** (antes
+> sobrescrevia sempre — descartava o valor do pipeline **e** qualquer UPDATE re-resolvia a
+> empresa); (2) **backfill** das contas já extraídas (55 → `sk_company=2`). **Ordem interna
+> importa** (trigger antes do backfill). Re-run reporta 0 linhas. Aplicada via psql em 2026-07-17.
+> Detalhes em "Empresa pagadora (`sk_company`) — regra LEBIANCO" no `CLAUDE.md`.
+
 > **`057_revoke_write_supplier_status.sql` (segurança, idempotente)** — `REVOKE` de escrita
 > do papel `authenticated` em `supplier`/`status` (defesa em profundidade; o RLS já bloqueia).
 > Seguro reaplicar; não altera políticas/dados/SELECT.
