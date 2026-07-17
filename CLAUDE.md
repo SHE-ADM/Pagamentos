@@ -985,24 +985,51 @@ O acesso às rotas internas (`/emails`, `/consulta`, `/erros`) exige login.
 - **Sem auto-cadastro**: usuários criados apenas pelo admin no Supabase Dashboard
   (`Authentication → Users → Add user`, com "Auto Confirm User" marcado).
   `supabase.auth.signUp()` nunca é chamado pelo frontend.
+- **Alterar o e-mail de um usuário — use a Admin API, NUNCA `UPDATE` em `auth.users`
+  (não regredir):** o e-mail vive em **dois lugares** (`auth.users.email` e
+  `auth.identities.identity_data->>'email'`); um `UPDATE` via SQL atualiza só o primeiro e
+  deixa a identidade inconsistente. O caminho correto é
+  `PUT /auth/v1/admin/users/:id` (ou `auth.admin.updateUserById`) com
+  `{ email, email_confirm: true }` — o `email_confirm` pula a confirmação por link, exigida
+  de outra forma pelo "Secure email change" (ON neste projeto). **Preservado
+  automaticamente:** o `id` (UUID) não muda, então senha, `app_metadata.password_changed`,
+  grupo (`user_profile.group_id`) e a autoria das contas (`created_by`/`updated_by`/
+  `status_changed_by`) sobrevivem intactos. **O que EXIGE atenção** são as duas regras que
+  casam por **TEXTO** do e-mail, não por UUID: (1) a RLS de `/emails` e `/erros`
+  (migration 078) compara `lower(sender_email) = lower(auth.email())` — um usuário de grupo
+  com `sees_only_own_accounts` (hoje só **Comercial**) **perde de vista** os e-mails enviados
+  do endereço antigo; (2) `resolve_user_for_account(sender_email)` deixa de casar o endereço
+  antigo, então contas históricas seguem apontando para o dono já resolvido (o `created_by`
+  é UUID, não muda), mas convém rodar a **re-varredura** descrita em "Visibilidade de contas
+  por dono" se houver linhas com o endereço antigo. Antes de trocar, meça o impacto:
+  `SELECT count(*) FROM email_control WHERE lower(sender_email) = '<e-mail antigo>'` (idem
+  `email_processing_errors` e `financial_account_control`). O usuário passa a **logar com o
+  e-mail novo, com a mesma senha**; peça logout/login para a sessão refletir a mudança.
+  Aplicado em 2026-07-17: `lucas@otimotex.com.br` → `lucas@lebianco.com.br` (grupo Diretor,
+  sem `sees_only_own_accounts` e com 0 linhas casando o endereço antigo → impacto nulo).
 - **Quatro telas** (`apps/frontend-vite/src/pages/auth/`): `LoginPage` → `signInWithPassword`,
   `ForgotPasswordPage` → `resetPasswordForEmail`, `ResetPasswordPage` → `updateUser`,
   `ChangePasswordPage` → `updateUser` (troca obrigatória no 1º acesso).
 - **Troca de senha OBRIGATÓRIA no 1º acesso (`/auth/change-password`):** o usuário criado
   pelo admin entra com uma senha temporária e é forçado a definir a sua própria antes de
-  acessar qualquer rota. Mecânica por **marca POSITIVA** `password_changed` em `user_metadata`
+  acessar qualquer rota. Mecânica por **marca POSITIVA** `password_changed` em **`app_metadata`**
   (`PASSWORD_CHANGED_META_KEY` + helper `mustChangePassword` em `@sheild/shared`): a marca só
   é gravada quando o próprio usuário troca a senha; **ausência da marca = senha ainda é a
   temporária → força a troca**. Cobre QUALQUER caminho de criação (Dashboard **ou**
   `POST /api/users`), pois usuário novo nunca tem a marca. `ProtectedRoute` redireciona para
-  `/auth/change-password` enquanto a marca faltar; `ChangePasswordForm` faz
-  `updateUser({ password, data: { password_changed: true } })` (sem deslogar — segue para
-  `/consulta`; o evento `USER_UPDATED` atualiza o `AuthContext`). **Usuários existentes** (antes
-  desta feature) foram marcados via **backfill** em `auth.users.raw_user_meta_data`
-  (`password_changed: true`) — só usuários NOVOS são forçados. É a diferença para o
-  `ResetPasswordForm` (fluxo "esqueci a senha": vem de link de e-mail e **desloga** ao final).
-  `user_metadata` é client-writable — adequado ao modelo de sessão confiável deste app interno
-  (a troca forçada é higiene de 1º acesso, não barreira contra o próprio usuário).
+  `/auth/change-password` enquanto a marca faltar (lê `user.app_metadata`); `ChangePasswordForm`
+  faz `updateUser({ password })` e, em seguida, **`POST /api/users/me/password-changed`**
+  (`requireAuth` → `userService.markPasswordChanged` via Admin API) + `refreshSession()` —
+  sem deslogar, segue para `/consulta` (o `TOKEN_REFRESHED` atualiza o `AuthContext`). É a
+  diferença para o `ResetPasswordForm` (fluxo "esqueci a senha": vem de link de e-mail e
+  **desloga** ao final).
+  **`app_metadata` é SERVER-CONTROLLED (não regredir — achado S1-1):** só é gravável via Admin
+  API/`service_role`, então o usuário não consegue forjar a marca e pular a troca. **Nunca**
+  voltar a marcar/ler em `user_metadata`, que é client-writable — era exatamente o furo que
+  tornava a "troca obrigatória" cosmética.
+  **Usuários existentes** (anteriores à correção) foram marcados via **backfill** em
+  `auth.users.raw_app_meta_data` (`password_changed: true`) — só usuários NOVOS são forçados;
+  quem ficou com a marca antiga em `raw_user_meta_data` é forçado a trocar uma vez.
   **Criar usuário pelo Dashboard:** Authentication → Users → Add user + "Auto Confirm User";
   NÃO definir `password_changed` no metadata (a ausência é justamente o que força a troca).
 - Estado de sessão: `AuthContext`/`useAuth` (`apps/frontend-vite/src/contexts/AuthContext.tsx`),
