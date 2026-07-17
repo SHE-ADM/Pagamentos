@@ -201,7 +201,7 @@ Validação Zod em `@sheild/shared` — `financialAccountControlCreateSchema` (c
 OMITIDO do create** — a conta nasce no DEFAULT 3 do banco (`a vencer`) e a trigger recalcula
 `a vencer`/`vencido` por vencimento, então o cliente NÃO cria conta já em estado fechado) e
 `financialAccountControlUpdateSchema` (partial — aceita `status_id`; a baixa/cancelamento é feita
-depois via PATCH). `status_id`/`company_id`/`created_at`/`updated_at` são derivados (trigger) ou
+depois via PATCH). `status_id`/`sk_company`/`created_at`/`updated_at` são derivados (trigger) ou
 controlados — só `status_id` entra no corpo de PATCH (situação), nunca no de criação. Status: `201` · `409` (23505) · `404` · `422` ·
 `400` id inválido. Frontend: **página `/contas`** (lançamento rápido — `pages/ContasNovaPage.tsx`
 com o card centralizado `mx-auto` + `organisms/ContaForm.tsx`) e **edição da conta em `/consulta`
@@ -2181,7 +2181,7 @@ faturamento reencaminhados trazem o **bloco do destinatário** no corpo (ex.: `T
 / CNPJ: 47273917/0001-23`), e a extração capturava esse CNPJ como se fosse do fornecedor — gravando
 a conta sob a OTIMOTEX (sk=1) mesmo com o favorecido real nomeado no assunto. `_finalize_supplier`
 descarta o `supplier_cnpj` extraído quando ele é igual ao CNPJ da empresa pagadora
-(`ctrl.company_cnpj()`, company_id=1) — assim a resolução segue pelo nome/assunto (âncora LTDA
+(`ctrl.company_cnpj()`, sk_company=1) — assim a resolução segue pelo nome/assunto (âncora LTDA
 acima). É a **guarda que habilita** a âncora de assunto nesse caso (sem ela, o CNPJ do pagador
 venceria a resolução por CNPJ antes do fallback de assunto). **Não** afeta a regra de imposto nem o
 fallback de pagador, que gravam OTIMOTEX explicitamente quando NÃO há favorecido. Best-effort (se o
@@ -2874,8 +2874,18 @@ local/agendada (ver flag `EMAIL_READER_ENABLED` acima e memória [[vercel-deploy
 ## Banco de dados (Supabase)
 
 Migrations em `supabase/migrations/`, aplicadas **manualmente no SQL Editor** em ordem
-numérica (`001` → `082`). **Próxima migration = `083`** (verificar sempre antes de criar nova).
-Não há migration automática. A **082** adiciona as colunas de CONTATO em `supplier`
+numérica (`001` → `083`). **Próxima migration = `084`** (verificar sempre antes de criar nova).
+Não há migration automática. A **083** introduz a **surrogate key snowflake `sk_company`**:
+`sk_company` (BIGINT `GENERATED ALWAYS AS IDENTITY`) vira a **PK** de `company` e a **chave única
+de relacionamento** do app; `company_id` passa a **campo de origem** (NOT NULL UNIQUE, do sistema
+maior). `financial_account_control.company_id` é **substituída** por `sk_company` (backfill via
+JOIN + FK `fk_fac_company` + índice `idx_fac_sk_company`; a coluna `company_id` é DROPADA). O
+trigger de resolução (`trg_fe_resolve_company()`, SECURITY DEFINER — lição da 074) passa a gravar
+`NEW.sk_company` via a nova função **`resolve_company_sk(payer_cnpj, payer_name)`** (REVOKE EXECUTE
+de anon/authenticated + GRANT service_role, mirror 072; fallback = sk da empresa `company_id=1`); a
+antiga `resolve_company_id` é DROPADA e o trigger foi renomeado `trg_fe_company_id`→
+`trg_fe_sk_company`. Espelha a 042 (supplier). **One-time — não re-executável** (troca de PK/
+IDENTITY, como 042/050/051). A **082** adiciona as colunas de CONTATO em `supplier`
 (telefone/WhatsApp/chave PIX, 2 slots cada — ver "Contato do fornecedor"); aplicada **via psql**
 (`SUPABASE_DB_URL` + `:5432/postgres`, com o Supabase MCP indisponível na sessão), idempotente
 (`ADD COLUMN IF NOT EXISTS` + REVOKE de escrita do papel `authenticated`). (As `059`/`060`/`061`/`063`/`064`/`066`/`067`/
@@ -3053,7 +3063,7 @@ internet` ao CHECK de `document_type` e faz backfill — ver "Normalização de 
 | `email_processing_errors` | Log de falhas com `raw_payload` JSON. **Visibilidade por REMETENTE (migration 078):** policy SELECT (`authenticated`) filtra por `lower(sender_email)=lower(auth.email())` para grupo com `sees_only_own_accounts` (Comercial) — `/erros` mostra só os erros de que o usuário é remetente; demais veem tudo; `service_role` com bypass |
 | `financial_account_attachment` | **Anexos (N) de uma conta** (migration 079) — PADRÃO ÚNICO das duas origens: `origin='pipeline'` (documento do e-mail; espelha `financial_account_control.source_file`, gravado pelo reader) e `origin='manual'` (upload do usuário no cadastro/edição). `storage_key` = chave CRUA do objeto no bucket `attachments` (pipeline: nome flat; manual: `manual/{conta}/…`). **Soft delete** (`deleted_at`/`deleted_by`) — o objeto FICA no bucket; anexo `pipeline` é irremovível (auditoria → 403). UNIQUE `(account_id, storage_key)`; **não** UNIQUE global (um PDF com N boletos gera N contas que COMPARTILHAM o objeto). RLS SELECT herda a visibilidade da conta pai (076) via `EXISTS`; escrita só `service_role`. Ver "Anexos de conta" |
 | `supplier` | Fornecedores. PK = `sk_supplier` (surrogate key snowflake auto-incremental — **migration 042**); `supplier_id` é **chave de negócio** (NOT NULL UNIQUE, só nesta tabela; = `sk_supplier` nos fornecedores criados pela extração, via trigger de espelho `trg_supplier_mirror_id`, podendo divergir em cargas externas). Auto-criados pelo trigger de resolução, mas **cadastro PRESERVADO** (curadoria manual de `email`/`email2`/`email3`/`email4`) — **nunca truncar** em limpezas (ver "Limpeza / reset de dados"). Reconhecimento por **e-mail** em `email`/`email2`/`email3`/`email4` (migrations 023/027/028) — ver "Auto-resolução de fornecedor". **Soft delete** via `deleted_at` (migration 045) — a baixa pelo CRUD da Next API marca `deleted_at` (nunca hard delete) e é bloqueada quando há contas vinculadas; ver "CRUD de fornecedores (Next API)". **Classificação default** `cost_center_id`/`chart_account_id` (SMALLINT NOT NULL DEFAULT 0 + FKs — migration 052): semeia o lançamento de novas contas e é atualizada pelo write-back do modal; ver "Classificação default do fornecedor — sync bidirecional". **Contatos** (migration 082): `phone_ddd1`/`phone1`/`phone_ddd2`/`phone2` (char(2)/varchar(9)), `whatsapp1`/`whatsapp2` (varchar(11)), `pix_key1`/`pix_key2` (varchar(77)) — 2 slots por tipo, preenchidos pelo form e pela extração (write-back com lógica de 2 slots); ver "Contato do fornecedor" |
-| `company` | Empresa pagadora (**cadastro**, tem campo `email`). Auto-resolvida pelo trigger `resolve_company_id` a partir de `payer_cnpj`/`payer_name`. **Preservada em limpezas** (ver abaixo) |
+| `company` | Empresa pagadora (**cadastro**, tem campo `email`). PK = **`sk_company`** (surrogate key snowflake `GENERATED ALWAYS AS IDENTITY` — migration 083, chave única de relacionamento); `company_id` é **campo de origem** (NOT NULL UNIQUE, do sistema maior). A conta é auto-resolvida pelo trigger `trg_fe_resolve_company()` → **`resolve_company_sk`** (a partir de `payer_cnpj`/`payer_name`), que grava `financial_account_control.sk_company`. **Preservada em limpezas** (ver abaixo) |
 | `status` | **Dimensão** de situação (`status_id`, `status_name`, `status_short_name`, `has_opened`/`has_closed`/`has_invoiced`). 10 linhas (ids 1..10) = **domínio de `financial_account_control.status_id`** (fonte única — a coluna `status` texto foi removida na 069) + alvo da FK `fk_fac_status`. O nome de exibição da conta vem do embed `status_dim:status(...)`. **Cadastro/configuração — preservar em limpezas** |
 | `user_group` | **Catálogo de grupos de usuário** (migration 063 — fundação de permissões por grupo). `group_id` IDENTITY ALWAYS PK, `group_name` VARCHAR(30) DEFAULT ''; **id 0 = sentinela "não informado"**. RLS read `authenticated`/write `service_role`. **Editado SÓ via Supabase** (sem CRUD no app); o usuário pretende acrescentar campos. A atribuição por usuário e o RBAC completo (`user_profile`/`permission`/`group_*`) estão **desenhados, não implementados** — ver "Grupos de usuário" na seção de papéis e `docs/design/permissoes-por-grupo.md`. **Cadastro/configuração — preservar em limpezas** |
 | `cobranca_envios_log` | Cobranças de vencidos **enviadas com sucesso** (migration 037). `document_id` (= TÍTULO no Firebird) **UNIQUE** = chave de deduplicação: `already_sent()` consulta aqui antes de enviar. Exibida em `/cobranca/envios`. Alvo de limpeza (dados de teste) |
@@ -3264,7 +3274,7 @@ da tabela de contas já a esvazia junto (é dado do pipeline, não cadastro — 
 manual (e-mails `email2`/`email3`/`email4`) que seria perdida na truncagem; no
 reprocessamento o `resolve_supplier_id` reutiliza os fornecedores existentes (casa por
 CNPJ/CPF/e-mail/nome) sem duplicar. A `company` e o `supplier` preservados continuam
-resolvendo `company_id`/`sk_supplier` das novas contas.
+resolvendo `sk_company`/`sk_supplier` das novas contas.
 
 > **Storage:** `DELETE` por `authenticated` em objetos do bucket `attachments` é bloqueado
 > pela policy RESTRICTIVE `attachments_no_delete_authenticated` (migration 073 — S2-2; antes
@@ -3304,7 +3314,7 @@ Firebird (VW_PSQ_FIN_REC_BAN + _004)  →  run.py  →  SMTP transacional Locawe
 | `template.py` | HTML do e-mail de cobrança (`render_html`). **Segurança §4 A-1 (não regredir):** `customer_name`/`document_id` (do Firebird) passam por `html.escape` antes de entrar no HTML — barra HTML/script injection no e-mail do cliente. Testes em `tests/test_email_security.py` |
 | `failure_notify.py` | **Notificação ao representante (CC)** das falhas **definitivas** (`DEFINITIVE_ERROR_TYPES` = email_ausente/email_invalido/smtp_bloqueio): `group_by_cc` (resumo por CC, ignora falha sem CC) + `render_failure_digest` (HTML com cliente/título/vencimento/valor/motivo) + `build_subject`. Só no batch (`run.py`) |
 
-**SMTP (não óbvio — não regredir):** remetente (`From`) = `company.email` (`company_id=1` =
+**SMTP (não óbvio — não regredir):** remetente (`From`) = `company.email` (`sk_company=1` =
 `financeiro@otimotex.com.br`). **Desde 2026-06-25 o envio usa o SMTP transacional da Locaweb**
 (`smtplw.com.br`, produto de alto volume — credencial/token PRÓPRIA do painel, **não** a senha
 do mailbox): `.env` tem `SMTP_HOST=smtplw.com.br` · `SMTP_PORT=587` (STARTTLS) · `SMTP_USER=otimotex1`

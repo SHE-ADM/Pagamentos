@@ -7,7 +7,8 @@ import { financialAccountAttachmentEmbeddedSchema } from './financial-account-at
 // pagar. Uma linha por documento financeiro, alimentada por duas origens:
 // o pipeline de extração de e-mail e o CRUD manual (baixas, consolidações,
 // dashboards). Reflete o estado das migrations 018 (criação + domínios pt-BR),
-// além de 005 (campos de boleto), 007/009 (company_id/supplier_id) e o
+// além de 005 (campos de boleto), 007/009 (company_id/supplier_id), 042/083
+// (surrogate keys sk_supplier/sk_company) e o
 // email_body_excerpt. Campos monetários chegam como string ou número pela REST
 // do Supabase — `z.coerce.number()` normaliza ambos.
 
@@ -251,8 +252,9 @@ export const financialAccountControlSchema = z.object({
   has_invoice: z.boolean().default(false),
   has_bank_slip: z.boolean().default(false),
 
-  // Pagador (sacado)
-  company_id: z.number().int().nullable(),
+  // Pagador (sacado) — sk_company: surrogate key snowflake da empresa pagadora
+  // (migration 083; substitui company_id, resolvida pelo trigger via payer_cnpj/name).
+  sk_company: z.number().int().nullable(),
   payer_cnpj: z.string().nullable(),
   payer_name: z.string().nullable(),
 
@@ -308,7 +310,7 @@ export const financialAccountControlSchema = z.object({
 
 export const financialAccountControlInputSchema = financialAccountControlSchema.omit({
   id: true,
-  company_id: true,
+  sk_company: true,
   // A situação é escrita por `status_id` (a coluna `status` texto foi removida — FASE 3).
   // `status_id` PERMANECE no input (entrada de escrita da situação — baixa/cancelamento via PATCH).
   created_at: true,

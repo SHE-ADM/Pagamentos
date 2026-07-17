@@ -90,7 +90,7 @@ def fetch_error_document_ids()->set[str]:
 
 def fetch_company_smtp()->dict|None:
     try:
-        r=httpx.get(f"{_base_url()}/company",headers=_headers(),params={"select":"email,legal_name,trade_name","company_id":"eq.1","limit":"1"},timeout=10)
+        r=httpx.get(f"{_base_url()}/company",headers=_headers(),params={"select":"email,legal_name,trade_name","sk_company":"eq.1","limit":"1"},timeout=10)
         if r.status_code==404: logger.warning("company not found"); return None
         r.raise_for_status(); d=r.json(); return d[0] if d else None
     except Exception as e: logger.warning("company fail: %s",e); return None
