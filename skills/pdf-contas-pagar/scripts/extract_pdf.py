@@ -313,6 +313,10 @@ _DOC_TYPE_NORM = {
     # e casa o CHECK/enum.
     _ns("cartorio"):        "cartório",
     _ns("tabelionato"):     "cartório",
+    # Cheque — o cheque como documento da conta (migration 086). Só normaliza o rótulo
+    # EXPLICITO "cheque"; nao ha auto-classificacao pela palavra no corpo/assunto (evita
+    # falso positivo com o payment_method 'cheque').
+    _ns("cheque"):          "cheque",
 }
 
 def _normalize_doc_type(raw: str) -> str:
