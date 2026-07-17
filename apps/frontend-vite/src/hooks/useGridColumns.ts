@@ -121,6 +121,19 @@ export function getConsultaColumns(
     render: (r) => r.supplier?.trade_name ?? '—',
   },
   {
+    // Empresa PAGADORA (JOIN com `company` pela FK sk_company — migrations 083/084):
+    // OTIMOTEX (1) ou LEBIANCO (2). Vem da regra LEBIANCO na extração e do select do
+    // ContaForm no cadastro manual. LOGO APÓS o Fornecedor (posição pedida pelo usuário)
+    // — são coisas distintas: pode haver conta da LEBIANCO cujo fornecedor é a OTIMOTEX.
+    // Ordenação server-side pelo embed `company(trade_name)`, padrão de `supplier(trade_name)`.
+    key: 'company',
+    header: 'Empresa',
+    size: 110,
+    minSize: 90,
+    sortKey: 'company(trade_name)',
+    render: (r) => r.company?.trade_name ?? '—',
+  },
+  {
     key: 'document_type',
     header: 'Tipo Documento',
     size: 100,

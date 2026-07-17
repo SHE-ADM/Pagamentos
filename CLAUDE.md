@@ -214,7 +214,14 @@ inline via `POST /api/suppliers`); **tipo de documento e tipo de pagamento** sã
 `PAYMENT_METHOD_OPTIONS` em `ContaForm`). **Classificação contábil** via dois lookups react-select —
 **Centro de custo** (`molecules/CostCenterSelect.tsx`) e **Plano de contas**
 (`molecules/ChartAccountSelect.tsx`), em CASCATA: ver "Lookups de classificação contábil (cascata)".
-Ordem dos campos do form: **Fornecedor → Descrição → Centro de custo → Plano de contas →
+**Empresa pagadora (`sk_company`) é ESCOLHIDA no form** (`LabeledSelect` "Empresa", logo após o
+Fornecedor): 1=OTIMOTEX / 2=LEBIANCO, opções via `GET /api/companies` (`companyService` em
+`lib/lookups.ts`, molde do `statusService`; cliente `listCompanies` em `services/lookups.ts`).
+**Create nasce no default OTIMOTEX** (`SK_COMPANY_DEFAULT`); edição mostra a empresa da conta.
+No **lançamento em série** a empresa **PERMANECE** (o `resetSupplier` não a toca — igual aos
+selects de classificação). Falha no lookup **não trava** o lançamento (fallback OTIMOTEX).
+`sk_company` **é independente do fornecedor** — pode haver conta da LEBIANCO cujo fornecedor é a
+OTIMOTEX. Ordem dos campos do form: **Fornecedor → Empresa → Descrição → Centro de custo → Plano de contas →
 (Tipo de documento + Tipo de pagamento) → (Nº documento + Emissão) → (Valor + Vencimento) →
 Código de barras → Informações adicionais** (os 3 pares na mesma linha; código de barras isolado;
 **Informações adicionais** por último — `<textarea>` de texto livre, coluna
@@ -1434,7 +1441,17 @@ embutido, via sintaxe do PostgREST `alias(coluna)` no `order` — `sortKey: 'sup
 (`financial_cost_center(...)`) é rejeitado pelo PostgREST (400). O `key` dessas colunas de embed no
 `ColumnDef` é sintético (`ColumnDef.key` é `keyof T | (string & {})`; o `accessorFn` só alimenta
 sort/filter client-side, que não usamos — a ordenação é sempre server-side). Ordem das colunas de
-`/consulta`: **… Tipo Pagamento → Plano de contas → Vencimento → Valor → NF → BOL → Situação → Extração**
+A coluna **"Empresa"** (`company.trade_name` via a FK `sk_company`, embed `company(trade_name)`) fica
+**logo APÓS o Fornecedor** — mesma posição no **card de detalhe** e no **ContaForm** (pedido do
+usuário). Há também **filtro por empresa** na barra (`<select>` "Empresa", vazio = TODAS, logo após
+a busca): aplica no **"Buscar"** como os demais selects, filtra **pela FK** (`sk_company=eq.N`, não
+pelo embed) e alcança o grid **e** os cards "Valor total"/"Total de registros" (que recebem os
+mesmos filtros) — os **KPIs gerais** (`getFinancialStats`) seguem **globais por design**, como já
+acontece com todos os outros filtros. As opções vêm do hook **`useCompanyOptions`**
+(`hooks/useCompanyOptions.ts` → `GET /api/companies`), **compartilhado com o `ContaForm`** — sem
+duas cópias do fetch; lista vazia (falha de rede) → o select fica só com "Empresa" (= sem filtro). É ordenável server-side por `company(trade_name)` e **não se confunde com o Fornecedor**:
+pode haver conta da LEBIANCO cujo fornecedor é a OTIMOTEX. Ordem das colunas de
+`/consulta`: **… Emissão → Fornecedor → Empresa → Tipo Documento → Tipo Pagamento → Plano de contas → Vencimento → Valor → NF → BOL → Situação → Extração**
 (`Extração` é a última; **não há mais colunas "Ações" nem "Centro de custo"**). `Extração` (badge
 `extraction_source`) aparece **só** no grid (removida do detalhe e do CSV); contas criadas
 **manualmente** (`extraction_source` nulo) exibem o rótulo **"Criado pelo usuário"** (constante
@@ -2252,11 +2269,27 @@ credor de uma guia de tributo é o **Fisco** (SEFAZ/RFB/prefeitura), que a extra
 (`_is_tax_document` → `_TAX_DOCUMENT_TYPES` = `darf, das, gru, dae, dare, gnre, ipva, iptu, dam,
 duam, iss, itbi, gare, tributo` — **`gps`/INSS e `multa` ficam de fora**, por decisão do usuário) **E**
 não há favorecido REAL extraído (`supplier_name`/`supplier_cnpj`/`supplier_cpf` do documento), a conta
-é lançada sob a **OTIMOTEX** (`OTIMOTEX_SK_SUPPLIER = 1`, a empresa pagadora — imposto próprio),
-**curto-circuitando os fallbacks de assunto e pagador**. Favorecido real extraído (ex.: "PREFEITURA
+é lançada sob o **FORNECEDOR OTIMOTEX** (`OTIMOTEX_SK_SUPPLIER = 1` — imposto próprio: a empresa
+aparece como seu próprio fornecedor), **curto-circuitando os fallbacks de assunto e pagador**.
+Favorecido real extraído (ex.: "PREFEITURA
 DE SÃO PAULO", "CONTABIL ESQUEMA") **NÃO** dispara a regra e é preservado. A guarda `sem_fornecedor`
 (PDF) também aceita `_is_tax_document` como chave, para uma guia de imposto sem nenhum outro
-identificador não ser barrada antes da regra. Testes: `tests/test_supplier_imposto.py`. Backfill
+identificador não ser barrada antes da regra. Testes: `tests/test_supplier_imposto.py`.
+
+> ⚠️ **LIMITAÇÃO CONHECIDA (multi-empresa) — não é a mesma coisa que `sk_company`:** esta regra
+> grava **`sk_supplier`** (quem RECEBE), **não** a empresa pagadora. **Não existe nenhuma regra
+> ligando documento tributário a `sk_company`** — a guia pega a empresa pela regra geral de
+> precedência (ester → 3 · lebianco → 2 · senão → 1), sem tratamento especial.
+> O `OTIMOTEX_SK_SUPPLIER` é **fixo em 1**, herdado de quando havia UMA empresa. Com 3 empresas isso
+> gera contas cujo fornecedor é a OTIMOTEX mas cuja pagadora é outra — **medido em 2026-07-17: 13
+> guias tributárias da LEBIANCO com `sk_supplier=1` (OTIMOTEX)**; a FARDOS ainda não tem guia, mas
+> terá. O correto seria a guia seguir a **empresa da conta** (fornecedor LEBIANCO/FARDOS), o que
+> exige cadastrar esses fornecedores (hoje só existe o da OTIMOTEX) + backfill. **Tarefa dedicada,
+> não implementada** — decisões pendentes do usuário. Nota: o `supplier` sk 1 **continua chamado
+> "OTIMOTEX"** (o rename de 2026-07-17 foi só de `company.trade_name`; os dois cadastros são
+> independentes).
+
+Backfill
 único aplicado em 2026-07-03 (ids 331/333/334/373/374 → OTIMOTEX; fornecedores-lixo 1243/1247/1248
 **hard-deletados** a pedido do usuário — eram fictícios, sem CNPJ/curadoria, e sem contas após o
 remapeamento; exceção pontual à regra de soft delete de `supplier`).
@@ -2308,11 +2341,38 @@ do resolver, descartados por `_finalize_supplier` depois de obter o `sk_supplier
   `financial_account_control.sender_email` (de `email_control.sender_email`) e o trigger o
   propaga ao resolver/criar o fornecedor.
 
-### Empresa pagadora (`sk_company`) — regra LEBIANCO (não regredir)
+### Empresa pagadora (`sk_company`) — regra por PRECEDÊNCIA (não regredir)
 
-Duas empresas pagam contas: **OTIMOTEX (`sk_company=1`, default)** e **LEBIANCO (`2`)**.
-Regra (decisão do usuário, 2026-07-17): **e-mail que faz REFERÊNCIA a "lebianco" → conta da
-LEBIANCO; SEM menção → SEMPRE OTIMOTEX.** Fontes varridas (sem acento, case-insensitive,
+**TRÊS** empresas pagam contas: **OTIMOTEX TECIDOS (`1`, default — renomeada de "OTIMOTEX")**,
+**LEBIANCO (`2`)** e **OTIMOTEX FARDOS (`3`)**. Regra (decisão do usuário, 2026-07-17), **a ordem
+É a regra**:
+
+| # | Sinal | → | Não regredir |
+|---|---|---|---|
+| 1º | **remetente `ester@otimotex.com.br`** (endereço EXATO) | **3** FARDOS | **vence tudo**: o domínio `otimotex.com.br` **e** a menção a lebianco |
+| 2º | **referência a "lebianco"** (assunto/corpo/anexo/remetente/domínio) | **2** LEBIANCO | vence o CNPJ (ver abaixo) |
+| 3º | nenhum dos dois | **1** TECIDOS | default |
+
+- **`_is_fardos_sender` é o 1º `if` de `resolve_sk_company`** — movê-lo para baixo inverteria a
+  regra. Casa o **endereço completo** (`(x or "").strip().lower() == FARDOS_SENDER`): outro usuário
+  `@otimotex.com.br` **não** casa — é isso que faz a regra "vencer o domínio". A ester **citada no
+  corpo/payer_name** (sem ser remetente) **não** classifica — só o REMETENTE conta.
+- ⚠️ **`OTIMOTEX_SK_SUPPLIER` (=1) ≠ `SK_COMPANY_DEFAULT` (=1)**: o primeiro é sk de **FORNECEDOR**
+  (`supplier`), o segundo de **EMPRESA** (`company`). Mesmo valor, mesmo nome, **tabelas
+  diferentes** — nunca find-replace nos dois (há teste travando: `NaoConfundirEmpresaComFornecedorTest`).
+- **O rename é só do NOME cadastral.** Nos e-mails/dados externos **"OTIMOTEX" continua sozinho** —
+  `_RECEIVABLE_SUBJECT_TERMS` ("cobranca otimotex"), payer/CNPJ e a resolução de fornecedor ficam
+  **intocados**. `_is_lebianco_sender` também é **dual-purpose** (decide o ICMS-ST `4.1.02` em
+  `_resolve_tax_chart_code`) — não alterar sua semântica.
+- **Cadastro manual**: o select "Empresa" nasce no default **por usuário logado**
+  (`hooks/useDefaultSkCompany`: ester → FARDOS; demais → TECIDOS). Isso é um vínculo
+  usuário→empresa — o mesmo conceito da tabela `user_company`, **revertida** a pedido do usuário:
+  fica DELIBERADAMENTE como **constante de e-mail no código**, sem ressuscitar a tabela. Vários
+  usuários no futuro → aí a tabela volta a fazer sentido.
+- **Estado (migration 085, aplicada 2026-07-17):** **347** TECIDOS · **55** LEBIANCO · **37** FARDOS
+  (backfill por remetente OU dono = ester; idempotente).
+
+A parte LEBIANCO (2º nível) permanece como antes: fontes varridas (sem acento, case-insensitive,
 **substring** — "lebianco" é nome próprio distintivo, então **não** se usa `_has_word`/`\b`, que
 existe para termos comuns como `das`/`iss`): **remetente/domínio** (`_is_lebianco_sender`,
 reusado da classificação de ICMS-ST), **assunto**, **corpo**, **anexo** e `description`/
@@ -2322,7 +2382,10 @@ reusado da classificação de ICMS-ST), **assunto**, **corpo**, **anexo** e `des
   impresso no boleto**. Logo o CNPJ **não** participa da regra — sem menção é `1` **mesmo com
   `payer_cnpj` = CNPJ da LEBIANCO** (caso real: conta **267**, que permanece em `1`). Na prática
   o Python grava `sk_company` **sempre** (1 ou 2) e o resolvedor SQL `resolve_company_sk` deixa de
-  influenciar o pipeline — segue só como fallback de quem **não** informa (CRUD manual → `1`).
+  influenciar o pipeline. **As DUAS origens informam a empresa explicitamente**: o pipeline pela
+  regra LEBIANCO e o CRUD manual pelo **select do `ContaForm`** (default OTIMOTEX). O
+  `resolve_company_sk` virou, na prática, **fallback residual** — só atuaria num INSERT que
+  omitisse `sk_company` (nenhum caminho do app faz isso hoje).
 - **`sk_company` (PAGADORA) é INDEPENDENTE de `sk_supplier` (FORNECEDOR)** — "pode acontecer de
   company ser lebianco, mas fornecedor ser otimotex". Por isso **`supplier_name`/`supplier_cnpj`
   ficam FORA da varredura**: se a LEBIANCO for o FORNECEDOR, quem paga é a OTIMOTEX (`1`), e
@@ -2730,7 +2793,7 @@ faturas SIEG em `ignorado`; o handler A1 (baixar o boleto real) segue como melho
 | `/tabelas/plano-de-contas` | `ChartAccountsPage.tsx` | `financial_chart_of_account` (CRUD via Next API) |
 | `/tabelas/grupos-plano-de-contas` | `ChartAccountGroupsPage.tsx` | `financial_chart_of_account_group` (CRUD via Next API) |
 | `/tabelas/subgrupos-plano-de-contas` | `ChartAccountSubgroupsPage.tsx` | `financial_chart_of_account_subgroup` (CRUD via Next API) |
-| `/dashboard` | `Dashboard.tsx` | `financial_account_control` (KPIs/gráficos por mês ou geral; `getDashboardData`). **Cards de KPI clicáveis = filtro** (Total/Pagos/A vencer/A vencer em 7 dias/Vencidas): clicar aplica o filtro (`KpiFilter`) a TODOS os gráficos; os KPIs seguem com os totais completos. **4 donuts** (situação · tipos de conta · **Tributos** = só guias tributárias detalhadas · formas de pagamento; tipos de conta colapsa os tributários numa fatia "Tributos" via `groupDocumentTypeLabel`/`isTaxDocumentType`) |
+| `/dashboard` | `Dashboard.tsx` | `financial_account_control` (KPIs/gráficos por mês ou geral; `getDashboardData`). **Filtro por EMPRESA** (`<select>` "Empresa", 1º dos controles; vazio = TODAS; hook `useCompanyOptions`): 5º parâmetro `skCompany` de `getDashboardData`, aplicado nas **DUAS** leituras (escopo + ano — senão o gráfico anual mostraria as duas empresas). Aqui ele escopa **TUDO** (KPIs, donuts e gráfico anual), diferente de `/consulta` (cujos KPIs gerais são globais), porque no dashboard todo indicador deriva do escopo; e **aplica na hora** (não há "Buscar"). Convive com o filtro de KPI. **Cards de KPI clicáveis = filtro** (Total/Pagos/A vencer/A vencer em 7 dias/Vencidas): clicar aplica o filtro (`KpiFilter`) a TODOS os gráficos; os KPIs seguem com os totais completos. **4 donuts** (situação · tipos de conta · **Tributos** = só guias tributárias detalhadas · formas de pagamento; tipos de conta colapsa os tributários numa fatia "Tributos" via `groupDocumentTypeLabel`/`isTaxDocumentType`) |
 | `/cobranca/envios` | `cobranca/CobrancaEnvios.tsx` | `cobranca_envios_log` (ver "Pipeline de cobrança de vencidos") |
 | `/cobranca/erros` | `cobranca/CobrancaErros.tsx` | `cobranca_erros_log` |
 
@@ -2961,7 +3024,11 @@ local/agendada (ver flag `EMAIL_READER_ENABLED` acima e memória [[vercel-deploy
 ## Banco de dados (Supabase)
 
 Migrations em `supabase/migrations/`, aplicadas **manualmente no SQL Editor** em ordem
-numérica (`001` → `084`). **Próxima migration = `085`** (verificar sempre antes de criar nova).
+numérica (`001` → `085`). **Próxima migration = `086`** (verificar sempre antes de criar nova).
+A **085** é o **backfill da 3ª empresa** (OTIMOTEX FARDOS): as contas cujo remetente/dono é a
+ester (`ester@otimotex.com.br`) passam a `sk_company=3` — **37 linhas**. **Sem DDL** (a linha 3 já
+existia em `company`) e idempotente; gruda porque o trigger da 084 não re-resolve no UPDATE. Ver
+"Empresa pagadora (`sk_company`) — regra por PRECEDÊNCIA". Aplicada via psql em 2026-07-17.
 Não há migration automática. A **084** implanta a **regra LEBIANCO** da empresa pagadora (ver
 "Empresa pagadora (`sk_company`) — regra LEBIANCO"): (1) o trigger `trg_fe_resolve_company()`
 passa a **respeitar `sk_company` explícito** (`IF NEW.sk_company IS NULL THEN resolve…`) — sem
@@ -3160,7 +3227,7 @@ internet` ao CHECK de `document_type` e faz backfill — ver "Normalização de 
 | `email_processing_errors` | Log de falhas com `raw_payload` JSON. **Visibilidade por REMETENTE (migration 078):** policy SELECT (`authenticated`) filtra por `lower(sender_email)=lower(auth.email())` para grupo com `sees_only_own_accounts` (Comercial) — `/erros` mostra só os erros de que o usuário é remetente; demais veem tudo; `service_role` com bypass |
 | `financial_account_attachment` | **Anexos (N) de uma conta** (migration 079) — PADRÃO ÚNICO das duas origens: `origin='pipeline'` (documento do e-mail; espelha `financial_account_control.source_file`, gravado pelo reader) e `origin='manual'` (upload do usuário no cadastro/edição). `storage_key` = chave CRUA do objeto no bucket `attachments` (pipeline: nome flat; manual: `manual/{conta}/…`). **Soft delete** (`deleted_at`/`deleted_by`) — o objeto FICA no bucket; anexo `pipeline` é irremovível (auditoria → 403). UNIQUE `(account_id, storage_key)`; **não** UNIQUE global (um PDF com N boletos gera N contas que COMPARTILHAM o objeto). RLS SELECT herda a visibilidade da conta pai (076) via `EXISTS`; escrita só `service_role`. Ver "Anexos de conta" |
 | `supplier` | Fornecedores. PK = `sk_supplier` (surrogate key snowflake auto-incremental — **migration 042**); `supplier_id` é **chave de negócio** (NOT NULL UNIQUE, só nesta tabela; = `sk_supplier` nos fornecedores criados pela extração, via trigger de espelho `trg_supplier_mirror_id`, podendo divergir em cargas externas). Auto-criados pelo trigger de resolução, mas **cadastro PRESERVADO** (curadoria manual de `email`/`email2`/`email3`/`email4`) — **nunca truncar** em limpezas (ver "Limpeza / reset de dados"). Reconhecimento por **e-mail** em `email`/`email2`/`email3`/`email4` (migrations 023/027/028) — ver "Auto-resolução de fornecedor". **Soft delete** via `deleted_at` (migration 045) — a baixa pelo CRUD da Next API marca `deleted_at` (nunca hard delete) e é bloqueada quando há contas vinculadas; ver "CRUD de fornecedores (Next API)". **Classificação default** `cost_center_id`/`chart_account_id` (SMALLINT NOT NULL DEFAULT 0 + FKs — migration 052): semeia o lançamento de novas contas e é atualizada pelo write-back do modal; ver "Classificação default do fornecedor — sync bidirecional". **Contatos** (migration 082): `phone_ddd1`/`phone1`/`phone_ddd2`/`phone2` (char(2)/varchar(9)), `whatsapp1`/`whatsapp2` (varchar(11)), `pix_key1`/`pix_key2` (varchar(77)) — 2 slots por tipo, preenchidos pelo form e pela extração (write-back com lógica de 2 slots); ver "Contato do fornecedor" |
-| `company` | Empresa pagadora (**cadastro**, tem campo `email`). PK = **`sk_company`** (surrogate key snowflake `GENERATED ALWAYS AS IDENTITY` — migration 083, chave única de relacionamento); `company_id` é **campo de origem** (NOT NULL UNIQUE, do sistema maior). Hoje há DUAS: OTIMOTEX (sk 1) e LEBIANCO (sk 2). A empresa da conta (`financial_account_control.sk_company`) vem da **regra LEBIANCO** gravada pelo pipeline (ver "Empresa pagadora (`sk_company`) — regra LEBIANCO"); o trigger `trg_fe_resolve_company()` → **`resolve_company_sk`** (`payer_cnpj`/`payer_name`) só atua como **fallback de quem NÃO informa** `sk_company` (ex.: CRUD manual → 1) — migration 084. **Preservada em limpezas** (ver abaixo) |
+| `company` | Empresa pagadora (**cadastro**, tem campo `email`). PK = **`sk_company`** (surrogate key snowflake `GENERATED ALWAYS AS IDENTITY` — migration 083, chave única de relacionamento); `company_id` é **campo de origem** (NOT NULL UNIQUE, do sistema maior). Hoje há DUAS: OTIMOTEX (sk 1) e LEBIANCO (sk 2). A empresa da conta (`financial_account_control.sk_company`) tem DUAS origens, ambas explícitas: a **regra LEBIANCO** no pipeline e o **select "Empresa" do `ContaForm`** no CRUD manual (default OTIMOTEX) — ver "Empresa pagadora (`sk_company`) — regra LEBIANCO". O trigger `trg_fe_resolve_company()` → **`resolve_company_sk`** (`payer_cnpj`/`payer_name`) ficou como **fallback residual** (migration 084): só atuaria num INSERT que omitisse `sk_company`. O lookup do select é `GET /api/companies` (`companyService`). **Preservada em limpezas** (ver abaixo) |
 | `status` | **Dimensão** de situação (`status_id`, `status_name`, `status_short_name`, `has_opened`/`has_closed`/`has_invoiced`). 10 linhas (ids 1..10) = **domínio de `financial_account_control.status_id`** (fonte única — a coluna `status` texto foi removida na 069) + alvo da FK `fk_fac_status`. O nome de exibição da conta vem do embed `status_dim:status(...)`. **Cadastro/configuração — preservar em limpezas** |
 | `user_group` | **Catálogo de grupos de usuário** (migration 063 — fundação de permissões por grupo). `group_id` IDENTITY ALWAYS PK, `group_name` VARCHAR(30) DEFAULT ''; **id 0 = sentinela "não informado"**. RLS read `authenticated`/write `service_role`. **Editado SÓ via Supabase** (sem CRUD no app); o usuário pretende acrescentar campos. A atribuição por usuário e o RBAC completo (`user_profile`/`permission`/`group_*`) estão **desenhados, não implementados** — ver "Grupos de usuário" na seção de papéis e `docs/design/permissoes-por-grupo.md`. **Cadastro/configuração — preservar em limpezas** |
 | `cobranca_envios_log` | Cobranças de vencidos **enviadas com sucesso** (migration 037). `document_id` (= TÍTULO no Firebird) **UNIQUE** = chave de deduplicação: `already_sent()` consulta aqui antes de enviar. Exibida em `/cobranca/envios`. Alvo de limpeza (dados de teste) |
@@ -3280,8 +3347,17 @@ gravar sem valor → vira erro `sem_valor`, não cria conta). A criação manual
 usa `financialAccountControlCreateSchema` e a edição via `PATCH` usa
 `financialAccountControlUpdateSchema`, **ambos derivados de `financialAccountControlManualEditSchema`**
 (S3-2, auditoria de segurança — não regredir): um **`.pick()`** SÓ dos campos do formulário
-(`sk_supplier`, `cost_center_id`, `chart_account_id`, `invoice_number`, `issue_date`, `due_date`,
-`amount`, `document_type`, `payment_method`, `barcode`, `description`, `additional_info`, `status_id`).
+(`sk_supplier`, **`sk_company`**, `cost_center_id`, `chart_account_id`, `invoice_number`, `issue_date`,
+`due_date`, `amount`, `document_type`, `payment_method`, `barcode`, `description`, `additional_info`,
+`status_id`). **`sk_company` é um CARVE-OUT consciente da S3-2** (a empresa pagadora é escolha do
+usuário no `ContaForm` — antes era só derivada): as demais colunas de pagador (`payer_cnpj`/
+`payer_name`) e todas as de pipeline/auditoria **continuam fora**, e há teste travando isso. O trigger
+da 084 respeita o valor explícito, então **nenhuma migration foi necessária** (a premissa documentada
+na 084 — "o CRUD manual não grava sk_company" — deixou de valer). Como `sk_company` chega do schema de
+leitura como `nullable`, o pick faz `.extend({ sk_company: z.number().int().positive() })`: um `null`
+não daria erro — o trigger o resolveria **em silêncio** para OTIMOTEX, ignorando a intenção do cliente;
+com o override vira **422**. Ele **não tem `.default()`**, então omiti-lo num PATCH preserva a empresa
+atual (mesma garantia do `status_id`).
 **`has_invoice`/`has_bank_slip` FICAM FORA do pick de propósito (não regredir):** elas têm
 `.default(false)` no inputSchema e o **`.partial()` do Zod NÃO remove o default** — se estivessem no
 pick, omiti-las no PATCH (o `ContaForm` não as edita) faria o parse injetar `false` e o UPDATE
@@ -3793,11 +3869,14 @@ lê os arquivos do disco.
 > `Enable-ScheduledTask -TaskName "Pagamentos - Email Reader" -TaskPath "\Sheild\"` (foi pausada
 > para o rollout). A máquina de dev (SHE-DEV) não a enxerga.
 
-> **DEPLOY 2026-07-17 — regra LEBIANCO da empresa pagadora (PENDENTE de cópia p/ prod):** o reader
-> passa a gravar `sk_company` (1=OTIMOTEX / 2=LEBIANCO) pela referência a "lebianco" — ver "Empresa
-> pagadora (`sk_company`) — regra LEBIANCO". Deploy = copiar **só** `read_emails.py` (novos
+> **DEPLOY 2026-07-17 — empresa pagadora por PRECEDÊNCIA, 3 empresas (PENDENTE de cópia p/ prod):**
+> o reader grava `sk_company` por **1º ester→3 (FARDOS) · 2º lebianco→2 · 3º default→1 (TECIDOS)** —
+> ver "Empresa pagadora (`sk_company`) — regra por PRECEDÊNCIA". Deploy = copiar **só**
+> `read_emails.py` (`FARDOS_SENDER`/`_is_fardos_sender`/`SK_COMPANY_FARDOS` + a ordem em
+> `resolve_sk_company`, além de
 > `resolve_sk_company`/`apply_sk_company`/`_has_lebianco_reference`/`_subject_has_lebianco`/
-> `_pdf_mentions_lebianco`; **`extract_pdf.py` NÃO muda**). **Sem `.env`, sem dependência nova**
+> `_pdf_mentions_lebianco`; **`extract_pdf.py` NÃO muda**). As migrations **084 e 085** já rodaram
+> na Supabase compartilhada → **nenhum passo de banco**. **Sem `.env`, sem dependência nova**
 > (pdfplumber já é usado). A **migration 084** (fix do trigger + backfill de 55 contas) já rodou na
 > Supabase compartilhada dev+prod → **nenhum passo de banco** em produção.
 > **ATENÇÃO — a ordem importa:** a 084 já está aplicada, então o trigger **já** respeita
@@ -3805,7 +3884,9 @@ lê os arquivos do disco.
 > `sk_company` → o trigger resolve pelo CNPJ → **fallback 1 (OTIMOTEX)**. Ou seja, degrada com
 > segurança (contas novas da Lebianco entram como Otimotex até a cópia; corrigíveis re-rodando o
 > backfill da 084, que é idempotente). Validação (esperado `2 1`):
-> `py -3 -c "import sys; sys.path.insert(0,'skills/email-reader/scripts'); import read_emails as R; print(R.resolve_sk_company(sender_email='ana@lebianco.com.br'), R.resolve_sk_company(subject='PAGAMENTO BOLETO DAMSP'))"`
+> `py -3 -c "import sys; sys.path.insert(0,'skills/email-reader/scripts'); import read_emails as R; print(R.resolve_sk_company(sender_email='ester@otimotex.com.br', subject='PAGAMENTO LEBIANCO'), R.resolve_sk_company(sender_email='ana@lebianco.com.br'), R.resolve_sk_company(sender_email='rose@otimotex.com.br'))"`
+> (esperado **`3 2 1`** — a ester vencendo até a menção a lebianco; lebianco; e outro usuário
+> `@otimotex.com.br` caindo no default.)
 
 ### Deploy manual da Cobrança de vencidos (envios) em produção (caso específico — não regredir)
 

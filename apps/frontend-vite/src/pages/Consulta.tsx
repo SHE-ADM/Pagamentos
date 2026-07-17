@@ -51,6 +51,7 @@ import ContaForm from '../components/organisms/ContaForm';
 import ContaAttachments from '../components/organisms/ContaAttachments';
 import { uploadContaAttachments, type UploadOutcome } from '../services/contaAttachments';
 import { getConsultaColumns, STATUS_OPTIONS, type ToggleFlag, type StatusChangeCallback } from '../hooks/useGridColumns';
+import { useCompanyOptions } from '../hooks/useCompanyOptions';
 import { fmtDate, fmtDateTime, fmtMoney, fmtCnpj, fmtCostCenter, fmtChartAccount } from '../lib/format';
 import { csvCell } from '../lib/csv';
 
@@ -133,6 +134,8 @@ interface ConsultaFilters {
   docType: string;
   // Situação filtrada por status_id (fonte única). undefined = sem filtro.
   statusId?: number;
+  // Empresa pagadora (sk_company: 1=OTIMOTEX TECIDOS, 2=LEBIANCO, 3=OTIMOTEX FARDOS). undefined = todas.
+  skCompany?: number;
   paymentMethod: string;
   // Coluna do filtro de período: vencimento (padrão) ou emissão.
   dateField: 'due_date' | 'issue_date';
@@ -149,6 +152,9 @@ const BASE_FILTERS = {
   supplier: '',
   docType: '',
   statusId: undefined as number | undefined,
+  // Empresa: undefined = todas. Como os demais filtros, é ZERADO ao clicar num card de KPI
+  // (que reseta a view) e no "Limpar" — ambos derivam daqui.
+  skCompany: undefined as number | undefined,
   paymentMethod: '',
   dateField: 'due_date' as const,
   dateFrom: '',
@@ -275,6 +281,9 @@ export default function Consulta() {
   const readingRef = useRef(false);
   const sf = <K extends keyof ConsultaFilters>(k: K, v: ConsultaFilters[K]) =>
     setF((x) => ({ ...x, [k]: v }));
+  // Opções do filtro de empresa (mesmo hook do ContaForm). Lista vazia → o select fica só
+  // com "Empresa" (todas), que é justamente o estado sem filtro — não quebra a tela.
+  const companyOptions = useCompanyOptions();
 
   const [loadingMore, setLoadingMore] = useState(false);
   const loadingMoreRef = useRef(false);
@@ -889,6 +898,24 @@ export default function Consulta() {
               </button>
             )}
           </div>
+          {/* Empresa pagadora — logo após a busca (espelha a ordem do grid: Fornecedor →
+              Empresa). Vazio = TODAS. Filtra o grid e os cards "Valor total"/"Total de
+              registros"; os KPIs gerais são globais por design. */}
+          <select
+            id="consulta-company"
+            name="consulta-company"
+            aria-label="Filtrar por empresa"
+            className="input w-36"
+            value={f.skCompany == null ? '' : String(f.skCompany)}
+            onChange={(e) => sf('skCompany', e.target.value ? Number(e.target.value) : undefined)}
+          >
+            <option value="">Empresa</option>
+            {companyOptions.map((c) => (
+              <option key={c.value} value={c.value}>
+                {c.label}
+              </option>
+            ))}
+          </select>
           <select id="consulta-doc-type" name="consulta-doc-type" aria-label="Filtrar por tipo de documento" className="input w-40" value={f.docType} onChange={(e) => sf('docType', e.target.value)}>
             <option value="">Tipo Documento</option>
             {DOCUMENT_TYPES.map((t) => (
@@ -1091,6 +1118,10 @@ export default function Consulta() {
                                 [
                                   ['ID', String(r.id)],
                                   ['Fornecedor', fmtSupplier(r)],
+                                  // Empresa PAGADORA (company.trade_name via FK sk_company) —
+                                  // logo APÓS o Fornecedor, espelhando a ordem do grid. São coisas
+                                  // distintas: a conta pode ser da LEBIANCO e o fornecedor, OTIMOTEX.
+                                  ['Empresa', r.company?.trade_name ?? '—'],
                                   ['Assunto', r.subject],
                                   ['Remetente', r.sender_email],
                                   ['CNPJ', fmtCnpj(r.supplier?.cnpj ?? null)],

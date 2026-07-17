@@ -191,6 +191,34 @@ describe('isTaxDocumentType — predicado de guia tributária', () => {
   });
 });
 
+describe('applyFinancialFilters — filtro de EMPRESA (sk_company)', () => {
+  it('empresa escolhida vira sk_company=eq.N', () => {
+    const params = new URLSearchParams();
+    applyFinancialFilters(params, { skCompany: 2 });
+    expect(params.get('sk_company')).toBe('eq.2');
+  });
+
+  it('sem empresa (undefined) NÃO filtra — mostra as duas', () => {
+    const params = new URLSearchParams();
+    applyFinancialFilters(params, {});
+    expect(params.has('sk_company')).toBe(false);
+  });
+
+  it('filtra pela FK e não pelo embed (o company(trade_name) é só exibição)', () => {
+    const params = new URLSearchParams();
+    applyFinancialFilters(params, { skCompany: 1 });
+    expect(params.toString()).not.toContain('trade_name');
+  });
+
+  it('combina com os demais filtros sem sobrescrevê-los', () => {
+    const params = new URLSearchParams();
+    applyFinancialFilters(params, { skCompany: 2, docType: 'boleto', statusId: 8 });
+    expect(params.get('sk_company')).toBe('eq.2');
+    expect(params.get('document_type')).toBe('eq.boleto');
+    expect(params.get('status_id')).toBe('eq.8');
+  });
+});
+
 describe('applyFinancialFilters — situação por status_id (fonte única)', () => {
   it('filtro explícito de situação vira status_id=eq.N', () => {
     const params = new URLSearchParams();

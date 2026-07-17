@@ -203,6 +203,11 @@ export async function getEmailStats(): Promise<EmailStats> {
 // contábil (centro de custo / plano de contas) via aliases de embed do PostgREST.
 const SELECT_WITH_EMBEDS =
   '*,supplier(trade_name,legal_name,cnpj,cpf),' +
+  // Empresa pagadora (FK sk_company — migrations 083/084): nome exibido na coluna "Empresa"
+  // do grid e no card de detalhe. Precisa espelhar o SELECT_WITH_SUPPLIER da Next API — a
+  // resposta do PATCH é mesclada IN-PLACE no grid (sem refetch); se só um trouxer o embed,
+  // a célula esvazia ao salvar a edição.
+  'company(trade_name),' +
   'cost_center:financial_cost_center(cost_center_code,cost_center_description),' +
   // Plano de contas + sua hierarquia (grupo/subgrupo, embeds aninhados) — a célula
   // "Plano de contas" do grid concatena plano + grupo + subgrupo + centro de custo.
@@ -225,6 +230,8 @@ interface FinancialAccountControlFilters {
   docType?: string;
   // Situação filtrada por status_id (fonte única). undefined = sem filtro de situação.
   statusId?: number;
+  // Empresa pagadora (FK sk_company: 1=OTIMOTEX TECIDOS, 2=LEBIANCO, 3=OTIMOTEX FARDOS). undefined = todas.
+  skCompany?: number;
   paymentMethod?: string;
   // Coluna de data do filtro de período: vencimento (default) ou emissão.
   dateField?: 'due_date' | 'issue_date';
@@ -409,7 +416,7 @@ const EMPTY_SEARCH_IDS: SearchIds = { supplierIds: [], costCenterIds: [], chartA
 // ts-prune-ignore-next
 export function applyFinancialFilters(
   params: URLSearchParams,
-  { supplier, docType, statusId, paymentMethod, dateField, month, year, dateFrom, dateTo }: FinancialAccountControlFilters,
+  { supplier, docType, statusId, skCompany, paymentMethod, dateField, month, year, dateFrom, dateTo }: FinancialAccountControlFilters,
   searchIds: SearchIds = EMPTY_SEARCH_IDS,
   // Só o GRID inclui canceladas; os KPIs (Valor total) mantêm a exclusão para não
   // somar cancelado (evita confusão). Default = excluir cancelado.
@@ -440,6 +447,10 @@ export function applyFinancialFilters(
     }
   }
   if (docType) params.set('document_type', `eq.${docType}`);
+  // Empresa pagadora — filtro direto pela FK (o embed company(trade_name) é só exibição).
+  // Vale para o grid E para os cards "Valor total"/"Total de registros" (que recebem os
+  // mesmos filtros); os KPIs gerais (getFinancialStats) são globais por design.
+  if (skCompany) params.set('sk_company', `eq.${skCompany}`);
   // Situação (status_id, fonte única): filtro explícito sobrescreve tudo. Sem filtro, o
   // grid mostra TODAS (inclui cancelado); os KPIs mantêm neq.cancelado (por id).
   if (statusId != null) params.set('status_id', `eq.${statusId}`);
@@ -466,6 +477,7 @@ export async function getFinancialAccountControl({
   supplier,
   docType,
   statusId,
+  skCompany,
   paymentMethod,
   dateField,
   month,
@@ -496,7 +508,7 @@ export async function getFinancialAccountControl({
   // Grid: inclui canceladas (includeCancelled=true). Os KPIs continuam excluindo.
   applyFinancialFilters(
     url.searchParams,
-    { supplier, docType, statusId, paymentMethod, dateField, month, year, dateFrom, dateTo },
+    { supplier, docType, statusId, skCompany, paymentMethod, dateField, month, year, dateFrom, dateTo },
     searchIds,
     true,
   );
@@ -871,7 +883,13 @@ function matchesKpiFilter(
 // de data nos painéis). O gráfico de movimentações sempre reflete o `year`.
 // `filter` = KPI clicado no topo: os cards mantêm os totais completos, mas TODOS
 // os gráficos passam a refletir só o subconjunto do KPI (limpar = 'total').
-export async function getDashboardData(month: number, year: number, scope: DashboardScope = 'month', filter: KpiFilter = 'total'): Promise<DashboardData> {
+// `skCompany` (opcional): empresa pagadora (1=OTIMOTEX TECIDOS, 2=LEBIANCO, 3=OTIMOTEX FARDOS); undefined = TODAS.
+// Diferente de /consulta (cujos KPIs gerais são globais), aqui o filtro vale para TUDO —
+// KPIs, donuts e o gráfico anual —, pois no dashboard todo indicador deriva do escopo.
+export async function getDashboardData(month: number, year: number, scope: DashboardScope = 'month', filter: KpiFilter = 'total', skCompany?: number): Promise<DashboardData> {
+  // Filtro de empresa pela FK — aplicado nas DUAS leituras (escopo + ano), senão o
+  // gráfico de movimentações mensais mostraria as duas empresas.
+  const companyFilter = skCompany ? { sk_company: `eq.${skCompany}` } : {};
   const first = new Date(Date.UTC(year, month, 1)).toISOString().slice(0, 10);
   const last = new Date(Date.UTC(year, month + 1, 0)).toISOString().slice(0, 10);
   const todayStr = new Date().toISOString().slice(0, 10);
@@ -884,6 +902,7 @@ export async function getDashboardData(month: number, year: number, scope: Dashb
     query<MonthRow[]>('financial_account_control', {
       select: 'id,amount,status_id,due_date,document_type,payment_method,description,supplier(trade_name,legal_name)',
       status_id: `neq.${STATUS_ID_CANCELADO}`,
+      ...companyFilter,
       ...(scope === 'month' ? { and: `(due_date.gte.${first},due_date.lte.${last})` } : {}),
       limit: scope === 'month' ? 5000 : 20000,
     }),
@@ -891,6 +910,7 @@ export async function getDashboardData(month: number, year: number, scope: Dashb
     query<YearRow[]>('financial_account_control', {
       select: 'amount,status_id,due_date',
       status_id: `neq.${STATUS_ID_CANCELADO}`,
+      ...companyFilter,
       and: `(due_date.gte.${year}-01-01,due_date.lte.${year}-12-31)`,
       limit: 20000,
     }),

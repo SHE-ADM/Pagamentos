@@ -33,6 +33,19 @@ vi.mock('../../services/suppliers', () => ({
   getSupplier: (sk: number) => getSupplierMock(sk),
 }));
 
+// Stub do lookup de empresas (o <select> "Empresa" carrega as 3 empresas).
+const listCompaniesMock = vi.fn();
+vi.mock('../../services/lookups', () => ({
+  listCompanies: () => listCompaniesMock(),
+}));
+
+// useAuth: o default do select "Empresa" depende do usuário logado (ester → FARDOS).
+// Mutável por teste.
+const authState = { email: 'rose@otimotex.com.br' };
+vi.mock('../../contexts/AuthContext', () => ({
+  useAuth: () => ({ user: { email: authState.email } }),
+}));
+
 import type { FinancialAccountControl } from '@sheild/shared';
 import ContaForm from './ContaForm';
 
@@ -47,6 +60,13 @@ beforeEach(() => {
   // de classificação sobrescrevem com mockResolvedValueOnce.
   getSupplierMock.mockReset();
   getSupplierMock.mockResolvedValue({ sk_supplier: 1, cost_center_id: 0, chart_account_id: 0 });
+  authState.email = 'rose@otimotex.com.br'; // usuário comum → default OTIMOTEX TECIDOS
+  listCompaniesMock.mockReset();
+  listCompaniesMock.mockResolvedValue([
+    { sk_company: 1, trade_name: 'OTIMOTEX TECIDOS' },
+    { sk_company: 2, trade_name: 'LEBIANCO' },
+    { sk_company: 3, trade_name: 'OTIMOTEX FARDOS' },
+  ]);
 });
 
 describe('ContaForm', () => {
@@ -280,5 +300,97 @@ describe('ContaForm', () => {
     expect(screen.getByText('Anexos da conta')).toBeInTheDocument();
     expect(screen.getByText('ja_salvo.pdf')).toBeInTheDocument();
     expect(screen.getByLabelText('Anexar arquivos')).toBeInTheDocument();
+  });
+});
+
+// Empresa PAGADORA (sk_company). É INDEPENDENTE do fornecedor: pode haver conta da
+// LEBIANCO cujo fornecedor é a OTIMOTEX.
+describe('ContaForm — Empresa', () => {
+  it('cadastro: nasce no default OTIMOTEX TECIDOS e vai no payload mesmo sem o usuário tocar', async () => {
+    const { onSubmit } = setup();
+    await screen.findByRole('option', { name: 'LEBIANCO' });   // lookup carregado
+
+    expect(screen.getByLabelText('Empresa')).toHaveValue('1');
+
+    await userEvent.click(screen.getByRole('button', { name: 'Fornecedor' }));
+    await userEvent.type(screen.getByLabelText('Valor (R$)'), '100');
+    await userEvent.selectOptions(screen.getByLabelText('Tipo de documento'), 'boleto');
+    await userEvent.selectOptions(screen.getByLabelText('Tipo de pagamento'), 'pix');
+    await userEvent.click(screen.getByRole('button', { name: 'Lançar conta' }));
+
+    await waitFor(() => expect(onSubmit).toHaveBeenCalled());
+    expect(onSubmit.mock.calls[0][0]).toMatchObject({ sk_company: 1 });
+  });
+
+  it('cadastro: escolher LEBIANCO grava sk_company = 2', async () => {
+    const { onSubmit } = setup();
+    await screen.findByRole('option', { name: 'LEBIANCO' });
+
+    await userEvent.selectOptions(screen.getByLabelText('Empresa'), '2');
+    await userEvent.click(screen.getByRole('button', { name: 'Fornecedor' }));
+    await userEvent.type(screen.getByLabelText('Valor (R$)'), '100');
+    await userEvent.selectOptions(screen.getByLabelText('Tipo de documento'), 'boleto');
+    await userEvent.selectOptions(screen.getByLabelText('Tipo de pagamento'), 'pix');
+    await userEvent.click(screen.getByRole('button', { name: 'Lançar conta' }));
+
+    await waitFor(() => expect(onSubmit).toHaveBeenCalled());
+    expect(onSubmit.mock.calls[0][0]).toMatchObject({ sk_company: 2 });
+  });
+
+  it('edição: mostra a empresa da própria conta (não o default)', async () => {
+    const conta = { id: 9, sk_supplier: 1, sk_company: 2, amount: 50 } as unknown as FinancialAccountControl;
+    render(<ContaForm mode="edit" defaultValues={conta} onSubmit={vi.fn().mockResolvedValue(undefined)} />);
+    await screen.findByRole('option', { name: 'LEBIANCO' });
+
+    expect(screen.getByLabelText('Empresa')).toHaveValue('2');
+  });
+
+  // Default POR USUÁRIO logado (espelha, no CRUD manual, a regra da ester do pipeline).
+  it('cadastro pela ester: nasce em OTIMOTEX FARDOS (sk_company 3)', async () => {
+    authState.email = 'ester@otimotex.com.br';
+    const { onSubmit } = setup();
+    await screen.findByRole('option', { name: 'OTIMOTEX FARDOS' });
+
+    expect(screen.getByLabelText('Empresa')).toHaveValue('3');
+
+    await userEvent.click(screen.getByRole('button', { name: 'Fornecedor' }));
+    await userEvent.type(screen.getByLabelText('Valor (R$)'), '100');
+    await userEvent.selectOptions(screen.getByLabelText('Tipo de documento'), 'boleto');
+    await userEvent.selectOptions(screen.getByLabelText('Tipo de pagamento'), 'pix');
+    await userEvent.click(screen.getByRole('button', { name: 'Lançar conta' }));
+
+    await waitFor(() => expect(onSubmit).toHaveBeenCalled());
+    expect(onSubmit.mock.calls[0][0]).toMatchObject({ sk_company: 3 });
+  });
+
+  it('outro usuário @otimotex.com.br NÃO herda o FARDOS (o endereço é exato)', async () => {
+    authState.email = 'rose@otimotex.com.br';
+    setup();
+    await screen.findByRole('option', { name: 'OTIMOTEX FARDOS' });
+    expect(screen.getByLabelText('Empresa')).toHaveValue('1');
+  });
+
+  it('edição pela ester: mostra a empresa da CONTA, não o default do usuário', async () => {
+    authState.email = 'ester@otimotex.com.br';
+    const conta = { id: 9, sk_supplier: 1, sk_company: 2, amount: 50 } as unknown as FinancialAccountControl;
+    render(<ContaForm mode="edit" defaultValues={conta} onSubmit={vi.fn().mockResolvedValue(undefined)} />);
+    await screen.findByRole('option', { name: 'LEBIANCO' });
+
+    expect(screen.getByLabelText('Empresa')).toHaveValue('2');
+  });
+
+  it('falha no lookup não trava o lançamento — mantém a OTIMOTEX TECIDOS', async () => {
+    listCompaniesMock.mockRejectedValue(new Error('rede'));
+    const { onSubmit } = setup();
+
+    expect(screen.getByLabelText('Empresa')).toHaveValue('1');
+    await userEvent.click(screen.getByRole('button', { name: 'Fornecedor' }));
+    await userEvent.type(screen.getByLabelText('Valor (R$)'), '100');
+    await userEvent.selectOptions(screen.getByLabelText('Tipo de documento'), 'boleto');
+    await userEvent.selectOptions(screen.getByLabelText('Tipo de pagamento'), 'pix');
+    await userEvent.click(screen.getByRole('button', { name: 'Lançar conta' }));
+
+    await waitFor(() => expect(onSubmit).toHaveBeenCalled());
+    expect(onSubmit.mock.calls[0][0]).toMatchObject({ sk_company: 1 });
   });
 });

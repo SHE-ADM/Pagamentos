@@ -16,17 +16,27 @@ import {
 } from '@sheild/shared';
 import AuthInput from '../atoms/AuthInput';
 import Alert from '../atoms/Alert';
+import LabeledSelect, { type SelectOption } from '../atoms/LabeledSelect';
 import SupplierSelect from '../molecules/SupplierSelect';
 import CostCenterSelect from '../molecules/CostCenterSelect';
 import ChartAccountSelect from '../molecules/ChartAccountSelect';
 import AttachmentPicker from '../molecules/AttachmentPicker';
 import ContaAttachments from './ContaAttachments';
 import { getSupplier } from '../../services/suppliers';
+import { useCompanyOptions } from '../../hooks/useCompanyOptions';
+import { useDefaultSkCompany, SK_COMPANY_DEFAULT } from '../../hooks/useDefaultSkCompany';
 
 // Opções dos selects de enum ordenadas alfabeticamente (pt-BR) — os valores são os
 // mesmos dos CHECK do banco; só a ordem de exibição muda.
 const DOCUMENT_TYPE_OPTIONS = [...DOCUMENT_TYPES].sort((a, b) => a.localeCompare(b, 'pt-BR'));
 const PAYMENT_METHOD_OPTIONS = [...PAYMENT_METHODS].sort((a, b) => a.localeCompare(b, 'pt-BR'));
+
+// Empresa pagadora (financial_account_control.sk_company) — 1 OTIMOTEX TECIDOS (default),
+// 2 LEBIANCO, 3 OTIMOTEX FARDOS. Na CRIAÇÃO o inicial vem de useDefaultSkCompany (a ester
+// nasce em FARDOS; os demais, em TECIDOS); na edição, da própria conta. Na extração quem
+// define é a regra de precedência do read_emails.py, não este form.
+// Fallback só para quando o lookup falhar — o select nunca fica vazio e o lançamento não trava.
+const COMPANY_FALLBACK_OPTION: SelectOption = { value: SK_COMPANY_DEFAULT, label: 'OTIMOTEX TECIDOS' };
 
 interface ContaFormValues {
   amount: string;
@@ -145,6 +155,13 @@ const ContaForm = forwardRef<ContaFormHandle, ContaFormProps>(function ContaForm
 
   const [skSupplier, setSkSupplier] = useState<number | null>(defaultValues?.sk_supplier ?? null);
   const [supplierError, setSupplierError] = useState<string | null>(null);
+  // Empresa PAGADORA — FK sk_company. Criação nasce no default POR USUÁRIO (ester → FARDOS;
+  // demais → TECIDOS); edição mostra a empresa da própria conta. Fora do react-hook-form como
+  // os demais FKs (skSupplier/costCenterId), pois ContaFormValues é só de strings. NÃO é limpo
+  // pelo resetSupplier: no lançamento EM SÉRIE a empresa escolhida PERMANECE (decisão do
+  // usuário), igual aos selects de classificação — só o fornecedor é limpo.
+  const defaultSkCompany = useDefaultSkCompany();
+  const [skCompany, setSkCompany] = useState<number>(defaultValues?.sk_company ?? defaultSkCompany);
   // `key` do SupplierSelect: incrementar REMONTA só o seletor de fornecedor (limpa o texto
   // interno do react-select, que não espelha `value`) e dispara o autofoco (key > 0). NÃO
   // afeta os selects de classificação (centro/plano permanecem — ver [[conta-form-...]]).
@@ -165,6 +182,11 @@ const ContaForm = forwardRef<ContaFormHandle, ContaFormProps>(function ContaForm
   const [files, setFiles] = useState<File[]>([]);
   // Descarta respostas obsoletas de getSupplier quando o fornecedor é trocado em sequência.
   const supplierReqRef = useRef(0);
+
+  // Empresas do <select> (mesmo hook do filtro de /consulta). Falha na rede NÃO trava o
+  // lançamento: sem opções, cai no fallback OTIMOTEX — o default e o caso da maioria.
+  const loadedCompanies = useCompanyOptions();
+  const companyOptions = loadedCompanies.length ? loadedCompanies : [COMPANY_FALLBACK_OPTION];
 
   // Limpa APENAS o fornecedor e foca o seletor (o pai chama após lançar uma conta, para o
   // próximo lançamento em série). Não navega, não remonta o form nem mexe nos demais campos.
@@ -227,6 +249,7 @@ const ContaForm = forwardRef<ContaFormHandle, ContaFormProps>(function ContaForm
 
     const payload = {
       sk_supplier: skSupplier ?? undefined,
+      sk_company: skCompany,
       // Não informado → 0 (sentinela). A coluna é NOT NULL DEFAULT 0 (migration 048).
       cost_center_id: costCenterId ?? 0,
       chart_account_id: chartAccountId ?? 0,
@@ -278,6 +301,17 @@ const ContaForm = forwardRef<ContaFormHandle, ContaFormProps>(function ContaForm
         defaultLabel={defaultValues?.supplier?.trade_name ?? defaultValues?.supplier?.legal_name}
         onChange={handleSupplierChange}
         error={supplierError ?? undefined}
+      />
+
+      {/* Empresa PAGADORA — logo após o Fornecedor. São coisas distintas: pode haver conta
+          da LEBIANCO cujo fornecedor é a OTIMOTEX. Sem placeholder: sempre há um valor
+          (nasce no default OTIMOTEX), então o campo nunca fica vazio. */}
+      <LabeledSelect
+        id="conta-company"
+        label="Empresa"
+        options={companyOptions}
+        value={skCompany}
+        onChange={(e) => setSkCompany(Number(e.target.value))}
       />
 
       <AuthInput label="Descrição" error={errors.description?.message} {...register('description')} />

@@ -41,6 +41,12 @@ vi.mock('../hooks/useIdleLogout', () => ({
   resumeIdleLogout: vi.fn(),
 }));
 
+// Lookup do filtro "Empresa" (useCompanyOptions) — evita rede no teste.
+const listCompaniesMock = vi.fn();
+vi.mock('../services/lookups', () => ({
+  listCompanies: () => listCompaniesMock(),
+}));
+
 // useAuth: o hard delete de conta só aparece para o grupo Administrador (mutável por teste).
 const authState = { isAdminGroup: false };
 vi.mock('../contexts/AuthContext', () => ({
@@ -82,6 +88,11 @@ describe('Consulta', () => {
     authState.isAdminGroup = false;
     deleteContaMock.mockReset();
     updateContaMock.mockReset();
+    listCompaniesMock.mockReset();
+    listCompaniesMock.mockResolvedValue([
+      { sk_company: 1, trade_name: 'OTIMOTEX TECIDOS' },
+      { sk_company: 2, trade_name: 'LEBIANCO' },
+    ]);
     getFinancialAccountControl.mockResolvedValue({ data: [], total: 0 });
     getFinancialStats.mockResolvedValue({
       totalRecords: 0,
@@ -388,6 +399,50 @@ describe('Consulta', () => {
         expect.objectContaining({ month: null, year: null }),
       ),
     );
+  });
+
+  // Filtro de EMPRESA (sk_company). Como os demais selects, aplica no "Buscar".
+  it('filtrar por LEBIANCO consulta com skCompany=2', async () => {
+    const user = userEvent.setup();
+    render(<Consulta />);
+    await waitFor(() => expect(getFinancialAccountControl).toHaveBeenCalled());
+    // As opções vêm do lookup (useCompanyOptions).
+    await screen.findByRole('option', { name: 'LEBIANCO' });
+
+    await user.selectOptions(screen.getByLabelText('Filtrar por empresa'), '2');
+    await user.click(screen.getByRole('button', { name: 'Buscar' }));
+
+    await waitFor(() =>
+      expect(getFinancialAccountControl).toHaveBeenLastCalledWith(
+        expect.objectContaining({ skCompany: 2 }),
+      ),
+    );
+  });
+
+  it('sem escolher empresa, consulta SEM o filtro (as duas empresas)', async () => {
+    render(<Consulta />);
+    await waitFor(() => expect(getFinancialAccountControl).toHaveBeenCalled());
+
+    expect(screen.getByLabelText('Filtrar por empresa')).toHaveValue('');
+    expect(getFinancialAccountControl.mock.calls[0][0]).toMatchObject({ skCompany: undefined });
+  });
+
+  it('o filtro de empresa alcança os cards "Valor total"/"Total de registros"', async () => {
+    const user = userEvent.setup();
+    render(<Consulta />);
+    await screen.findByRole('option', { name: 'LEBIANCO' });
+    getFinancialAccountTotalValue.mockClear();
+    getFinancialAccountCount.mockClear();
+
+    await user.selectOptions(screen.getByLabelText('Filtrar por empresa'), '2');
+    await user.click(screen.getByRole('button', { name: 'Buscar' }));
+
+    await waitFor(() =>
+      expect(getFinancialAccountTotalValue).toHaveBeenLastCalledWith(
+        expect.objectContaining({ skCompany: 2 }),
+      ),
+    );
+    expect(getFinancialAccountCount).toHaveBeenLastCalledWith(expect.objectContaining({ skCompany: 2 }));
   });
 
   it('a busca por intervalo De/Até é global (zera mês/ano) e usa dateFrom/dateTo', async () => {
