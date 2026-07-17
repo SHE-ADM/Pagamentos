@@ -230,6 +230,8 @@ interface FinancialAccountControlFilters {
   docType?: string;
   // Situação filtrada por status_id (fonte única). undefined = sem filtro de situação.
   statusId?: number;
+  // Empresa pagadora (FK sk_company: 1=OTIMOTEX, 2=LEBIANCO). undefined = todas.
+  skCompany?: number;
   paymentMethod?: string;
   // Coluna de data do filtro de período: vencimento (default) ou emissão.
   dateField?: 'due_date' | 'issue_date';
@@ -414,7 +416,7 @@ const EMPTY_SEARCH_IDS: SearchIds = { supplierIds: [], costCenterIds: [], chartA
 // ts-prune-ignore-next
 export function applyFinancialFilters(
   params: URLSearchParams,
-  { supplier, docType, statusId, paymentMethod, dateField, month, year, dateFrom, dateTo }: FinancialAccountControlFilters,
+  { supplier, docType, statusId, skCompany, paymentMethod, dateField, month, year, dateFrom, dateTo }: FinancialAccountControlFilters,
   searchIds: SearchIds = EMPTY_SEARCH_IDS,
   // Só o GRID inclui canceladas; os KPIs (Valor total) mantêm a exclusão para não
   // somar cancelado (evita confusão). Default = excluir cancelado.
@@ -445,6 +447,10 @@ export function applyFinancialFilters(
     }
   }
   if (docType) params.set('document_type', `eq.${docType}`);
+  // Empresa pagadora — filtro direto pela FK (o embed company(trade_name) é só exibição).
+  // Vale para o grid E para os cards "Valor total"/"Total de registros" (que recebem os
+  // mesmos filtros); os KPIs gerais (getFinancialStats) são globais por design.
+  if (skCompany) params.set('sk_company', `eq.${skCompany}`);
   // Situação (status_id, fonte única): filtro explícito sobrescreve tudo. Sem filtro, o
   // grid mostra TODAS (inclui cancelado); os KPIs mantêm neq.cancelado (por id).
   if (statusId != null) params.set('status_id', `eq.${statusId}`);
@@ -471,6 +477,7 @@ export async function getFinancialAccountControl({
   supplier,
   docType,
   statusId,
+  skCompany,
   paymentMethod,
   dateField,
   month,
@@ -501,7 +508,7 @@ export async function getFinancialAccountControl({
   // Grid: inclui canceladas (includeCancelled=true). Os KPIs continuam excluindo.
   applyFinancialFilters(
     url.searchParams,
-    { supplier, docType, statusId, paymentMethod, dateField, month, year, dateFrom, dateTo },
+    { supplier, docType, statusId, skCompany, paymentMethod, dateField, month, year, dateFrom, dateTo },
     searchIds,
     true,
   );

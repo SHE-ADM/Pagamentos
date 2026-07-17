@@ -4,7 +4,7 @@
 // (@sheild/shared). Fornecedor via react-select (SupplierSelect). Tipo de documento
 // e tipo de pagamento são selects de APENAS CONSULTA (valores pré-definidos dos enums,
 // obrigatórios). O envio (POST/PATCH na Next API) é responsabilidade do pai.
-import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from 'react';
+import { forwardRef, useImperativeHandle, useRef, useState } from 'react';
 import { useForm } from 'react-hook-form';
 import {
   financialAccountControlCreateSchema,
@@ -23,7 +23,7 @@ import ChartAccountSelect from '../molecules/ChartAccountSelect';
 import AttachmentPicker from '../molecules/AttachmentPicker';
 import ContaAttachments from './ContaAttachments';
 import { getSupplier } from '../../services/suppliers';
-import { listCompanies } from '../../services/lookups';
+import { useCompanyOptions } from '../../hooks/useCompanyOptions';
 
 // Opções dos selects de enum ordenadas alfabeticamente (pt-BR) — os valores são os
 // mesmos dos CHECK do banco; só a ordem de exibição muda.
@@ -159,7 +159,6 @@ const ContaForm = forwardRef<ContaFormHandle, ContaFormProps>(function ContaForm
   // lançamento EM SÉRIE a empresa escolhida PERMANECE (decisão do usuário), igual aos selects
   // de classificação — só o fornecedor é limpo.
   const [skCompany, setSkCompany] = useState<number>(defaultValues?.sk_company ?? SK_COMPANY_DEFAULT);
-  const [companyOptions, setCompanyOptions] = useState<SelectOption[]>([COMPANY_FALLBACK_OPTION]);
   // `key` do SupplierSelect: incrementar REMONTA só o seletor de fornecedor (limpa o texto
   // interno do react-select, que não espelha `value`) e dispara o autofoco (key > 0). NÃO
   // afeta os selects de classificação (centro/plano permanecem — ver [[conta-form-...]]).
@@ -181,24 +180,10 @@ const ContaForm = forwardRef<ContaFormHandle, ContaFormProps>(function ContaForm
   // Descarta respostas obsoletas de getSupplier quando o fornecedor é trocado em sequência.
   const supplierReqRef = useRef(0);
 
-  // Carrega as empresas uma vez (cadastro de 2 linhas, só-leitura). Falha na rede NÃO trava o
-  // lançamento: o fallback mantém a OTIMOTEX (o default), que é o caso da esmagadora maioria.
-  useEffect(() => {
-    let active = true;
-    const load = async () => {
-      try {
-        const rows = await listCompanies();
-        if (!active || rows.length === 0) return;
-        setCompanyOptions(rows.map((c) => ({ value: c.sk_company, label: c.trade_name ?? `#${c.sk_company}` })));
-      } catch {
-        // Silencioso de propósito — segue com o fallback (OTIMOTEX).
-      }
-    };
-    void load();
-    return () => {
-      active = false;
-    };
-  }, []);
+  // Empresas do <select> (mesmo hook do filtro de /consulta). Falha na rede NÃO trava o
+  // lançamento: sem opções, cai no fallback OTIMOTEX — o default e o caso da maioria.
+  const loadedCompanies = useCompanyOptions();
+  const companyOptions = loadedCompanies.length ? loadedCompanies : [COMPANY_FALLBACK_OPTION];
 
   // Limpa APENAS o fornecedor e foca o seletor (o pai chama após lançar uma conta, para o
   // próximo lançamento em série). Não navega, não remonta o form nem mexe nos demais campos.

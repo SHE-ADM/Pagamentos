@@ -1443,7 +1443,13 @@ embutido, via sintaxe do PostgREST `alias(coluna)` no `order` — `sortKey: 'sup
 sort/filter client-side, que não usamos — a ordenação é sempre server-side). Ordem das colunas de
 A coluna **"Empresa"** (`company.trade_name` via a FK `sk_company`, embed `company(trade_name)`) fica
 **logo APÓS o Fornecedor** — mesma posição no **card de detalhe** e no **ContaForm** (pedido do
-usuário). É ordenável server-side por `company(trade_name)` e **não se confunde com o Fornecedor**:
+usuário). Há também **filtro por empresa** na barra (`<select>` "Empresa", vazio = TODAS, logo após
+a busca): aplica no **"Buscar"** como os demais selects, filtra **pela FK** (`sk_company=eq.N`, não
+pelo embed) e alcança o grid **e** os cards "Valor total"/"Total de registros" (que recebem os
+mesmos filtros) — os **KPIs gerais** (`getFinancialStats`) seguem **globais por design**, como já
+acontece com todos os outros filtros. As opções vêm do hook **`useCompanyOptions`**
+(`hooks/useCompanyOptions.ts` → `GET /api/companies`), **compartilhado com o `ContaForm`** — sem
+duas cópias do fetch; lista vazia (falha de rede) → o select fica só com "Empresa" (= sem filtro). É ordenável server-side por `company(trade_name)` e **não se confunde com o Fornecedor**:
 pode haver conta da LEBIANCO cujo fornecedor é a OTIMOTEX. Ordem das colunas de
 `/consulta`: **… Emissão → Fornecedor → Empresa → Tipo Documento → Tipo Pagamento → Plano de contas → Vencimento → Valor → NF → BOL → Situação → Extração**
 (`Extração` é a última; **não há mais colunas "Ações" nem "Centro de custo"**). `Extração` (badge
