@@ -2885,7 +2885,12 @@ trigger de resolução (`trg_fe_resolve_company()`, SECURITY DEFINER — lição
 de anon/authenticated + GRANT service_role, mirror 072; fallback = sk da empresa `company_id=1`); a
 antiga `resolve_company_id` é DROPADA e o trigger foi renomeado `trg_fe_company_id`→
 `trg_fe_sk_company`. Espelha a 042 (supplier). **One-time — não re-executável** (troca de PK/
-IDENTITY, como 042/050/051). A **082** adiciona as colunas de CONTATO em `supplier`
+IDENTITY, como 042/050/051). **Aplicada via psql em 2026-07-17** (`SUPABASE_DB_URL` +
+`:5432/postgres`); a coluna `sk_company` criada pelo usuário tinha `DEFAULT 0` (sentinela) — a
+migration o **dropa antes** do `ADD GENERATED ALWAYS AS IDENTITY` (não coexistem). As guardas de
+string em `resolve_company_sk` usam `length(trim(x)) > 0` (não `trim(x) <> ''`) para evitar um
+**falso positivo do SonarCloud** (analisador PL/SQL com semântica Oracle, onde `'' = NULL`);
+comportamento idêntico em PostgreSQL. **NÃO reaplicar.** A **082** adiciona as colunas de CONTATO em `supplier`
 (telefone/WhatsApp/chave PIX, 2 slots cada — ver "Contato do fornecedor"); aplicada **via psql**
 (`SUPABASE_DB_URL` + `:5432/postgres`, com o Supabase MCP indisponível na sessão), idempotente
 (`ADD COLUMN IF NOT EXISTS` + REVOKE de escrita do papel `authenticated`). (As `059`/`060`/`061`/`063`/`064`/`066`/`067`/
@@ -3673,6 +3678,23 @@ lê os arquivos do disco.
 > Validação (esperado `True`):
 > `py -3 -c "import sys; sys.path.insert(0,'skills/email-reader/scripts'); import read_emails as R;
 > print(hasattr(R,'_is_real_nosso_numero'))"`
+
+> **DEPLOY 2026-07-17 — `sk_company` como chave de relacionamento (migration 083 já aplicada):** a
+> `company` passou a ter `sk_company` (PK IDENTITY, chave única de relacionamento) e
+> `financial_account_control` referencia a empresa por `sk_company` (não mais `company_id`) — ver
+> "Banco de dados" / migration 083. **A migration 083 JÁ foi aplicada** na Supabase compartilhada
+> dev+prod (via psql, 2026-07-17) — **nenhum passo de banco** em produção. Deploy = copiar **DOIS**
+> arquivos Python (ambos passaram a ler `company?sk_company=eq.1` no lugar de `company_id=eq.1`):
+> - `skills/email-reader/scripts/read_emails.py` → `C:\Sheild\API\Pagamentos\skills\email-reader\scripts\`
+>   (método `company_cnpj()`; `extract_pdf.py` NÃO muda).
+> - `skills/cobranca-vencidos/scripts/supabase_log.py` → `C:\Sheild\API\Pagamentos\skills\cobranca-vencidos\scripts\`
+>   (função `fetch_company_smtp()`).
+>
+> **Sem `.env`, sem dependência nova.** **Degrada com segurança:** `company_id` foi preservado
+> (NOT NULL UNIQUE), então o código ANTIGO em produção (que lê `company_id=eq.1`) segue funcionando
+> até a cópia. Frontend (getCompanyEmail + schema) saiu pelo Vercel no merge do PR #139. Validação
+> (esperado o CNPJ da OTIMOTEX e a linha SMTP — exige `.env` carregado):
+> `py -3 -c "import sys; sys.path.insert(0,'skills/email-reader/scripts'); import read_emails as R; print(R.SupabaseControl().company_cnpj())"`
 
 ### Deploy manual da Cobrança de vencidos (envios) em produção (caso específico — não regredir)
 
