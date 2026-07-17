@@ -90,10 +90,12 @@ class ProcessPdfSplitTest(unittest.TestCase):
 
     def _run(self, pages, per_page_recs):
         it = iter(per_page_recs)
+        # _write_single_page e unlink são mockados — o Path devolvido é um stub NUNCA escrito
+        # nem lido (por isso não usa diretório temporário real; evita o alerta S/ tmp do Sonar).
         with mock.patch.object(E, "_is_image_file", return_value=False), \
              mock.patch.object(E, "_pdf_is_encrypted", return_value=False), \
              mock.patch.object(E, "_payable_pages", return_value=pages), \
-             mock.patch.object(E, "_write_single_page", side_effect=lambda p, i: Path(f"/tmp/pg{i}.pdf")), \
+             mock.patch.object(E, "_write_single_page", side_effect=lambda p, i: Path(f"page-stub-{i}.pdf")), \
              mock.patch.object(Path, "unlink", return_value=None), \
              mock.patch.object(E, "_extract_single", side_effect=lambda p, **k: next(it)):
             return E.process_pdf(Path("multi_guias_fgts.pdf"))
