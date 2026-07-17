@@ -108,6 +108,19 @@ export function getConsultaColumns(
     render: (r) => fmtDate(r.issue_date),
   },
   {
+    // Empresa PAGADORA (JOIN com `company` pela FK sk_company — migrations 083/084):
+    // OTIMOTEX (1) ou LEBIANCO (2), definida na extração pela regra LEBIANCO. É a
+    // empresa que PAGA — não confundir com o Fornecedor (coluna seguinte): pode haver
+    // conta da LEBIANCO cujo fornecedor é a OTIMOTEX. Ordenação server-side pelo embed
+    // do PostgREST `company(trade_name)`, igual ao padrão de `supplier(trade_name)`.
+    key: 'company',
+    header: 'Empresa',
+    size: 110,
+    minSize: 90,
+    sortKey: 'company(trade_name)',
+    render: (r) => r.company?.trade_name ?? '—',
+  },
+  {
     // Fornecedor vem do JOIN com `supplier` (migrations 040/041). O grid exibe APENAS
     // `trade_name` (razão fantasia) — todos os fornecedores têm `trade_name` preenchido.
     // Ordenação SERVER-SIDE pela mesma coluna via embed do PostgREST `supplier(trade_name)`,

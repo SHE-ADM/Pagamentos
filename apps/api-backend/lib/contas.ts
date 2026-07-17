@@ -32,6 +32,10 @@ const SUPPLIER_TABLE = 'supplier';
 // um refresh da página. Por isso o embed de chart_account inclui group + subgroup.
 const SELECT_WITH_SUPPLIER =
   '*,supplier(trade_name,legal_name,cnpj,cpf),' +
+  // Empresa pagadora (FK sk_company) — espelha o SELECT_WITH_EMBEDS do frontend. A resposta
+  // de POST/PATCH é mesclada IN-PLACE no grid de /consulta (sem refetch), entao sem este
+  // embed a coluna "Empresa" ficaria vazia logo apos salvar a edicao da conta.
+  'company(trade_name),' +
   'cost_center:financial_cost_center(cost_center_code,cost_center_description),' +
   'chart_account:financial_chart_of_account(account_code,account_description,' +
   'group:financial_chart_of_account_group(group_code,group_description),' +

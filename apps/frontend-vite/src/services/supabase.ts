@@ -203,6 +203,11 @@ export async function getEmailStats(): Promise<EmailStats> {
 // contábil (centro de custo / plano de contas) via aliases de embed do PostgREST.
 const SELECT_WITH_EMBEDS =
   '*,supplier(trade_name,legal_name,cnpj,cpf),' +
+  // Empresa pagadora (FK sk_company — migrations 083/084): nome exibido na coluna "Empresa"
+  // do grid e no card de detalhe. Precisa espelhar o SELECT_WITH_SUPPLIER da Next API — a
+  // resposta do PATCH é mesclada IN-PLACE no grid (sem refetch); se só um trouxer o embed,
+  // a célula esvazia ao salvar a edição.
+  'company(trade_name),' +
   'cost_center:financial_cost_center(cost_center_code,cost_center_description),' +
   // Plano de contas + sua hierarquia (grupo/subgrupo, embeds aninhados) — a célula
   // "Plano de contas" do grid concatena plano + grupo + subgrupo + centro de custo.

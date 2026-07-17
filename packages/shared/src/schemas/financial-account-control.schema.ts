@@ -153,6 +153,14 @@ export const supplierEmbeddedSchema = z.object({
 
 export type SupplierEmbedded = z.infer<typeof supplierEmbeddedSchema>;
 
+// Empresa pagadora embutida (tabela `company`, via a FK sk_company — migrations 083/084).
+// Presente quando o select inclui company(...). Exibida no grid e no card de /consulta.
+export const companyEmbeddedSchema = z.object({
+  trade_name: z.string().nullable(),
+}).nullable();
+
+export type CompanyEmbedded = z.infer<typeof companyEmbeddedSchema>;
+
 // ── Classificação contábil embutida (JOIN via cost_center_id / chart_account_id) ─
 // Retornado pelo PostgREST quando o select inclui os aliases
 // cost_center:financial_cost_center(...) e chart_account:financial_chart_of_account(...).
@@ -287,6 +295,10 @@ export const financialAccountControlSchema = z.object({
   // Fonte de verdade única para exibição (nome/CNPJ/CPF vêm daqui via JOIN).
   supplier: supplierEmbeddedSchema.optional(),
 
+  // Empresa pagadora embutida — presente quando o select inclui company(...).
+  // Fonte do nome exibido (coluna "Empresa" do grid + card de detalhe); a FK é sk_company.
+  company: companyEmbeddedSchema.optional(),
+
   // Classificação contábil embutida — presente quando o select inclui os aliases
   // cost_center:financial_cost_center(...) / chart_account:financial_chart_of_account(...).
   cost_center: costCenterEmbeddedSchema.optional(),
@@ -324,6 +336,7 @@ export const financialAccountControlInputSchema = financialAccountControlSchema.
   status_changed_by: true,
   status_changed_at: true,
   supplier: true,
+  company: true,
   cost_center: true,
   chart_account: true,
   status_dim: true,
