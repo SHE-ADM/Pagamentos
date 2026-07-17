@@ -1251,15 +1251,68 @@ def _decrypt_pdf(pdf_path, passwords) -> "Path | None":
     return None
 
 
-# --- Carnê: páginas que contêm boleto (têm linha digitável) ---
-def _boleto_pages(pdf_path) -> "list[int]":
-    """Índices 0-based das páginas com linha digitável de boleto. Em carnês (vários
-    boletos, uma página cada) emitimos um registro por boleto."""
+# --- Documento com VÁRIOS pagáveis (carnê de boletos, guias FGTS Digital, etc.) ---
+# Regex de PIX Copia-e-Cola (payload EMV do BR Code). Âncoras fortes de PIX de COBRANÇA:
+# o payload começa em "000201..." e a chave de cobrança do BC é "br.gov.bcb.pix". Não casam
+# texto comum. (Comprovante de pagamento JÁ feito é barrado a montante por
+# subject_is_payment_confirmation, então isto não vira conta espúria.)
+def _has_pix_emv(text: str) -> bool:
+    """True se o texto tem um PIX Copia-e-Cola (payload EMV / BR Code)."""
+    norm = re.sub(r"\s+", "", text or "").lower()
+    return "br.gov.bcb.pix" in norm or "00020101" in norm
+
+
+# Linha digitável de ARRECADAÇÃO: 4 blocos de 11 dígitos + 1 DV cada (48 no total),
+# ou o código de barras contínuo de 48. Ancorado no FORMATO (não num "44+ chars" ganancioso,
+# que casaria uma tabela de valores/CPFs numa página de detalhamento).
+_ARRECADACAO_LINE_RE = re.compile(
+    r"\d{11}[-.\s]?\d[-.\s]+\d{11}[-.\s]?\d[-.\s]+\d{11}[-.\s]?\d[-.\s]+\d{11}[-.\s]?\d"
+)
+_BARCODE_48_RE = re.compile(r"(?<!\d)\d{48}(?!\d)")
+
+
+def _text_has_arrecadacao_barcode(text: str) -> bool:
+    """True se o texto tem uma linha digitável/código de ARRECADAÇÃO de 48 dígitos
+    (tributo/guia/concessionária) — validado por is_boleto_barcode. extract_linha_digitavel
+    só cobre o boleto FEBRABAN de 47; esta é a outra família de pagável impressa."""
+    t = text or ""
+    for m in _ARRECADACAO_LINE_RE.finditer(t):
+        if is_boleto_barcode(re.sub(r"\D", "", m.group())):
+            return True
+    for m in _BARCODE_48_RE.finditer(t):
+        if is_boleto_barcode(m.group()):
+            return True
+    return False
+
+
+def _page_has_payable(text: str) -> bool:
+    """True quando a página traz um INSTRUMENTO DE PAGAMENTO — a definição genérica de
+    "página pagável", que distingue uma guia/boleto de uma página de detalhamento
+    (relação de trabalhadores, instruções). Em ordem de confiabilidade:
+      1) linha digitável de boleto (47 díg FEBRABAN — extract_linha_digitavel);
+      2) linha/código de arrecadação (48 díg — tributo/guia/concessionária);
+      3) PIX Copia-e-Cola (guias sem código de barras, ex.: FGTS Digital/GFD).
+    Página de detalhamento NUNCA tem instrumento próprio → não conta (verificado no PDF
+    real do FGTS: p.1-2 têm PIX, p.3-10 de relação de trabalhadores não têm nada)."""
+    return (
+        bool(extract_linha_digitavel(text))
+        or _text_has_arrecadacao_barcode(text)
+        or _has_pix_emv(text)
+    )
+
+
+def _payable_pages(pdf_path) -> "list[int]":
+    """Índices 0-based das páginas que são um PAGÁVEL (têm instrumento de pagamento — ver
+    _page_has_payable). Com ≥2, process_pdf divide o PDF e emite um registro por página
+    (carnê de boletos, guia FGTS Mensal + Consignado, etc.). Rede de segurança: se uma
+    página não-pagável escapar do critério, o registro dela sai sem `amount` e o pipeline
+    a jusante o descarta (validação `sem_valor` em extract_and_store_accounts) — não vira
+    conta espúria; o gate ≥2 preserva o contrato "1 pagável ⇒ 1 registro"."""
     pages = []
     try:
         with pdfplumber.open(str(pdf_path)) as pdf:
             for i, p in enumerate(pdf.pages):
-                if extract_linha_digitavel(p.extract_text() or ""):
+                if _page_has_payable(p.extract_text() or ""):
                     pages.append(i)
     except Exception:
         pass
@@ -1313,18 +1366,18 @@ def process_pdf(pdf_path, force_vision=False, pdf_passwords=None):
                 log.warning(f"  ✗ {pdf_path.name}: protegido por senha — nenhuma senha candidata abriu")
                 return [_failure_record(pdf_path, "PDF protegido por senha — nenhuma senha candidata (CNPJ) abriu")]
 
-        boleto_pages = _boleto_pages(work)
-        if len(boleto_pages) >= 2:
-            log.info(f"  → carnê com {len(boleto_pages)} boletos — um registro por boleto")
+        payable_pages = _payable_pages(work)
+        if len(payable_pages) >= 2:
+            log.info(f"  → {len(payable_pages)} pagáveis no PDF — um registro por página")
             recs = []
-            for idx in boleto_pages:
+            for idx in payable_pages:
                 page_pdf = _write_single_page(work, idx)
                 tmps.append(page_pdf)
                 rec = _extract_single(page_pdf, force_vision=force_vision)
                 rec["source_file"] = pdf_path.name  # preserva o nome do arquivo original
                 recs.append(rec)
                 if rec.get("extraction_source") == "erro_api":
-                    break  # circuit breaker: não gasta chamadas nos demais boletos
+                    break  # circuit breaker: não gasta chamadas nos demais pagáveis
             return recs
 
         rec = _extract_single(work, force_vision=force_vision)
