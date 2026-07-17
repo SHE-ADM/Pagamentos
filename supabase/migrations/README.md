@@ -39,6 +39,9 @@ As migrations `001 → 061` são aplicadas **manualmente no SQL Editor do Supaba
    reaplicadas) — isso é **falha segura** (erro, não corrupção de dado), mas evite re-run:
    - `042` — `ADD CONSTRAINT supplier_pkey PRIMARY KEY` / `DROP IDENTITY`.
    - `050`, `051` — `ALTER COLUMN ... ADD GENERATED ALWAYS AS IDENTITY`.
+   - `083` — `company`: `ADD CONSTRAINT company_pkey PRIMARY KEY (sk_company)` +
+     `ALTER COLUMN sk_company ADD GENERATED ALWAYS AS IDENTITY`; `financial_account_control`
+     `DROP COLUMN company_id`. Espelha a `042` (agora para empresa).
    - `053` — `ADD CONSTRAINT fk_financial_account_status` (sem bloco `DO`/`IF NOT EXISTS`).
    - `039` — `DISABLE/ENABLE TRIGGER trg_fe_supplier_id`: quebra se reaplicada **após** a
      `041` (que dropa esse trigger). Só re-run isolado é afetado.
@@ -48,8 +51,9 @@ As migrations `001 → 061` são aplicadas **manualmente no SQL Editor do Supaba
 
 2. **Pré-requisito de bootstrap (banco vazio NÃO se reconstrói só com estas migrations).**
    As migrations dependem de objetos **pré-existentes** nunca criados por elas:
-   - Tabelas de cadastro: `company`, `status`, `supplier`, `financial_account`,
-     `financial_bank`, `financial_cost_center`,
+   - Tabelas de cadastro: `company` (com `sk_company` — surrogate PK IDENTITY criada na
+     `083`; um ambiente novo aplica a `083` sobre o dump que já tenha a coluna), `status`,
+     `supplier`, `financial_account`, `financial_bank`, `financial_cost_center`,
      `financial_chart_of_account(_group/_subgroup)`.
    - Função `normalize_search()` (usada já na `007`).
    Em um ambiente novo, aplique o **dump desses cadastros + `normalize_search`** ANTES da

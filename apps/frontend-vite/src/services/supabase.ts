@@ -51,13 +51,15 @@ async function query<T>(table: string, params: QueryParams = {}): Promise<T> {
 
 // ── company ──────────────────────────────────────────────────────────────────
 
-// E-mail da empresa pagadora (cadastro `company`, company_id=1) — exibido como
+// E-mail da empresa pagadora (cadastro `company`, sk_company=1) — exibido como
 // subtítulo em /emails: é a caixa de onde os e-mails são lidos. RLS: policy
 // `authenticated read` (qual `true`). Retorna null se não encontrado/sem acesso.
-export async function getCompanyEmail(companyId = 1): Promise<string | null> {
+// sk_company é a chave de relacionamento única (migration 083; company_id ficou
+// só como campo de origem do sistema maior).
+export async function getCompanyEmail(skCompany = 1): Promise<string | null> {
   const rows = await query<{ email: string | null }[]>('company', {
     select: 'email',
-    company_id: `eq.${companyId}`,
+    sk_company: `eq.${skCompany}`,
     limit: 1,
   });
   return rows[0]?.email ?? null;
