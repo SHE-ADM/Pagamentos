@@ -77,7 +77,7 @@ class TryExtractFromBodyTest(unittest.TestCase):
 
     def test_sem_pagavel_retorna_body_none(self):
         ctrl = FakeCtrl(dup=None)
-        outcome, rec = _run(ctrl, body="Obrigada! Segue em anexo o comprovante.")
+        outcome, _ = _run(ctrl, body="Obrigada! Segue em anexo o comprovante.")
         self.assertEqual(outcome, R.BODY_NONE)
         self.assertEqual(ctrl.registered_payloads, [])
 

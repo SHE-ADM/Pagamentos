@@ -157,7 +157,7 @@ def main() -> int:
             removidos += _storage_remove(lote)
             log.info(f"  removidos {removidos}/{len(apagar)}")
         except urllib.error.HTTPError as e:
-            log.error(f"Falha no lote {i // DELETE_BATCH + 1}: {e.code} {e.read()[:200]}")
+            log.exception(f"Falha no lote {i // DELETE_BATCH + 1}: {e.code} {e.read()[:200]}")
             return 1
 
     log.info(f"\nOK: {removidos} objetos removidos; {len(preservar)} preservados.")

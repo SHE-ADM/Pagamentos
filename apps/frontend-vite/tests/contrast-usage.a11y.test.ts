@@ -38,6 +38,7 @@ const TW: Record<string, string> = {
   'gray-50': '#f9fafb',
   'gray-400': '#9ca3af',
   'gray-500': '#6b7280',
+  'gray-600': '#4b5563',
   'slate-50': '#f8fafc',
   'slate-400': '#94a3b8',
   'slate-500': '#64748b',
@@ -91,6 +92,11 @@ interface Pair {
 // → -600, ink-muted → ink-secondary).
 const COMPLIANT: Pair[] = [
   { fg: 'gray-500', bg: 'white', min: 4.5, where: 'estado vazio/subtítulos/células (Erros, Emails, Forms, ProtectedRoute)' },
+  // Linha erro_api de /erros: o fundo fica em bg-status-error-bg (#fef2f2) em repouso E no hover
+  // (o hover passou a ser um ring, não escurece o fundo — o texto vermelho sobre o antigo hover
+  // #fecaca dava só 4,47:1). Ambas as células de texto passam AA sobre #fef2f2:
+  { fg: 'gray-600', bg: 'status-error-bg', min: 4.5, where: 'nome de arquivo (source_file) na linha erro_api (/erros)' },
+  { fg: 'status-error-fg', bg: 'status-error-bg', min: 4.5, where: 'mensagem de erro na linha erro_api (/erros)' },
   { fg: 'slate-500', bg: 'white', min: 4.5, where: 'subtítulo/labels/botões (Consulta, AttachmentViewer, ColumnVisibilityMenu, GridToolbar)' },
   { fg: 'zinc-500', bg: 'white', min: 4.5, where: 'labels e título do painel de detalhe (/emails)' },
   { fg: 'ink-secondary', bg: 'white', min: 4.5, where: 'StatusBadge vazio "—" + fallback de Suspense (App.tsx)' },

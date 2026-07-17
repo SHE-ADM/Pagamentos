@@ -105,8 +105,8 @@ class SswLinkSelectionTest(unittest.TestCase):
     X = "https://ssw.inf.br/cgi-local/ssw1188?id=58303030363238373430333630354F4E52545845564F"
 
     def test_ssw_doc_kind(self):
-        self.assertEqual(read_emails._ssw_doc_kind(self.F), "fatura")  # 46 = 'F'
-        for u in (self.D, self.E, self.X):                             # 44/45/58 = D/E/X
+        self.assertEqual(read_emails._ssw_doc_kind(self.F), "fatura")  # byte 46 corresponde a F
+        for u in (self.D, self.E, self.X):                             # bytes 44/45/58 correspondem a D/E/X
             self.assertEqual(read_emails._ssw_doc_kind(u), "dacte", u)
         self.assertIsNone(read_emails._ssw_doc_kind("https://outro.com/x?id=46AA"))
         self.assertIsNone(read_emails._ssw_doc_kind(""))

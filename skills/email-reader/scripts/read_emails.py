@@ -69,6 +69,13 @@ _UPLOAD_CONTENT_TYPES = {
     ".png": "image/png", ".gif": "image/gif", ".webp": "image/webp",
 }
 
+# Header PostgREST reutilizado (evita literal duplicado — S1192).
+_PREFER_MINIMAL = "return=minimal"
+
+# Regex de tag HTML compilado UMA vez (reuso em _html_to_text e na extracao de
+# texto de ancora de links — S1192 + performance).
+_HTML_TAG_RE = re.compile(r"<[^>]+>")
+
 
 def _normalize_body_barcode(raw: str | None) -> str | None:
     """Normaliza o barcode extraido do CORPO reusando a funcao canonica do
@@ -315,10 +322,10 @@ class SupabaseControl:
             body = e.read().decode()
             if "duplicate" in body.lower() or e.code == 409:
                 return False   # já existe — normal
-            log.error(f"Erro ao registrar no Supabase: {e.code} {body[:150]}")
+            log.exception(f"Erro ao registrar no Supabase: {e.code} {body[:150]}")
             return False
         except Exception as e:
-            log.error(f"Erro ao registrar no Supabase: {e}")
+            log.exception(f"Erro ao registrar no Supabase: {e}")
             return False
 
     def register_error(self, email_rec: dict, error_type: str,
@@ -350,7 +357,7 @@ class SupabaseControl:
             log.warning(f"  [ERRO-LOG] {error_type}: {error_message[:120]}")
             return True
         except Exception as e:
-            log.error(f"Falha ao gravar erro no Supabase: {e}")
+            log.exception(f"Falha ao gravar erro no Supabase: {e}")
             return False
 
     def register_financial(self, payload: dict):
@@ -404,10 +411,10 @@ class SupabaseControl:
             return rows[0]["id"] if rows else None
         except urllib.error.HTTPError as e:
             body = e.read().decode()
-            log.error(f"Erro ao gravar conta no Supabase: {e.code} {body[:200]}")
+            log.exception(f"Erro ao gravar conta no Supabase: {e.code} {body[:200]}")
             return None
         except Exception as e:
-            log.error(f"Erro ao gravar conta no Supabase: {e}")
+            log.exception(f"Erro ao gravar conta no Supabase: {e}")
             return None
 
     def unique_invoice_number(self, base: str) -> str:
@@ -759,16 +766,16 @@ class SupabaseControl:
             req = urllib.request.Request(
                 f"{self.base}/rest/v1/financial_account_control?id=eq.{record_id}",
                 data=data,
-                headers={**self.headers, "Prefer": "return=minimal"},
+                headers={**self.headers, "Prefer": _PREFER_MINIMAL},
                 method="PATCH",
             )
             urllib.request.urlopen(req, timeout=10)
             return True
         except urllib.error.HTTPError as e:
-            log.error(f"Falha ao atualizar conta {record_id}: {e.code} {e.read().decode(errors='replace')[:150]}")
+            log.exception(f"Falha ao atualizar conta {record_id}: {e.code} {e.read().decode(errors='replace')[:150]}")
             return False
         except Exception as e:
-            log.error(f"Falha ao atualizar conta {record_id}: {e}")
+            log.exception(f"Falha ao atualizar conta {record_id}: {e}")
             return False
 
     def update_supplier_classification(self, sk_supplier, cost_center_id, chart_account_id) -> bool:
@@ -789,7 +796,7 @@ class SupabaseControl:
             req = urllib.request.Request(
                 f"{self.base}/rest/v1/supplier?sk_supplier=eq.{int(sk_supplier)}",
                 data=data,
-                headers={**self.headers, "Prefer": "return=minimal"},
+                headers={**self.headers, "Prefer": _PREFER_MINIMAL},
                 method="PATCH",
             )
             urllib.request.urlopen(req, timeout=10)
@@ -839,7 +846,7 @@ class SupabaseControl:
             req = urllib.request.Request(
                 f"{self.base}/rest/v1/supplier?sk_supplier=eq.{int(sk_supplier)}",
                 data=data,
-                headers={**self.headers, "Prefer": "return=minimal"},
+                headers={**self.headers, "Prefer": _PREFER_MINIMAL},
                 method="PATCH",
             )
             urllib.request.urlopen(req, timeout=10)
@@ -998,7 +1005,7 @@ def _html_to_text(html: str) -> str:
     text = re.sub(r"(?is)<(script|style)\b.*?</\1>", " ", html)
     text = re.sub(r"(?i)<br\s*/?>", "\n", text)
     text = re.sub(r"(?i)</(p|div|tr|li|h[1-6]|table)>", "\n", text)
-    text = re.sub(r"<[^>]+>", " ", text)
+    text = _HTML_TAG_RE.sub(" ", text)
     text = html_unescape(text)
     text = re.sub(r"[ \t ]+", " ", text)
     text = re.sub(r"\n\s*\n+", "\n", text)
@@ -3221,7 +3228,7 @@ def extract_pdf_links(text: str, html: str) -> list[str]:
 
     for m in _LINK_HREF_RE.finditer(html or ""):
         url         = m.group(1).strip()
-        anchor_text = re.sub(r"<[^>]+>", "", m.group(2)).strip()
+        anchor_text = _HTML_TAG_RE.sub("", m.group(2)).strip()
         if not url.startswith("http"):
             continue
         # SSW: o link de FATURA (id=F) traz o boleto; o de DACTE (id=D/E/X) é fiscal, sem
@@ -3516,7 +3523,7 @@ def download_pdf_from_url(url: str, sender_email: str, subject: str,
         inner = _fetch_url(bp_url, timeout=60, opener=opener)
         if inner and b"%PDF" in inner[0][:32]:
             return _save_pdf_data(inner[0], sender_email, subject, received_at)
-        log.info(f"    Download BRASPRESS não retornou PDF")
+        log.info("    Download BRASPRESS não retornou PDF")
 
     # Caso 3: página HTML intermediária — busca link PDF na página
     is_html = "text/html" in content_type or b"<html" in data[:200].lower()
@@ -3524,13 +3531,13 @@ def download_pdf_from_url(url: str, sender_email: str, subject: str,
         log.info(f"    Conteúdo não reconhecido (tipo: {content_type[:40]})")
         return None
 
-    log.info(f"    Página HTML recebida — buscando link PDF interno")
+    log.info("    Página HTML recebida — buscando link PDF interno")
     html_text = data.decode("utf-8", errors="replace")
     for m in _LINK_HREF_RE.finditer(html_text):
         # Desescapa &amp; etc. — ex.: SIEG linka o boleto na Vindi (?b=…&m=…&t=…),
         # cujos parâmetros quebrariam se mantidos como &amp;.
         inner_url   = html_unescape(m.group(1).strip())
-        anchor_text = re.sub(r"<[^>]+>", "", m.group(2)).strip()
+        anchor_text = _HTML_TAG_RE.sub("", m.group(2)).strip()
         if not inner_url.startswith("http"):
             continue
         url_path = inner_url.lower().split("?")[0]
@@ -3542,7 +3549,7 @@ def download_pdf_from_url(url: str, sender_email: str, subject: str,
             if inner and b"%PDF" in inner[0][:32]:
                 return _save_pdf_data(inner[0], sender_email, subject, received_at)
 
-    log.info(f"    Nenhum PDF encontrado na página HTML")
+    log.info("    Nenhum PDF encontrado na página HTML")
     return None
 
 
@@ -4371,7 +4378,7 @@ def process_message(mail, uid: bytes, keywords: list,
             if pdf_links:
                 log.info(f"    {len(pdf_links)} link(s) candidato(s) encontrado(s) no corpo")
             else:
-                log.info(f"    Sem links candidatos no corpo do e-mail")
+                log.info("    Sem links candidatos no corpo do e-mail")
             for url in pdf_links:
                 log.info(f"    Tentando link: {url[:80]}")
                 pdf_path = download_pdf_from_url(url, sender_email, subject, received_at)
@@ -4466,7 +4473,7 @@ def process_message(mail, uid: bytes, keywords: list,
         raise
     except Exception as e:
         rec["notes"] = f"Erro: {str(e)[:200]}"
-        log.error(f"  Erro UID {uid}: {e}")
+        log.exception(f"  Erro UID {uid}: {e}")
         ctrl.register_error(rec, "processamento_erro", str(e))
 
     # O status já foi definido em process_message (extraído/recebido/pendente/falha).
@@ -4729,7 +4736,7 @@ def run_reader(days: int = 0, all_: bool = False,
             except ApiUnavailableError as e:
                 log.error("=" * 58)
                 log.error("  PIPELINE INTERROMPIDO — API Anthropic indisponível.")
-                log.error(f"  Motivo: {str(e)[:160]}")
+                log.exception(f"  Motivo: {str(e)[:160]}")
                 log.error("  Nenhum dado adicional gravado. Recarregue os créditos "
                           "e rode novamente.")
                 log.error("=" * 58)
@@ -4751,7 +4758,7 @@ def run_reader(days: int = 0, all_: bool = False,
     log.info(f"  Sem palavra-chave : {skipped_kw}")
     log.info(f"  Duplicados (skip) : {skipped_dup}")
     if api_aborted:
-        log.info(f"  Interrompido      : API Anthropic indisponível")
+        log.info("  Interrompido      : API Anthropic indisponível")
     log.info(f"  Log local         : {EMAILS_LOG}")
     log.info("=" * 58)
 
@@ -4797,7 +4804,7 @@ def main():
         except Exception:
             pass
     except RuntimeError as e:
-        log.error(str(e))
+        log.exception(str(e))
         sys.exit(1)
 
 

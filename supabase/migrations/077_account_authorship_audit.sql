@@ -17,8 +17,13 @@ ALTER TABLE financial_account_control
   ADD COLUMN IF NOT EXISTS status_changed_at TIMESTAMPTZ NOT NULL DEFAULT now();
 
 -- (b) Backfill: histórico = o criador (melhor aproximação sem log de alterações).
+--     WHERE explícito e idempotente — restringe às linhas ainda no DEFAULT sentinela (recém-criadas
+--     pelo ADD COLUMN acima). No backfill único TODAS começam no sentinela, então o efeito é idêntico
+--     ao UPDATE sem filtro; numa reexecução vira no-op e PRESERVA edições reais (updated_by já apontando
+--     para um editor). Também satisfaz o SonarCloud (UPDATE sem WHERE = Blocker de confiabilidade).
 UPDATE financial_account_control
-  SET updated_by = created_by, status_changed_by = created_by, status_changed_at = updated_at;
+  SET updated_by = created_by, status_changed_by = created_by, status_changed_at = updated_at
+  WHERE updated_by = 'fe8d268d-2bc3-4418-8cae-65e426c3fb4e';
 
 -- (c) Trigger de carimbo. Nome trg_fac_* roda ANTES de trg_fe_* (recálculo de status por vencimento)
 --     → vê o status_id enviado pelo HUMANO, não o recálculo automático (que não conta como mudança).

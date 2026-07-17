@@ -64,5 +64,25 @@ class HeaderInjectionTest(unittest.TestCase):
         self.assertIn("Otimotex", from_header)
 
 
+class TlsContextTest(unittest.TestCase):
+    """O STARTTLS do SMTP usa contexto seguro: valida certificado + hostname e
+    rejeita protocolos < TLS 1.2 (S4423 — defesa em profundidade)."""
+
+    def test_contexto_valida_certificado_e_hostname(self):
+        import ssl
+
+        ctx = email_sender._secure_tls_context()
+        self.assertTrue(ctx.check_hostname)
+        self.assertEqual(ctx.verify_mode, ssl.CERT_REQUIRED)
+
+    def test_minimo_tls_1_2(self):
+        import ssl
+
+        ctx = email_sender._secure_tls_context()
+        self.assertEqual(ctx.minimum_version, ssl.TLSVersion.TLSv1_2)
+        # SSLv3/TLS 1.0/1.1 ficam abaixo do mínimo → recusados.
+        self.assertGreater(ctx.minimum_version, ssl.TLSVersion.TLSv1_1)
+
+
 if __name__ == "__main__":
     unittest.main()

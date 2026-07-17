@@ -31,7 +31,7 @@ class Rfc822FromFetchTest(unittest.TestCase):
         # FLAGS/UID isolado ANTES do conteudo — a versao antiga pegava data[0][1]
         # (um int) e quebrava. O helper deve achar a tupla com os bytes RFC822.
         data = [b"86 (FLAGS (\\Seen) UID 14778)", (_META, _RAW), b")"]
-        meta, raw = read_emails._rfc822_from_fetch(data)
+        _, raw = read_emails._rfc822_from_fetch(data)
         self.assertEqual(raw, _RAW)
         # E o resultado alimenta message_from_bytes sem erro de int.decode.
         import email

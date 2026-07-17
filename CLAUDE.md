@@ -913,6 +913,29 @@ perguntar**. PRs seguem de `Features` → `main` (ver "GIT STRATEGY" do workspac
   (o `curl` do Git Bash falha no TLS do sonarcloud.io — use `node -e` com `fetch`.) Antes de
   concluir que é ruído, confira se PRs anteriores passavam (`gh pr view <N> --json
   statusCheckRollup`): se passavam, o achado é seu.
+- **Backlog de issues do SonarCloud (não é o gate — dívida pré-existente) e TRIAGEM (2026-07-17):**
+  o gate reprova só **código novo**; o backlog do `main` (facetar por `resolved=false`) é dívida que
+  não bloqueia PR. Triagem feita e ações tomadas — **não reinvestigar do zero**:
+  - **Segurança:** os 106 issues Python eram **100% code smells** (0 bug/vulnerabilidade). As 9
+    "vulnerabilidades" eram **falsos positivos**: `email_sender.py` já usava `ssl.create_default_context()`
+    (resolvido de vez fixando TLS 1.2 — ver abaixo); `auth.schema.ts` `PASSWORD_CHANGED_META_KEY`
+    (nome de chave, não senha); tokens/URLs `http://` de **fixtures de teste** (o `http://` do
+    `test_ssrf_guard` é PROPOSITAL — testa o bloqueio). Os **4× `S8707`** (path de CLI em
+    `extract_pdf.py`) foram marcados **Won't Fix** na UI — é CLI de operador confiável (in-process em
+    prod); a entrada realmente não-confiável (boleto por link) já é guardada (`_is_within_inbox`/SSRF).
+  - **1 BLOCKER real (077):** `UPDATE` de backfill sem `WHERE` (`plsql:DeleteOrUpdateWithoutWhereCheck`)
+    — corrigido com `WHERE updated_by = '<sentinela do DEFAULT>'` (idempotente; efeito idêntico no
+    backfill único, no-op na reexecução). A migration já estava aplicada — mudança só no arquivo.
+  - **Limpeza mecânica aplicada (37 smells, comportamento preservado, 604 testes verdes):** `S8572`
+    `log.error`→`log.exception` em `except` (21), `S3457` f-string sem campo (5), `S1481` var não
+    usada→`_` (3), `S125` comentário que parecia código (3), `S1186` método-stub vazio (2), `S1192`
+    só as TÉCNICAS — `_PREFER_MINIMAL`/`_HTML_TAG_RE` (3).
+  - **DELIBERADAMENTE não corrigidos:** `S1192` de **vocabulário de domínio** (mime types, "nota
+    fiscal"/"honorários"/"conta de luz"… em listas que espelham o CHECK do banco — a constante piora
+    a legibilidade sem ganho) e os **refactors estruturais** `S3776` (complexidade, 22) + `S8786`/
+    `S7632`/… no **núcleo do pipeline** (`read_emails.py`): mudar fluxo de controle do coração da
+    extração para satisfazer métrica é anti-robustez — fazer, se um dia, função a função com a suíte
+    como rede, não em sweep.
 
 ### 6 — Acessibilidade (WCAG 2.1 AA)
 
@@ -980,6 +1003,17 @@ Alvo: **WCAG 2.1 Nível AA** em todas as telas. Regras práticas:
     (2,57:1 sobre card branco) e a linha "vence …" da lista de prioridades `text-slate-500`→
     **`slate-600`** (4,35:1 sobre `bg-status-error-bg` #fef2f2 nas linhas críticas). Regra geral em
     fundo CLARO: secundário mínimo `slate-600` quando puder cair sobre tinta (não `slate-400/500`).
+- **Achado a11y de `/erros` corrigido em 2026-07-17 (hover tintado — não regredir):** as linhas
+  `erro_api` de `/erros` (`rowClass` em `Erros.tsx`) recebem `bg-status-error-bg` (#fef2f2) e, no
+  hover, escureciam para **`bg-status-error-border` (#fecaca)**. O axe **escaneia a linha sob o
+  cursor**, e sobre esse fundo o texto vermelho `status-error-fg` (#b91c1c) dava só **4,47:1**
+  (< 4,5) — vermelho-sobre-vermelho é intrinsecamente baixo. **Fix:** o hover passou a ser um **anel**
+  (`hover:ring-1 hover:ring-inset hover:ring-status-error-border`), mantendo o fundo SEMPRE em
+  `#fef2f2`, onde todo texto passa AA (status-error-fg 5,9:1 · gray-600 6,9:1); espelha o estado
+  `selected`, que já usa o mesmo ring. A célula `source_file` também subiu `text-gray-500`→
+  **`text-gray-600`**. **Regra:** em linha de fundo tintado, o **hover não deve escurecer o fundo**
+  (usar ring) — ou o texto colorido sobre o hover reprova. Guard jsdom `contrast-usage.a11y.test.ts`
+  travado com os pares reais (`gray-600`/`status-error-fg` sobre `status-error-bg`).
 
 ---
 
@@ -3531,7 +3565,7 @@ Firebird (VW_PSQ_FIN_REC_BAN + _004)  →  run.py  →  SMTP transacional Locawe
 | `send_core.py` | **Núcleo compartilhado** por `run.py` (batch) e `resend.py` (reenvio manual): `validate_email`, `classify_smtp_error` e `send_and_log` (render→envia→loga; sucesso→`cobranca_envios_log`, falha→`cobranca_erros_log`; **nunca propaga exceção SMTP**). Centraliza a lógica num só lugar — não duplicar entre os fluxos |
 | `resend.py` | **Reenvio manual** de falhas a partir de `/cobranca/erros` (`resend_erros(ids, on_progress)`). Ver subseção "Reenvio manual" abaixo |
 | `db_firebird.py` | Conexão Firebird (driver **`fdb`**, fixado em `server/requirements.txt`) + `_QUERY` (UNION das views `VW_PSQ_FIN_REC_BAN` e `_004`). Linha **sem e-mail SEGUE** o fluxo (vira `email_ausente`); só descarta linha sem `document_id` |
-| `email_sender.py` | Monta e envia. **To primeiro; se o principal falhar, o Cc NÃO é enviado** (2 `sendmail` na mesma conexão). **`SmtpSession`**: conexão **reaproveitada no lote** (lazy no 1º envio; reconecta+reenvia 1× se cair). `send_cobranca` (avulso) é wrapper de compat. **Atenção:** `smtplib.SMTPException` herda de `OSError` — o catch de queda usa `(SMTPServerDisconnected, ConnectionError, TimeoutError)`, **nunca** `OSError`, para não reenviar recusa definitiva (451/5xx/auth). **Segurança §4 A-2/A-3 (não regredir):** Subject é normalizado (`_strip_crlf`) e o Cc com quebra de linha é DESCARTADO (`_safe_address`) antes do header E do envelope `sendmail` — barra header injection (CRLF) a partir de dados do Firebird |
+| `email_sender.py` | Monta e envia. **To primeiro; se o principal falhar, o Cc NÃO é enviado** (2 `sendmail` na mesma conexão). **`SmtpSession`**: conexão **reaproveitada no lote** (lazy no 1º envio; reconecta+reenvia 1× se cair). `send_cobranca` (avulso) é wrapper de compat. **Atenção:** `smtplib.SMTPException` herda de `OSError` — o catch de queda usa `(SMTPServerDisconnected, ConnectionError, TimeoutError)`, **nunca** `OSError`, para não reenviar recusa definitiva (451/5xx/auth). **Segurança §4 A-2/A-3 (não regredir):** Subject é normalizado (`_strip_crlf`) e o Cc com quebra de linha é DESCARTADO (`_safe_address`) antes do header E do envelope `sendmail` — barra header injection (CRLF) a partir de dados do Firebird. **TLS (S4423 — não regredir):** o STARTTLS usa `_secure_tls_context()` (helper testado) = `ssl.create_default_context()` (valida certificado + hostname) **+ `minimum_version = TLSv1_2` explícito** (rejeita SSLv3/TLS 1.0/1.1, defesa em profundidade). Testes em `tests/test_email_security.py` (`TlsContextTest`) |
 | `supabase_log.py` | `already_sent` (dedup), `log_envio_sucesso`, `log_envio_erro`, `fetch_company_smtp`, `fetch_erro_rows` (linhas de erro para o reenvio), `delete_erro_rows`/`delete_erro_rows_by_document_id`/`fetch_error_document_ids` (limpeza de resolvidos) |
 | `template.py` | HTML do e-mail de cobrança (`render_html`). **Segurança §4 A-1 (não regredir):** `customer_name`/`document_id` (do Firebird) passam por `html.escape` antes de entrar no HTML — barra HTML/script injection no e-mail do cliente. Testes em `tests/test_email_security.py` |
 | `failure_notify.py` | **Notificação ao representante (CC)** das falhas **definitivas** (`DEFINITIVE_ERROR_TYPES` = email_ausente/email_invalido/smtp_bloqueio): `group_by_cc` (resumo por CC, ignora falha sem CC) + `render_failure_digest` (HTML com cliente/título/vencimento/valor/motivo) + `build_subject`. Só no batch (`run.py`) |
