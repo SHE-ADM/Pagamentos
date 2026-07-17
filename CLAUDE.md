@@ -2269,25 +2269,27 @@ credor de uma guia de tributo é o **Fisco** (SEFAZ/RFB/prefeitura), que a extra
 (`_is_tax_document` → `_TAX_DOCUMENT_TYPES` = `darf, das, gru, dae, dare, gnre, ipva, iptu, dam,
 duam, iss, itbi, gare, tributo` — **`gps`/INSS e `multa` ficam de fora**, por decisão do usuário) **E**
 não há favorecido REAL extraído (`supplier_name`/`supplier_cnpj`/`supplier_cpf` do documento), a conta
-é lançada sob o **FORNECEDOR OTIMOTEX** (`OTIMOTEX_SK_SUPPLIER = 1` — imposto próprio: a empresa
-aparece como seu próprio fornecedor), **curto-circuitando os fallbacks de assunto e pagador**.
+é lançada sob o **FORNECEDOR OTIMOTEX** (`OTIMOTEX_SK_SUPPLIER = 1` — o **fornecedor-placeholder de
+imposto próprio do grupo**, usado para QUALQUER empresa pagadora; ver a nota abaixo),
+**curto-circuitando os fallbacks de assunto e pagador**.
 Favorecido real extraído (ex.: "PREFEITURA
 DE SÃO PAULO", "CONTABIL ESQUEMA") **NÃO** dispara a regra e é preservado. A guarda `sem_fornecedor`
 (PDF) também aceita `_is_tax_document` como chave, para uma guia de imposto sem nenhum outro
 identificador não ser barrada antes da regra. Testes: `tests/test_supplier_imposto.py`.
 
-> ⚠️ **LIMITAÇÃO CONHECIDA (multi-empresa) — não é a mesma coisa que `sk_company`:** esta regra
-> grava **`sk_supplier`** (quem RECEBE), **não** a empresa pagadora. **Não existe nenhuma regra
-> ligando documento tributário a `sk_company`** — a guia pega a empresa pela regra geral de
-> precedência (ester → 3 · lebianco → 2 · senão → 1), sem tratamento especial.
-> O `OTIMOTEX_SK_SUPPLIER` é **fixo em 1**, herdado de quando havia UMA empresa. Com 3 empresas isso
-> gera contas cujo fornecedor é a OTIMOTEX mas cuja pagadora é outra — **medido em 2026-07-17: 13
-> guias tributárias da LEBIANCO com `sk_supplier=1` (OTIMOTEX)**; a FARDOS ainda não tem guia, mas
-> terá. O correto seria a guia seguir a **empresa da conta** (fornecedor LEBIANCO/FARDOS), o que
-> exige cadastrar esses fornecedores (hoje só existe o da OTIMOTEX) + backfill. **Tarefa dedicada,
-> não implementada** — decisões pendentes do usuário. Nota: o `supplier` sk 1 **continua chamado
-> "OTIMOTEX"** (o rename de 2026-07-17 foi só de `company.trade_name`; os dois cadastros são
-> independentes).
+> ✅ **COMPORTAMENTO CORRETO — NÃO "consertar" (multi-empresa):** esta regra grava **`sk_supplier`**
+> (o fornecedor), **não** a empresa pagadora. **Não existe — nem deve existir — regra ligando
+> documento tributário a `sk_company`**: a guia pega a empresa pela precedência geral (ester → 3 ·
+> lebianco → 2 · senão → 1), sem tratamento especial.
+> **`sk_company` (PAGADORA) e `sk_supplier` (FORNECEDOR) são INDEPENDENTES** — decisão do usuário,
+> reafirmada em 2026-07-17: *"company pode ser lebianco ao mesmo tempo que supplier otimotex"*.
+> Logo, as **13 guias tributárias da LEBIANCO com `sk_supplier=1` (OTIMOTEX)** que existem hoje
+> estão **CERTAS**, não são inconsistência. O `OTIMOTEX_SK_SUPPLIER` é o **fornecedor-placeholder de
+> imposto próprio do grupo** (o credor real é o Fisco, que a extração não captura) — ele **não**
+> afirma que a OTIMOTEX recebeu o valor, e por isso **não** precisa acompanhar a empresa pagadora.
+> **Não** criar fornecedor LEBIANCO/FARDOS para "corrigir" isso nem fazer backfill.
+> Nota: o `supplier` sk 1 **continua chamado "OTIMOTEX"** (o rename de 2026-07-17 foi só de
+> `company.trade_name`; os dois cadastros são independentes).
 
 Backfill
 único aplicado em 2026-07-03 (ids 331/333/334/373/374 → OTIMOTEX; fornecedores-lixo 1243/1247/1248
