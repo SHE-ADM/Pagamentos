@@ -657,8 +657,9 @@ sem pedido explícito):** chegou a existir uma migration `084_create_user_compan
 mais `getUserCompanies()` em `lib/auth.ts` e `skCompanies` no `AuthContext`. **Tudo foi desfeito a
 pedido do usuário** ("não vou mais trabalhar com identificação de company nos usuários"): a tabela
 foi dropada, o `handle_new_user` restaurado à versão da 065 e o código/doc revertidos — verificado
-sem resíduo (0 objetos `user_company` no catálogo; nenhuma referência no repo). O nº **084 ficou
-LIVRE** de novo. **Não "ajude" recriando isso.** Se o tema voltar: o blueprint aprovado
+sem resíduo (0 objetos `user_company` no catálogo; nenhuma referência no repo). (O nº 084 foi
+liberado e **já reutilizado** pela regra LEBIANCO — próxima = 085.) **Não "ajude" recriando isso.**
+Se o tema voltar: o blueprint aprovado
 (`docs/design/permissoes-por-grupo.md`) roteia empresa **pelo GRUPO** (`group_company`; decisão
 travada 1 = "o único vínculo direto do usuário é o grupo") — a tentativa revertida divergia dele ao
 vincular por usuário. Hoje o único vínculo do usuário é `user_profile.group_id`.
@@ -2307,6 +2308,53 @@ do resolver, descartados por `_finalize_supplier` depois de obter o `sk_supplier
   `financial_account_control.sender_email` (de `email_control.sender_email`) e o trigger o
   propaga ao resolver/criar o fornecedor.
 
+### Empresa pagadora (`sk_company`) — regra LEBIANCO (não regredir)
+
+Duas empresas pagam contas: **OTIMOTEX (`sk_company=1`, default)** e **LEBIANCO (`2`)**.
+Regra (decisão do usuário, 2026-07-17): **e-mail que faz REFERÊNCIA a "lebianco" → conta da
+LEBIANCO; SEM menção → SEMPRE OTIMOTEX.** Fontes varridas (sem acento, case-insensitive,
+**substring** — "lebianco" é nome próprio distintivo, então **não** se usa `_has_word`/`\b`, que
+existe para termos comuns como `das`/`iss`): **remetente/domínio** (`_is_lebianco_sender`,
+reusado da classificação de ICMS-ST), **assunto**, **corpo**, **anexo** e `description`/
+`source_file`/`payer_name`/`email_body_excerpt`.
+
+- **A REFERÊNCIA VENCE O CNPJ** (o cerne): a conta pode ser da LEBIANCO com o **CNPJ da OTIMOTEX
+  impresso no boleto**. Logo o CNPJ **não** participa da regra — sem menção é `1` **mesmo com
+  `payer_cnpj` = CNPJ da LEBIANCO** (caso real: conta **267**, que permanece em `1`). Na prática
+  o Python grava `sk_company` **sempre** (1 ou 2) e o resolvedor SQL `resolve_company_sk` deixa de
+  influenciar o pipeline — segue só como fallback de quem **não** informa (CRUD manual → `1`).
+- **`sk_company` (PAGADORA) é INDEPENDENTE de `sk_supplier` (FORNECEDOR)** — "pode acontecer de
+  company ser lebianco, mas fornecedor ser otimotex". Por isso **`supplier_name`/`supplier_cnpj`
+  ficam FORA da varredura**: se a LEBIANCO for o FORNECEDOR, quem paga é a OTIMOTEX (`1`), e
+  varrer o nome do fornecedor inverteria a conta. Reforço: `_finalize_supplier` já remove essas
+  chaves do payload, e a regra roda depois dele.
+- **"LE BIANCO" (com ESPAÇO) vale SÓ NO ASSUNTO** (`_subject_has_lebianco`): no assunto é
+  referência deliberada ("LE BIANCO - PAGAMENTO FORNECEDOR"); no **corpo** ela aparece na
+  **assinatura do grupo** ("Departamento Financeiro | Otimotex / Le Bianco") e marcaria contas que
+  são da OTIMOTEX — falso positivo **comprovado** na conta **167** (assunto "COBRANÇA OTIMOTEX
+  TECIDO"), que corretamente permanece em `1`.
+- **Anexo**: o texto CRU do PDF não chega ao payload (o CSV só traz `description`/`source_file`),
+  então `_pdf_mentions_lebianco(pdf_path)` o lê no **passo 1** de `extract_and_store_accounts`
+  (único ponto com o arquivo em disco), uma vez por e-mail, com curto-circuito. **Best-effort** —
+  qualquer falha (PDF cifrado, imagem, pdfplumber) devolve `False` sem levantar; a regra nunca
+  bloqueia a gravação da conta.
+- **Onde é aplicada** (`apply_sk_company`, respeita valor já presente — idiom de `created_by`):
+  (1) `extract_and_store_accounts` passo 2 (único ponto com `body_text` + flag do anexo em
+  escopo); (2) `extract_from_email_body` no payload BASE, **antes** do bloco de parcelas (os
+  clones herdam via `dict(payload)`); (3) **rede de segurança UNIVERSAL** no choke point
+  `register_financial` (mesmo padrão de `_apply_barcode_due_date`), cobrindo os 3 scripts de
+  reprocessamento.
+- **Trigger (migration 084) — não regredir:** `trg_fe_resolve_company()` só resolve
+  `IF NEW.sk_company IS NULL`. Antes a atribuição era **incondicional** e tinha dois defeitos
+  provados: descartava o valor do Python **e qualquer UPDATE re-resolvia a empresa** (um
+  `UPDATE ... SET has_invoice = has_invoice` na conta 267 mudava `sk_company` de 1→2 — a curadoria
+  de NF/BOL revertia a empresa e o backfill não grudaria). Mantém `SECURITY DEFINER` +
+  `search_path` + chamada qualificada (lição da **074**).
+- **Estado após o backfill (2026-07-17):** **55** contas em `sk_company=2` (19 por menção no
+  texto, 46 pelo remetente `@lebianco.com.br` — 36 delas *só* pelo remetente) e **381** em `1`.
+  Trade-off aceito: se alguém da Lebianco encaminhar um boleto da OTIMOTEX, a conta fica como
+  Lebianco. Testes: `tests/test_sk_company_lebianco.py`.
+
 ### `extraction_source` — origem dos dados
 
 | Valor (banco) | Origem | Rótulo exibido (badge/UI) |
@@ -2913,8 +2961,13 @@ local/agendada (ver flag `EMAIL_READER_ENABLED` acima e memória [[vercel-deploy
 ## Banco de dados (Supabase)
 
 Migrations em `supabase/migrations/`, aplicadas **manualmente no SQL Editor** em ordem
-numérica (`001` → `083`). **Próxima migration = `084`** (verificar sempre antes de criar nova).
-Não há migration automática. A **083** introduz a **surrogate key snowflake `sk_company`**:
+numérica (`001` → `084`). **Próxima migration = `085`** (verificar sempre antes de criar nova).
+Não há migration automática. A **084** implanta a **regra LEBIANCO** da empresa pagadora (ver
+"Empresa pagadora (`sk_company`) — regra LEBIANCO"): (1) o trigger `trg_fe_resolve_company()`
+passa a **respeitar `sk_company` explícito** (`IF NEW.sk_company IS NULL THEN resolve…`) — sem
+isso o valor gravado pelo Python era descartado **e qualquer UPDATE re-resolvia a empresa**; e
+(2) **backfill** das contas já extraídas (55 de 436 → `sk_company=2`). Aplicada via psql em
+2026-07-17; **idempotente** (re-run = 0 linhas). A **083** introduz a **surrogate key snowflake `sk_company`**:
 `sk_company` (BIGINT `GENERATED ALWAYS AS IDENTITY`) vira a **PK** de `company` e a **chave única
 de relacionamento** do app; `company_id` passa a **campo de origem** (NOT NULL UNIQUE, do sistema
 maior). `financial_account_control.company_id` é **substituída** por `sk_company` (backfill via
@@ -3107,7 +3160,7 @@ internet` ao CHECK de `document_type` e faz backfill — ver "Normalização de 
 | `email_processing_errors` | Log de falhas com `raw_payload` JSON. **Visibilidade por REMETENTE (migration 078):** policy SELECT (`authenticated`) filtra por `lower(sender_email)=lower(auth.email())` para grupo com `sees_only_own_accounts` (Comercial) — `/erros` mostra só os erros de que o usuário é remetente; demais veem tudo; `service_role` com bypass |
 | `financial_account_attachment` | **Anexos (N) de uma conta** (migration 079) — PADRÃO ÚNICO das duas origens: `origin='pipeline'` (documento do e-mail; espelha `financial_account_control.source_file`, gravado pelo reader) e `origin='manual'` (upload do usuário no cadastro/edição). `storage_key` = chave CRUA do objeto no bucket `attachments` (pipeline: nome flat; manual: `manual/{conta}/…`). **Soft delete** (`deleted_at`/`deleted_by`) — o objeto FICA no bucket; anexo `pipeline` é irremovível (auditoria → 403). UNIQUE `(account_id, storage_key)`; **não** UNIQUE global (um PDF com N boletos gera N contas que COMPARTILHAM o objeto). RLS SELECT herda a visibilidade da conta pai (076) via `EXISTS`; escrita só `service_role`. Ver "Anexos de conta" |
 | `supplier` | Fornecedores. PK = `sk_supplier` (surrogate key snowflake auto-incremental — **migration 042**); `supplier_id` é **chave de negócio** (NOT NULL UNIQUE, só nesta tabela; = `sk_supplier` nos fornecedores criados pela extração, via trigger de espelho `trg_supplier_mirror_id`, podendo divergir em cargas externas). Auto-criados pelo trigger de resolução, mas **cadastro PRESERVADO** (curadoria manual de `email`/`email2`/`email3`/`email4`) — **nunca truncar** em limpezas (ver "Limpeza / reset de dados"). Reconhecimento por **e-mail** em `email`/`email2`/`email3`/`email4` (migrations 023/027/028) — ver "Auto-resolução de fornecedor". **Soft delete** via `deleted_at` (migration 045) — a baixa pelo CRUD da Next API marca `deleted_at` (nunca hard delete) e é bloqueada quando há contas vinculadas; ver "CRUD de fornecedores (Next API)". **Classificação default** `cost_center_id`/`chart_account_id` (SMALLINT NOT NULL DEFAULT 0 + FKs — migration 052): semeia o lançamento de novas contas e é atualizada pelo write-back do modal; ver "Classificação default do fornecedor — sync bidirecional". **Contatos** (migration 082): `phone_ddd1`/`phone1`/`phone_ddd2`/`phone2` (char(2)/varchar(9)), `whatsapp1`/`whatsapp2` (varchar(11)), `pix_key1`/`pix_key2` (varchar(77)) — 2 slots por tipo, preenchidos pelo form e pela extração (write-back com lógica de 2 slots); ver "Contato do fornecedor" |
-| `company` | Empresa pagadora (**cadastro**, tem campo `email`). PK = **`sk_company`** (surrogate key snowflake `GENERATED ALWAYS AS IDENTITY` — migration 083, chave única de relacionamento); `company_id` é **campo de origem** (NOT NULL UNIQUE, do sistema maior). A conta é auto-resolvida pelo trigger `trg_fe_resolve_company()` → **`resolve_company_sk`** (a partir de `payer_cnpj`/`payer_name`), que grava `financial_account_control.sk_company`. **Preservada em limpezas** (ver abaixo) |
+| `company` | Empresa pagadora (**cadastro**, tem campo `email`). PK = **`sk_company`** (surrogate key snowflake `GENERATED ALWAYS AS IDENTITY` — migration 083, chave única de relacionamento); `company_id` é **campo de origem** (NOT NULL UNIQUE, do sistema maior). Hoje há DUAS: OTIMOTEX (sk 1) e LEBIANCO (sk 2). A empresa da conta (`financial_account_control.sk_company`) vem da **regra LEBIANCO** gravada pelo pipeline (ver "Empresa pagadora (`sk_company`) — regra LEBIANCO"); o trigger `trg_fe_resolve_company()` → **`resolve_company_sk`** (`payer_cnpj`/`payer_name`) só atua como **fallback de quem NÃO informa** `sk_company` (ex.: CRUD manual → 1) — migration 084. **Preservada em limpezas** (ver abaixo) |
 | `status` | **Dimensão** de situação (`status_id`, `status_name`, `status_short_name`, `has_opened`/`has_closed`/`has_invoiced`). 10 linhas (ids 1..10) = **domínio de `financial_account_control.status_id`** (fonte única — a coluna `status` texto foi removida na 069) + alvo da FK `fk_fac_status`. O nome de exibição da conta vem do embed `status_dim:status(...)`. **Cadastro/configuração — preservar em limpezas** |
 | `user_group` | **Catálogo de grupos de usuário** (migration 063 — fundação de permissões por grupo). `group_id` IDENTITY ALWAYS PK, `group_name` VARCHAR(30) DEFAULT ''; **id 0 = sentinela "não informado"**. RLS read `authenticated`/write `service_role`. **Editado SÓ via Supabase** (sem CRUD no app); o usuário pretende acrescentar campos. A atribuição por usuário e o RBAC completo (`user_profile`/`permission`/`group_*`) estão **desenhados, não implementados** — ver "Grupos de usuário" na seção de papéis e `docs/design/permissoes-por-grupo.md`. **Cadastro/configuração — preservar em limpezas** |
 | `cobranca_envios_log` | Cobranças de vencidos **enviadas com sucesso** (migration 037). `document_id` (= TÍTULO no Firebird) **UNIQUE** = chave de deduplicação: `already_sent()` consulta aqui antes de enviar. Exibida em `/cobranca/envios`. Alvo de limpeza (dados de teste) |
@@ -3739,6 +3792,20 @@ lê os arquivos do disco.
 > **Único item que depende da máquina de PRODUÇÃO:** reabilitar a task
 > `Enable-ScheduledTask -TaskName "Pagamentos - Email Reader" -TaskPath "\Sheild\"` (foi pausada
 > para o rollout). A máquina de dev (SHE-DEV) não a enxerga.
+
+> **DEPLOY 2026-07-17 — regra LEBIANCO da empresa pagadora (PENDENTE de cópia p/ prod):** o reader
+> passa a gravar `sk_company` (1=OTIMOTEX / 2=LEBIANCO) pela referência a "lebianco" — ver "Empresa
+> pagadora (`sk_company`) — regra LEBIANCO". Deploy = copiar **só** `read_emails.py` (novos
+> `resolve_sk_company`/`apply_sk_company`/`_has_lebianco_reference`/`_subject_has_lebianco`/
+> `_pdf_mentions_lebianco`; **`extract_pdf.py` NÃO muda**). **Sem `.env`, sem dependência nova**
+> (pdfplumber já é usado). A **migration 084** (fix do trigger + backfill de 55 contas) já rodou na
+> Supabase compartilhada dev+prod → **nenhum passo de banco** em produção.
+> **ATENÇÃO — a ordem importa:** a 084 já está aplicada, então o trigger **já** respeita
+> `sk_company` explícito; enquanto o `read_emails.py` ANTIGO estiver em produção, ele **não** envia
+> `sk_company` → o trigger resolve pelo CNPJ → **fallback 1 (OTIMOTEX)**. Ou seja, degrada com
+> segurança (contas novas da Lebianco entram como Otimotex até a cópia; corrigíveis re-rodando o
+> backfill da 084, que é idempotente). Validação (esperado `2 1`):
+> `py -3 -c "import sys; sys.path.insert(0,'skills/email-reader/scripts'); import read_emails as R; print(R.resolve_sk_company(sender_email='ana@lebianco.com.br'), R.resolve_sk_company(subject='PAGAMENTO BOLETO DAMSP'))"`
 
 ### Deploy manual da Cobrança de vencidos (envios) em produção (caso específico — não regredir)
 

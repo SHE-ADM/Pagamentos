@@ -373,6 +373,12 @@ class SupabaseControl:
             payload = dict(payload)   # copia — nao muta o dict do chamador ao traduzir status
             _apply_barcode_due_date(payload)  # rede de seguranca: vencimento pelo fator do barcode
             _apply_status_id(payload)
+            # Empresa pagadora (regra LEBIANCO) — rede de seguranca UNIVERSAL: os caminhos que
+            # veem o corpo/anexo ja gravaram sk_company (e este no-op respeita), mas qualquer
+            # outro caller (scripts de reprocessamento) cai aqui e resolve pelos campos do
+            # payload. Sem isso, sk_company iria NULL e o trigger resolveria pelo CNPJ — o
+            # oposto da regra (a referencia vence o CNPJ).
+            apply_sk_company(payload)
             # Autoria (Etapa 1 — visibilidade por dono): dono = usuario do remetente
             # (sender_email -> UUID via RPC), padrao sentinela quando nao casa. So no INSERT;
             # se ja veio created_by, respeita. Falha/None -> DEFAULT da coluna (sentinela).
@@ -2201,6 +2207,104 @@ def _is_lebianco_sender(sender_email: str | None) -> bool:
     domain = (sender_email or "").split("@")[-1].lower().strip()
     return domain == LEBIANCO_DOMAIN or domain.endswith("." + LEBIANCO_DOMAIN)
 
+
+# ---------------------------------------------------------------------------
+# Empresa pagadora (sk_company) — regra LEBIANCO (decisao do usuario, 2026-07-17).
+#
+# E-mail que faz REFERENCIA a "lebianco" (assunto, corpo, ANEXO, remetente ou dominio do
+# remetente) e conta da LEBIANCO -> sk_company = 2. SEM mencao -> SEMPRE OTIMOTEX (1).
+#
+# A REFERENCIA VENCE a busca por CNPJ (nao regredir): a conta pode ser da LEBIANCO com o
+# CNPJ da OTIMOTEX impresso no boleto, entao o CNPJ NAO entra nesta regra. Na pratica o
+# resolvedor SQL resolve_company_sk deixa de influenciar o pipeline — gravamos sk_company
+# SEMPRE (1 ou 2) e o trigger (migration 084) respeita valor explicito.
+#
+# sk_company (empresa PAGADORA) e INDEPENDENTE de sk_supplier (FORNECEDOR): pode haver conta
+# da LEBIANCO cujo fornecedor e a OTIMOTEX. Por isso supplier_name/supplier_cnpj FICAM FORA
+# da varredura (nao regredir) — se a LEBIANCO for o FORNECEDOR, quem paga e a OTIMOTEX (=1),
+# e varrer o nome do fornecedor inverteria a conta. Reforco: _finalize_supplier ja remove
+# essas chaves do payload antes da gravacao.
+# ---------------------------------------------------------------------------
+SK_COMPANY_DEFAULT = 1     # OTIMOTEX — empresa pagadora padrao (sem mencao a lebianco)
+SK_COMPANY_LEBIANCO = 2    # LEBIANCO
+LEBIANCO_TERM = "lebianco"
+
+# Grafia com ESPACO ("LE BIANCO"), aceita SO NO ASSUNTO (nao regredir — verificado no dado
+# real): no assunto e referencia deliberada ("LE BIANCO - PAGAMENTO FORNECEDOR"); no CORPO
+# ela aparece na ASSINATURA do grupo ("Departamento Financeiro | Otimotex / Le Bianco") e
+# marcaria como LEBIANCO contas que sao da OTIMOTEX (falso positivo comprovado na conta 167,
+# assunto "COBRANCA OTIMOTEX TECIDO"). Por isso NAO entra em corpo/anexo/descricao.
+LEBIANCO_SUBJECT_TERM = "le bianco"
+
+
+def _has_lebianco_reference(*texts: "str | None") -> bool:
+    r"""True se QUALQUER texto menciona "lebianco" (sem acento, case-insensitive).
+
+    SUBSTRING (e nao _has_word/\b) de proposito: "lebianco" e nome proprio distintivo e
+    precisa casar DENTRO de "@lebianco.com.br", "boleto_lebianco.pdf" e "LEBIANCO PLASTICOS".
+    O \b do _has_word existe para termos comuns (das/iss/gru) — nao e o caso aqui.
+    None/vazio sao ignorados (_ns_body nao e None-safe).
+
+    So a forma JUNTA — a grafia "le bianco" e exclusiva do assunto (_subject_has_lebianco).
+    """
+    return any(LEBIANCO_TERM in _ns_body(t) for t in texts if t)
+
+
+def _subject_has_lebianco(subject: "str | None") -> bool:
+    """True se o ASSUNTO menciona a LEBIANCO — forma junta OU com espaco ("LE BIANCO")."""
+    if not subject:
+        return False
+    norm = _ns_body(subject)
+    return LEBIANCO_TERM in norm or LEBIANCO_SUBJECT_TERM in norm
+
+
+def _pdf_mentions_lebianco(pdf_path) -> bool:
+    """True se o TEXTO do PDF anexado menciona "lebianco" — cobre o "anexo do email".
+
+    O texto cru do PDF nao chega ao payload (o CSV so traz description/source_file), entao a
+    leitura acontece aqui. BEST-EFFORT: qualquer falha (PDF cifrado, imagem, pdfplumber
+    indisponivel) devolve False sem levantar — a regra NUNCA pode bloquear a gravacao da conta.
+    """
+    try:
+        import pdfplumber  # import lazy — so quando ha PDF a inspecionar
+        with pdfplumber.open(str(pdf_path)) as pdf:
+            for page in pdf.pages:
+                if _has_lebianco_reference(page.extract_text() or ""):
+                    return True
+    except Exception as e:  # noqa: BLE001 — best-effort por design
+        log.debug(f"Regra LEBIANCO: nao foi possivel ler o texto de {pdf_path}: {e}")
+    return False
+
+
+def resolve_sk_company(subject=None, body_text=None, sender_email=None, description=None,
+                       source_file=None, payer_name=None, email_body_excerpt=None,
+                       pdf_lebianco: bool = False) -> int:
+    """Empresa pagadora da conta: 2 (LEBIANCO) se houver referencia; 1 (OTIMOTEX) senao."""
+    if pdf_lebianco or _is_lebianco_sender(sender_email) or _subject_has_lebianco(subject):
+        return SK_COMPANY_LEBIANCO
+    if _has_lebianco_reference(body_text, sender_email, description,
+                               source_file, payer_name, email_body_excerpt):
+        return SK_COMPANY_LEBIANCO
+    return SK_COMPANY_DEFAULT
+
+
+def apply_sk_company(payload: dict, body_text: str = "", pdf_lebianco: bool = False) -> None:
+    """Grava payload['sk_company'] pela regra LEBIANCO, RESPEITANDO valor ja presente
+    (mesmo idiom de created_by em register_financial)."""
+    if payload.get("sk_company"):
+        return
+    payload["sk_company"] = resolve_sk_company(
+        subject=payload.get("subject"),
+        body_text=body_text,
+        sender_email=payload.get("sender_email"),
+        description=payload.get("description"),
+        source_file=payload.get("source_file"),
+        payer_name=payload.get("payer_name"),
+        email_body_excerpt=payload.get("email_body_excerpt"),
+        pdf_lebianco=pdf_lebianco,
+    )
+
+
 # ICMS de importacao — frases (sem acento, substring). NUNCA casar "icms" sozinho: ICMS/GNRE
 # normal nao deve cair aqui — exige o par icms+importacao.
 _ICMS_IMPORT_PHRASES = ("icms importacao", "icms de importacao",
@@ -3631,11 +3735,23 @@ def extract_and_store_accounts(saved_pdfs: list, message_id: str,
     # Tamanho de cada anexo, colhido AQUI (no passo 2 o arquivo pode nao estar mais em
     # disco) — vai para financial_account_attachment.size_bytes.
     attachment_sizes = {}
+    # Regra LEBIANCO — parte "anexo do email": o texto CRU do PDF nao chega ao passo 2 (o CSV
+    # so traz description/source_file) e o arquivo pode nao estar mais em disco la, entao a
+    # varredura acontece AQUI, uma vez por e-mail (flag no nivel da MENSAGEM: qualquer anexo
+    # que mencione lebianco marca o e-mail inteiro). Best-effort — nunca levanta.
+    # Otimizacao: se remetente/assunto/corpo JA decidiram que e LEBIANCO, nao ha o que provar —
+    # pula a leitura dos PDFs (I/O e superficie de falha a toa).
+    pdf_lebianco = (_is_lebianco_sender(err_ctx.get("sender_email"))
+                    or _subject_has_lebianco(err_ctx.get("subject"))
+                    or _has_lebianco_reference(body_text))
     for pdf_path in saved_pdfs:
         try:
             attachment_sizes[pdf_path.name] = pdf_path.stat().st_size
         except OSError:
             attachment_sizes[pdf_path.name] = 0
+
+        if not pdf_lebianco and _pdf_mentions_lebianco(pdf_path):
+            pdf_lebianco = True   # curto-circuito: nao varre os demais anexos
 
         # Publica o PDF no Storage SEMPRE (antes da extracao) — assim o anexo fica
         # disponivel para revisao manual mesmo quando a extracao falha por completo.
@@ -3807,6 +3923,13 @@ def extract_and_store_accounts(saved_pdfs: list, message_id: str,
         # no supplier (exceto OTIMOTEX). Roda apos finalize (sk/cc/ca ja setados), antes da dedup.
         apply_forced_classification(ctrl, payload)
 
+        # Empresa pagadora (regra LEBIANCO): mencao no assunto/corpo/anexo/remetente -> 2,
+        # senao 1. Aqui (e nao so na rede do register_financial) porque este e o unico ponto
+        # com body_text + o flag do anexo em escopo. Roda DEPOIS de _finalize_supplier, que ja
+        # removeu supplier_name/cnpj do payload — a empresa pagadora nao se confunde com o
+        # fornecedor (pode haver conta da LEBIANCO cujo fornecedor e a OTIMOTEX).
+        apply_sk_company(payload, body_text=body_text, pdf_lebianco=pdf_lebianco)
+
         # Write-back de contato (chave PIX / telefone / WhatsApp) detectado no texto
         # do e-mail para o cadastro do fornecedor. Best-effort, nao toca no payload.
         apply_contact_writeback(ctrl, payload)
@@ -3971,6 +4094,11 @@ def try_extract_from_body(email_rec: dict, body_text: str, received_at: str,
     # Roda no payload base, ANTES do bloco de parcelas — os clones herdam cost_center_id/
     # chart_account_id.
     apply_forced_classification(ctrl, payload, extra_text=body_text)
+
+    # Empresa pagadora (regra LEBIANCO): mencao no assunto/corpo/remetente -> 2, senao 1.
+    # No payload BASE, antes do bloco de parcelas — os clones herdam sk_company via dict(payload).
+    # Sem pdf_lebianco: este e o caminho do CORPO (nao ha anexo pagavel).
+    apply_sk_company(payload, body_text=body_text)
 
     # Write-back de contato (chave PIX / telefone / WhatsApp) do corpo do e-mail para
     # o cadastro do fornecedor. Best-effort, nao toca no payload. Roda no payload base,
