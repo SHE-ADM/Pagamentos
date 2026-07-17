@@ -1872,6 +1872,23 @@ de verdade** e sobrescreve o valor extraído.
   (`sem_valor`). **`extract_linha_digitavel` NÃO foi tocada** (o detector é aditivo). Testes:
   `tests/test_payable_pages.py` (detectores + split ≥2/==1 — o split multi-registro passou a ter
   cobertura, que antes não existia).
+- **Barcode gravado ERRADO causa DEDUP FALSA que perde parcela (BR Supply — correção 2026-07-17):**
+  o barcode determinístico da linha digitável (`rec["barcode"] = normalize_barcode(extract_linha_digitavel(raw))`,
+  prioridade sobre o LLM) **já previne** — mas dados HISTÓRICOS gravados por versão antiga podem ter o
+  barcode de OUTRA parcela. Caso: NF de julho `000152737` (3 parcelas em e-mails separados) — a conta
+  **539** (parcela 1) fora gravada com o **barcode E o vencimento da parcela 2**; quando a parcela 2 real
+  chegou, colidiu (impressão 1 barcode + impressão 3 valor+venc) e foi **deduplicada como reemissão** →
+  boleto perdido silenciosamente. **Auditoria ampla** (script `scratchpad/audit_barcode.py`, só
+  diagnóstico: baixa cada PDF `pdf_text` e compara o barcode gravado com TODAS as linhas digitáveis do
+  documento — determinístico, SEM Claude): das **205** contas comparáveis, **1 única** divergência real
+  (539). O 2º "achado" (id 521, BRASPRESS por link) é **FALSO POSITIVO** — o `source_file` de fatura por
+  link aponta para o PDF de OUTRA fatura (boleto da 525), mas o barcode gravado da 521 bate o próprio
+  valor (limitação conhecida do download por link, não erro de dado). Correção: UPDATE do barcode+venc da
+  539 para os valores da parcela 1 (autoritativos, re-extraídos) + `reprocess_message` do e-mail da
+  parcela 2 → conta **603** criada (sem colisão após corrigir a 539). Estado final: 3 parcelas distintas
+  (539 venc 14/08 · 603 venc 13/09 · 538 venc 13/10). Os demais e-mails "BR Supply" com "0 contas" são
+  **reenvios legítimos** (dedup correta). **Reincidência já prevenida** pelo barcode determinístico atual
+  (pendente deploy do `extract_pdf.py`).
 
 Testes: `tests/test_barcode_due_date.py` (fator real do id 435 → `2026-07-08`; desambiguação do
 reset; fator 0; não-boleto; correção de inversão; no-op quando já bate; **gate de consistência:
@@ -1979,11 +1996,16 @@ por nome (RPC `financial_dup_by_name` / `_dup_by_name`) foi **removida** — "EF
 
 `extract_pdf.py` usa `_ns()` (strip de acentos + lowercase) para lookup em `_DOC_TYPE_NORM`.
 CHECK constraint em `financial_account_control.document_type` usa `lower()` (migrations 014,
-017, **024**, **026**, **043**, **062**, **066** e **075**). Tipos aceitos incluem: `boleto`, `cte`, `nfe`, `nfse`, `tributo`,
-`das`, `seguro`, `fatura`, `recibo`, `contrato`, `honorários`, `container`, `multa`, `dare`, `cartório`, `outro`
+017, **024**, **026**, **043**, **062**, **066**, **075** e **086**). Tipos aceitos incluem: `boleto`, `cte`, `nfe`, `nfse`, `tributo`,
+`das`, `seguro`, `fatura`, `recibo`, `contrato`, `honorários`, `container`, `multa`, `dare`, `cartório`, `cheque`, `outro`
 (DAS de Simples Nacional → `das`; **`multa`** = multa/penalidade/juros avulsos, auto de
 infração; **`dare`** = Documento de Arrecadação de Receitas Estaduais, antes dobrado em `dae` — a
 migration 062 separou DAE=eSocial de DARE=estadual em `_DOC_TYPE_NORM`/`_BODY_DOC_KEYWORDS`).
+**`cheque`** (migration 086) = o cheque como DOCUMENTO da conta, distinto do `payment_method`
+`cheque` (forma de pagamento). Tipo **SELECIONÁVEL** no cadastro manual (`ContaForm`) e no filtro
+de `/consulta` (ambos derivam do enum `DOCUMENT_TYPES`); a extração só o emite pelo rótulo
+EXPLÍCITO em `_DOC_TYPE_NORM` — **NÃO** há auto-classificação pela palavra "cheque" no assunto/
+corpo (evita falso positivo com a forma de pagamento). Teste: `tests/test_doc_type_cheque.py`.
 **`pix` NÃO é tipo de documento (removido na migration 075)** — é só forma de pagamento
 (`PAYMENT_METHODS`). Um pagamento PIX sem outro indício de tipo fica `document_type='outro'` e
 `payment_method='pix'`; quando não há Nº de documento próprio, o sintético é
@@ -3045,7 +3067,13 @@ local/agendada (ver flag `EMAIL_READER_ENABLED` acima e memória [[vercel-deploy
 ## Banco de dados (Supabase)
 
 Migrations em `supabase/migrations/`, aplicadas **manualmente no SQL Editor** em ordem
-numérica (`001` → `085`). **Próxima migration = `086`** (verificar sempre antes de criar nova).
+numérica (`001` → `086`). **Próxima migration = `087`** (verificar sempre antes de criar nova).
+A **086** estende o CHECK de `financial_account_control.document_type` com **`cheque`** (o cheque
+como DOCUMENTO da conta — ver "Normalização de `document_type`"); idempotente (DROP+recria), **sem
+backfill**. **Não regredir:** o array do CHECK espelha 1:1 o enum `DOCUMENT_TYPES` e **NÃO inclui
+`pix`** (removido pela 075) — copiar do enum, nunca de uma versão pré-075. **Aplicada via psql em
+2026-07-17** (verificado: `cheque` aceito, `pix` rejeitado); a Supabase é compartilhada dev+prod,
+então já vale para os dois — **sem passo de banco em produção**.
 A **085** é o **backfill da 3ª empresa** (OTIMOTEX FARDOS): as contas cujo remetente/dono é a
 ester (`ester@otimotex.com.br`) passam a `sk_company=3` — **37 linhas**. **Sem DDL** (a linha 3 já
 existia em `company`) e idempotente; gruda porque o trigger da 084 não re-resolve no UPDATE. Ver

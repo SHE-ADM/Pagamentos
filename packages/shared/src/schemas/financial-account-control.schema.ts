@@ -47,6 +47,9 @@ export const DOCUMENT_TYPES = [
   // Cartório — pagamento de/em cartório (custas de tabelionato/registro/protesto);
   // classificado pelo contexto "cartório"/"cartorio" no assunto/fornecedor (migration 066).
   'cartório',
+  // Cheque — o cheque como documento da conta (migration 086). Selecionável no cadastro
+  // manual; NÃO auto-classificado pela palavra "cheque" (que já é payment_method).
+  'cheque',
   // Contas de concessionária — classificadas por frase do assunto/corpo (migration 043).
   'conta de água',
   'conta de luz',
