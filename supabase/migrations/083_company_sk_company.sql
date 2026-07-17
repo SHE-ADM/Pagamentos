@@ -92,9 +92,9 @@ SET search_path = public AS $$
 DECLARE
   v_sk BIGINT;
 BEGIN
-  -- Passo 1: CNPJ — apenas se nao-nulo, nao-branco e 14 digitos exatos
+  -- Passo 1: CNPJ — apenas se nao-nulo e com 14 digitos exatos (length=14 ja
+  -- garante nao-branco).
   IF p_payer_cnpj IS NOT NULL
-     AND trim(p_payer_cnpj) <> ''
      AND length(trim(p_payer_cnpj)) = 14
   THEN
     SELECT c.sk_company INTO v_sk
@@ -105,7 +105,7 @@ BEGIN
   END IF;
 
   -- Passos 2 e 3: nome — apenas se nao-nulo e nao-branco
-  IF p_payer_name IS NOT NULL AND trim(p_payer_name) <> '' THEN
+  IF p_payer_name IS NOT NULL AND length(trim(p_payer_name)) > 0 THEN
     -- Razao social normalizada
     SELECT c.sk_company INTO v_sk
     FROM company c
