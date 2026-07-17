@@ -651,6 +651,18 @@ não pega) · linha=RLS em `financial_account_control`. Roadmap restante: migrat
 `belongsToGroup`/`requirePermission` em `lib/auth.ts` + menu no `Layout.tsx`. Ler o blueprint antes
 de implementar.
 
+**Vínculo usuário → EMPRESA: NÃO EXISTE — implementado e REVERTIDO em 2026-07-17 (não reimplementar
+sem pedido explícito):** chegou a existir uma migration `084_create_user_company.sql` (tabela N:N
+`user_company` — `user_id` + `sk_company`, RLS, REVOKE, extensão do `handle_new_user` e backfill),
+mais `getUserCompanies()` em `lib/auth.ts` e `skCompanies` no `AuthContext`. **Tudo foi desfeito a
+pedido do usuário** ("não vou mais trabalhar com identificação de company nos usuários"): a tabela
+foi dropada, o `handle_new_user` restaurado à versão da 065 e o código/doc revertidos — verificado
+sem resíduo (0 objetos `user_company` no catálogo; nenhuma referência no repo). O nº **084 ficou
+LIVRE** de novo. **Não "ajude" recriando isso.** Se o tema voltar: o blueprint aprovado
+(`docs/design/permissoes-por-grupo.md`) roteia empresa **pelo GRUPO** (`group_company`; decisão
+travada 1 = "o único vínculo direto do usuário é o grupo") — a tentativa revertida divergia dele ao
+vincular por usuário. Hoje o único vínculo do usuário é `user_profile.group_id`.
+
 **Visibilidade de contas por DONO, por grupo (Etapa 1 APLICADA — migration 076):** primeira
 dimensão de visibilidade por linha efetivamente em produção (independente do blueprint acima, que é
 por empresa/centro/plano). Cada `financial_account_control` tem **`created_by`** (UUID → `auth.users`,
@@ -2380,7 +2392,7 @@ passa por `upload_attachment` dentro de `extract_and_store_accounts`, anexo ou l
 - **Lmed/mdnet (portal ScriptCase) — adiado por CAPTCHA (decisão do usuário, 2026-06-17):**
   `srv2.mdnet.com.br/lmedseg/vExternoFatura` pede os "primeiros 3 dígitos do CPF/CNPJ"
   (campo `m_veri`) **e um CAPTCHA com imagem**. O prefixo do CNPJ viria de `company.cnpj`
-  (`company_id=1`, tentar 5 e depois 3 primeiros dígitos), mas o captcha bloqueia o download
+  (`sk_company=1`, tentar 5 e depois 3 primeiros dígitos), mas o captcha bloqueia o download
   automático → fatura fica em `falha` p/ download manual. **Regra de prefixo de CNPJ ainda
   não implementada** — fazer quando houver um portal que peça só o prefixo (sem captcha).
   Detalhes na memória `link-boleto-pipeline`.
@@ -3706,22 +3718,27 @@ lê os arquivos do disco.
 > `py -3 -c "import sys; sys.path.insert(0,'skills/email-reader/scripts'); import read_emails as R;
 > print(hasattr(R,'_is_real_nosso_numero'))"`
 
-> **DEPLOY 2026-07-17 — `sk_company` como chave de relacionamento (migration 083 já aplicada):** a
-> `company` passou a ter `sk_company` (PK IDENTITY, chave única de relacionamento) e
-> `financial_account_control` referencia a empresa por `sk_company` (não mais `company_id`) — ver
-> "Banco de dados" / migration 083. **A migration 083 JÁ foi aplicada** na Supabase compartilhada
-> dev+prod (via psql, 2026-07-17) — **nenhum passo de banco** em produção. Deploy = copiar **DOIS**
-> arquivos Python (ambos passaram a ler `company?sk_company=eq.1` no lugar de `company_id=eq.1`):
-> - `skills/email-reader/scripts/read_emails.py` → `C:\Sheild\API\Pagamentos\skills\email-reader\scripts\`
->   (método `company_cnpj()`; `extract_pdf.py` NÃO muda).
-> - `skills/cobranca-vencidos/scripts/supabase_log.py` → `C:\Sheild\API\Pagamentos\skills\cobranca-vencidos\scripts\`
->   (função `fetch_company_smtp()`).
+> **DEPLOY 2026-07-17 — `sk_company` como chave de relacionamento (CONCLUÍDO — migration + cópia
+> + merge feitos):** a `company` passou a ter `sk_company` (PK IDENTITY, chave única de
+> relacionamento) e `financial_account_control` referencia a empresa por `sk_company` (não mais
+> `company_id`) — ver "Banco de dados" / migration 083. Estado do rollout:
+> - **Migration 083 APLICADA** (via psql, 2026-07-17) na Supabase compartilhada dev+prod →
+>   **nenhum passo de banco** em produção.
+> - **Os 2 arquivos Python COPIADOS** para `C:\Sheild\API\Pagamentos\` (ambos passaram a ler
+>   `company?sk_company=eq.1` no lugar de `company_id=eq.1`):
+>   `skills/email-reader/scripts/read_emails.py` (método `company_cnpj()`; `extract_pdf.py` NÃO
+>   muda) e `skills/cobranca-vencidos/scripts/supabase_log.py` (função `fetch_company_smtp()`).
+> - **Frontend** (getCompanyEmail + schema) publicado pelo Vercel no merge do **PR #139**.
 >
-> **Sem `.env`, sem dependência nova.** **Degrada com segurança:** `company_id` foi preservado
-> (NOT NULL UNIQUE), então o código ANTIGO em produção (que lê `company_id=eq.1`) segue funcionando
-> até a cópia. Frontend (getCompanyEmail + schema) saiu pelo Vercel no merge do PR #139. Validação
-> (esperado o CNPJ da OTIMOTEX e a linha SMTP — exige `.env` carregado):
+> **Sem `.env`, sem dependência nova.** **Degradou com segurança:** `company_id` foi preservado
+> (NOT NULL UNIQUE), então o código ANTIGO seguiu funcionando entre a migration e a cópia.
+> Os dois leitores foram validados contra o banco migrado (CNPJ da OTIMOTEX `47273917000123` e a
+> linha SMTP). Revalidar (exige `.env` carregado):
 > `py -3 -c "import sys; sys.path.insert(0,'skills/email-reader/scripts'); import read_emails as R; print(R.SupabaseControl().company_cnpj())"`
+>
+> **Único item que depende da máquina de PRODUÇÃO:** reabilitar a task
+> `Enable-ScheduledTask -TaskName "Pagamentos - Email Reader" -TaskPath "\Sheild\"` (foi pausada
+> para o rollout). A máquina de dev (SHE-DEV) não a enxerga.
 
 ### Deploy manual da Cobrança de vencidos (envios) em produção (caso específico — não regredir)
 
