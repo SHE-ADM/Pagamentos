@@ -4,6 +4,9 @@ import userEvent from '@testing-library/user-event';
 
 const createContaMock = vi.fn();
 vi.mock('../services/contas', () => ({ createConta: (...a: unknown[]) => createContaMock(...a) }));
+// O ContaForm lê o usuário logado (default do select "Empresa") e lista as empresas.
+vi.mock('../contexts/AuthContext', () => ({ useAuth: () => ({ user: { email: 'rose@otimotex.com.br' } }) }));
+vi.mock('../services/lookups', () => ({ listCompanies: () => Promise.resolve([{ sk_company: 1, trade_name: 'OTIMOTEX TECIDOS' }]) }));
 
 const uploadMock = vi.fn();
 vi.mock('../services/contaAttachments', () => ({

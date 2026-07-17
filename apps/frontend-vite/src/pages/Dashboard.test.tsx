@@ -56,7 +56,7 @@ describe('Dashboard', () => {
     vi.spyOn(supabase, 'getDashboardData').mockResolvedValue(MOCK);
     listCompaniesMock.mockReset();
     listCompaniesMock.mockResolvedValue([
-      { sk_company: 1, trade_name: 'OTIMOTEX' },
+      { sk_company: 1, trade_name: 'OTIMOTEX TECIDOS' },
       { sk_company: 2, trade_name: 'LEBIANCO' },
     ]);
   });

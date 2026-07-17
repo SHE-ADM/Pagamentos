@@ -2325,11 +2325,38 @@ do resolver, descartados por `_finalize_supplier` depois de obter o `sk_supplier
   `financial_account_control.sender_email` (de `email_control.sender_email`) e o trigger o
   propaga ao resolver/criar o fornecedor.
 
-### Empresa pagadora (`sk_company`) — regra LEBIANCO (não regredir)
+### Empresa pagadora (`sk_company`) — regra por PRECEDÊNCIA (não regredir)
 
-Duas empresas pagam contas: **OTIMOTEX (`sk_company=1`, default)** e **LEBIANCO (`2`)**.
-Regra (decisão do usuário, 2026-07-17): **e-mail que faz REFERÊNCIA a "lebianco" → conta da
-LEBIANCO; SEM menção → SEMPRE OTIMOTEX.** Fontes varridas (sem acento, case-insensitive,
+**TRÊS** empresas pagam contas: **OTIMOTEX TECIDOS (`1`, default — renomeada de "OTIMOTEX")**,
+**LEBIANCO (`2`)** e **OTIMOTEX FARDOS (`3`)**. Regra (decisão do usuário, 2026-07-17), **a ordem
+É a regra**:
+
+| # | Sinal | → | Não regredir |
+|---|---|---|---|
+| 1º | **remetente `ester@otimotex.com.br`** (endereço EXATO) | **3** FARDOS | **vence tudo**: o domínio `otimotex.com.br` **e** a menção a lebianco |
+| 2º | **referência a "lebianco"** (assunto/corpo/anexo/remetente/domínio) | **2** LEBIANCO | vence o CNPJ (ver abaixo) |
+| 3º | nenhum dos dois | **1** TECIDOS | default |
+
+- **`_is_fardos_sender` é o 1º `if` de `resolve_sk_company`** — movê-lo para baixo inverteria a
+  regra. Casa o **endereço completo** (`(x or "").strip().lower() == FARDOS_SENDER`): outro usuário
+  `@otimotex.com.br` **não** casa — é isso que faz a regra "vencer o domínio". A ester **citada no
+  corpo/payer_name** (sem ser remetente) **não** classifica — só o REMETENTE conta.
+- ⚠️ **`OTIMOTEX_SK_SUPPLIER` (=1) ≠ `SK_COMPANY_DEFAULT` (=1)**: o primeiro é sk de **FORNECEDOR**
+  (`supplier`), o segundo de **EMPRESA** (`company`). Mesmo valor, mesmo nome, **tabelas
+  diferentes** — nunca find-replace nos dois (há teste travando: `NaoConfundirEmpresaComFornecedorTest`).
+- **O rename é só do NOME cadastral.** Nos e-mails/dados externos **"OTIMOTEX" continua sozinho** —
+  `_RECEIVABLE_SUBJECT_TERMS` ("cobranca otimotex"), payer/CNPJ e a resolução de fornecedor ficam
+  **intocados**. `_is_lebianco_sender` também é **dual-purpose** (decide o ICMS-ST `4.1.02` em
+  `_resolve_tax_chart_code`) — não alterar sua semântica.
+- **Cadastro manual**: o select "Empresa" nasce no default **por usuário logado**
+  (`hooks/useDefaultSkCompany`: ester → FARDOS; demais → TECIDOS). Isso é um vínculo
+  usuário→empresa — o mesmo conceito da tabela `user_company`, **revertida** a pedido do usuário:
+  fica DELIBERADAMENTE como **constante de e-mail no código**, sem ressuscitar a tabela. Vários
+  usuários no futuro → aí a tabela volta a fazer sentido.
+- **Estado (migration 085, aplicada 2026-07-17):** **347** TECIDOS · **55** LEBIANCO · **37** FARDOS
+  (backfill por remetente OU dono = ester; idempotente).
+
+A parte LEBIANCO (2º nível) permanece como antes: fontes varridas (sem acento, case-insensitive,
 **substring** — "lebianco" é nome próprio distintivo, então **não** se usa `_has_word`/`\b`, que
 existe para termos comuns como `das`/`iss`): **remetente/domínio** (`_is_lebianco_sender`,
 reusado da classificação de ICMS-ST), **assunto**, **corpo**, **anexo** e `description`/
@@ -2981,7 +3008,11 @@ local/agendada (ver flag `EMAIL_READER_ENABLED` acima e memória [[vercel-deploy
 ## Banco de dados (Supabase)
 
 Migrations em `supabase/migrations/`, aplicadas **manualmente no SQL Editor** em ordem
-numérica (`001` → `084`). **Próxima migration = `085`** (verificar sempre antes de criar nova).
+numérica (`001` → `085`). **Próxima migration = `086`** (verificar sempre antes de criar nova).
+A **085** é o **backfill da 3ª empresa** (OTIMOTEX FARDOS): as contas cujo remetente/dono é a
+ester (`ester@otimotex.com.br`) passam a `sk_company=3` — **37 linhas**. **Sem DDL** (a linha 3 já
+existia em `company`) e idempotente; gruda porque o trigger da 084 não re-resolve no UPDATE. Ver
+"Empresa pagadora (`sk_company`) — regra por PRECEDÊNCIA". Aplicada via psql em 2026-07-17.
 Não há migration automática. A **084** implanta a **regra LEBIANCO** da empresa pagadora (ver
 "Empresa pagadora (`sk_company`) — regra LEBIANCO"): (1) o trigger `trg_fe_resolve_company()`
 passa a **respeitar `sk_company` explícito** (`IF NEW.sk_company IS NULL THEN resolve…`) — sem
@@ -3822,11 +3853,14 @@ lê os arquivos do disco.
 > `Enable-ScheduledTask -TaskName "Pagamentos - Email Reader" -TaskPath "\Sheild\"` (foi pausada
 > para o rollout). A máquina de dev (SHE-DEV) não a enxerga.
 
-> **DEPLOY 2026-07-17 — regra LEBIANCO da empresa pagadora (PENDENTE de cópia p/ prod):** o reader
-> passa a gravar `sk_company` (1=OTIMOTEX / 2=LEBIANCO) pela referência a "lebianco" — ver "Empresa
-> pagadora (`sk_company`) — regra LEBIANCO". Deploy = copiar **só** `read_emails.py` (novos
+> **DEPLOY 2026-07-17 — empresa pagadora por PRECEDÊNCIA, 3 empresas (PENDENTE de cópia p/ prod):**
+> o reader grava `sk_company` por **1º ester→3 (FARDOS) · 2º lebianco→2 · 3º default→1 (TECIDOS)** —
+> ver "Empresa pagadora (`sk_company`) — regra por PRECEDÊNCIA". Deploy = copiar **só**
+> `read_emails.py` (`FARDOS_SENDER`/`_is_fardos_sender`/`SK_COMPANY_FARDOS` + a ordem em
+> `resolve_sk_company`, além de
 > `resolve_sk_company`/`apply_sk_company`/`_has_lebianco_reference`/`_subject_has_lebianco`/
-> `_pdf_mentions_lebianco`; **`extract_pdf.py` NÃO muda**). **Sem `.env`, sem dependência nova**
+> `_pdf_mentions_lebianco`; **`extract_pdf.py` NÃO muda**). As migrations **084 e 085** já rodaram
+> na Supabase compartilhada → **nenhum passo de banco**. **Sem `.env`, sem dependência nova**
 > (pdfplumber já é usado). A **migration 084** (fix do trigger + backfill de 55 contas) já rodou na
 > Supabase compartilhada dev+prod → **nenhum passo de banco** em produção.
 > **ATENÇÃO — a ordem importa:** a 084 já está aplicada, então o trigger **já** respeita
@@ -3834,7 +3868,9 @@ lê os arquivos do disco.
 > `sk_company` → o trigger resolve pelo CNPJ → **fallback 1 (OTIMOTEX)**. Ou seja, degrada com
 > segurança (contas novas da Lebianco entram como Otimotex até a cópia; corrigíveis re-rodando o
 > backfill da 084, que é idempotente). Validação (esperado `2 1`):
-> `py -3 -c "import sys; sys.path.insert(0,'skills/email-reader/scripts'); import read_emails as R; print(R.resolve_sk_company(sender_email='ana@lebianco.com.br'), R.resolve_sk_company(subject='PAGAMENTO BOLETO DAMSP'))"`
+> `py -3 -c "import sys; sys.path.insert(0,'skills/email-reader/scripts'); import read_emails as R; print(R.resolve_sk_company(sender_email='ester@otimotex.com.br', subject='PAGAMENTO LEBIANCO'), R.resolve_sk_company(sender_email='ana@lebianco.com.br'), R.resolve_sk_company(sender_email='rose@otimotex.com.br'))"`
+> (esperado **`3 2 1`** — a ester vencendo até a menção a lebianco; lebianco; e outro usuário
+> `@otimotex.com.br` caindo no default.)
 
 ### Deploy manual da Cobrança de vencidos (envios) em produção (caso específico — não regredir)
 

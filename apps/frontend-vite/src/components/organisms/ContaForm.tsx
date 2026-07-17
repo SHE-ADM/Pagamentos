@@ -24,17 +24,19 @@ import AttachmentPicker from '../molecules/AttachmentPicker';
 import ContaAttachments from './ContaAttachments';
 import { getSupplier } from '../../services/suppliers';
 import { useCompanyOptions } from '../../hooks/useCompanyOptions';
+import { useDefaultSkCompany, SK_COMPANY_DEFAULT } from '../../hooks/useDefaultSkCompany';
 
 // Opções dos selects de enum ordenadas alfabeticamente (pt-BR) — os valores são os
 // mesmos dos CHECK do banco; só a ordem de exibição muda.
 const DOCUMENT_TYPE_OPTIONS = [...DOCUMENT_TYPES].sort((a, b) => a.localeCompare(b, 'pt-BR'));
 const PAYMENT_METHOD_OPTIONS = [...PAYMENT_METHODS].sort((a, b) => a.localeCompare(b, 'pt-BR'));
 
-// Empresa pagadora (financial_account_control.sk_company). Conta lançada à mão nasce na
-// OTIMOTEX — o default do negócio; a LEBIANCO é escolhida no select. Na extração quem
-// define é a regra LEBIANCO (read_emails.py), não este form.
-const SK_COMPANY_DEFAULT = 1;
-const COMPANY_FALLBACK_OPTION: SelectOption = { value: SK_COMPANY_DEFAULT, label: 'OTIMOTEX' };
+// Empresa pagadora (financial_account_control.sk_company) — 1 OTIMOTEX TECIDOS (default),
+// 2 LEBIANCO, 3 OTIMOTEX FARDOS. Na CRIAÇÃO o inicial vem de useDefaultSkCompany (a ester
+// nasce em FARDOS; os demais, em TECIDOS); na edição, da própria conta. Na extração quem
+// define é a regra de precedência do read_emails.py, não este form.
+// Fallback só para quando o lookup falhar — o select nunca fica vazio e o lançamento não trava.
+const COMPANY_FALLBACK_OPTION: SelectOption = { value: SK_COMPANY_DEFAULT, label: 'OTIMOTEX TECIDOS' };
 
 interface ContaFormValues {
   amount: string;
@@ -153,12 +155,13 @@ const ContaForm = forwardRef<ContaFormHandle, ContaFormProps>(function ContaForm
 
   const [skSupplier, setSkSupplier] = useState<number | null>(defaultValues?.sk_supplier ?? null);
   const [supplierError, setSupplierError] = useState<string | null>(null);
-  // Empresa PAGADORA — FK sk_company. Criação nasce no default (OTIMOTEX); edição mostra a
-  // empresa da própria conta. Fora do react-hook-form como os demais FKs (skSupplier/
-  // costCenterId), pois ContaFormValues é só de strings. NÃO é limpo pelo resetSupplier: no
-  // lançamento EM SÉRIE a empresa escolhida PERMANECE (decisão do usuário), igual aos selects
-  // de classificação — só o fornecedor é limpo.
-  const [skCompany, setSkCompany] = useState<number>(defaultValues?.sk_company ?? SK_COMPANY_DEFAULT);
+  // Empresa PAGADORA — FK sk_company. Criação nasce no default POR USUÁRIO (ester → FARDOS;
+  // demais → TECIDOS); edição mostra a empresa da própria conta. Fora do react-hook-form como
+  // os demais FKs (skSupplier/costCenterId), pois ContaFormValues é só de strings. NÃO é limpo
+  // pelo resetSupplier: no lançamento EM SÉRIE a empresa escolhida PERMANECE (decisão do
+  // usuário), igual aos selects de classificação — só o fornecedor é limpo.
+  const defaultSkCompany = useDefaultSkCompany();
+  const [skCompany, setSkCompany] = useState<number>(defaultValues?.sk_company ?? defaultSkCompany);
   // `key` do SupplierSelect: incrementar REMONTA só o seletor de fornecedor (limpa o texto
   // interno do react-select, que não espelha `value`) e dispara o autofoco (key > 0). NÃO
   // afeta os selects de classificação (centro/plano permanecem — ver [[conta-form-...]]).

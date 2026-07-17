@@ -3,6 +3,8 @@ import { render } from '@testing-library/react';
 import { axe } from '../../tests/axe';
 
 vi.mock('../services/contas', () => ({ createConta: vi.fn() }));
+vi.mock('../contexts/AuthContext', () => ({ useAuth: () => ({ user: { email: 'rose@otimotex.com.br' } }) }));
+vi.mock('../services/lookups', () => ({ listCompanies: () => Promise.resolve([{ sk_company: 1, trade_name: 'OTIMOTEX TECIDOS' }]) }));
 vi.mock('../components/molecules/SupplierSelect', () => ({
   default: ({ label }: { label: string }) => (
     <label>

@@ -21,7 +21,8 @@ export interface StatusOption {
 }
 
 // Linha do cadastro `company` (lookup da empresa pagadora no ContaForm —
-// financial_account_control.sk_company). Hoje 2 linhas: OTIMOTEX (1) e LEBIANCO (2).
+// financial_account_control.sk_company). Hoje 3 linhas: OTIMOTEX TECIDOS (1), LEBIANCO (2)
+// e OTIMOTEX FARDOS (3). Sem filtro/limite — empresa nova aparece sozinha nos selects.
 export interface CompanyOption {
   sk_company: number;
   trade_name: string | null;

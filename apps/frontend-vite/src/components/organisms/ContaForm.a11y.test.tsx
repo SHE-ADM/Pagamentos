@@ -2,6 +2,9 @@ import { describe, it, expect, vi } from 'vitest';
 import { render } from '@testing-library/react';
 import { axe } from '../../../tests/axe';
 
+vi.mock('../../contexts/AuthContext', () => ({ useAuth: () => ({ user: { email: 'rose@otimotex.com.br' } }) }));
+vi.mock('../../services/lookups', () => ({ listCompanies: () => Promise.resolve([{ sk_company: 1, trade_name: 'OTIMOTEX TECIDOS' }]) }));
+
 vi.mock('../molecules/SupplierSelect', () => ({
   default: ({ label }: { label: string }) => (
     <label>

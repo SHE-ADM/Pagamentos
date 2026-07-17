@@ -1,7 +1,12 @@
 """
 test_sk_company_lebianco.py — regra da EMPRESA PAGADORA (sk_company) na extracao.
 
-Regra (decisao do usuario, 2026-07-17):
+Regra por PRECEDENCIA (decisao do usuario, 2026-07-17):
+  1o remetente ester@otimotex.com.br -> sk_company = 3 (OTIMOTEX FARDOS)  <- VENCE tudo
+  2o referencia a "lebianco" (assunto / corpo / ANEXO / remetente / dominio) -> 2
+  3o nenhum dos dois -> 1 (OTIMOTEX TECIDOS)
+
+Regra anterior (preservada nos ramos 2o/3o):
   - referencia a "lebianco" no assunto / corpo / ANEXO / remetente / dominio -> sk_company = 2
   - SEM mencao -> SEMPRE OTIMOTEX (sk_company = 1)
   - a REFERENCIA VENCE o CNPJ: conta da LEBIANCO pode ter o CNPJ da OTIMOTEX no boleto, e o
@@ -20,8 +25,9 @@ sys.path.insert(0, str(_SCRIPTS_DIR))
 import read_emails as R  # noqa: E402
 
 LEBIANCO = R.SK_COMPANY_LEBIANCO   # 2
-OTIMOTEX = R.SK_COMPANY_DEFAULT    # 1
-CNPJ_LEBIANCO = "47273917000395"
+OTIMOTEX = R.SK_COMPANY_DEFAULT    # 1 — OTIMOTEX TECIDOS
+FARDOS = R.SK_COMPANY_FARDOS       # 3 — OTIMOTEX FARDOS
+CNPJ_LEBIANCO = "47273917000223"
 CNPJ_OTIMOTEX = "47273917000123"
 
 
@@ -40,6 +46,98 @@ class IsLebiancoSenderTest(unittest.TestCase):
 
     def test_none(self):
         self.assertFalse(R._is_lebianco_sender(None))
+
+
+class IsFardosSenderTest(unittest.TestCase):
+    """Endereco EXATO — e o que faz a regra "vencer o dominio otimotex.com.br"."""
+
+    def test_endereco_exato(self):
+        self.assertTrue(R._is_fardos_sender("ester@otimotex.com.br"))
+
+    def test_caixa_alta_e_espacos(self):
+        self.assertTrue(R._is_fardos_sender("  Ester@Otimotex.COM.BR "))
+
+    def test_outro_usuario_do_mesmo_dominio_nao_casa(self):
+        # O dominio otimotex.com.br NAO basta — so a ester.
+        self.assertFalse(R._is_fardos_sender("rose@otimotex.com.br"))
+        self.assertFalse(R._is_fardos_sender("financeiro@otimotex.com.br"))
+
+    def test_local_part_ester_em_outro_dominio_nao_casa(self):
+        self.assertFalse(R._is_fardos_sender("ester@gmail.com"))
+
+    def test_none_e_vazio(self):
+        self.assertFalse(R._is_fardos_sender(None))
+        self.assertFalse(R._is_fardos_sender(""))
+
+
+class FardosPrecedenciaTest(unittest.TestCase):
+    """NAO REGREDIR: a ester vence o dominio E a mencao a lebianco (decisao do usuario).
+
+    A ordem em resolve_sk_company e o que garante isso — mover a checagem da ester para
+    depois dos ramos de lebianco inverteria a regra.
+    """
+
+    def test_ester_vence_mencao_a_lebianco(self):
+        self.assertEqual(
+            R.resolve_sk_company(sender_email="ester@otimotex.com.br",
+                                 subject="PAGAMENTO LEBIANCO"),
+            FARDOS)
+
+    def test_ester_vence_lebianco_no_corpo_e_no_anexo(self):
+        self.assertEqual(
+            R.resolve_sk_company(sender_email="ester@otimotex.com.br",
+                                 body_text="conta da lebianco", pdf_lebianco=True),
+            FARDOS)
+
+    def test_ester_vence_o_dominio_otimotex(self):
+        self.assertEqual(R.resolve_sk_company(sender_email="ester@otimotex.com.br"), FARDOS)
+
+    def test_outro_usuario_otimotex_e_o_default(self):
+        self.assertEqual(R.resolve_sk_company(sender_email="rose@otimotex.com.br"), OTIMOTEX)
+
+    def test_ester_citada_no_texto_sem_ser_remetente_nao_classifica(self):
+        # So o REMETENTE conta — citar o e-mail dela no corpo nao torna a conta da FARDOS.
+        self.assertEqual(
+            R.resolve_sk_company(sender_email="x@fornecedor.com.br",
+                                 body_text="favor falar com ester@otimotex.com.br",
+                                 payer_name="ester@otimotex.com.br"),
+            OTIMOTEX)
+
+    def test_lebianco_segue_valendo_sem_a_ester(self):
+        self.assertEqual(R.resolve_sk_company(sender_email="ana@lebianco.com.br"), LEBIANCO)
+        self.assertEqual(R.resolve_sk_company(subject="NF LEBIANCO 998"), LEBIANCO)
+
+
+class ApplySkCompanyFardosTest(unittest.TestCase):
+    def test_payload_da_ester_grava_3(self):
+        payload = {"subject": "PAGAMENTO BOLETO", "sender_email": "ester@otimotex.com.br"}
+        R.apply_sk_company(payload)
+        self.assertEqual(payload["sk_company"], FARDOS)
+
+    def test_payload_da_ester_com_lebianco_grava_3(self):
+        payload = {"subject": "PAGAMENTO LEBIANCO", "sender_email": "ester@otimotex.com.br"}
+        R.apply_sk_company(payload, body_text="lebianco")
+        self.assertEqual(payload["sk_company"], FARDOS)
+
+
+class NaoConfundirEmpresaComFornecedorTest(unittest.TestCase):
+    """NAO REGREDIR: OTIMOTEX_SK_SUPPLIER (fornecedor) != SK_COMPANY_DEFAULT (empresa).
+
+    Os dois valem 1 e tem o mesmo nome, mas sao de TABELAS diferentes (supplier x company).
+    Este teste existe para um find-replace descuidado quebrar aqui, e nao em producao.
+    """
+
+    def test_sao_constantes_distintas(self):
+        self.assertEqual(R.OTIMOTEX_SK_SUPPLIER, 1)   # supplier.sk_supplier
+        self.assertEqual(R.SK_COMPANY_DEFAULT, 1)     # company.sk_company
+        self.assertEqual(R.SK_COMPANY_FARDOS, 3)
+
+    def test_regra_de_empresa_ignora_o_fornecedor(self):
+        # Fornecedor LEBIANCO nao torna a conta da LEBIANCO (quem paga seria a OTIMOTEX).
+        payload = {"subject": "PAGAMENTO", "sender_email": "x@fornecedor.com.br",
+                   "supplier_name": "LEBIANCO PLASTICOS"}
+        R.apply_sk_company(payload)
+        self.assertEqual(payload["sk_company"], OTIMOTEX)
 
 
 class HasLebiancoReferenceTest(unittest.TestCase):

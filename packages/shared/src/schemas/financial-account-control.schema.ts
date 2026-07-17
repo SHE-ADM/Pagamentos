@@ -261,7 +261,8 @@ export const financialAccountControlSchema = z.object({
   has_bank_slip: z.boolean().default(false),
 
   // Pagador (sacado) — sk_company: surrogate key snowflake da empresa pagadora
-  // (migration 083; substitui company_id). 1 = OTIMOTEX (default), 2 = LEBIANCO.
+  // (migration 083; substitui company_id). 1 = OTIMOTEX TECIDOS (default), 2 = LEBIANCO,
+  // 3 = OTIMOTEX FARDOS.
   // DUAS origens: no pipeline vem da regra LEBIANCO (referência a "lebianco" no assunto/
   // corpo/anexo/remetente); no CRUD manual é ESCOLHA do usuário (select do ContaForm).
   // O trigger só resolve por payer_cnpj/name quando o valor não vem (migration 084).

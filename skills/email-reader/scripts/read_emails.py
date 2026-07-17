@@ -2208,8 +2208,32 @@ def _is_lebianco_sender(sender_email: str | None) -> bool:
     return domain == LEBIANCO_DOMAIN or domain.endswith("." + LEBIANCO_DOMAIN)
 
 
+# Remetente cujo e-mail e SEMPRE da OTIMOTEX FARDOS (endereco EXATO, nao o dominio —
+# decisao do usuario: "ester@otimotex.com.br vence o dominio otimotex.com.br").
+FARDOS_SENDER = "ester@otimotex.com.br"
+
+
+def _is_fardos_sender(sender_email: str | None) -> bool:
+    """True quando o remetente e EXATAMENTE o endereco da OTIMOTEX FARDOS.
+
+    Endereco completo (nao local-part nem dominio): outro usuario @otimotex.com.br NAO casa —
+    e justamente isso que faz esta regra "vencer o dominio". Normalizacao strip+lower, o mesmo
+    idiom de resolve_user/is_ignored_sender.
+    """
+    return (sender_email or "").strip().lower() == FARDOS_SENDER
+
+
 # ---------------------------------------------------------------------------
-# Empresa pagadora (sk_company) — regra LEBIANCO (decisao do usuario, 2026-07-17).
+# Empresa pagadora (sk_company) — regra por PRECEDENCIA (decisao do usuario, 2026-07-17).
+#
+#   1o  remetente ester@otimotex.com.br  -> 3 (OTIMOTEX FARDOS)   <- VENCE tudo
+#   2o  referencia a "lebianco"          -> 2 (LEBIANCO)
+#   3o  nenhum dos dois                  -> 1 (OTIMOTEX TECIDOS)
+#
+# A ester vence o DOMINIO otimotex.com.br E a mencao a lebianco (decisao explicita): tudo
+# que ela extrai e da FARDOS. Nos e-mails/dados externos o termo "OTIMOTEX" continua
+# sozinho — o rename para "OTIMOTEX TECIDOS" e so do NOME no cadastro/UI, nada que casa
+# texto de fora muda (ver _RECEIVABLE_SUBJECT_TERMS, payer/CNPJ).
 #
 # E-mail que faz REFERENCIA a "lebianco" (assunto, corpo, ANEXO, remetente ou dominio do
 # remetente) e conta da LEBIANCO -> sk_company = 2. SEM mencao -> SEMPRE OTIMOTEX (1).
@@ -2225,8 +2249,12 @@ def _is_lebianco_sender(sender_email: str | None) -> bool:
 # e varrer o nome do fornecedor inverteria a conta. Reforco: _finalize_supplier ja remove
 # essas chaves do payload antes da gravacao.
 # ---------------------------------------------------------------------------
-SK_COMPANY_DEFAULT = 1     # OTIMOTEX — empresa pagadora padrao (sem mencao a lebianco)
+# ATENCAO (nao confundir): estes sao sk de EMPRESA (company.sk_company). O
+# OTIMOTEX_SK_SUPPLIER (=1) la em cima e sk de FORNECEDOR (supplier.sk_supplier) — mesmo
+# valor, mesmo nome, TABELAS DIFERENTES. Nunca tratar um pelo outro.
+SK_COMPANY_DEFAULT = 1     # OTIMOTEX TECIDOS — empresa pagadora padrao (sem ester, sem lebianco)
 SK_COMPANY_LEBIANCO = 2    # LEBIANCO
+SK_COMPANY_FARDOS = 3      # OTIMOTEX FARDOS — tudo que vem do FARDOS_SENDER
 LEBIANCO_TERM = "lebianco"
 
 # Grafia com ESPACO ("LE BIANCO"), aceita SO NO ASSUNTO (nao regredir — verificado no dado
@@ -2279,7 +2307,14 @@ def _pdf_mentions_lebianco(pdf_path) -> bool:
 def resolve_sk_company(subject=None, body_text=None, sender_email=None, description=None,
                        source_file=None, payer_name=None, email_body_excerpt=None,
                        pdf_lebianco: bool = False) -> int:
-    """Empresa pagadora da conta: 2 (LEBIANCO) se houver referencia; 1 (OTIMOTEX) senao."""
+    """Empresa pagadora da conta, por PRECEDENCIA (nao regredir a ordem):
+
+    1o ester (FARDOS=3) -> 2o referencia a lebianco (2) -> 3o default (OTIMOTEX TECIDOS=1).
+    """
+    # PRIMEIRO de todos: o remetente da FARDOS vence o dominio otimotex.com.br E a mencao a
+    # lebianco (decisao do usuario). Mover esta checagem para baixo inverteria a regra.
+    if _is_fardos_sender(sender_email):
+        return SK_COMPANY_FARDOS
     if pdf_lebianco or _is_lebianco_sender(sender_email) or _subject_has_lebianco(subject):
         return SK_COMPANY_LEBIANCO
     if _has_lebianco_reference(body_text, sender_email, description,

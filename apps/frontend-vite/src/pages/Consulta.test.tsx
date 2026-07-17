@@ -90,7 +90,7 @@ describe('Consulta', () => {
     updateContaMock.mockReset();
     listCompaniesMock.mockReset();
     listCompaniesMock.mockResolvedValue([
-      { sk_company: 1, trade_name: 'OTIMOTEX' },
+      { sk_company: 1, trade_name: 'OTIMOTEX TECIDOS' },
       { sk_company: 2, trade_name: 'LEBIANCO' },
     ]);
     getFinancialAccountControl.mockResolvedValue({ data: [], total: 0 });
