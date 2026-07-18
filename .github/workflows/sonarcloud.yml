@@ -47,6 +47,16 @@ jobs:
       - name: Instalar provider de cobertura do Vitest
         run: npm i --no-save @vitest/coverage-v8@4.1.9
 
+      # O supabaseClient.ts LANÇA no import se VITE_SUPABASE_* faltarem, e a suíte
+      # do frontend-vite importa serviços que o usam. Os testes não batem no
+      # Supabase (mockam os serviços), então placeholders bastam. Mesmo padrão do
+      # workflow a11y.yml.
+      - name: Configurar .env do frontend-vite
+        working-directory: apps/frontend-vite
+        run: |
+          echo "VITE_SUPABASE_URL=${{ secrets.VITE_SUPABASE_URL || 'https://placeholder.supabase.co' }}" >> .env
+          echo "VITE_SUPABASE_ANON_KEY=${{ secrets.VITE_SUPABASE_ANON_KEY || 'anon-key-placeholder' }}" >> .env
+
       # lcov por workspace → apps/<x>/coverage/lcov.info (ver sonar-project.properties).
       - name: Cobertura JS (Vitest → lcov)
         run: |
