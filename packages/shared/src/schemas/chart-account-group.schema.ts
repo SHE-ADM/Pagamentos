@@ -8,11 +8,24 @@ import { z } from 'zod';
 
 // ── Leitura (linha do banco) ────────────────────────────────────────────────
 
+// Embed da NATUREZA contábil (FK type_group_id → financial_type_group). Presente quando
+// o select inclui `type_group:financial_type_group(...)`. id 0 = "Não informado".
+export const financialTypeGroupEmbeddedSchema = z
+  .object({
+    type_group_id: z.number().int(),
+    type_group_description: z.string().nullable(),
+  })
+  .nullable();
+
 export const chartAccountGroupSchema = z.object({
   chart_account_group_id: z.number().int(),
   group_code: z.string().nullable(),
   group_description: z.string().nullable(),
   group_type: z.string().nullable(),
+  // Natureza contábil (Receitas/Despesas/Ativo/Passivo) — fonte de verdade nova que
+  // substitui `group_type`. NOT NULL DEFAULT 0 no banco; 0 = "Não informado".
+  type_group_id: z.number().int(),
+  type_group: financialTypeGroupEmbeddedSchema.optional(),
 });
 
 // Embed (JOIN via financial_chart_of_account_subgroup.chart_account_group_id).
@@ -40,6 +53,9 @@ const editableGroupFields = {
     .max(MAX_DESCRIPTION, `Descrição deve ter no máximo ${MAX_DESCRIPTION} caracteres`),
   // group_type é CHAR(1) opcional (ex.: A/P/L/R/D/O) — sem domínio fixo aqui.
   group_type: z.string().trim().max(MAX_TYPE, `Tipo deve ter no máximo ${MAX_TYPE} caractere`).optional(),
+  // Natureza (FK financial_type_group). 0 = "Não informado" é válido; opcional para não
+  // exigir o campo em cargas que omitem (DB default 0).
+  type_group_id: z.number().int().min(0, 'Natureza inválida').optional(),
 };
 
 // ── Criação ─────────────────────────────────────────────────────────────────
@@ -51,13 +67,19 @@ export const chartAccountGroupUpdateSchema = z
     group_code: editableGroupFields.group_code.optional(),
     group_description: editableGroupFields.group_description.optional(),
     group_type: editableGroupFields.group_type,
+    type_group_id: editableGroupFields.type_group_id,
   })
   .refine(
-    (d) => d.group_code !== undefined || d.group_description !== undefined || d.group_type !== undefined,
+    (d) =>
+      d.group_code !== undefined ||
+      d.group_description !== undefined ||
+      d.group_type !== undefined ||
+      d.type_group_id !== undefined,
     { message: 'Informe ao menos um campo para atualizar' },
   );
 
 export type ChartAccountGroup = z.infer<typeof chartAccountGroupSchema>;
 export type ChartAccountGroupEmbedded = z.infer<typeof chartAccountGroupEmbeddedSchema>;
+export type FinancialTypeGroupEmbedded = z.infer<typeof financialTypeGroupEmbeddedSchema>;
 export type ChartAccountGroupCreateInput = z.infer<typeof chartAccountGroupCreateSchema>;
 export type ChartAccountGroupUpdateInput = z.infer<typeof chartAccountGroupUpdateSchema>;

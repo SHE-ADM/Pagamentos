@@ -13,6 +13,14 @@ vi.mock('../services/chartAccountGroups', () => ({
   createChartAccountGroup: vi.fn(),
   updateChartAccountGroup: vi.fn(),
 }));
+vi.mock('../services/lookups', () => ({
+  listFinancialTypeGroups: vi
+    .fn()
+    .mockResolvedValue([
+      { type_group_id: 0, type_group_description: 'Não informado' },
+      { type_group_id: 3, type_group_description: 'Ativo' },
+    ]),
+}));
 
 import ChartAccountGroupsPage from './ChartAccountGroupsPage';
 import { listChartAccountGroupsPage } from '../services/chartAccountGroups';
@@ -20,8 +28,10 @@ import { listChartAccountGroupsPage } from '../services/chartAccountGroups';
 const sample: ChartAccountGroup = {
   chart_account_group_id: 1,
   group_code: '1',
-  group_description: 'Ativo',
+  group_description: 'Disponibilidades',
   group_type: 'A',
+  type_group_id: 3,
+  type_group: { type_group_id: 3, type_group_description: 'Ativo' },
 };
 
 beforeEach(() => {
@@ -32,12 +42,12 @@ beforeEach(() => {
 describe('ChartAccountGroupsPage', () => {
   it('lista os grupos carregados', async () => {
     render(<ChartAccountGroupsPage />);
-    expect(await screen.findByText('Ativo')).toBeInTheDocument();
+    expect(await screen.findByText('Disponibilidades')).toBeInTheDocument();
   });
 
   it('abre o modal ao clicar em "Novo grupo"', async () => {
     render(<ChartAccountGroupsPage />);
-    await screen.findByText('Ativo');
+    await screen.findByText('Disponibilidades');
     await userEvent.click(screen.getByRole('button', { name: /novo grupo/i }));
     expect(await screen.findByRole('button', { name: 'Cadastrar', hidden: true })).toBeInTheDocument();
   });

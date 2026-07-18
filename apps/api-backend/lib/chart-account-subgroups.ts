@@ -65,10 +65,14 @@ function sanitizeTerm(term: string): string {
   return term.replace(/[%,()]/g, ' ').trim();
 }
 
-// Mapeia erro do Postgres para status HTTP: 23503 (FK) = grupo inexistente → 422.
+// Mapeia erro do Postgres para status HTTP sem VAZAR detalhe interno (§3 M-2):
+// 23503 (FK) = grupo inexistente → 422; 23505 (UNIQUE) = código duplicado → 409
+// (defensivo — a unicidade já é checada em assertCodeUnique); qualquer outro é
+// inesperado (5xx) → o failFromError da rota loga e responde genérico (não vaza).
 function mapWriteError(error: { code?: string; message: string }): ChartAccountSubgroupServiceError {
   if (error.code === '23503') return new ChartAccountSubgroupServiceError('Grupo informado não existe', 422);
-  return new ChartAccountSubgroupServiceError(error.message, 422);
+  if (error.code === '23505') return new ChartAccountSubgroupServiceError('Código já cadastrado', 409);
+  return new ChartAccountSubgroupServiceError(error.message, 500);
 }
 
 const repository = {

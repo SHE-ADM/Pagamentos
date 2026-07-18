@@ -21,7 +21,7 @@ function makeBuilder(result: QueryResult) {
 const fromMock = vi.fn(() => makeBuilder(resultQueue.shift() ?? { data: [], error: null }));
 vi.mock('@/lib/supabase-admin', () => ({ getSupabaseAdmin: () => ({ from: fromMock }) }));
 
-const { chartAccountService, costCenterService } = await import('./lookups');
+const { chartAccountService, costCenterService, financialTypeGroupService } = await import('./lookups');
 
 beforeEach(() => {
   resultQueue.length = 0;
@@ -88,5 +88,29 @@ describe('costCenterService.list', () => {
     const r = await costCenterService.list({});
     expect(fromMock).toHaveBeenCalledTimes(1);
     expect(r).toHaveLength(1);
+  });
+});
+
+describe('financialTypeGroupService.list (lookup de Natureza)', () => {
+  it('lista o catálogo ordenado por id, incluindo o sentinela 0', async () => {
+    resultQueue.push({
+      data: [
+        { type_group_id: 0, type_group_description: 'Não informado' },
+        { type_group_id: 1, type_group_description: 'Receitas' },
+        { type_group_id: 2, type_group_description: 'Despesas' },
+      ],
+      error: null,
+    });
+    const r = await financialTypeGroupService.list();
+    expect(fromMock).toHaveBeenCalledTimes(1);
+    expect(builders[0].select).toHaveBeenCalledWith('type_group_id,type_group_description');
+    expect(builders[0].order).toHaveBeenCalledWith('type_group_id', { ascending: true });
+    expect(r).toHaveLength(3);
+    expect(r[0]).toEqual({ type_group_id: 0, type_group_description: 'Não informado' });
+  });
+
+  it('propaga erro do banco como LookupServiceError 500', async () => {
+    resultQueue.push({ data: null, error: { message: 'db down' } });
+    await expect(financialTypeGroupService.list()).rejects.toMatchObject({ status: 500 });
   });
 });

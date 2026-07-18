@@ -49,6 +49,14 @@ describe('chartAccountSubgroupService', () => {
     ).rejects.toMatchObject({ status: 409 });
   });
 
+  it('create 500 (genérico, sem vazar detalhe) em erro inesperado do banco', async () => {
+    resultQueue.push({ data: null, error: null }); // findByCode → único
+    resultQueue.push({ data: null, error: { code: '08006', message: 'connection failure' } }); // create
+    await expect(
+      chartAccountSubgroupService.create({ subgroup_code: '1.1', subgroup_description: 'X', chart_account_group_id: 1 }),
+    ).rejects.toMatchObject({ status: 500 });
+  });
+
   it('remove 409 quando há planos vinculados', async () => {
     resultQueue.push({ data: { chart_account_subgroup_id: 5 }, error: null }); // findById
     resultQueue.push({ count: 7, error: null }); // countReferences

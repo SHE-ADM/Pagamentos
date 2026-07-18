@@ -14,9 +14,10 @@ import {
 import type { ZodError } from 'zod';
 import { getSupabaseAdmin } from './supabase-admin';
 import { resolveSort, type SortOrder } from './sort';
+import { resolveMatchingIds } from './search';
 
 const TABLE = 'financial_chart_of_account_group';
-const SORTABLE_COLUMNS = ['group_code', 'group_description', 'group_type'] as const;
+const SORTABLE_COLUMNS = ['group_code', 'group_description', 'group_type', 'type_group_id'] as const;
 // O grupo é referenciado por DUAS tabelas via `chart_account_group_id`: o subgrupo
 // (hierarquia clássica) e o plano de contas DIRETAMENTE (FK `fk_fin_coa_group`,
 // migration 058). Ambas precisam bloquear o hard delete (→ 409), senão o Postgres
@@ -61,7 +62,19 @@ function sanitizeTerm(term: string): string {
   return term.replace(/[%,()]/g, ' ').trim();
 }
 
-const SELECT_COLS = 'chart_account_group_id,group_code,group_description,group_type';
+// Mapeia erro do Postgres para status HTTP sem VAZAR detalhe interno (§3 M-2):
+// 23503 (FK) = Natureza (type_group_id) inexistente → 422; 23505 (UNIQUE) = código
+// duplicado → 409 (defensivo — a unicidade já é checada em assertCodeUnique); qualquer
+// outro é inesperado (5xx) → o failFromError da rota loga e responde genérico (não vaza).
+function mapWriteError(error: { code?: string; message: string }): ChartAccountGroupServiceError {
+  if (error.code === '23503') return new ChartAccountGroupServiceError('Natureza informada não existe', 422);
+  if (error.code === '23505') return new ChartAccountGroupServiceError('Código já cadastrado', 409);
+  return new ChartAccountGroupServiceError(error.message, 500);
+}
+
+const SELECT_COLS =
+  'chart_account_group_id,group_code,group_description,group_type,type_group_id,' +
+  'type_group:financial_type_group(type_group_id,type_group_description)';
 
 const repository = {
   async findAll(params: { from: number; to: number; search?: string; sort?: string; order?: SortOrder }) {
@@ -72,8 +85,19 @@ const repository = {
 
     if (params.search) {
       const term = sanitizeTerm(params.search);
-      // Cobre TODAS as colunas do grid: código, descrição e tipo.
-      query = query.or(`group_code.ilike.%${term}%,group_description.ilike.%${term}%,group_type.ilike.%${term}%`);
+      if (term) {
+        // Cobre as colunas do grid: código, descrição e NATUREZA (embed). A natureza vem
+        // de JOIN — resolvemos os ids do catálogo que casam o termo e os injetamos no OR.
+        const clauses = [`group_code.ilike.%${term}%`, `group_description.ilike.%${term}%`];
+        const typeGroupIds = await resolveMatchingIds(
+          'financial_type_group',
+          'type_group_id',
+          ['type_group_description'],
+          term,
+        );
+        if (typeGroupIds.length > 0) clauses.push(`type_group_id.in.(${typeGroupIds.join(',')})`);
+        query = query.or(clauses.join(','));
+      }
     }
 
     const sorted = resolveSort(params.sort, params.order, SORTABLE_COLUMNS);
@@ -95,11 +119,11 @@ const repository = {
   },
 
   create(payload: ChartAccountGroupCreateInput) {
-    return getSupabaseAdmin().from(TABLE).insert(payload).select().single();
+    return getSupabaseAdmin().from(TABLE).insert(payload).select(SELECT_COLS).single();
   },
 
   update(id: number, payload: ChartAccountGroupUpdateInput) {
-    return getSupabaseAdmin().from(TABLE).update(payload).eq('chart_account_group_id', id).select().maybeSingle();
+    return getSupabaseAdmin().from(TABLE).update(payload).eq('chart_account_group_id', id).select(SELECT_COLS).maybeSingle();
   },
 
   countReferences(table: string, id: number) {
@@ -125,7 +149,9 @@ export const chartAccountGroupService = {
       order: params.order,
     });
     if (error) throw new ChartAccountGroupServiceError(error.message, 500);
-    return { data: (data ?? []) as ChartAccountGroup[], total: count ?? 0, page, limit };
+    // `as unknown as`: o embed type_group no SELECT muda a inferência do PostgREST
+    // (o relacionamento pode aparecer como GenericStringError), sem overlap direto.
+    return { data: (data ?? []) as unknown as ChartAccountGroup[], total: count ?? 0, page, limit };
   },
 
   async getById(id: number): Promise<ChartAccountGroup> {
@@ -133,7 +159,7 @@ export const chartAccountGroupService = {
     const { data, error } = await repository.findById(id);
     if (error) throw new ChartAccountGroupServiceError(error.message, 500);
     if (!data) throw new ChartAccountGroupServiceError('Grupo não encontrado', 404);
-    return data as ChartAccountGroup;
+    return data as unknown as ChartAccountGroup;
   },
 
   async create(raw: unknown): Promise<ChartAccountGroup> {
@@ -143,8 +169,8 @@ export const chartAccountGroupService = {
     await this.assertCodeUnique(parsed.data.group_code);
 
     const { data, error } = await repository.create(parsed.data);
-    if (error) throw new ChartAccountGroupServiceError(error.message, 422);
-    return data as ChartAccountGroup;
+    if (error) throw mapWriteError(error);
+    return data as unknown as ChartAccountGroup;
   },
 
   async update(id: number, raw: unknown): Promise<ChartAccountGroup> {
@@ -156,9 +182,9 @@ export const chartAccountGroupService = {
     if (parsed.data.group_code !== undefined) await this.assertCodeUnique(parsed.data.group_code, id);
 
     const { data, error } = await repository.update(id, parsed.data);
-    if (error) throw new ChartAccountGroupServiceError(error.message, 422);
+    if (error) throw mapWriteError(error);
     if (!data) throw new ChartAccountGroupServiceError('Grupo não encontrado', 404);
-    return data as ChartAccountGroup;
+    return data as unknown as ChartAccountGroup;
   },
 
   async remove(id: number): Promise<{ chart_account_group_id: number }> {

@@ -681,7 +681,14 @@ export function getChartAccountGroupColumns(
   return [
     { key: 'group_code', header: 'Código', sortKey: 'group_code', size: 120, render: (g) => g.group_code ?? '—' },
     { key: 'group_description', header: 'Descrição', sortKey: 'group_description', size: 320, wrap: true, render: (g) => g.group_description ?? '—' },
-    { key: 'group_type', header: 'Tipo', sortKey: 'group_type', size: 80, align: 'center', render: (g) => g.group_type ?? '—' },
+    {
+      key: 'type_group',
+      header: 'Natureza',
+      sortKey: 'type_group_id',
+      size: 160,
+      wrap: true,
+      render: (g) => g.type_group?.type_group_description ?? '—',
+    },
     {
       key: '__actions__',
       header: 'Ações',

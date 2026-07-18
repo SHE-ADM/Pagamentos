@@ -39,6 +39,14 @@ interface CompanyOption {
   trade_name: string | null;
 }
 
+// Linha do catálogo `financial_type_group` (NATUREZA contábil — lookup do <select>
+// "Natureza" no CRUD de Grupos). Espelha o tipo do backend (lib/lookups.ts TypeGroupOption).
+// Sem `export` (como CompanyOption): o consumidor (ChartAccountGroupsPage) infere pelo retorno.
+interface TypeGroupOption {
+  type_group_id: number;
+  type_group_description: string | null;
+}
+
 const DATA_API_BASE = (import.meta.env.VITE_DATA_API_URL as string | undefined) ?? '/data-api';
 
 interface ApiEnvelope<T> {
@@ -107,4 +115,10 @@ export function listStatuses(): Promise<StatusOption[]> {
 // Empresas pagadoras (OTIMOTEX/LEBIANCO) — lookup do <select> "Empresa" do ContaForm.
 export function listCompanies(): Promise<CompanyOption[]> {
   return call<CompanyOption[]>('/companies');
+}
+
+// Natureza contábil (Receitas/Despesas/Ativo/Passivo) — lookup do <select> "Natureza" do
+// CRUD de Grupos. Inclui o id 0 ("Não informado"), permitindo desclassificar um grupo.
+export function listFinancialTypeGroups(): Promise<TypeGroupOption[]> {
+  return call<TypeGroupOption[]>('/financial-type-groups');
 }

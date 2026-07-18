@@ -11,6 +11,7 @@ const COST_CENTER_TABLE = 'financial_cost_center';
 const CHART_ACCOUNT_TABLE = 'financial_chart_of_account';
 const STATUS_TABLE = 'status';
 const COMPANY_TABLE = 'company';
+const TYPE_GROUP_TABLE = 'financial_type_group';
 const DEFAULT_LIMIT = 500; // cadastros pequenos (dezenas/centenas) — cabe num fetch.
 const MAX_LIMIT = 1000;
 
@@ -26,6 +27,14 @@ export interface StatusOption {
 export interface CompanyOption {
   sk_company: number;
   trade_name: string | null;
+}
+
+// Linha do catálogo `financial_type_group` (NATUREZA contábil — lookup do <select>
+// "Natureza" no CRUD de Grupos, financial_chart_of_account_group.type_group_id). Poucas
+// linhas (0 Não informado + Receitas/Despesas/Ativo/Passivo). Ordenado por id.
+export interface TypeGroupOption {
+  type_group_id: number;
+  type_group_description: string | null;
 }
 
 // Opção do 1º select da classificação contábil (cascata INVERTIDA Plano → Centro):
@@ -203,5 +212,22 @@ export const companyService = {
       .order('trade_name', { ascending: true });
     if (error) throw new LookupServiceError(error.message, 500);
     return (data ?? []) as CompanyOption[];
+  },
+};
+
+export const financialTypeGroupService = {
+  /**
+   * Lista o catálogo `financial_type_group` (NATUREZA contábil — alimenta o <select>
+   * "Natureza" do CRUD de Grupos, financial_chart_of_account_group.type_group_id).
+   * Inclui o id 0 ("Não informado") para permitir desclassificar. Ordenado por id.
+   * @throws {LookupServiceError} 500 em falha do banco.
+   */
+  async list(): Promise<TypeGroupOption[]> {
+    const { data, error } = await getSupabaseAdmin()
+      .from(TYPE_GROUP_TABLE)
+      .select('type_group_id,type_group_description')
+      .order('type_group_id', { ascending: true });
+    if (error) throw new LookupServiceError(error.message, 500);
+    return (data ?? []) as TypeGroupOption[];
   },
 };
