@@ -18,6 +18,7 @@ import {
 import type { ZodError } from 'zod';
 import { getSupabaseAdmin } from './supabase-admin';
 import { resolveSort, type SortOrder } from './sort';
+import { checkClassificationPair } from './classification';
 
 const SUPPLIER_TABLE = 'supplier';
 // Colunas ordenáveis (própria tabela) usadas pelo sort do grid de /fornecedores.
@@ -211,6 +212,11 @@ export const supplierService = {
     const parsed = supplierCreateSchema.safeParse(raw);
     if (!parsed.success) throw new SupplierServiceError(formatZodError(parsed.error), 422);
 
+    // Par de classificação DEFAULT (centro de custo + plano de contas): mesma trava do
+    // CRUD de contas — plano sem centro relacionado (e vice-versa) é rejeitado.
+    const pairMsg = await checkClassificationPair(parsed.data.cost_center_id ?? 0, parsed.data.chart_account_id ?? 0);
+    if (pairMsg) throw new SupplierServiceError(pairMsg, 422);
+
     const { data, error } = await supplierRepository.create(parsed.data);
     if (error) {
       if (error.code === '23505') {
@@ -231,6 +237,13 @@ export const supplierService = {
   async update(sk: number, raw: unknown): Promise<Supplier> {
     const parsed = supplierUpdateSchema.safeParse(raw);
     if (!parsed.success) throw new SupplierServiceError(formatZodError(parsed.error), 422);
+
+    // Par de classificação — só quando algum id vem no PATCH (SupplierForm envia os dois).
+    const { cost_center_id: cc, chart_account_id: ca } = parsed.data;
+    if (cc !== undefined || ca !== undefined) {
+      const pairMsg = await checkClassificationPair(cc ?? 0, ca ?? 0);
+      if (pairMsg) throw new SupplierServiceError(pairMsg, 422);
+    }
 
     const { data, error } = await supplierRepository.update(sk, parsed.data);
     if (error) {

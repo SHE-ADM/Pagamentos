@@ -132,9 +132,11 @@ const costCenterDefaultLabel = (c?: ClassificationSource): string | undefined =>
   return c.cost_center?.cost_center_description ?? c.cost_center?.cost_center_code ?? `#${c.cost_center_id}`;
 };
 
-const chartAccountDefaultLabel = (c?: ClassificationSource): string | undefined => {
-  if (!c?.chart_account_id) return undefined;
-  return c.chart_account?.account_description ?? c.chart_account?.account_code ?? `#${c.chart_account_id}`;
+// Descrição do plano de contas já vinculado — é o VALOR do 1º select (cascata invertida
+// Plano → Centro). Vem do embed do JOIN; null quando não há classificação (id 0/ausente).
+const chartAccountDescriptionOf = (c?: ClassificationSource): string | null => {
+  if (!c?.chart_account_id) return null;
+  return c.chart_account?.account_description ?? null;
 };
 
 const ContaForm = forwardRef<ContaFormHandle, ContaFormProps>(function ContaForm({
@@ -166,10 +168,16 @@ const ContaForm = forwardRef<ContaFormHandle, ContaFormProps>(function ContaForm
   // interno do react-select, que não espelha `value`) e dispara o autofoco (key > 0). NÃO
   // afeta os selects de classificação (centro/plano permanecem — ver [[conta-form-...]]).
   const [supplierKey, setSupplierKey] = useState(0);
-  // Classificação contábil (opcional) — FKs cost_center_id / chart_account_id.
-  // id 0 (sentinela "não informado") aparece vazio no select.
+  // Classificação contábil (opcional) — cascata INVERTIDA Plano → Centro. O 1º select
+  // guarda a DESCRIÇÃO do plano; o 2º (centro) resolve o chart_account_id + o cost_center_id.
+  // id 0 (sentinela "não informado") aparece vazio nos selects.
+  const [chartAccountDescription, setChartAccountDescription] = useState<string | null>(
+    chartAccountDescriptionOf(defaultValues),
+  );
   const [costCenterId, setCostCenterId] = useState<number | null>(orNull(defaultValues?.cost_center_id));
   const [chartAccountId, setChartAccountId] = useState<number | null>(orNull(defaultValues?.chart_account_id));
+  // Erro do par de classificação (plano sem centro) — espelha a trava da Next API na UI.
+  const [classificationError, setClassificationError] = useState<string | null>(null);
   // Classificação DEFAULT do fornecedor selecionado — fonte dos rótulos ao re-semear.
   // Fica preenchido depois que o usuário ESCOLHE/TROCA o fornecedor (create OU edição);
   // antes disso (edição), os rótulos vêm de `defaultValues` (a própria conta). Os selects
@@ -198,11 +206,21 @@ const ContaForm = forwardRef<ContaFormHandle, ContaFormProps>(function ContaForm
     },
   }), []);
 
-  // Cascata: trocar (ou limpar) o centro de custo zera o plano de contas, que pode não
-  // pertencer ao novo centro. O ChartAccountSelect remonta via `key={costCenterId}`.
-  const handleCostCenterChange = (id: number | null) => {
-    setCostCenterId(id);
+  // Cascata INVERTIDA: trocar (ou limpar) o PLANO zera o centro, que pode não pertencer ao
+  // novo plano. O CostCenterSelect remonta via `key={chartAccountDescription}`.
+  const handlePlanoChange = (description: string | null) => {
+    setChartAccountDescription(description);
     setChartAccountId(null);
+    setCostCenterId(null);
+    setClassificationError(null);
+  };
+
+  // Escolher o CENTRO resolve o chart_account_id (a linha do plano naquele centro) e o
+  // cost_center_id — gravados juntos, sempre consistentes.
+  const handleCentroChange = (caId: number | null, ccId: number | null) => {
+    setChartAccountId(caId);
+    setCostCenterId(ccId);
+    setClassificationError(null);
   };
 
   // Ao ESCOLHER/TROCAR o fornecedor (ação do usuário — o onChange do SupplierSelect NÃO
@@ -223,8 +241,10 @@ const ContaForm = forwardRef<ContaFormHandle, ContaFormProps>(function ContaForm
         const cc = sup.cost_center_id || 0;
         const ca = sup.chart_account_id || 0;
         setPrefill(cc || ca ? sup : null);
+        setChartAccountDescription(ca ? (sup.chart_account?.account_description ?? null) : null);
         setCostCenterId(cc || null);
         setChartAccountId(ca || null);
+        setClassificationError(null);
       } catch {
         // Falha ao buscar defaults não bloqueia o lançamento — segue sem re-semear.
       }
@@ -244,6 +264,12 @@ const ContaForm = forwardRef<ContaFormHandle, ContaFormProps>(function ContaForm
     }
     if (!raw.payment_method) {
       setError('payment_method', { message: 'Selecione o tipo de pagamento' });
+      ok = false;
+    }
+    // Par de classificação: plano informado exige o centro (espelha a trava da Next API).
+    setClassificationError(null);
+    if (chartAccountDescription && chartAccountId == null) {
+      setClassificationError('Selecione o centro de custo do plano informado');
       ok = false;
     }
 
@@ -316,21 +342,22 @@ const ContaForm = forwardRef<ContaFormHandle, ContaFormProps>(function ContaForm
 
       <AuthInput label="Descrição" error={errors.description?.message} {...register('description')} />
 
-      <CostCenterSelect
-        id="conta-cost-center"
-        label="Centro de custo"
-        value={costCenterId}
-        defaultLabel={costCenterDefaultLabel(labelSource)}
-        onChange={handleCostCenterChange}
-      />
-
+      {/* Cascata INVERTIDA: Plano de contas PRIMEIRO; o centro reflete o plano escolhido. */}
       <ChartAccountSelect
         id="conta-chart-account"
         label="Plano de contas"
+        value={chartAccountDescription}
+        onChange={handlePlanoChange}
+      />
+
+      <CostCenterSelect
+        id="conta-cost-center"
+        label="Centro de custo"
+        planoDescription={chartAccountDescription}
         value={chartAccountId}
-        costCenterId={costCenterId}
-        defaultLabel={chartAccountDefaultLabel(labelSource)}
-        onChange={setChartAccountId}
+        defaultLabel={costCenterDefaultLabel(labelSource)}
+        onChange={handleCentroChange}
+        error={classificationError ?? undefined}
       />
 
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">

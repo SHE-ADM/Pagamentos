@@ -11,7 +11,10 @@ vi.mock('@/lib/lookups', () => {
       this.status = status;
     }
   }
-  return { chartAccountService: { list: vi.fn() }, LookupServiceError };
+  return {
+    chartAccountService: { listPlanoDescriptions: vi.fn(), listCentersForPlano: vi.fn() },
+    LookupServiceError,
+  };
 });
 vi.mock('@/lib/chart-accounts', () => {
   class ChartAccountServiceError extends Error {
@@ -31,7 +34,8 @@ import { chartAccountService as lookup, LookupServiceError } from '@/lib/lookups
 import { chartAccountService as crud, ChartAccountServiceError } from '@/lib/chart-accounts';
 
 const requireAuthMock = vi.mocked(requireAuth);
-const lookupListMock = vi.mocked(lookup.list);
+const planoDescMock = vi.mocked(lookup.listPlanoDescriptions);
+const centersMock = vi.mocked(lookup.listCentersForPlano);
 const crudListMock = vi.mocked(crud.list);
 const crudCreateMock = vi.mocked(crud.create);
 
@@ -44,37 +48,41 @@ function postRequest(jsonImpl: () => Promise<unknown>): NextRequest {
 
 beforeEach(() => {
   requireAuthMock.mockReset();
-  lookupListMock.mockReset();
+  planoDescMock.mockReset();
+  centersMock.mockReset();
   crudListMock.mockReset();
   crudCreateMock.mockReset();
 });
 
-describe('GET /api/chart-accounts (lookup/cascata — sem page)', () => {
+describe('GET /api/chart-accounts (cascata invertida — lookup)', () => {
   it('401 quando não autenticado', async () => {
     requireAuthMock.mockResolvedValue(Response.json({ success: false, error: 'x' }, { status: 401 }));
     const res = await GET(getRequest());
     expect(res.status).toBe(401);
-    expect(lookupListMock).not.toHaveBeenCalled();
+    expect(planoDescMock).not.toHaveBeenCalled();
   });
 
-  it('encaminha cost_center_id ao lookup (cascata) e não toca o CRUD', async () => {
+  it('sem page/description → 1º select: descrições de planos (encaminha search)', async () => {
     requireAuthMock.mockResolvedValue(null);
-    lookupListMock.mockResolvedValue([] as never);
-    await GET(getRequest('cost_center_id=7'));
-    expect(lookupListMock).toHaveBeenCalledWith(expect.objectContaining({ costCenterId: 7 }));
+    planoDescMock.mockResolvedValue([] as never);
+    await GET(getRequest('search=serv'));
+    expect(planoDescMock).toHaveBeenCalledWith(expect.objectContaining({ search: 'serv' }));
+    expect(centersMock).not.toHaveBeenCalled();
     expect(crudListMock).not.toHaveBeenCalled();
   });
 
-  it('cost_center_id inválido → costCenterId=undefined', async () => {
+  it('com description → 2º select: centros do plano (não toca o CRUD)', async () => {
     requireAuthMock.mockResolvedValue(null);
-    lookupListMock.mockResolvedValue([] as never);
-    await GET(getRequest('cost_center_id=0'));
-    expect(lookupListMock).toHaveBeenCalledWith(expect.objectContaining({ costCenterId: undefined }));
+    centersMock.mockResolvedValue([] as never);
+    await GET(getRequest('description=Hospedagens'));
+    expect(centersMock).toHaveBeenCalledWith({ description: 'Hospedagens' });
+    expect(planoDescMock).not.toHaveBeenCalled();
+    expect(crudListMock).not.toHaveBeenCalled();
   });
 
   it('500 quando o lookup falha', async () => {
     requireAuthMock.mockResolvedValue(null);
-    lookupListMock.mockRejectedValue(new LookupServiceError('boom', 500));
+    planoDescMock.mockRejectedValue(new LookupServiceError('boom', 500));
     const res = await GET(getRequest());
     expect(res.status).toBe(500);
   });
@@ -88,7 +96,7 @@ describe('GET /api/chart-accounts (CRUD paginado — com page)', () => {
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body).toEqual({ success: true, data: [{ chart_account_id: 1 }], meta: { total: 1, page: 1, limit: 20 } });
-    expect(lookupListMock).not.toHaveBeenCalled();
+    expect(planoDescMock).not.toHaveBeenCalled();
   });
 
   it('encaminha cost_center_id + postable ao CRUD (grid complementar)', async () => {
@@ -98,7 +106,7 @@ describe('GET /api/chart-accounts (CRUD paginado — com page)', () => {
     expect(crudListMock).toHaveBeenCalledWith(
       expect.objectContaining({ costCenterId: 42, postableOnly: true }),
     );
-    expect(lookupListMock).not.toHaveBeenCalled();
+    expect(planoDescMock).not.toHaveBeenCalled();
   });
 
   it('cost_center_id inválido no CRUD → costCenterId=undefined e postableOnly=false', async () => {

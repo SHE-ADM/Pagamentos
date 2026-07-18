@@ -2,51 +2,34 @@ import { describe, it, expect, vi } from 'vitest';
 import { render, screen } from '@testing-library/react';
 
 vi.mock('../../services/lookups', () => ({
-  listChartAccounts: vi.fn().mockResolvedValue([]),
-  listCostCenters: vi.fn(),
+  listPlanoDescriptions: vi.fn().mockResolvedValue([]),
 }));
 
-import { listChartAccounts } from '../../services/lookups';
+import { listPlanoDescriptions } from '../../services/lookups';
 import ChartAccountSelect from './ChartAccountSelect';
 
-describe('ChartAccountSelect', () => {
+// 1º select da cascata INVERTIDA: o plano de contas é escolhido pela DESCRIÇÃO (o value é
+// a própria descrição, não um id). O centro (CostCenterSelect) resolve o chart_account_id.
+describe('ChartAccountSelect (plano de contas por descrição)', () => {
   it('renderiza o rótulo', () => {
-    render(<ChartAccountSelect label="Plano de contas" value={null} costCenterId={1} onChange={vi.fn()} />);
+    render(<ChartAccountSelect label="Plano de contas" value={null} onChange={vi.fn()} />);
     expect(screen.getByText('Plano de contas')).toBeInTheDocument();
   });
 
-  it('exibe o item já selecionado (modo edição)', () => {
-    render(
-      <ChartAccountSelect label="Plano de contas" value={5} costCenterId={1} defaultLabel="Clientes" onChange={vi.fn()} />,
-    );
-    expect(screen.getByText('Clientes')).toBeInTheDocument();
-  });
-
-  it('fica desabilitado quando não há centro de custo (cascata)', () => {
-    render(<ChartAccountSelect label="Plano de contas" value={null} costCenterId={null} onChange={vi.fn()} />);
-    // Sem centro: orienta o usuário e não expõe o input interativo (react-select
-    // remove o role combobox quando isDisabled).
-    expect(screen.getByText('Selecione um centro de custo primeiro')).toBeInTheDocument();
-    expect(screen.queryByRole('combobox')).toBeNull();
-  });
-
-  it('habilita quando há um centro de custo selecionado', () => {
-    render(<ChartAccountSelect label="Plano de contas" value={null} costCenterId={1} onChange={vi.fn()} />);
-    expect(screen.getByRole('combobox')).toBeEnabled();
+  it('exibe a descrição já selecionada (modo edição)', () => {
+    render(<ChartAccountSelect label="Plano de contas" value="Serviços Gerais" onChange={vi.fn()} />);
+    expect(screen.getByText('Serviços Gerais')).toBeInTheDocument();
   });
 
   it('é controlado: reflete a mudança do value após montado (não some)', () => {
-    // Regressão: o valor não pode sumir quando o pai o atualiza (pré-preenchimento/edição).
-    const { rerender } = render(
-      <ChartAccountSelect label="Plano de contas" value={null} costCenterId={1} onChange={vi.fn()} />,
-    );
-    rerender(<ChartAccountSelect label="Plano de contas" value={9} costCenterId={1} defaultLabel="Frete" onChange={vi.fn()} />);
-    expect(screen.getByText('Frete')).toBeInTheDocument();
+    const { rerender } = render(<ChartAccountSelect label="Plano de contas" value={null} onChange={vi.fn()} />);
+    rerender(<ChartAccountSelect label="Plano de contas" value="Frete sobre vendas" onChange={vi.fn()} />);
+    expect(screen.getByText('Frete sobre vendas')).toBeInTheDocument();
   });
 
-  it('mostra erro claro quando o lookup falha (API indisponível), não "nenhuma encontrada"', async () => {
-    vi.mocked(listChartAccounts).mockRejectedValueOnce(new Error('network'));
-    render(<ChartAccountSelect label="Plano de contas" value={null} costCenterId={1} onChange={vi.fn()} />);
+  it('mostra erro claro quando o lookup falha (API indisponível), não "nenhum encontrado"', async () => {
+    vi.mocked(listPlanoDescriptions).mockRejectedValueOnce(new Error('network'));
+    render(<ChartAccountSelect label="Plano de contas" value={null} onChange={vi.fn()} />);
     expect(await screen.findByText(/API de dados indisponível/i)).toBeInTheDocument();
   });
 });

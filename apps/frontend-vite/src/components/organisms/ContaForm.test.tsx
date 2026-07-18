@@ -14,16 +14,32 @@ vi.mock('../molecules/SupplierSelect', () => ({
   ),
 }));
 
-// Stubs dos lookups (react-select async) — evitam o react-select + rede no teste.
-// Expõem value/defaultLabel em data-* para asserir o pré-preenchimento.
-vi.mock('../molecules/CostCenterSelect', () => ({
-  default: ({ label, value, defaultLabel }: { label: string; value: number | null; defaultLabel?: string }) => (
-    <input aria-label={label} data-value={value ?? ''} data-default-label={defaultLabel ?? ''} readOnly />
+// Stubs dos lookups (react-select async) — evitam o react-select + rede no teste. Cascata
+// INVERTIDA: ChartAccountSelect (plano) tem value = DESCRIÇÃO; CostCenterSelect (centro) tem
+// value = chart_account_id e onChange devolve (chartAccountId, costCenterId). Expõem os
+// valores em data-* e um botão para simular a seleção.
+vi.mock('../molecules/ChartAccountSelect', () => ({
+  default: ({ label, value, onChange }: { label: string; value: string | null; onChange: (d: string | null) => void }) => (
+    <div>
+      <input aria-label={label} data-value={value ?? ''} readOnly />
+      <button type="button" onClick={() => onChange('Serviços Gerais')}>set-plano</button>
+    </div>
   ),
 }));
-vi.mock('../molecules/ChartAccountSelect', () => ({
-  default: ({ label, value, defaultLabel }: { label: string; value: number | null; defaultLabel?: string }) => (
-    <input aria-label={label} data-value={value ?? ''} data-default-label={defaultLabel ?? ''} readOnly />
+vi.mock('../molecules/CostCenterSelect', () => ({
+  default: ({ label, value, defaultLabel, planoDescription, error, onChange }: {
+    label: string;
+    value: number | null;
+    defaultLabel?: string;
+    planoDescription: string | null;
+    error?: string;
+    onChange: (ca: number | null, cc: number | null) => void;
+  }) => (
+    <div>
+      <input aria-label={label} data-value={value ?? ''} data-default-label={defaultLabel ?? ''} data-plano={planoDescription ?? ''} readOnly />
+      {error && <span>{error}</span>}
+      <button type="button" onClick={() => onChange(10, 5)}>set-centro</button>
+    </div>
   ),
 }));
 
@@ -109,12 +125,14 @@ describe('ContaForm', () => {
     await userEvent.click(screen.getByRole('button', { name: 'Fornecedor' }));
 
     await waitFor(() => expect(getSupplierMock).toHaveBeenCalledWith(1));
-    const cc = screen.getByLabelText('Centro de custo');
-    const ca = screen.getByLabelText('Plano de contas');
-    await waitFor(() => expect(cc).toHaveAttribute('data-value', '5'));
-    expect(cc).toHaveAttribute('data-default-label', 'Logística');
-    await waitFor(() => expect(ca).toHaveAttribute('data-value', '10'));
-    expect(ca).toHaveAttribute('data-default-label', 'Frete sobre vendas');
+    // Cascata invertida: o PLANO guarda a descrição; o CENTRO guarda o chart_account_id
+    // resolvido + rotula pelo centro (Logística).
+    const plano = screen.getByLabelText('Plano de contas');
+    const centro = screen.getByLabelText('Centro de custo');
+    await waitFor(() => expect(plano).toHaveAttribute('data-value', 'Frete sobre vendas'));
+    await waitFor(() => expect(centro).toHaveAttribute('data-value', '10'));
+    expect(centro).toHaveAttribute('data-default-label', 'Logística');
+    expect(centro).toHaveAttribute('data-plano', 'Frete sobre vendas');
   });
 
   it('re-semeia a classificação ao TROCAR o fornecedor no modo edição (não re-semeia no mount)', async () => {
@@ -136,18 +154,48 @@ describe('ContaForm', () => {
     render(<ContaForm mode="edit" defaultValues={conta} onSubmit={vi.fn().mockResolvedValue(undefined)} />);
 
     // No mount da edição: mantém a classificação da própria conta (0/0 → vazio), SEM buscar o fornecedor.
-    const cc = screen.getByLabelText('Centro de custo');
-    expect(cc).toHaveAttribute('data-value', '');
+    const centro = screen.getByLabelText('Centro de custo');
+    expect(centro).toHaveAttribute('data-value', '');
     expect(getSupplierMock).not.toHaveBeenCalled();
 
-    // Troca o fornecedor (stub → sk=1) → re-semeia com o default do NOVO fornecedor.
+    // Troca o fornecedor (stub → sk=1) → re-semeia com o default do NOVO fornecedor. O CENTRO
+    // passa a guardar o chart_account_id (152) e o PLANO, a descrição.
     await userEvent.click(screen.getByRole('button', { name: 'Fornecedor' }));
     await waitFor(() => expect(getSupplierMock).toHaveBeenCalledWith(1));
-    await waitFor(() => expect(cc).toHaveAttribute('data-value', '19'));
-    expect(cc).toHaveAttribute('data-default-label', 'Compras');
-    const ca = screen.getByLabelText('Plano de contas');
-    await waitFor(() => expect(ca).toHaveAttribute('data-value', '152'));
-    expect(ca).toHaveAttribute('data-default-label', 'Mercadorias para Revenda');
+    await waitFor(() => expect(centro).toHaveAttribute('data-value', '152'));
+    expect(centro).toHaveAttribute('data-default-label', 'Compras');
+    const plano = screen.getByLabelText('Plano de contas');
+    await waitFor(() => expect(plano).toHaveAttribute('data-value', 'Mercadorias para Revenda'));
+  });
+
+  it('bloqueia o submit quando o plano é informado sem o centro (par incompleto)', async () => {
+    const { onSubmit } = setup();
+    await userEvent.click(screen.getByRole('button', { name: 'Fornecedor' }));
+    await waitFor(() => expect(getSupplierMock).toHaveBeenCalledWith(1)); // prefill 0/0 aplicado
+    await userEvent.type(screen.getByLabelText('Valor (R$)'), '100');
+    await userEvent.selectOptions(screen.getByLabelText('Tipo de documento'), 'boleto');
+    await userEvent.selectOptions(screen.getByLabelText('Tipo de pagamento'), 'pix');
+    // Escolhe SÓ o plano (sem o centro) → par incompleto.
+    await userEvent.click(screen.getByRole('button', { name: 'set-plano' }));
+    await userEvent.click(screen.getByRole('button', { name: 'Lançar conta' }));
+
+    expect(await screen.findByText('Selecione o centro de custo do plano informado')).toBeInTheDocument();
+    expect(onSubmit).not.toHaveBeenCalled();
+  });
+
+  it('submete o par completo (plano + centro) — chart_account_id e cost_center_id juntos', async () => {
+    const { onSubmit } = setup();
+    await userEvent.click(screen.getByRole('button', { name: 'Fornecedor' }));
+    await waitFor(() => expect(getSupplierMock).toHaveBeenCalledWith(1));
+    await userEvent.type(screen.getByLabelText('Valor (R$)'), '100');
+    await userEvent.selectOptions(screen.getByLabelText('Tipo de documento'), 'boleto');
+    await userEvent.selectOptions(screen.getByLabelText('Tipo de pagamento'), 'pix');
+    await userEvent.click(screen.getByRole('button', { name: 'set-plano' }));
+    await userEvent.click(screen.getByRole('button', { name: 'set-centro' }));
+    await userEvent.click(screen.getByRole('button', { name: 'Lançar conta' }));
+
+    await waitFor(() => expect(onSubmit).toHaveBeenCalled());
+    expect(onSubmit.mock.calls[0][0]).toMatchObject({ chart_account_id: 10, cost_center_id: 5 });
   });
 
   it('submete com fornecedor, valor e enums preenchidos', async () => {

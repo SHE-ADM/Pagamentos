@@ -23,12 +23,18 @@ function makeBuilder(result: QueryResult) {
 const fromMock = vi.fn(() => makeBuilder(resultQueue.shift() ?? { data: null, error: null, count: 0 }));
 vi.mock('@/lib/supabase-admin', () => ({ getSupabaseAdmin: () => ({ from: fromMock }) }));
 
+// Validação do par de classificação DEFAULT mockada (tem teste próprio em classification.test.ts).
+vi.mock('./classification', () => ({ checkClassificationPair: vi.fn() }));
+import { checkClassificationPair } from './classification';
+
 const { supplierService } = await import('./suppliers');
 
 beforeEach(() => {
   resultQueue.length = 0;
   builders.length = 0;
   fromMock.mockClear();
+  vi.mocked(checkClassificationPair).mockReset();
+  vi.mocked(checkClassificationPair).mockResolvedValue(null);
 });
 
 describe('supplierService.list', () => {
@@ -81,12 +87,32 @@ describe('supplierService.create', () => {
     await expect(supplierService.create({})).rejects.toMatchObject({ status: 422 });
     expect(fromMock).not.toHaveBeenCalled();
   });
+
+  it('422 quando o par de classificação default é inválido — não chega ao insert', async () => {
+    vi.mocked(checkClassificationPair).mockResolvedValueOnce('Informe o centro de custo e o plano de contas juntos.');
+    await expect(
+      supplierService.create({ trade_name: 'ACME', cost_center_id: 5, chart_account_id: 0 }),
+    ).rejects.toMatchObject({ status: 422 });
+    expect(fromMock).not.toHaveBeenCalled();
+  });
 });
 
 describe('supplierService.update', () => {
   it('404 quando não existe', async () => {
     resultQueue.push({ data: null, error: null });
     await expect(supplierService.update(9, { trade_name: 'X' })).rejects.toMatchObject({ status: 404 });
+  });
+
+  it('422 quando o par de classificação é inválido no PATCH — não chega ao update', async () => {
+    vi.mocked(checkClassificationPair).mockResolvedValueOnce('O centro de custo informado não pertence ao plano de contas selecionado.');
+    await expect(supplierService.update(5, { cost_center_id: 5, chart_account_id: 10 })).rejects.toMatchObject({ status: 422 });
+    expect(fromMock).not.toHaveBeenCalled();
+  });
+
+  it('PATCH sem classificação NÃO valida o par', async () => {
+    resultQueue.push({ data: { sk_supplier: 5, trade_name: 'X' }, error: null });
+    await supplierService.update(5, { trade_name: 'X' });
+    expect(vi.mocked(checkClassificationPair)).not.toHaveBeenCalled();
   });
 });
 
