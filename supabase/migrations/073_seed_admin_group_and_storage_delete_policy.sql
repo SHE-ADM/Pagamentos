@@ -41,9 +41,7 @@ CREATE POLICY "attachments_no_delete_authenticated"
   USING (bucket_id <> 'attachments');
 
 -- ============================================================================
--- VERIFICAÇÃO (após aplicar):
---   SELECT group_id, group_name FROM public.user_group WHERE group_id IN (0, 1);
---   SELECT policyname, cmd, permissive FROM pg_policies
---   WHERE  schemaname = 'storage' AND tablename = 'objects'
---     AND  policyname = 'attachments_no_delete_authenticated';
+-- VERIFICAÇÃO (após aplicar): confirmar em public.user_group que os grupos de id
+-- 0 e 1 existem; e em pg_policies (schema storage, tabela objects) que a policy
+-- RESTRICTIVE "attachments_no_delete_authenticated" (comando DELETE) está presente.
 -- ============================================================================

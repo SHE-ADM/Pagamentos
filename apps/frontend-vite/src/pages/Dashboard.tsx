@@ -185,14 +185,13 @@ export default function Dashboard() {
         </div>
       </div>
 
-      {/* Região rolável precisa de acesso por teclado (WCAG 2.1.1): diferente de
-          /consulta e /emails (cujos grids têm botões/checkboxes focáveis), o corpo do
-          Dashboard só tem cards/gráficos não-focáveis — tabIndex=0 + região nomeada
-          deixam o usuário de teclado focar e rolar (axe: scrollable-region-focusable). */}
-      <div
+      {/* Região rolável nomeada (WCAG 2.1.1 / axe scrollable-region-focusable): o
+          <section> com aria-label expõe o papel "region" IMPLÍCITO (sem role=; S6819) e
+          os cards de KPI (<button>, logo abaixo) são os descendentes FOCÁVEIS que dão
+          acesso por teclado à rolagem — daí NÃO precisar tabIndex no contêiner (S6845).
+          Os 5 KPIs são estáticos: sempre há botão focável, mesmo em loading/vazio. */}
+      <section
         className="flex-1 overflow-y-auto px-6 py-3"
-        tabIndex={0}
-        role="region"
         aria-label="Indicadores e gráficos"
       >
         {error && (
@@ -313,7 +312,7 @@ export default function Dashboard() {
             <PriorityList data={data} />
           </div>
         </div>
-      </div>
+      </section>
     </div>
   );
 }
