@@ -152,10 +152,11 @@ CRUD completo da Next API (Repository → Service → Route, escrita via `getSup
 (`supplierCreateSchema`/`supplierUpdateSchema` — CNPJ/CPF com strip de máscara; ao menos um
 identificador, espelhando `chk_supplier_has_identifier`; **classificação default
 `cost_center_id`/`chart_account_id`** editável — `int().min(0)`, `0` = "não informado"). O form
-(`SupplierForm`) traz **Centro de custo** e **Plano de contas** em CASCATA (`CostCenterSelect`/
-`ChartAccountSelect`); o payload sempre envia os dois ids (`0` quando vazio, cobrindo limpar na
-edição), e `SuppliersPage.openEdit` busca o fornecedor completo (`getSupplier`, com embeds) para
-rotular os selects. `DELETE` é **soft delete**
+(`SupplierForm`) traz **Plano de contas** e **Centro de custo** em CASCATA INVERTIDA
+(`ChartAccountSelect`=plano por descrição → `CostCenterSelect`=os centros que compõem o plano;
+ver "Lookups de classificação contábil"); o payload sempre envia os dois ids (`0` quando vazio,
+cobrindo limpar na edição), e `SuppliersPage.openEdit` busca o fornecedor completo (`getSupplier`,
+com embeds) para rotular os selects. `DELETE` é **soft delete**
 (`deleted_at`, migration 045) e **bloqueia com 409** quando há contas vinculadas
 (`financial_account_control.sk_supplier`) — fornecedor é PRESERVADO, nunca hard delete.
 `sk_supplier`/`supplier_id` nunca entram no corpo (gerados pelo banco + trigger
@@ -211,9 +212,10 @@ coluna de ação; clicar na linha abre o detalhe e a edição parte de lá. Forn
 **react-select** (`molecules/SupplierSelect.tsx` — `AsyncCreatableSelect`: busca + cria fornecedor
 inline via `POST /api/suppliers`); **tipo de documento e tipo de pagamento** são `<select>` de enum
 (valores pré-definidos, obrigatórios, **ordenados alfabeticamente** — `DOCUMENT_TYPE_OPTIONS`/
-`PAYMENT_METHOD_OPTIONS` em `ContaForm`). **Classificação contábil** via dois lookups react-select —
-**Centro de custo** (`molecules/CostCenterSelect.tsx`) e **Plano de contas**
-(`molecules/ChartAccountSelect.tsx`), em CASCATA: ver "Lookups de classificação contábil (cascata)".
+`PAYMENT_METHOD_OPTIONS` em `ContaForm`). **Classificação contábil** via dois lookups react-select
+em **CASCATA INVERTIDA (Plano → Centro)**: **Plano de contas** (`molecules/ChartAccountSelect.tsx`,
+por descrição) PRIMEIRO e **Centro de custo** (`molecules/CostCenterSelect.tsx`, os centros que
+compõem o plano) DEPOIS: ver "Lookups de classificação contábil (cascata)".
 **Empresa pagadora (`sk_company`) é ESCOLHIDA no form** (`LabeledSelect` "Empresa", logo após o
 Fornecedor): 1=OTIMOTEX / 2=LEBIANCO, opções via `GET /api/companies` (`companyService` em
 `lib/lookups.ts`, molde do `statusService`; cliente `listCompanies` em `services/lookups.ts`).
@@ -221,7 +223,7 @@ Fornecedor): 1=OTIMOTEX / 2=LEBIANCO, opções via `GET /api/companies` (`compan
 No **lançamento em série** a empresa **PERMANECE** (o `resetSupplier` não a toca — igual aos
 selects de classificação). Falha no lookup **não trava** o lançamento (fallback OTIMOTEX).
 `sk_company` **é independente do fornecedor** — pode haver conta da LEBIANCO cujo fornecedor é a
-OTIMOTEX. Ordem dos campos do form: **Fornecedor → Empresa → Descrição → Centro de custo → Plano de contas →
+OTIMOTEX. Ordem dos campos do form: **Fornecedor → Empresa → Descrição → Plano de contas → Centro de custo →
 (Tipo de documento + Tipo de pagamento) → (Nº documento + Emissão) → (Valor + Vencimento) →
 Código de barras → Informações adicionais** (os 3 pares na mesma linha; código de barras isolado;
 **Informações adicionais** por último — `<textarea>` de texto livre, coluna
@@ -364,7 +366,8 @@ do cadastro `financial_cost_center` (grupo **Tabelas** da sidebar, página **`/t
 → `pages/CostCentersPage.tsx`). PK `cost_center_id` é **SMALLINT IDENTITY ALWAYS** (gerada pelo banco,
 nunca no corpo); o **id 0 é o sentinela "não informado"** — preservado, nunca listado/editado/excluído.
 `GET /api/cost-centers` é **dois consumos do mesmo recurso, discriminados por `page`**: **sem `page`** =
-lookup legado da classificação contábil (lista completa p/ o react-select, `lib/lookups.ts`, INTOCADO);
+lookup do cadastro (lista completa p/ o `<select>` de centro do form de Plano de contas — `lib/lookups.ts`
+`costCenterService`, INTOCADO; NÃO é mais a cascata de classificação, que agora parte do plano);
 **com `page`** = listagem paginada + busca por código/descrição do CRUD (`lib/cost-centers.ts`, exclui o
 sentinela). `POST /api/cost-centers` cria · `GET/PATCH/DELETE /api/cost-centers/:id`. Validação Zod em
 `@sheild/shared` (`costCenterCreateSchema` exige **código + descrição**; `costCenterUpdateSchema` parcial,
@@ -394,10 +397,11 @@ por Código ascendente** por padrão (estado inicial `detailSort = { col: 'accou
 envia `sort=account_code&order=asc`). Ordenação server-side (Código/Descrição + Grupo/Sub Grupo pela
 descrição do embed via `alias(coluna)`) e paginação própria (evita truncar acima de `MAX_LIMIT=100`). **Backend (aditivo, retrocompatível):** o CRUD paginado
 de plano de contas (`lib/chart-accounts.ts` + `app/api/chart-accounts` ramo COM `page`) ganhou os filtros
-`cost_center_id` (inteiro > 0) e `postable=true` — antes só o **lookup** da cascata (sem `page`) filtrava
-por centro, mas devolvia só código/descrição (sem embeds grupo/subgrupo); o ramo de lookup ficou
-**INTOCADO**. Cliente: `listChartAccountsByCostCenter(costCenterId, params)` em `services/chartAccounts.ts`
-(reusa o CRUD paginado, envelope com `meta` + embeds).
+`cost_center_id` (inteiro > 0) e `postable=true`. Cliente:
+`listChartAccountsByCostCenter(costCenterId, params)` em `services/chartAccounts.ts` (reusa o CRUD
+paginado, envelope com `meta` + embeds). O ramo **SEM `page`** dessa rota **não** é mais a antiga cascata
+por centro (removida) — passou a servir a cascata INVERTIDA: `description=`→centros do plano · senão→
+descrições de planos (ver "Lookups de classificação contábil").
 
 **CRUDs dos demais cadastros contábeis (grupo Tabelas) — Bancos, Contas, Plano de contas, Grupos,
 Sub grupos:** mesmo padrão do CRUD de centros de custo (Repository → Service `service_role` → Route
@@ -488,37 +492,66 @@ três services (igual a `lib/lookups.ts`) para o lookup não truncar o `<select>
 usa `DEFAULT_LIMIT`. **`GET /api/statuses`** (read-only,
 `statusService` em `lib/lookups.ts`) alimenta o lookup de situação do form de Contas. Lookups no frontend:
 `services/lookups.ts` (`listBanks`/`listChartAccountGroups`/`listChartAccountSubgroups`/`listStatuses` +
-`listCostCenters`/`listChartAccounts`). Schemas Zod em `@sheild/shared` (`bank`/`financial-account`/
+`listCostCenters` + `listPlanoDescriptions`/`listCentersForPlano` da cascata invertida). Schemas Zod
+em `@sheild/shared` (`bank`/`financial-account`/
 `chart-account`/`chart-account-group`/`chart-account-subgroup`). **Selects obrigatórios vazios** chegam
 como `NaN` (`valueAsNumber`) e são **normalizados para 0** nos forms antes do `safeParse` (0 dispara o
 `.min(1)` com a mensagem amigável). **Pendência conhecida:** `payment_type_id` é input numérico cru
 (não há tabela de domínio no banco) — melhoria futura.
 
-**Lookups de classificação contábil (cascata Centro de custo → Plano de contas):** cadastros
-pré-existentes `financial_cost_center` (agora também gerenciado pelo **CRUD de centros de custo** acima)
-e `financial_chart_of_account` (agora também gerenciado pelo **CRUD de Plano de contas** acima; o lookup
-da cascata segue intocado — `GET /api/chart-accounts` sem `page`; este com FK
-`cost_center_id`). Backend: `apps/api-backend/lib/lookups.ts` (`costCenterService`/`chartAccountService`,
-service_role) + rotas `GET /api/cost-centers` e `GET /api/chart-accounts`. Cliente: `services/lookups.ts`
-(`listCostCenters`/`listChartAccounts`). **Regra de cascata:** o plano de contas só lista os planos
-**do centro selecionado** (`chartAccountService.list({ costCenterId })` filtra `cost_center_id`;
-**sem centro → `[]` sem consultar o banco**, e `ChartAccountSelect` fica **desabilitado**). No
-`ContaForm`, trocar o centro **zera o plano** (`handleCostCenterChange`) e o `ChartAccountSelect`
-**remonta via `key={costCenterId}`** (reset visual sem `setState`-in-effect). Os planos só listam
-`is_postable=true`, ordenados por `account_description`; os centros, por `cost_center_description`
-(descartando o placeholder id 0). Os selects exibem **só a descrição** (fallback código → `#id`).
+**Lookups de classificação contábil — CASCATA INVERTIDA Plano → Centro (2026-07-18):** a pedido do
+usuário, o `ContaForm` e o `SupplierForm` escolhem o **Plano de contas PRIMEIRO** (por descrição) e o
+**Centro de custo DEPOIS** (os centros que compõem aquele plano). Antes era Centro → Plano. **Modelo de
+dados inalterado** (`financial_chart_of_account.cost_center_id` = plano→1 centro; a conta grava
+`chart_account_id` + `cost_center_id`) — a inversão é só na UX, **sem migração**. A mesma **descrição**
+de plano ("Serviços Gerais") existe em vários centros como linhas/códigos DISTINTOS (~530 descrições em
+~547 planos postáveis). Cadastros `financial_cost_center`/
+`financial_chart_of_account` (pré-existentes, também geridos pelos CRUDs de Tabelas). Backend:
+`apps/api-backend/lib/lookups.ts` (`chartAccountService.listPlanoDescriptions`/`listCentersForPlano` +
+`costCenterService`, service_role) + rota `GET /api/chart-accounts` (dispatch: `page`→CRUD ·
+`description=`→centros do plano · senão→descrições de planos). Cliente: `services/lookups.ts`
+(`listPlanoDescriptions`/`listCentersForPlano`; o antigo `listChartAccounts` por centro foi **REMOVIDO**).
+
+- **1º select — `ChartAccountSelect` (Plano):** `value` = a **DESCRIÇÃO** (string), não id. Lista as
+  descrições DISTINTAS de planos postáveis com centro válido (`listPlanoDescriptions`, `is_postable=true`
+  + `cost_center_id > 0`). **A dedup é em JS**, então o LIMIT usa `MAX_LIMIT` (não `DEFAULT_LIMIT`) para
+  NÃO truncar antes de deduplicar — com 547 linhas e limite 500 sumiam ~47 descrições do fim do alfabeto
+  (bug corrigido na revisão; se o cadastro passar de `MAX_LIMIT` linhas postáveis, migrar p/ DISTINCT via
+  RPC). Busca por código/descrição.
+- **2º select — `CostCenterSelect` (Centro):** prop `planoDescription` (cascata; **sem plano →
+  desabilitado e `[]` sem ir ao banco**). Lista as linhas postáveis com aquela descrição
+  (`listCentersForPlano`, `.eq(account_description)` + `cost_center_id > 0`); cada opção resolve um
+  `chart_account_id` específico + o seu `cost_center_id`, e o `onChange(chartAccountId, costCenterId)`
+  devolve **os dois juntos** (sempre consistentes). Rótulo pela descrição do centro; nos 3 casos raros de
+  mesma descrição repetida no MESMO centro (2 códigos), anexa o `account_code` p/ diferenciar.
+- No `ContaForm`/`SupplierForm`, trocar o PLANO **zera o centro** (`handlePlanoChange`) — o
+  `CostCenterSelect` recarrega via `key={planoDescription}` no `<AsyncSelect>` interno. Os dois selects
+  são **CONTROLADOS** (espelham `value` no render; **não** remonte por `key`/`prefillNonce` do componente
+  — ver [[conta-form-classification-selects]], já regrediu 3x). Exibem só a descrição (fallback → `#id`).
+
+**Validação do par (autoritativa — `apps/api-backend/lib/classification.ts` `checkClassificationPair`):**
+não gravar plano sem centro relacionado (e vice-versa), nem ids inexistentes, nem par inconsistente. Regra:
+ambos 0 ("não informado") → ok; só um informado → 422 "Informe … juntos"; ambos > 0 → o plano existe, o
+centro existe e o `cost_center_id` da linha do plano **bate** o centro informado (senão 422 "não pertence
+ao plano"). **NÃO valida `is_postable`** (o select já só oferece postáveis; re-impor bloquearia editar
+conta histórica cujo plano foi desativado — plano não-lançável ainda é FK válida). Erro de INFRA do banco
+→ `throw` (500 genérico, sem vazar detalhe), não 422. Chamado em `contaService.create/update` e
+`supplierService.create/update`; espelhado no front (`classificationError` "Selecione o centro de custo do
+plano informado"). O **pipeline Python bypassa** (service_role) e já produz par consistente por construção.
+**Sem migração** — dados atuais 100% consistentes (0 pares inconsistentes/parciais). Testes:
+`lib/classification.test.ts`, `lib/lookups.test.ts`, `lib/contas.test.ts`/`suppliers.test.ts` (mock),
+`ContaForm.test.tsx`/`SupplierForm.test.tsx`, `Cost/ChartAccountSelect.test.tsx`.
 
 **Classificação default do fornecedor — sync bidirecional (migration 052):** `supplier` tem
 `cost_center_id`/`chart_account_id` (SMALLINT NOT NULL DEFAULT 0, sentinela 0 = "não informado"),
 e a classificação flui nos **dois sentidos**:
 - **Default na criação (supplier → conta).** Ao incluir conta, a nova `financial_account_control`
-  herda a classificação do fornecedor quando `> 0`. (a) **Modal create** (`ContaForm`): um efeito
-  **só no modo `create`** chama `getSupplier(sk)` (`services/suppliers.ts` → `GET /api/suppliers/:sk`,
-  que traz `cost_center_id`/`chart_account_id` + embeds) e semeia os selects de Centro de custo /
-  Plano de contas (com rótulos); trocar o fornecedor **re-semeia** e o usuário pode alterar. Como
-  `CostCenterSelect`/`ChartAccountSelect` inicializam `selected` uma vez (não sincronizam `value`),
-  o pré-preenchimento entra na `key` deles via um **`prefillNonce`** que força o remonte. Edição
-  **não** pré-preenche (usa a classificação da própria conta). (b) **Extração de e-mail**:
+  herda a classificação do fornecedor quando `> 0`. (a) **Ao ESCOLHER/TROCAR o fornecedor**
+  (`handleSupplierChange`, ambos os modos) `getSupplier(sk)` (`services/suppliers.ts` →
+  `GET /api/suppliers/:sk`, com `cost_center_id`/`chart_account_id` + embeds) semeia os estados
+  `chartAccountDescription` (do embed `chart_account.account_description`), `chartAccountId` e
+  `costCenterId` — os selects são CONTROLADOS e refletem sozinhos (sem `prefillNonce`/remonte por `key`).
+  No mount da EDIÇÃO **não** busca o fornecedor (usa a classificação da própria conta). (b) **Extração de e-mail**:
   `SupabaseControl.supplier_defaults(sk)` (`read_emails.py`) lê os defaults e `_finalize_supplier`
   os injeta no payload quando `> 0` (cobre PDF e corpo; `0`/ausente → o `DEFAULT 0` do banco assume,
   nunca enviamos `None`).
@@ -532,8 +565,8 @@ e a classificação flui nos **dois sentidos**:
   + embeds opcionais `cost_center`/`chart_account`; `findBySk` faz o JOIN.
 - **Edição direta pelo CRUD de fornecedores (`/fornecedores`).** `cost_center_id`/`chart_account_id`
   **agora entram em `editableFields`** (POST/PATCH públicos de fornecedor) — o form de fornecedor
-  (`SupplierForm`) traz os lookups **Centro de custo** e **Plano de contas** em CASCATA (mesmos
-  `CostCenterSelect`/`ChartAccountSelect` do `ContaForm`; trocar o centro zera/recarrega o plano). O
+  (`SupplierForm`) traz os lookups **Plano de contas** e **Centro de custo** em CASCATA INVERTIDA (mesmos
+  `ChartAccountSelect`/`CostCenterSelect` do `ContaForm`; trocar o plano zera/recarrega o centro). O
   payload **sempre** envia os dois ids (`0` quando não informado), cobrindo definir **e LIMPAR** no
   modo edição (omitir não zeraria a coluna num PATCH parcial). Na edição, `SuppliersPage.openEdit`
   busca o fornecedor completo (`getSupplier` → `GET /suppliers/:sk`, com embeds) para rotular os
@@ -816,6 +849,10 @@ tipo(escopo): mensagem em português ou inglês
 | `refactor` | refatoração sem mudança de comportamento |
 
 Escopo = área afetada: `login`, `email-reader`, `consulta`, `scheduler`, `migrations`, etc.
+
+**Sem co-autoria do Claude (não regredir):** NÃO incluir a linha `Co-Authored-By: Claude ...`
+na mensagem de commit nem no corpo do PR — pedido explícito do usuário. Isso sobrepõe a
+instrução padrão do harness de assinar como co-autor.
 
 **Nomenclatura de Pull Request:** se o usuário informar o nome do PR, usar exatamente esse.
 **Quando o usuário NÃO informar o nome (ou disser "pr seu nome"), o Claude escolhe** um
@@ -1416,8 +1453,8 @@ apps/frontend-vite/src/components/
 │   ├── AuthHeroHeader.tsx     # (gradient) header decorativo com círculos sobrepostos
 │   ├── InlineMessage.tsx      # (gradient) banner sucesso/erro — nunca alert()
 │   ├── SupplierSelect.tsx     # (contas) react-select AsyncCreatable — busca/cria fornecedor (sort=name)
-│   ├── CostCenterSelect.tsx   # (contas + fornecedores) react-select Async — centro de custo (lookup)
-│   ├── ChartAccountSelect.tsx # (contas + fornecedores) react-select Async — plano de contas (CASCATA: filtrado por centro)
+│   ├── ChartAccountSelect.tsx # (contas + fornecedores) react-select Async — PLANO de contas por DESCRIÇÃO (1º da cascata invertida); value = descrição
+│   ├── CostCenterSelect.tsx   # (contas + fornecedores) react-select Async — CENTRO de custo do plano (2º da cascata; value = chart_account_id, onChange devolve chartAccountId+costCenterId)
 │   ├── ColumnVisibilityMenu.tsx # (grid) popover mostrar/ocultar + fixar coluna (pin esq/dir)
 │   ├── GridToolbar.tsx        # (grid) barra: colunas + densidade + restaurar + ações de seleção
 │   ├── AttachmentPicker.tsx   # (anexos) fila CONTROLADA de arquivos a enviar — valida mime/tamanho/duplicata no cliente
@@ -1429,9 +1466,9 @@ apps/frontend-vite/src/components/
 │   ├── ResetPasswordForm.tsx  # (gradient) updateUser + signOut + redirect (fluxo "esqueci a senha")
 │   ├── ChangePasswordForm.tsx # (auth) troca obrigatória no 1º acesso — updateUser + marca password_changed (sem deslogar)
 │   ├── ResendErrosAction.tsx  # (cobrança) barra de seleção "Reenviar e-mails (N)" + confirmação inline + poll de progresso
-│   ├── ContaForm.tsx          # (contas) form criar/editar conta — supplier/centro/plano + cascata; onSubmit(data, pendingFiles) — a fila de anexos sobe no PAI, após gravar a conta
+│   ├── ContaForm.tsx          # (contas) form criar/editar conta — supplier + cascata INVERTIDA plano→centro; onSubmit(data, pendingFiles) — a fila de anexos sobe no PAI, após gravar a conta
 │   ├── ContaAttachments.tsx   # (anexos) anexos SALVOS de uma conta — lista + viewer + soft delete (com confirmação); fallback legacySourceFile
-│   ├── SupplierForm.tsx       # (fornecedores) form criar/editar fornecedor — classificação default (centro/plano cascata) + contatos (telefone/WhatsApp/chave PIX, 2 slots)
+│   ├── SupplierForm.tsx       # (fornecedores) form criar/editar fornecedor — classificação default (cascata INVERTIDA plano→centro) + contatos (telefone/WhatsApp/chave PIX, 2 slots)
 │   ├── CostCenterForm.tsx     # (tabelas) form criar/editar centro de custo — código + descrição
 │   ├── BankForm.tsx           # (tabelas) form de banco — código(3) + nome
 │   ├── FinancialAccountForm.tsx # (tabelas) form de conta — descrição/banco/situação(lookups) + saldo

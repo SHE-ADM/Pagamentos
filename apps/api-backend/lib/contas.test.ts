@@ -21,12 +21,19 @@ function makeBuilder(result: QueryResult) {
 const fromMock = vi.fn(() => makeBuilder(resultQueue.shift() ?? { data: null, error: null, count: 0 }));
 vi.mock('@/lib/supabase-admin', () => ({ getSupabaseAdmin: () => ({ from: fromMock }) }));
 
+// A validação do par de classificação tem teste próprio (classification.test.ts); aqui é
+// mockada (null = par válido por padrão) para os testes exercitarem o resto do service.
+vi.mock('./classification', () => ({ checkClassificationPair: vi.fn() }));
+import { checkClassificationPair } from './classification';
+
 const { contaService } = await import('./contas');
 
 beforeEach(() => {
   resultQueue.length = 0;
   builders.length = 0;
   fromMock.mockClear();
+  vi.mocked(checkClassificationPair).mockReset();
+  vi.mocked(checkClassificationPair).mockResolvedValue(null);
 });
 
 describe('contaService.list', () => {
@@ -137,6 +144,14 @@ describe('contaService.create', () => {
     await expect(contaService.create({ sk_supplier: 1, amount: 100 })).rejects.toMatchObject({ status: 409 });
   });
 
+  it('422 quando o par de classificação é inválido — não chega ao insert', async () => {
+    vi.mocked(checkClassificationPair).mockResolvedValueOnce('O centro de custo informado não pertence ao plano de contas selecionado.');
+    await expect(
+      contaService.create({ sk_supplier: 1, amount: 100, cost_center_id: 5, chart_account_id: 10 }),
+    ).rejects.toMatchObject({ status: 422 });
+    expect(fromMock).not.toHaveBeenCalled();
+  });
+
   it('write-back: grava a classificação no fornecedor quando cost_center_id e chart_account_id > 0', async () => {
     resultQueue.push(
       { data: { id: 7, sk_supplier: 3, cost_center_id: 5, chart_account_id: 10 }, error: null }, // insert conta
@@ -197,6 +212,20 @@ describe('contaService.update', () => {
   it('422 com document_type fora do enum', async () => {
     await expect(contaService.update(5, { document_type: 'xxx' })).rejects.toMatchObject({ status: 422 });
     expect(fromMock).not.toHaveBeenCalled();
+  });
+
+  it('422 quando o par de classificação é inválido no PATCH — não chega ao update', async () => {
+    vi.mocked(checkClassificationPair).mockResolvedValueOnce('Informe o centro de custo e o plano de contas juntos.');
+    await expect(contaService.update(5, { cost_center_id: 5 })).rejects.toMatchObject({ status: 422 });
+    expect(fromMock).not.toHaveBeenCalled();
+  });
+
+  it('PATCH sem classificação valida o par com 0/0 (no-op) e não bloqueia', async () => {
+    // Os campos têm DEFAULT 0 no schema → o PATCH sempre carrega 0/0 quando omitidos; o
+    // validador é chamado com (0,0), que é "não informado" e não bloqueia.
+    resultQueue.push({ data: { id: 5, amount: 200 }, error: null });
+    await contaService.update(5, { amount: 200 });
+    expect(vi.mocked(checkClassificationPair)).toHaveBeenCalledWith(0, 0);
   });
 
   it('S3-2: descarta colunas de pipeline/auditoria enviadas no corpo do PATCH', async () => {

@@ -1,87 +1,66 @@
 // src/components/molecules/ChartAccountSelect.tsx
-// Molecule — seletor de plano de contas com react-select (AsyncSelect): pesquisa
-// o cadastro financial_chart_of_account (apenas contas postáveis) na Next API e
-// retorna o chart_account_id escolhido. NÃO é creatable (cadastro externo ao app).
+// Molecule — 1º select da classificação contábil (cascata INVERTIDA Plano → Centro):
+// pesquisa as DESCRIÇÕES distintas de planos de contas postáveis na Next API e retorna a
+// descrição escolhida. A mesma descrição ("Serviços Gerais") existe em vários centros de
+// custo; a escolha do CENTRO (2º select, CostCenterSelect) é que resolve o chart_account_id.
+// NÃO é creatable (cadastro externo ao app).
 import { useCallback, useState } from 'react';
 import AsyncSelect from 'react-select/async';
-import type { ChartAccount } from '@sheild/shared';
-import { listChartAccounts } from '../../services/lookups';
+import { listPlanoDescriptions } from '../../services/lookups';
 
 // Mensagem exibida quando o lookup FALHA (API de dados fora, 401/500) — distinta de
-// "lista vazia". Evita o engano de "Nenhuma conta encontrada" quando a Next API não respondeu.
+// "lista vazia". Evita o engano de "Nenhum plano encontrado" quando a Next API não respondeu.
 const LOAD_ERROR_MSG = 'Não foi possível carregar os planos de contas (API de dados indisponível).';
 
 interface ChartAccountOption {
-  value: number; // chart_account_id
+  value: string; // account_description
   label: string;
 }
 
 interface ChartAccountSelectProps {
-  /** chart_account_id selecionado (controlado pelo formulário). */
-  value: number | null;
-  /**
-   * Centro de custo selecionado (cascata): filtra os planos disponíveis. Quando `null`,
-   * o select fica DESABILITADO e vazio — o plano de contas depende do centro de custo.
-   * O pai deve remontar este componente (via `key`) ao trocar o centro.
-   */
-  costCenterId: number | null;
-  /** Rótulo já selecionado (modo edição) — exibe sem refazer fetch. */
-  defaultLabel?: string | null;
-  onChange: (id: number | null) => void;
+  /** account_description selecionada (controlada pelo formulário). */
+  value: string | null;
+  onChange: (description: string | null) => void;
   label: string;
   error?: string;
   id?: string;
 }
 
-// Exibe apenas a descrição; fallback para código e, por fim, o id.
-const chartAccountLabel = (c: ChartAccount): string =>
-  c.account_description ?? c.account_code ?? `#${c.chart_account_id}`;
-
-export default function ChartAccountSelect({ value, costCenterId, defaultLabel, onChange, label, error, id }: Readonly<ChartAccountSelectProps>) {
-  // Mirror CONTROLADO do `value` (mesma estratégia do CostCenterSelect): sincroniza
-  // `selected` com a prop no render, sem useEffect nem remonte por `key` do componente —
-  // o que antes zerava o valor em races de timing. Preserva o rótulo quando o id não muda.
+export default function ChartAccountSelect({ value, onChange, label, error, id }: Readonly<ChartAccountSelectProps>) {
+  // Mirror CONTROLADO do `value` (padrão dos selects do projeto): react-select guarda a
+  // opção, mas o pai é a fonte de verdade — sincroniza no render, sem useEffect nem remonte
+  // por `key`. Para o plano, value e label são a própria descrição.
   const [selected, setSelected] = useState<ChartAccountOption | null>(
-    value == null ? null : { value, label: defaultLabel ?? `#${value}` },
+    value == null ? null : { value, label: value },
   );
   if (value !== (selected?.value ?? null)) {
-    setSelected(value == null ? null : { value, label: defaultLabel ?? `#${value}` });
+    setSelected(value == null ? null : { value, label: value });
   }
-
-  const disabled = costCenterId == null;
 
   // Erro de carregamento (API indisponível) — distingue "falhou" de "lista vazia".
   const [loadError, setLoadError] = useState<string | null>(null);
 
-  // Carrega os planos do centro de custo selecionado (código/descrição). Sem centro,
-  // não vai à rede (lista vazia). Em falha, marca o erro e devolve []. Fecha sobre `costCenterId`.
-  const loadOptions = useCallback(
-    async (input: string): Promise<ChartAccountOption[]> => {
-      try {
-        const data = await listChartAccounts(costCenterId, input || undefined);
-        setLoadError(null);
-        return data.map((c) => ({ value: c.chart_account_id, label: chartAccountLabel(c) }));
-      } catch {
-        setLoadError(LOAD_ERROR_MSG);
-        return [];
-      }
-    },
-    [costCenterId],
-  );
+  // Carrega as descrições de planos postáveis (busca por código/descrição). Em falha,
+  // marca o erro (mostrado abaixo e no menu) e devolve [] — sem mascarar como "nenhum".
+  const loadOptions = useCallback(async (input: string): Promise<ChartAccountOption[]> => {
+    try {
+      const data = await listPlanoDescriptions(input || undefined);
+      setLoadError(null);
+      return data.map((c) => ({ value: c.account_description, label: c.account_description }));
+    } catch {
+      setLoadError(LOAD_ERROR_MSG);
+      return [];
+    }
+  }, []);
 
   return (
     <div>
       <span className="block text-sm font-medium text-gray-700 mb-1">{label}</span>
       <AsyncSelect<ChartAccountOption>
-        // Recarrega as opções (defaultOptions) ao trocar o centro de custo — cascata.
-        // O `value` é controlado pelo pai, então o item selecionado PERSISTE através
-        // deste remonte interno (diferente de remontar o componente inteiro por `key`).
-        key={costCenterId ?? 'none'}
         inputId={id}
         aria-label={label}
         aria-invalid={error ? true : undefined}
         value={selected}
-        isDisabled={disabled}
         isClearable
         cacheOptions
         defaultOptions
@@ -90,15 +69,12 @@ export default function ChartAccountSelect({ value, costCenterId, defaultLabel, 
           setSelected(opt);
           onChange(opt ? opt.value : null);
         }}
-        placeholder={disabled ? 'Selecione um centro de custo primeiro' : 'Buscar plano de contas…'}
+        placeholder="Buscar plano de contas…"
         loadingMessage={() => 'Buscando…'}
-        noOptionsMessage={() => loadError ?? 'Nenhuma conta encontrada para este centro de custo'}
+        noOptionsMessage={() => loadError ?? 'Nenhum plano de contas encontrado'}
         classNamePrefix="rs"
         classNames={{
-          control: ({ isDisabled }) =>
-            isDisabled
-              ? 'min-h-[38px] rounded-lg border border-slate-200 bg-slate-50 text-sm cursor-not-allowed'
-              : 'min-h-[38px] rounded-lg border border-slate-200 bg-white text-sm',
+          control: () => 'min-h-[38px] rounded-lg border border-slate-200 bg-white text-sm',
           menu: () => 'rounded-lg border border-slate-200 bg-white shadow-lg text-sm z-20',
           option: ({ isFocused }) => (isFocused ? 'bg-brand/10 px-3 py-2' : 'px-3 py-2'),
         }}

@@ -2,20 +2,24 @@ import { describe, it, expect, vi } from 'vitest';
 import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 
-// Stubs dos lookups (react-select async) — evitam o react-select + rede no teste.
-// Um botão por select dispara onChange com um id fixo, simulando a seleção.
-vi.mock('../molecules/CostCenterSelect', () => ({
-  default: ({ label, onChange }: { label: string; onChange: (id: number | null) => void }) => (
-    <button type="button" aria-label={label} onClick={() => onChange(5)}>
+// Stubs dos lookups (react-select async) — evitam o react-select + rede no teste. Cascata
+// INVERTIDA: ChartAccountSelect (plano) dispara onChange com a DESCRIÇÃO; CostCenterSelect
+// (centro) dispara onChange(chartAccountId, costCenterId). O centro repassa o `error`.
+vi.mock('../molecules/ChartAccountSelect', () => ({
+  default: ({ label, onChange }: { label: string; onChange: (d: string | null) => void }) => (
+    <button type="button" aria-label={label} onClick={() => onChange('Serviços Gerais')}>
       {label}
     </button>
   ),
 }));
-vi.mock('../molecules/ChartAccountSelect', () => ({
-  default: ({ label, onChange }: { label: string; onChange: (id: number | null) => void }) => (
-    <button type="button" aria-label={label} onClick={() => onChange(9)}>
-      {label}
-    </button>
+vi.mock('../molecules/CostCenterSelect', () => ({
+  default: ({ label, error, onChange }: { label: string; error?: string; onChange: (ca: number | null, cc: number | null) => void }) => (
+    <div>
+      <button type="button" aria-label={label} onClick={() => onChange(9, 5)}>
+        {label}
+      </button>
+      {error && <span>{error}</span>}
+    </div>
   ),
 }));
 
@@ -55,15 +59,25 @@ describe('SupplierForm', () => {
     );
   });
 
-  it('envia o centro de custo e o plano de contas selecionados', async () => {
+  it('envia o centro de custo e o plano de contas selecionados (plano primeiro)', async () => {
     const { onSubmit } = setup();
     await userEvent.type(screen.getByLabelText('Nome fantasia'), 'ACME');
-    await userEvent.click(screen.getByRole('button', { name: 'Centro de custo' }));
+    // Cascata invertida: escolhe o PLANO primeiro, depois o CENTRO.
     await userEvent.click(screen.getByRole('button', { name: 'Plano de contas' }));
+    await userEvent.click(screen.getByRole('button', { name: 'Centro de custo' }));
     await userEvent.click(screen.getByRole('button', { name: 'Cadastrar' }));
     await waitFor(() =>
       expect(onSubmit).toHaveBeenCalledWith({ trade_name: 'ACME', cost_center_id: 5, chart_account_id: 9 }),
     );
+  });
+
+  it('bloqueia o cadastro quando o plano é informado sem o centro (par incompleto)', async () => {
+    const { onSubmit } = setup();
+    await userEvent.type(screen.getByLabelText('Nome fantasia'), 'ACME');
+    await userEvent.click(screen.getByRole('button', { name: 'Plano de contas' })); // só o plano
+    await userEvent.click(screen.getByRole('button', { name: 'Cadastrar' }));
+    expect(await screen.findByText('Selecione o centro de custo do plano informado')).toBeInTheDocument();
+    expect(onSubmit).not.toHaveBeenCalled();
   });
 
   it('renderiza e submete os campos de contato (telefone/WhatsApp/PIX) com strip de máscara', async () => {

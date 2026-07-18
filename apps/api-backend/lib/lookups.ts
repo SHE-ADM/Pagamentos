@@ -4,7 +4,7 @@
 // consumidos pelos react-select do formulário de contas. Service simples (sem
 // Repository dedicado): a leitura é trivial e não há escrita.
 
-import { type CostCenter, type ChartAccount } from '@sheild/shared';
+import { type CostCenter } from '@sheild/shared';
 import { getSupabaseAdmin } from './supabase-admin';
 
 const COST_CENTER_TABLE = 'financial_cost_center';
@@ -28,6 +28,23 @@ export interface CompanyOption {
   trade_name: string | null;
 }
 
+// Opção do 1º select da classificação contábil (cascata INVERTIDA Plano → Centro):
+// descrições DISTINTAS de planos postáveis. A mesma descrição ("Serviços Gerais") existe
+// como várias linhas (uma por centro), então a lista é deduplicada por descrição.
+export interface ChartAccountDescriptionOption {
+  account_description: string;
+}
+
+// Opção do 2º select (centro de custo QUE COMPÕE o plano escolhido): cada linha do plano
+// com aquela descrição resolve um `chart_account_id` específico e o seu `cost_center_id`.
+// `account_code` distingue os casos raros de mesma descrição repetida no mesmo centro.
+export interface CenterForPlanoOption {
+  chart_account_id: number;
+  account_code: string | null;
+  cost_center_id: number;
+  cost_center_description: string | null;
+}
+
 export class LookupServiceError extends Error {
   status: number;
   constructor(message: string, status: number) {
@@ -40,8 +57,6 @@ export class LookupServiceError extends Error {
 interface LookupListParams {
   search?: string;
   limit?: number;
-  /** Filtra planos de contas pelo centro de custo (cascata). Só usado pelo chartAccountService. */
-  costCenterId?: number;
 }
 
 // Sanitiza o termo para o filtro `or` do PostgREST (chars de controle da sintaxe).
@@ -76,32 +91,84 @@ export const costCenterService = {
   },
 };
 
+// Linha crua de financial_chart_of_account com o embed do centro (to-one).
+interface ChartAccountRow {
+  chart_account_id: number;
+  account_code: string | null;
+  cost_center_id: number;
+  cost_center: { cost_center_code: string | null; cost_center_description: string | null } | null;
+}
+
 export const chartAccountService = {
   /**
-   * Lista contas do plano de contas elegíveis a lançamento (is_postable = true),
-   * SEMPRE filtradas pelo centro de custo (cascata): `cost_center_id` é obrigatório
-   * — sem ele (ausente/0) retorna `[]` (o plano depende do centro; evita carga).
-   * Busca textual opcional por código/descrição.
+   * 1º select da classificação (cascata INVERTIDA Plano → Centro): lista as DESCRIÇÕES
+   * distintas de planos postáveis com centro válido (cost_center_id > 0). A mesma descrição
+   * existe em várias linhas (uma por centro), então deduplica por descrição preservando a
+   * ordem alfabética. Busca textual opcional por código/descrição.
    * @throws {LookupServiceError} 500 em falha do banco.
    */
-  async list(params: LookupListParams = {}): Promise<ChartAccount[]> {
-    // Plano de contas só existe no contexto de um centro de custo selecionado.
-    if (!params.costCenterId) return [];
-
+  async listPlanoDescriptions(params: LookupListParams = {}): Promise<ChartAccountDescriptionOption[]> {
     let query = getSupabaseAdmin()
       .from(CHART_ACCOUNT_TABLE)
-      .select('chart_account_id,account_code,account_description')
+      .select('account_description')
       .is('is_postable', true)
-      .eq('cost_center_id', params.costCenterId);
+      .not('account_description', 'is', null)
+      .gt('cost_center_id', 0);
 
     const term = params.search?.trim() ? sanitizeTerm(params.search) : '';
     if (term) {
       query = query.or(`account_code.ilike.%${term}%,account_description.ilike.%${term}%`);
     }
 
-    const { data, error } = await query.order('account_description', { ascending: true }).limit(clampLimit(params.limit));
+    // A dedup é em JS, então o LIMIT precisa cobrir TODAS as linhas postáveis (uma descrição
+    // se repete por centro): truncar antes de deduplicar esconderia descrições no fim do
+    // alfabeto. Usa MAX_LIMIT por padrão (catálogo pequeno, ~centenas < 1000). Se o cadastro
+    // ultrapassar MAX_LIMIT linhas postáveis, migrar para DISTINCT via RPC/paginação.
+    const { data, error } = await query
+      .order('account_description', { ascending: true })
+      .limit(clampLimit(params.limit ?? MAX_LIMIT));
     if (error) throw new LookupServiceError(error.message, 500);
-    return (data ?? []) as ChartAccount[];
+
+    // Deduplica por descrição (o PostgREST não faz DISTINCT) preservando a ordem já ordenada.
+    const seen = new Set<string>();
+    const out: ChartAccountDescriptionOption[] = [];
+    for (const row of (data ?? []) as { account_description: string | null }[]) {
+      const desc = row.account_description;
+      if (desc && !seen.has(desc)) {
+        seen.add(desc);
+        out.push({ account_description: desc });
+      }
+    }
+    return out;
+  },
+
+  /**
+   * 2º select da classificação: os CENTROS DE CUSTO que compõem o plano escolhido — todas
+   * as linhas postáveis com a descrição informada, cada uma resolvendo um `chart_account_id`
+   * específico + o seu `cost_center_id`. Sem descrição, retorna [] sem consultar o banco
+   * (o centro depende do plano; evita carga).
+   * @throws {LookupServiceError} 500 em falha do banco.
+   */
+  async listCentersForPlano(params: { description?: string; limit?: number } = {}): Promise<CenterForPlanoOption[]> {
+    const description = params.description?.trim();
+    if (!description) return [];
+
+    const { data, error } = await getSupabaseAdmin()
+      .from(CHART_ACCOUNT_TABLE)
+      .select('chart_account_id,account_code,cost_center_id,cost_center:financial_cost_center(cost_center_code,cost_center_description)')
+      .is('is_postable', true)
+      .eq('account_description', description)
+      .gt('cost_center_id', 0)
+      .order('cost_center_id', { ascending: true })
+      .limit(clampLimit(params.limit));
+    if (error) throw new LookupServiceError(error.message, 500);
+
+    return ((data ?? []) as unknown as ChartAccountRow[]).map((r) => ({
+      chart_account_id: r.chart_account_id,
+      account_code: r.account_code,
+      cost_center_id: r.cost_center_id,
+      cost_center_description: r.cost_center?.cost_center_description ?? r.cost_center?.cost_center_code ?? null,
+    }));
   },
 };
 

@@ -4,8 +4,24 @@
 // fornecedores: as tabelas têm RLS, a leitura via service_role vive no backend.
 // O token da sessão do Supabase vai no Authorization; o middleware o valida.
 
-import type { CostCenter, ChartAccount, Bank, ChartAccountGroup, ChartAccountSubgroup } from '@sheild/shared';
+import type { CostCenter, Bank, ChartAccountGroup, ChartAccountSubgroup } from '@sheild/shared';
 import { supabase } from '../lib/supabaseClient';
+
+// Opções da cascata INVERTIDA de classificação contábil (Plano → Centro). Espelham os
+// tipos do backend (lib/lookups.ts). Sem schema compartilhado — o consumidor infere.
+// ChartAccountDescriptionOption fica MÓDULO-PRIVADO (só o tipo de retorno de
+// listPlanoDescriptions; o ChartAccountSelect infere pela chamada); CenterForPlanoOption é
+// exportado porque o CostCenterSelect o nomeia.
+interface ChartAccountDescriptionOption {
+  account_description: string;
+}
+
+export interface CenterForPlanoOption {
+  chart_account_id: number;
+  account_code: string | null;
+  cost_center_id: number;
+  cost_center_description: string | null;
+}
 
 // Linha da dimensão `status` (lookup de situação do CRUD de contas). Espelha o tipo
 // do backend (lib/lookups.ts StatusOption) — não há schema compartilhado p/ status.
@@ -51,13 +67,19 @@ export async function listCostCenters(search?: string): Promise<CostCenter[]> {
   return call<CostCenter[]>(`/cost-centers${qs}`);
 }
 
-// Cascata: o plano de contas depende do centro de custo. Sem centro (`null`), não há
-// o que listar → retorna [] sem ir à rede (reduz carga e mantém o select vazio).
-export async function listChartAccounts(costCenterId: number | null, search?: string): Promise<ChartAccount[]> {
-  if (costCenterId == null) return [];
-  const qs = new URLSearchParams({ cost_center_id: String(costCenterId) });
-  if (search) qs.set('search', search);
-  return call<ChartAccount[]>(`/chart-accounts?${qs.toString()}`);
+// Cascata INVERTIDA — 1º select: descrições distintas de planos de contas postáveis
+// (com centro válido). Busca textual opcional por código/descrição.
+export async function listPlanoDescriptions(search?: string): Promise<ChartAccountDescriptionOption[]> {
+  const qs = search ? `?search=${encodeURIComponent(search)}` : '';
+  return call<ChartAccountDescriptionOption[]>(`/chart-accounts${qs}`);
+}
+
+// Cascata INVERTIDA — 2º select: os centros de custo que compõem o plano (descrição)
+// escolhido. Sem descrição (`null`), retorna [] sem ir à rede (o centro depende do plano).
+export async function listCentersForPlano(description: string | null): Promise<CenterForPlanoOption[]> {
+  if (!description) return [];
+  const qs = new URLSearchParams({ description });
+  return call<CenterForPlanoOption[]>(`/chart-accounts?${qs.toString()}`);
 }
 
 // ── Lookups dos cadastros do grupo Tabelas (modo lookup = rota sem `page`) ────────

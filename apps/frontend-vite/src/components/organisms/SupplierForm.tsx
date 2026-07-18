@@ -118,9 +118,11 @@ const costCenterDefaultLabel = (c?: ClassificationSource): string | undefined =>
   return c.cost_center?.cost_center_description ?? c.cost_center?.cost_center_code ?? `#${c.cost_center_id}`;
 };
 
-const chartAccountDefaultLabel = (c?: ClassificationSource): string | undefined => {
-  if (!c?.chart_account_id) return undefined;
-  return c.chart_account?.account_description ?? c.chart_account?.account_code ?? `#${c.chart_account_id}`;
+// Descrição do plano de contas já vinculado — é o VALOR do 1º select (cascata invertida
+// Plano → Centro). Vem do embed do JOIN; null quando não há classificação (id 0/ausente).
+const chartAccountDescriptionOf = (c?: ClassificationSource): string | null => {
+  if (!c?.chart_account_id) return null;
+  return c.chart_account?.account_description ?? null;
 };
 
 export default function SupplierForm({
@@ -141,22 +143,43 @@ export default function SupplierForm({
   // Erro da regra "ao menos um identificador" (refine sem path no schema de criação).
   const [identifierError, setIdentifierError] = useState<string | null>(null);
 
-  // Classificação contábil DEFAULT do fornecedor — FKs cost_center_id / chart_account_id.
-  // id 0 (sentinela "não informado") aparece vazio no select. A `key` do form (sk_supplier,
-  // em SuppliersPage) garante o remonte por fornecedor, então não é preciso sincronizar
-  // o estado dos selects via efeito.
+  // Classificação contábil DEFAULT do fornecedor — cascata INVERTIDA Plano → Centro. O 1º
+  // select guarda a DESCRIÇÃO do plano; o 2º (centro) resolve o chart_account_id + o
+  // cost_center_id. id 0 (sentinela "não informado") aparece vazio nos selects. A `key` do
+  // form (sk_supplier, em SuppliersPage) garante o remonte por fornecedor.
+  const [chartAccountDescription, setChartAccountDescription] = useState<string | null>(
+    chartAccountDescriptionOf(defaultValues),
+  );
   const [costCenterId, setCostCenterId] = useState<number | null>(orNull(defaultValues?.cost_center_id));
   const [chartAccountId, setChartAccountId] = useState<number | null>(orNull(defaultValues?.chart_account_id));
+  // Erro do par de classificação (plano sem centro) — espelha a trava da Next API na UI.
+  const [classificationError, setClassificationError] = useState<string | null>(null);
 
-  // Cascata: trocar (ou limpar) o centro de custo zera o plano de contas, que pode não
-  // pertencer ao novo centro. O ChartAccountSelect remonta via `key={costCenterId}`.
-  const handleCostCenterChange = (id: number | null) => {
-    setCostCenterId(id);
+  // Cascata INVERTIDA: trocar (ou limpar) o PLANO zera o centro, que pode não pertencer ao
+  // novo plano. O CostCenterSelect remonta via `key={chartAccountDescription}`.
+  const handlePlanoChange = (description: string | null) => {
+    setChartAccountDescription(description);
     setChartAccountId(null);
+    setCostCenterId(null);
+    setClassificationError(null);
+  };
+
+  // Escolher o CENTRO resolve o chart_account_id (a linha do plano naquele centro) e o
+  // cost_center_id — gravados juntos, sempre consistentes.
+  const handleCentroChange = (caId: number | null, ccId: number | null) => {
+    setChartAccountId(caId);
+    setCostCenterId(ccId);
+    setClassificationError(null);
   };
 
   const submit = handleSubmit(async (raw) => {
     setIdentifierError(null);
+    // Par de classificação: plano informado exige o centro (espelha a trava da Next API).
+    setClassificationError(null);
+    if (chartAccountDescription && chartAccountId == null) {
+      setClassificationError('Selecione o centro de custo do plano informado');
+      return;
+    }
     const schema = mode === 'create' ? supplierCreateSchema : supplierUpdateSchema;
     // Classificação sempre enviada (0 quando não informada) — cobre tanto definir quanto
     // LIMPAR no modo edição (omitir não zeraria a coluna num PATCH parcial).
@@ -201,24 +224,23 @@ export default function SupplierForm({
         ))}
       </div>
 
-      {/* Classificação contábil default (cascata: o plano depende do centro). */}
+      {/* Classificação contábil default — cascata INVERTIDA: Plano de contas PRIMEIRO;
+          o centro reflete o plano escolhido. */}
+      <ChartAccountSelect
+        id="supplier-chart-account"
+        label="Plano de contas"
+        value={chartAccountDescription}
+        onChange={handlePlanoChange}
+      />
+
       <CostCenterSelect
         id="supplier-cost-center"
         label="Centro de custo"
-        value={costCenterId}
-        defaultLabel={costCenterDefaultLabel(defaultValues)}
-        onChange={handleCostCenterChange}
-      />
-
-      <ChartAccountSelect
-        // Remonta ao trocar o centro de custo (reinicia + recarrega as opções do novo centro).
-        key={`chart-${costCenterId ?? 'none'}`}
-        id="supplier-chart-account"
-        label="Plano de contas"
+        planoDescription={chartAccountDescription}
         value={chartAccountId}
-        costCenterId={costCenterId}
-        defaultLabel={chartAccountDefaultLabel(defaultValues)}
-        onChange={setChartAccountId}
+        defaultLabel={costCenterDefaultLabel(defaultValues)}
+        onChange={handleCentroChange}
+        error={classificationError ?? undefined}
       />
 
       <div className="flex justify-end gap-2 pt-2">

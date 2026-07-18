@@ -5,11 +5,14 @@ import { parseSortParams } from '@/lib/sort';
 import { chartAccountService as chartAccountLookup } from '@/lib/lookups';
 import { chartAccountService as chartAccountCrud } from '@/lib/chart-accounts';
 
-// /api/chart-accounts — dois consumos do mesmo recurso:
-//  - SEM `page`: lookup da CASCATA de classificação contábil (filtra por
-//    `cost_center_id`, só postáveis — lib/lookups). Comportamento legado, INTOCADO.
+// /api/chart-accounts — consumos do mesmo recurso, discriminados por query:
 //  - COM `page`: listagem paginada + busca do CRUD "Plano de contas" (envelope com
-//    `meta`, exclui o sentinela id 0 — lib/chart-accounts).
+//    `meta`, exclui o sentinela id 0 — lib/chart-accounts). Também alimenta o grid
+//    mestre-detalhe (`cost_center_id` + `postable`).
+//  - COM `description`: 2º select da CASCATA INVERTIDA — os centros de custo que compõem
+//    o plano (descrição) escolhido (lib/lookups.listCentersForPlano).
+//  - SEM `page`/`description`: 1º select da cascata — descrições distintas de planos
+//    postáveis (lib/lookups.listPlanoDescriptions; aceita `search`).
 //  - POST: criação (CRUD).
 export const dynamic = 'force-dynamic';
 
@@ -35,18 +38,24 @@ async function listPaginated(sp: URLSearchParams): Promise<Response> {
   }
 }
 
-// Modo lookup (legado): cascata por centro de custo, só postáveis.
-async function listForLookup(sp: URLSearchParams): Promise<Response> {
+// Cascata invertida — 1º select: descrições distintas de planos postáveis (aceita `search`).
+async function listPlanoDescriptions(sp: URLSearchParams): Promise<Response> {
   const limitRaw = Number(sp.get('limit'));
-  const ccRaw = Number(sp.get('cost_center_id'));
-  // Cascata: sem um centro de custo válido o service devolve [] (plano depende do centro).
-  const costCenterId = Number.isInteger(ccRaw) && ccRaw > 0 ? ccRaw : undefined;
   try {
-    const data = await chartAccountLookup.list({
+    const data = await chartAccountLookup.listPlanoDescriptions({
       search: sp.get('search') ?? undefined,
       limit: Number.isFinite(limitRaw) && limitRaw > 0 ? limitRaw : undefined,
-      costCenterId,
     });
+    return ok(data);
+  } catch (e) {
+    return failFromError(e, 'chart-accounts');
+  }
+}
+
+// Cascata invertida — 2º select: centros de custo que compõem o plano (descrição) escolhido.
+async function listCentersForPlano(sp: URLSearchParams): Promise<Response> {
+  try {
+    const data = await chartAccountLookup.listCentersForPlano({ description: sp.get('description') ?? undefined });
     return ok(data);
   } catch (e) {
     return failFromError(e, 'chart-accounts');
@@ -57,8 +66,10 @@ export async function GET(req: NextRequest) {
   const denied = await requireAuth(req);
   if (denied) return denied;
   const sp = req.nextUrl.searchParams;
-  // `page` presente → CRUD paginado; ausente → lookup da cascata (nunca envia `page`).
-  return sp.has('page') ? listPaginated(sp) : listForLookup(sp);
+  // `page` → CRUD paginado; `description` → centros do plano; senão → descrições de planos.
+  if (sp.has('page')) return listPaginated(sp);
+  if (sp.has('description')) return listCentersForPlano(sp);
+  return listPlanoDescriptions(sp);
 }
 
 export async function POST(req: NextRequest) {

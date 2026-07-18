@@ -19,6 +19,7 @@ import {
 import type { ZodError } from 'zod';
 import { getSupabaseAdmin } from './supabase-admin';
 import { setSupplierClassification } from './suppliers';
+import { checkClassificationPair } from './classification';
 
 const TABLE = 'financial_account_control';
 const SUPPLIER_TABLE = 'supplier';
@@ -253,6 +254,12 @@ export const contaService = {
     const parsed = financialAccountControlCreateSchema.safeParse(raw);
     if (!parsed.success) throw new ContaServiceError(formatZodError(parsed.error), 422);
 
+    // Par de classificação (centro de custo + plano de contas): não permite plano sem
+    // centro relacionado (e vice-versa), ids inexistentes nem par inconsistente. O create
+    // sempre traz os dois (default 0 no schema = "não informado", que é aceito).
+    const pairMsg = await checkClassificationPair(parsed.data.cost_center_id ?? 0, parsed.data.chart_account_id ?? 0);
+    if (pairMsg) throw new ContaServiceError(pairMsg, 422);
+
     // Autoria (Etapa 1 — visibilidade por dono): carimba o UUID do usuário logado
     // (resolvido do Bearer no handler). Sem userId, o DEFAULT da coluna (sentinela) assume.
     const payload = userId ? { ...parsed.data, created_by: userId } : parsed.data;
@@ -271,6 +278,12 @@ export const contaService = {
   async update(id: number, raw: unknown, userId?: string): Promise<FinancialAccountControl> {
     const parsed = financialAccountControlUpdateSchema.safeParse(raw);
     if (!parsed.success) throw new ContaServiceError(formatZodError(parsed.error), 422);
+
+    // Par de classificação. Os campos têm DEFAULT 0 no schema (nunca undefined no PATCH),
+    // então valida-se sempre — 0/0 ("não informado") é no-op. O ContaForm envia os dois
+    // juntos; par incompleto (só um) é rejeitado.
+    const pairMsg = await checkClassificationPair(parsed.data.cost_center_id ?? 0, parsed.data.chart_account_id ?? 0);
+    if (pairMsg) throw new ContaServiceError(pairMsg, 422);
 
     // Autoria (Etapa 2): carimba o editor. Quando status_id muda no PATCH, a trigger deriva
     // status_changed_by do mesmo ator (updated_by) — não precisa enviar aqui.
