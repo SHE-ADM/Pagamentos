@@ -51,3 +51,9 @@ data/samples/**
 __pycache__/
 *.pyc
 .pytest_cache/
+
+# Cobertura de testes (gerada por Vitest / pytest — CI, não versionar)
+coverage/
+apps/*/coverage/
+coverage.xml
+.coverage
