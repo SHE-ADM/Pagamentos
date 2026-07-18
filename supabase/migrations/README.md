@@ -16,6 +16,17 @@ As migrations `001 → 061` são aplicadas **manualmente no SQL Editor do Supaba
 > `064` = adiciona `financial_account_control.additional_info` TEXT (nullable) — texto livre do
 > usuário no cadastro de contas (ContaForm), exibido no card de detalhe de `/consulta`.
 
+> **`088`/`089`/`090` (NATUREZA contábil — aplicadas DIRETO via Supabase MCP, idempotentes)** —
+> normalizam a classificação dos grupos do plano de contas (substituem o legado `group_type`).
+> `088` = catálogo `public.financial_type_group` (id 0 sentinela + Receitas/Despesas/Ativo/Passivo;
+> RLS read `authenticated`/write `service_role` + REVOKE). `089` = FK `type_group_id` (SMALLINT
+> NOT NULL DEFAULT 0) em `financial_chart_of_account_group` **e** `_subgroup` + índice parcial (a
+> classificação é feita só no GRUPO; o subgrupo fica em 0). `090` = índice UNIQUE case-insensitive
+> `lower(code)` (parcial, exclui o sentinela) em grupo/subgrupo — fecha o TOCTOU do create.
+> **A CLASSIFICAÇÃO em si dos grupos** (mapear `group_type` → `type_group_id`, rename de "Despesas
+> Fiscais"→"Despesas Tributárias") foi **curadoria de DADOS manual** (não há migration de backfill);
+> em ambiente novo vem do dump dos cadastros (como os demais cadastros pré-existentes).
+
 > **`084_sk_company_lebianco_rule.sql` (idempotente)** — empresa pagadora pela **regra LEBIANCO**:
 > (1) `trg_fe_resolve_company()` passa a resolver **só quando `NEW.sk_company IS NULL`** (antes
 > sobrescrevia sempre — descartava o valor do pipeline **e** qualquer UPDATE re-resolvia a

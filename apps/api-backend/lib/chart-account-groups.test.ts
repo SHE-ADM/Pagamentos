@@ -77,12 +77,43 @@ describe('chartAccountGroupService', () => {
     await expect(chartAccountGroupService.update(0, { group_code: 'X' })).rejects.toMatchObject({ status: 404 });
   });
 
-  it('busca cobre TODAS as colunas do grid (código, descrição, tipo)', async () => {
-    resultQueue.push({ data: [], count: 0, error: null }); // main query
+  it('busca cobre código e descrição (não filtra mais o legado group_type)', async () => {
+    resultQueue.push({ data: [], count: 0, error: null }); // main query (builders[0])
+    resultQueue.push({ data: [], error: null }); // resolveMatchingIds (natureza) — nada casa
     await chartAccountGroupService.list({ search: 'ativo' });
     const orArg = (builders[0].or.mock.calls[0]?.[0] ?? '') as string;
     expect(orArg).toContain('group_code.ilike.%ativo%');
     expect(orArg).toContain('group_description.ilike.%ativo%');
-    expect(orArg).toContain('group_type.ilike.%ativo%');
+    expect(orArg).not.toContain('group_type');
+  });
+
+  it('busca por NATUREZA resolve os ids e injeta type_group_id.in', async () => {
+    resultQueue.push({ data: [], count: 0, error: null }); // main query (builders[0])
+    resultQueue.push({ data: [{ type_group_id: 2 }], error: null }); // resolveMatchingIds → id 2
+    await chartAccountGroupService.list({ search: 'despesas' });
+    const orArg = (builders[0].or.mock.calls[0]?.[0] ?? '') as string;
+    expect(orArg).toContain('type_group_id.in.(2)');
+  });
+
+  it('não aplica filtro quando o termo fica vazio após sanitizar', async () => {
+    resultQueue.push({ data: [], count: 0, error: null }); // main query
+    await chartAccountGroupService.list({ search: '%,()' });
+    expect(builders[0].or).not.toHaveBeenCalled();
+  });
+
+  it('create 422 quando a Natureza (type_group_id) não existe — FK 23503', async () => {
+    resultQueue.push({ data: null, error: null }); // findByCode → único
+    resultQueue.push({ data: null, error: { code: '23503', message: 'violates foreign key constraint' } }); // create
+    await expect(
+      chartAccountGroupService.create({ group_code: '9', group_description: 'X', type_group_id: 999 }),
+    ).rejects.toMatchObject({ status: 422, message: 'Natureza informada não existe' });
+  });
+
+  it('create 500 (genérico, sem vazar detalhe) em erro inesperado do banco', async () => {
+    resultQueue.push({ data: null, error: null }); // findByCode → único
+    resultQueue.push({ data: null, error: { code: '08006', message: 'connection failure' } }); // create
+    await expect(
+      chartAccountGroupService.create({ group_code: '9', group_description: 'X' }),
+    ).rejects.toMatchObject({ status: 500 });
   });
 });

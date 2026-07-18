@@ -47,7 +47,7 @@ describe('/api/chart-account-groups/:id', () => {
     expect((await GET(req(), ctx('9'))).status).toBe(404);
   });
   it('PATCH 200', async () => {
-    updateMock.mockResolvedValue({ chart_account_group_id: 5, group_code: '5', group_description: 'X', group_type: null });
+    updateMock.mockResolvedValue({ chart_account_group_id: 5, group_code: '5', group_description: 'X', group_type: null, type_group_id: 0 });
     expect((await PATCH(jsonReq(async () => ({ group_description: 'X' })), ctx('5'))).status).toBe(200);
   });
   it('DELETE 409 em uso', async () => {

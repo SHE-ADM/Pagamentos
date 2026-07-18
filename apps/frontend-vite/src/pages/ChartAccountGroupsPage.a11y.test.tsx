@@ -13,11 +13,23 @@ vi.mock('../services/chartAccountGroups', () => ({
   createChartAccountGroup: vi.fn(),
   updateChartAccountGroup: vi.fn(),
 }));
+vi.mock('../services/lookups', () => ({
+  listFinancialTypeGroups: vi
+    .fn()
+    .mockResolvedValue([{ type_group_id: 3, type_group_description: 'Ativo' }]),
+}));
 
 import ChartAccountGroupsPage from './ChartAccountGroupsPage';
 import { listChartAccountGroupsPage } from '../services/chartAccountGroups';
 
-const sample: ChartAccountGroup = { chart_account_group_id: 1, group_code: '1', group_description: 'Ativo', group_type: 'A' };
+const sample: ChartAccountGroup = {
+  chart_account_group_id: 1,
+  group_code: '1',
+  group_description: 'Disponibilidades',
+  group_type: 'A',
+  type_group_id: 3,
+  type_group: { type_group_id: 3, type_group_description: 'Ativo' },
+};
 
 beforeEach(() => {
   vi.mocked(listChartAccountGroupsPage).mockResolvedValue({ data: [sample], total: 1, page: 1, limit: 20 });
@@ -26,7 +38,7 @@ beforeEach(() => {
 describe('ChartAccountGroupsPage a11y', () => {
   it('não tem violações de acessibilidade', async () => {
     const { container } = render(<ChartAccountGroupsPage />);
-    await screen.findByText('Ativo');
+    await screen.findByText('Disponibilidades');
     expect(await axe(container)).toHaveNoViolations();
   });
 });
