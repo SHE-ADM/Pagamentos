@@ -2047,8 +2047,8 @@ por nome (RPC `financial_dup_by_name` / `_dup_by_name`) foi **removida** — "EF
 
 `extract_pdf.py` usa `_ns()` (strip de acentos + lowercase) para lookup em `_DOC_TYPE_NORM`.
 CHECK constraint em `financial_account_control.document_type` usa `lower()` (migrations 014,
-017, **024**, **026**, **043**, **062**, **066**, **075** e **086**). Tipos aceitos incluem: `boleto`, `cte`, `nfe`, `nfse`, `tributo`,
-`das`, `seguro`, `fatura`, `recibo`, `contrato`, `honorários`, `container`, `multa`, `dare`, `cartório`, `cheque`, `outro`
+017, **024**, **026**, **043**, **062**, **066**, **075**, **086** e **087**). Tipos aceitos incluem: `boleto`, `cte`, `nfe`, `nfse`, `tributo`,
+`das`, `seguro`, `fatura`, `recibo`, `contrato`, `honorários`, `container`, `multa`, `dare`, `cartório`, `cheque`, `comprovante`, `outro`
 (DAS de Simples Nacional → `das`; **`multa`** = multa/penalidade/juros avulsos, auto de
 infração; **`dare`** = Documento de Arrecadação de Receitas Estaduais, antes dobrado em `dae` — a
 migration 062 separou DAE=eSocial de DARE=estadual em `_DOC_TYPE_NORM`/`_BODY_DOC_KEYWORDS`).
@@ -2057,6 +2057,20 @@ migration 062 separou DAE=eSocial de DARE=estadual em `_DOC_TYPE_NORM`/`_BODY_DO
 de `/consulta` (ambos derivam do enum `DOCUMENT_TYPES`); a extração só o emite pelo rótulo
 EXPLÍCITO em `_DOC_TYPE_NORM` — **NÃO** há auto-classificação pela palavra "cheque" no assunto/
 corpo (evita falso positivo com a forma de pagamento). Teste: `tests/test_doc_type_cheque.py`.
+**Guard de consistência do domínio** (`tests/test_doc_type_domain_consistency.py` — não regredir):
+trava as invariantes cross-camada revisadas em 2026-07-18 — (A) o enum `DOCUMENT_TYPES` é **idêntico**
+ao CHECK da migration de document_type mais recente (o teste acha a de MAIOR número que recria o
+constraint); (B) **todo** valor emitido por `_DOC_TYPE_NORM` (extração), `_BODY_DOC_KEYWORDS`,
+`_UTILITY_DOC_KEYWORDS` e `_SUBJECT_TAX_DOC_KEYWORDS` ∈ enum (senão o INSERT quebraria com 23514) e
+`_normalize_doc_type` sempre retorna valor do enum; (C) `_is_tax_document` reconhece todo tributo
+canônico (inclui `dam / duam`) e exclui `gps`/`multa`. Ao adicionar um tipo, rodar este teste — ele
+falha se o enum e a migration divergirem, ou se um classificador emitir valor fora do domínio.
+**`comprovante`** (migration 087) = comprovante/recibo como DOCUMENTO da conta. Mesmo padrão do
+`cheque`: tipo **SELECIONÁVEL** no cadastro manual (`ContaForm`) e no filtro de `/consulta` (derivam
+do enum `DOCUMENT_TYPES`); a extração só o emite pelo rótulo EXPLÍCITO em `_DOC_TYPE_NORM` — **NÃO**
+há auto-classificação pela palavra "comprovante" no assunto/corpo, para não conflitar com
+`subject_is_payment_confirmation` (que já IGNORA e-mail de "comprovante de pagamento" — recibo de
+pagamento já feito, não conta a pagar). Teste: `tests/test_doc_type_comprovante.py`.
 **`pix` NÃO é tipo de documento (removido na migration 075)** — é só forma de pagamento
 (`PAYMENT_METHODS`). Um pagamento PIX sem outro indício de tipo fica `document_type='outro'` e
 `payment_method='pix'`; quando não há Nº de documento próprio, o sintético é
@@ -2358,7 +2372,9 @@ credor de uma guia de tributo é o **Fisco** (SEFAZ/RFB/prefeitura), que a extra
 "PAGAMENTO IMPOSTOS" → criava o fornecedor fictício **"IMPOSTOS"**; idem "GNRE -PAGAMENTO",
 "DARE - REF"). Regra (`_finalize_supplier`): quando `document_type` é imposto
 (`_is_tax_document` → `_TAX_DOCUMENT_TYPES` = `darf, das, gru, dae, dare, gnre, ipva, iptu, dam,
-duam, iss, itbi, gare, tributo` — **`gps`/INSS e `multa` ficam de fora**, por decisão do usuário) **E**
+duam, dam / duam, iss, itbi, gare, tributo` — `dam`/`duam` avulsos são redundância defensiva, pois
+`_normalize_doc_type` sempre produz o canônico `dam / duam`, que também está no set;
+**`gps`/INSS e `multa` ficam de fora**, por decisão do usuário) **E**
 não há favorecido REAL extraído (`supplier_name`/`supplier_cnpj`/`supplier_cpf` do documento), a conta
 é lançada sob o **FORNECEDOR OTIMOTEX** (`OTIMOTEX_SK_SUPPLIER = 1` — o **fornecedor-placeholder de
 imposto próprio do grupo**, usado para QUALQUER empresa pagadora; ver a nota abaixo),
@@ -3118,7 +3134,12 @@ local/agendada (ver flag `EMAIL_READER_ENABLED` acima e memória [[vercel-deploy
 ## Banco de dados (Supabase)
 
 Migrations em `supabase/migrations/`, aplicadas **manualmente no SQL Editor** em ordem
-numérica (`001` → `086`). **Próxima migration = `087`** (verificar sempre antes de criar nova).
+numérica (`001` → `087`). **Próxima migration = `088`** (verificar sempre antes de criar nova).
+A **087** estende o CHECK de `financial_account_control.document_type` com **`comprovante`**
+(comprovante/recibo como DOCUMENTO da conta — ver "Normalização de `document_type`"); idempotente
+(DROP+recria), **sem backfill**. Mesmo padrão da 086: o array espelha 1:1 o enum `DOCUMENT_TYPES`
+(NÃO inclui `pix`, removido pela 075). **Aplicada via psql em 2026-07-18** (verificado: `comprovante`
+aceito, `pix` ausente); Supabase compartilhada dev+prod → **sem passo de banco em produção**.
 A **086** estende o CHECK de `financial_account_control.document_type` com **`cheque`** (o cheque
 como DOCUMENTO da conta — ver "Normalização de `document_type`"); idempotente (DROP+recria), **sem
 backfill**. **Não regredir:** o array do CHECK espelha 1:1 o enum `DOCUMENT_TYPES` e **NÃO inclui

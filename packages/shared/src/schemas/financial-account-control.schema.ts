@@ -50,6 +50,10 @@ export const DOCUMENT_TYPES = [
   // Cheque — o cheque como documento da conta (migration 086). Selecionável no cadastro
   // manual; NÃO auto-classificado pela palavra "cheque" (que já é payment_method).
   'cheque',
+  // Comprovante — comprovante/recibo como documento da conta (migration 087). Selecionável
+  // no cadastro manual; NÃO auto-classificado pela palavra "comprovante" (evita conflito
+  // com subject_is_payment_confirmation, que já IGNORA "comprovante de pagamento").
+  'comprovante',
   // Contas de concessionária — classificadas por frase do assunto/corpo (migration 043).
   'conta de água',
   'conta de luz',
