@@ -913,6 +913,29 @@ perguntar**. PRs seguem de `Features` → `main` (ver "GIT STRATEGY" do workspac
   (o `curl` do Git Bash falha no TLS do sonarcloud.io — use `node -e` com `fetch`.) Antes de
   concluir que é ruído, confira se PRs anteriores passavam (`gh pr view <N> --json
   statusCheckRollup`): se passavam, o achado é seu.
+- **Análise CI-based + escopo VERSIONADO — `sonar-project.properties` + `.github/workflows/sonarcloud.yml`
+  (migração de 2026-07-18 — não regredir):** o método passou de **Automatic Analysis** (GitHub App)
+  para **CI-based** (o workflow roda o scanner a cada PR/push). No modo CI o arquivo de escopo lido é
+  **`sonar-project.properties`** na raiz (o `.sonarcloud.properties` do Automatic Analysis foi
+  **removido** — só valia naquele modo). **PRÉ-REQUISITO no dashboard:** desligar Administration →
+  Analysis Method → "Automatic Analysis" (senão o scan CI é rejeitado com "Automatic Analysis is
+  enabled") + cadastrar o secret **`SONAR_TOKEN`** no GitHub. O motivo da migração é o mesmo do
+  escopo versionado: resolver issue na UI ("Won't Fix"/"False Positive") **NÃO é permanente** — o
+  engine perde o rastreamento ao re-basear e **REABRE** a issue (`REOPENED`; diagnóstico de
+  2026-07-18: 266 de 376 issues do `main` estavam REOPENED). O `sonar-project.properties` fixa o
+  escopo de forma determinística: (1) **exclui `supabase/migrations/**`** — PostgreSQL analisado
+  pelo engine **PL/SQL (Oracle)**, semântica divergente (`'' = NULL`) → falsos positivos plsql
+  sistemáticos, e são artefatos IMUTÁVEIS (proibido editar migration aplicada), logo inanalisáveis
+  por definição (trade-off: bug real em migration nova fica coberto por revisão de PR + testes, ex.:
+  `tests/test_doc_type_domain_consistency.py`); (2) **marca os testes como TEST sources**
+  (`sonar.tests`/`sonar.test.inclusions`) — o Sonar não levanta em fixture de teste as regras de
+  "main" que viram falso positivo (IP hardcoded `S1313`, http `S5332`, "secret" `S2068/S6418` — ex.:
+  `tests/test_ssrf_guard.py`, cujas fixtures SSRF são propositais); (3) **supressão por regra+arquivo
+  via `sonar.issue.ignore.multicriteria`** (que — ao contrário do Automatic Analysis — **funciona** no
+  modo CI): `pythonsecurity:S8707` no CLI do `extract_pdf.py` (Won't Fix deliberado). O workflow
+  também **roda a cobertura** (Vitest → lcov por app + pytest → coverage.xml) e a reporta ao Sonar —
+  logo um teste quebrado passa a **reprovar o PR** neste workflow. **O backlog NUNCA bloqueou deploy**
+  — o gate julga só código NOVO (`new_*`); o escopo versionado limpa o RUÍDO acumulado, não o gate.
 - **Backlog de issues do SonarCloud (não é o gate — dívida pré-existente) e TRIAGEM (2026-07-17):**
   o gate reprova só **código novo**; o backlog do `main` (facetar por `resolved=false`) é dívida que
   não bloqueia PR. Triagem feita e ações tomadas — **não reinvestigar do zero**:

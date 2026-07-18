@@ -1,0 +1,5 @@
+# Dependências de TESTE do pipeline Python — não vão para produção.
+# O runtime fica em server/requirements.txt (fonte de verdade dos pacotes de prod).
+# Instalação: pip install -r requirements-dev.txt
+pytest~=8.3
+pytest-cov~=6.0
