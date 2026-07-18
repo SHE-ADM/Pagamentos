@@ -4,7 +4,7 @@
 // o compõem. Cada opção resolve um `chart_account_id` específico (a linha daquele plano
 // naquele centro) e o seu `cost_center_id` — por isso o onChange devolve os dois juntos,
 // sempre consistentes. NÃO é creatable (cadastro externo ao app).
-import { useCallback, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import AsyncSelect from 'react-select/async';
 import { listCentersForPlano, type CenterForPlanoOption } from '../../services/lookups';
 
@@ -75,6 +75,42 @@ export default function CostCenterSelect({
 
   // Erro de carregamento (API indisponível) — distingue "falhou" de "lista vazia".
   const [loadError, setLoadError] = useState<string | null>(null);
+
+  // AUTO-SELEÇÃO: quando o plano escolhido tem UM ÚNICO centro, popula-o sozinho (poupa o
+  // clique). Só age com um plano definido e NADA selecionado (value == null) — em edição/
+  // prefill o value já vem preenchido, então o early-return evita sobrescrever a escolha.
+  //
+  // DUAS guardas, cada uma com um papel (não regredir):
+  // - `lastAutoPlanoRef`: já processamos ESTE plano → early-return ANTES de tocar o contador.
+  //   Sem ela, um re-render por churn de identidade de `onChange`/`value` (com o value ainda
+  //   null) re-incrementaria o request-id e INVALIDARIA a busca em voo do mesmo plano — a
+  //   auto-seleção poderia nunca disparar. É a robustez que NÃO depende do React Compiler
+  //   memoizar `onChange`.
+  // - `autoReqRef` (request-id, padrão do supplierReqRef do ContaForm): se o plano MUDAR
+  //   antes da resposta (A→B rápido), a resolução obsoleta de A é descartada.
+  const autoReqRef = useRef(0);
+  const lastAutoPlanoRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (planoDescription == null || value != null) return;
+    if (lastAutoPlanoRef.current === planoDescription) return; // já processado — não re-busca
+    lastAutoPlanoRef.current = planoDescription;
+    const reqId = ++autoReqRef.current;
+    // fetch-on-change: o effect é a ferramenta correta (busca ao trocar o plano). O setState
+    // fica dentro do IIFE async (deferido), então não dispara react-hooks/set-state-in-effect.
+    void (async () => {
+      try {
+        const data = await listCentersForPlano(planoDescription);
+        if (autoReqRef.current !== reqId) return; // plano mudou — resposta obsoleta
+        const opts = buildOptions(data);
+        if (opts.length === 1) {
+          setSelected(opts[0]);
+          onChange(opts[0].value, opts[0].costCenterId);
+        }
+      } catch {
+        // silencioso — o loadOptions do próprio select já reporta erro de rede abaixo.
+      }
+    })();
+  }, [planoDescription, value, onChange]);
 
   // Carrega os centros do plano escolhido. Sem plano, não vai à rede (lista vazia). Em
   // falha, marca o erro e devolve []. Fecha sobre `planoDescription`.
