@@ -920,7 +920,12 @@ perguntar**. PRs seguem de `Features` → `main` (ver "GIT STRATEGY" do workspac
     "vulnerabilidades" eram **falsos positivos**: `email_sender.py` já usava `ssl.create_default_context()`
     (resolvido de vez fixando TLS 1.2 — ver abaixo); `auth.schema.ts` `PASSWORD_CHANGED_META_KEY`
     (nome de chave, não senha); tokens/URLs `http://` de **fixtures de teste** (o `http://` do
-    `test_ssrf_guard` é PROPOSITAL — testa o bloqueio). Os **4× `S8707`** (path de CLI em
+    `test_ssrf_guard` é PROPOSITAL — testa o bloqueio). **O `S6418` "hard-coded secret" em
+    `tests/test_flask_csrf_guard.py` (Blocker que reprova o gate) foi CORRIGIDO** — o literal
+    `"segredo-de-disparo"` (repetido em 3 pontos) virou `_FAKE_TRIGGER_TOKEN = "test-" +
+    uuid.uuid4().hex` (gerado em runtime): sem literal, a heurística não flagra, e some a duplicação
+    (S1192); comportamento do teste inalterado. **Regra:** token/senha em teste = valor computado
+    (uuid), nunca string fixa que pareça segredo. Os **4× `S8707`** (path de CLI em
     `extract_pdf.py`) foram marcados **Won't Fix** na UI — é CLI de operador confiável (in-process em
     prod); a entrada realmente não-confiável (boleto por link) já é guardada (`_is_within_inbox`/SSRF).
   - **1 BLOCKER real (077):** `UPDATE` de backfill sem `WHERE` (`plsql:DeleteOrUpdateWithoutWhereCheck`)
