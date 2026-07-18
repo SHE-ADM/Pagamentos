@@ -935,6 +935,11 @@ perguntar**. PRs seguem de `Features` → `main` (ver "GIT STRATEGY" do workspac
     `log.error`→`log.exception` em `except` (21), `S3457` f-string sem campo (5), `S1481` var não
     usada→`_` (3), `S125` comentário que parecia código (3), `S1186` método-stub vazio (2), `S1192`
     só as TÉCNICAS — `_PREFER_MINIMAL`/`_HTML_TAG_RE` (3).
+  - **Backlog resolvido em 2026-07-18 (S6418/S6819/S6845/S125):** `S6418` "hard-coded secret" em
+    `tests/test_flask_csrf_guard.py` → token de teste gerado em runtime (`uuid.uuid4().hex`); os a11y
+    do Dashboard `S6819` (`role="region"`→`<section>`) e `S6845` (`tabIndex` redundante removido — KPIs
+    já são `<button>` focáveis, ver seção 6); `S125` na migration 073 → bloco de VERIFICAÇÃO reescrito
+    de SQL comentado para prosa (a migration já estava aplicada; comentário não afeta reprodutibilidade).
   - **DELIBERADAMENTE não corrigidos:** `S1192` de **vocabulário de domínio** (mime types, "nota
     fiscal"/"honorários"/"conta de luz"… em listas que espelham o CHECK do banco — a constante piora
     a legibilidade sem ganho) e os **refactors estruturais** `S3776` (complexidade, 22) + `S8786`/
@@ -1001,9 +1006,16 @@ Alvo: **WCAG 2.1 Nível AA** em todas as telas. Regras práticas:
     (`bg-sidebar`, ~7:1). **Não** remover o `min-h-0`/`overflow-y-auto`.
   - **Corpo do Dashboard = região rolável sem acesso por teclado** (`scrollable-region-focusable`,
     WCAG 2.1.1). Ao conter a sidebar, o layout de altura passou a constringir o corpo, que agora ROLA
-    de fato; diferente de `/consulta`/`/emails` (grids com botões/checkboxes focáveis DENTRO da
-    região), o Dashboard só tem cards/gráficos não-focáveis. Fix (`Dashboard.tsx`): o container
-    `overflow-y-auto` ganhou **`tabIndex={0}` + `role="region"` + `aria-label`**.
+    de fato. **Solução ATUAL (revisada 2026-07-18 — não regredir):** o container `overflow-y-auto` é
+    um **`<section aria-label="Indicadores e gráficos">`** — o `<section>` com nome acessível expõe o
+    papel `region` **implícito** (sem `role="region"` — evita SonarCloud **S6819**), e os **5 cards de
+    KPI (`<button>`, estáticos)** são os descendentes **focáveis** que dão acesso por teclado à
+    rolagem, tornando o **`tabIndex={0}` desnecessário** (evita **S6845** "tabIndex só em elemento
+    interativo"). A versão anterior usava `<div tabIndex={0} role="region">` — foi trocada porque os
+    KPIs viraram `<button>` focáveis (feature "Cards de KPI clicáveis = filtro"), então o axe
+    `scrollable-region-focusable` já fica satisfeito pelos botões, em qualquer estado (loading/vazio,
+    pois os 5 KPIs são um array estático). **Não** reintroduzir `tabIndex`/`role="region"` no
+    contêiner nem transformar os KPIs em `<div onClick>` (voltaria a exigir o `tabIndex`).
   - **Contraste do Dashboard sobre fundo claro:** legenda do donut `text-slate-400`→**`slate-600`**
     (2,57:1 sobre card branco) e a linha "vence …" da lista de prioridades `text-slate-500`→
     **`slate-600`** (4,35:1 sobre `bg-status-error-bg` #fef2f2 nas linhas críticas). Regra geral em
