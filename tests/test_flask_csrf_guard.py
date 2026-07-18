@@ -8,12 +8,18 @@ CSRF "simples" do navegador) e, opcionalmente, um token de disparo (X-Trigger-To
 
 import sys
 import unittest
+import uuid
 from pathlib import Path
 
 _SERVER_DIR = Path(__file__).resolve().parents[1] / "server"
 sys.path.insert(0, str(_SERVER_DIR))
 
 import app as flask_app  # noqa: E402
+
+# Token sintético SÓ para os testes — gerado em runtime (não é literal nem
+# credencial real). Evita o achado do SonarCloud "hard-coded secret" (S6418/
+# former-hotspot) que uma string fixa como "segredo-de-disparo" dispara.
+_FAKE_TRIGGER_TOKEN = "test-" + uuid.uuid4().hex
 
 
 class FlaskTriggerGuardTest(unittest.TestCase):
@@ -38,13 +44,13 @@ class FlaskTriggerGuardTest(unittest.TestCase):
         self.assertNotIn(r.status_code, (415, 401))
 
     def test_token_exigido_quando_configurado(self):
-        flask_app._TRIGGER_TOKEN = "segredo-de-disparo"
+        flask_app._TRIGGER_TOKEN = _FAKE_TRIGGER_TOKEN
         # JSON correto mas SEM o header de token → 401.
         r = self.client.post("/api/emails/read", json={})
         self.assertEqual(r.status_code, 401)
         # Com o token correto, a guarda passa (não é 401/415).
         r2 = self.client.post("/api/cobranca/resend/start", json={"ids": [1]},
-                              headers={"X-Trigger-Token": "segredo-de-disparo"})
+                              headers={"X-Trigger-Token": _FAKE_TRIGGER_TOKEN})
         self.assertNotIn(r2.status_code, (415, 401))
 
 
@@ -61,7 +67,7 @@ class BindTokenRequirementTest(unittest.TestCase):
                 flask_app._require_trigger_token_if_exposed(host, token="")
 
     def test_exposto_com_token_sobe(self):
-        flask_app._require_trigger_token_if_exposed("0.0.0.0", token="segredo-de-disparo")  # ok
+        flask_app._require_trigger_token_if_exposed("0.0.0.0", token=_FAKE_TRIGGER_TOKEN)  # ok
 
 
 if __name__ == "__main__":
