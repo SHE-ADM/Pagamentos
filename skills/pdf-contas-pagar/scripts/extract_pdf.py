@@ -317,6 +317,11 @@ _DOC_TYPE_NORM = {
     # EXPLICITO "cheque"; nao ha auto-classificacao pela palavra no corpo/assunto (evita
     # falso positivo com o payment_method 'cheque').
     _ns("cheque"):          "cheque",
+    # Comprovante — comprovante/recibo como documento da conta (migration 087). Só normaliza
+    # o rotulo EXPLICITO "comprovante"; nao ha auto-classificacao pela palavra no corpo/
+    # assunto (evita conflito com subject_is_payment_confirmation, que ja IGNORA e-mail de
+    # "comprovante de pagamento" antes de extrair).
+    _ns("comprovante"):     "comprovante",
 }
 
 def _normalize_doc_type(raw: str) -> str:
