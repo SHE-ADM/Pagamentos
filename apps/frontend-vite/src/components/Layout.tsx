@@ -6,6 +6,7 @@ import {
   Mail,
   Wallet,
   BarChart2,
+  PieChart,
   FilePlus,
   Building2,
   Receipt,
@@ -152,6 +153,9 @@ export default function Layout({ children }: Readonly<{ children: ReactNode }>) 
           </p>
           <NavLink to="/dashboard_vencimentos" onClick={closeNav} className={({ isActive }) => navLink({ active: isActive })}>
             <BarChart2 size={16} /> Indicadores de Vencimentos
+          </NavLink>
+          <NavLink to="/dashboard_financeiro" onClick={closeNav} className={({ isActive }) => navLink({ active: isActive })}>
+            <PieChart size={16} /> Indicadores financeiros
           </NavLink>
         </nav>
 
