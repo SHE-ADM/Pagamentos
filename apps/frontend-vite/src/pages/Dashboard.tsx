@@ -214,46 +214,49 @@ export default function Dashboard() {
           <MonthlyFlow flow={data?.monthlyFlow ?? []} />
         </div>
 
-        {/* Donuts na mesma linha: situação, tipos de conta, tributos e formas de pagamento */}
-        <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-3 mb-3">
-          <div className="card p-3">
+        {/* Donuts em 2 colunas (mais largos p/ caber R$ + contagem + %), modo dense. */}
+        <div className="grid grid-cols-1 xl:grid-cols-2 gap-2 mb-3">
+          <div className="card p-2.5">
             <div className="mb-2">
               <h3 className="text-sm font-semibold text-slate-800">Minha situação</h3>
               <p className="text-xs text-slate-500">Por status · {scope === 'all' ? 'Todas as contas' : MONTHS_FULL[month]}</p>
             </div>
-            <StatusDonut data={data} />
+            <StatusDonut data={data} dense />
           </div>
 
-          <div className="card p-3">
+          <div className="card p-2.5">
             <div className="mb-2">
               <h3 className="text-sm font-semibold text-slate-800">Tipos de contas</h3>
               <p className="text-xs text-slate-500">Por tipo de documento · {scope === 'all' ? 'Todas as contas' : MONTHS_FULL[month]}</p>
             </div>
             <BreakdownDonut
-              segs={(data?.documentTypeBreakdown ?? []).map((s) => ({ key: s.label, label: s.label, count: s.count, value: s.value }))}
+              segs={(data?.documentTypeBreakdown ?? []).map((s) => ({ key: s.label, label: s.label, value: s.value }))}
               colorFor={paletteColor}
+              dense
             />
           </div>
 
-          <div className="card p-3">
+          <div className="card p-2.5">
             <div className="mb-2">
               <h3 className="text-sm font-semibold text-slate-800">Tributos</h3>
               <p className="text-xs text-slate-500">Por tipo de guia · {scope === 'all' ? 'Todas as contas' : MONTHS_FULL[month]}</p>
             </div>
             <BreakdownDonut
-              segs={(data?.taxTypeBreakdown ?? []).map((s) => ({ key: s.label, label: s.label, count: s.count, value: s.value }))}
+              segs={(data?.taxTypeBreakdown ?? []).map((s) => ({ key: s.label, label: s.label, value: s.value }))}
               colorFor={paletteColor}
+              dense
             />
           </div>
 
-          <div className="card p-3">
+          <div className="card p-2.5">
             <div className="mb-2">
               <h3 className="text-sm font-semibold text-slate-800">Tipos de pagamentos</h3>
               <p className="text-xs text-slate-500">Por forma de pagamento · {scope === 'all' ? 'Todas as contas' : MONTHS_FULL[month]}</p>
             </div>
             <BreakdownDonut
-              segs={(data?.paymentMethodBreakdown ?? []).map((s) => ({ key: s.label, label: s.label, count: s.count, value: s.value }))}
+              segs={(data?.paymentMethodBreakdown ?? []).map((s) => ({ key: s.label, label: s.label, value: s.value }))}
               colorFor={paletteColor}
+              dense
             />
           </div>
         </div>
@@ -292,7 +295,7 @@ export default function Dashboard() {
 // Situação por status: cor semântica por nome de status (ignora o índice da paleta).
 // Fica local porque só o dashboard de vencimentos tem o donut de situação (o financeiro
 // usa apenas Natureza/Tipo). Delega ao BreakdownDonut compartilhado.
-function StatusDonut({ data }: { data: DashboardData | null }) {
-  const segs = (data?.statusBreakdown ?? []).map((s) => ({ key: s.status, label: s.status, count: s.count, value: s.value }));
-  return <BreakdownDonut segs={segs} colorFor={(label) => statusColor(label)} />;
+function StatusDonut({ data, dense = false }: { data: DashboardData | null; dense?: boolean }) {
+  const segs = (data?.statusBreakdown ?? []).map((s) => ({ key: s.status, label: s.status, value: s.value }));
+  return <BreakdownDonut segs={segs} colorFor={(label) => statusColor(label)} dense={dense} />;
 }

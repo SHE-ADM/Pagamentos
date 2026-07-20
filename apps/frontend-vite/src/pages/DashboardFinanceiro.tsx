@@ -217,7 +217,7 @@ export default function DashboardFinanceiro() {
               <p className="text-xs text-slate-500">Por grupo de despesa · {scope === 'all' ? 'Todas as contas' : MONTHS_FULL[month]}</p>
             </div>
             <BreakdownDonut
-              segs={(data?.naturezaBreakdown ?? []).map((s) => ({ key: s.label, label: s.label, count: s.count, value: s.value }))}
+              segs={(data?.naturezaBreakdown ?? []).map((s) => ({ key: s.label, label: s.label, value: s.value }))}
               colorFor={paletteColor}
             />
           </div>
@@ -228,7 +228,7 @@ export default function DashboardFinanceiro() {
               <p className="text-xs text-slate-500">Por tipo (fixa/variável) · {scope === 'all' ? 'Todas as contas' : MONTHS_FULL[month]}</p>
             </div>
             <BreakdownDonut
-              segs={(data?.tipoBreakdown ?? []).map((s) => ({ key: s.label, label: s.label, count: s.count, value: s.value }))}
+              segs={(data?.tipoBreakdown ?? []).map((s) => ({ key: s.label, label: s.label, value: s.value }))}
               colorFor={paletteColor}
             />
           </div>

@@ -24,6 +24,18 @@ export const fmtDateTime = (iso: string | null): string =>
 export const fmtMoney = (v: number | null): string =>
   v == null ? '—' : Number(v).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
 
+/** Número → moeda BRL compacta (ex.: "R$ 12,3 mil", "R$ 1,2 mi"). '—' quando null.
+ *  Usado onde o espaço é curto (ex.: furo central dos donuts). */
+export const fmtMoneyCompact = (v: number | null): string =>
+  v == null
+    ? '—'
+    : Number(v).toLocaleString('pt-BR', {
+        style: 'currency',
+        currency: 'BRL',
+        notation: 'compact',
+        maximumFractionDigits: 1,
+      });
+
 /**
  * Bytes → tamanho legível (B / KB / MB), com vírgula decimal do pt-BR.
  * Base 1024 (o que o SO e o Storage reportam). '—' quando não informado.
