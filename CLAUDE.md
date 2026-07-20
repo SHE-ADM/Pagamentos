@@ -738,7 +738,7 @@ POST usa `getAuthenticatedUser`, não `requireAuth`); extração → `SupabaseCo
 = DEFAULT da coluna. **Restrição por grupo (opt-in):** flag `user_group.sees_only_own_accounts` (só
 **Comercial=6** ligada; **Financeiro=7** e demais = false → veem tudo). **Enforcement por RLS SELECT**
 de `financial_account_control`: `USING (NOT public.auth_group_sees_only_own() OR created_by = auth.uid())`
-— cobre `/consulta` (grid + busca) e `/dashboard`, que leem via `authenticated`; `service_role`
+— cobre `/consulta` (grid + busca) e `/dashboard_vencimentos`, que leem via `authenticated`; `service_role`
 (Next API/Python) mantém bypass. **Estendido a `/emails` e `/erros` (migration 078):** as policies
 SELECT de `email_control` e `email_processing_errors` usam a MESMA flag/helper, porém casando o
 REMETENTE com o e-mail do logado — `USING (NOT public.auth_group_sees_only_own() OR
@@ -1065,7 +1065,7 @@ Alvo: **WCAG 2.1 Nível AA** em todas as telas. Regras práticas:
 - **Camada de acessibilidade em NAVEGADOR REAL** (Playwright + `@axe-core/playwright`) — cobre o
   que o jsdom não vê: contraste sob render efetivo, ordem de foco e autofill. Config em
   `playwright.config.ts`, specs em `e2e/*.a11y.e2e.ts` (`public-auth` = login/forgot/reset sem
-  login; `protected` = `/consulta`/`/emails`/`/erros`/**`/dashboard`** atrás de `A11Y_TEST_EMAIL`/
+  login; `protected` = `/consulta`/`/emails`/`/erros`/**`/dashboard_vencimentos`** atrás de `A11Y_TEST_EMAIL`/
   `A11Y_TEST_PASSWORD`, pulado sem credencial — o Dashboard entrou no scan pelo achado A3-8),
   helper `e2e/axe.ts` (tags AA). O reporter do `axe.ts` emite, por nó, o **`failureSummary`**
   (para color-contrast: `foreground`/`background`/`ratio`/esperado) **+ o HTML do elemento**, além
@@ -1521,7 +1521,7 @@ apps/frontend-vite/src/components/
 | **Envios** | E-mails (`/cobranca/envios`) · Log de erros (`/cobranca/erros`) — logs da cobrança automática de vencidos |
 | **Contas** | Gestão de contas (`/consulta`) · Cadastro de contas (`/contas`) · Cadastro de fornecedores (`/fornecedores`) |
 | **Tabelas** | Plano de contas (`/tabelas/plano-de-contas`) · Grupos de plano de contas (`/tabelas/grupos-plano-de-contas`) · Sub grupos de plano de contas (`/tabelas/subgrupos-plano-de-contas`) · Centro de custos (`/tabelas/centros-de-custo`) · Contas bancárias (`/tabelas/contas`) · Bancos (`/tabelas/bancos`) — CRUDs dos cadastros contábeis (ordem conforme `Layout.tsx`) |
-| **Análise** | Dashboard de Vencimentos (`/dashboard`) |
+| **Análise** | Dashboard de Vencimentos (`/dashboard_vencimentos`) |
 
 > "Gestão de contas" aponta para `/consulta` (só o rótulo difere da rota). Ao promover um
 > item `breve` a ativo, troque o `<span … is-disabled>` por `<NavLink>` e remova o badge
@@ -2986,7 +2986,7 @@ faturas SIEG em `ignorado`; o handler A1 (baixar o boleto real) segue como melho
 | `/tabelas/plano-de-contas` | `ChartAccountsPage.tsx` | `financial_chart_of_account` (CRUD via Next API) |
 | `/tabelas/grupos-plano-de-contas` | `ChartAccountGroupsPage.tsx` | `financial_chart_of_account_group` (CRUD via Next API) |
 | `/tabelas/subgrupos-plano-de-contas` | `ChartAccountSubgroupsPage.tsx` | `financial_chart_of_account_subgroup` (CRUD via Next API) |
-| `/dashboard` | `Dashboard.tsx` | `financial_account_control` (KPIs/gráficos por mês ou geral; `getDashboardData`). **Filtro por EMPRESA** (`<select>` "Empresa", 1º dos controles; vazio = TODAS; hook `useCompanyOptions`): 5º parâmetro `skCompany` de `getDashboardData`, aplicado nas **DUAS** leituras (escopo + ano — senão o gráfico anual mostraria as duas empresas). Aqui ele escopa **TUDO** (KPIs, donuts e gráfico anual), diferente de `/consulta` (cujos KPIs gerais são globais), porque no dashboard todo indicador deriva do escopo; e **aplica na hora** (não há "Buscar"). Convive com o filtro de KPI. **Cards de KPI clicáveis = filtro** (Total/Pagos/A vencer/A vencer em 7 dias/Vencidas): clicar aplica o filtro (`KpiFilter`) a TODOS os gráficos; os KPIs seguem com os totais completos. **4 donuts** (situação · tipos de conta · **Tributos** = só guias tributárias detalhadas · formas de pagamento; tipos de conta colapsa os tributários numa fatia "Tributos" via `groupDocumentTypeLabel`/`isTaxDocumentType`) |
+| `/dashboard_vencimentos` | `Dashboard.tsx` | `financial_account_control` (KPIs/gráficos por mês ou geral; `getDashboardData`). **Filtro por EMPRESA** (`<select>` "Empresa", 1º dos controles; vazio = TODAS; hook `useCompanyOptions`): 5º parâmetro `skCompany` de `getDashboardData`, aplicado nas **DUAS** leituras (escopo + ano — senão o gráfico anual mostraria as duas empresas). Aqui ele escopa **TUDO** (KPIs, donuts e gráfico anual), diferente de `/consulta` (cujos KPIs gerais são globais), porque no dashboard todo indicador deriva do escopo; e **aplica na hora** (não há "Buscar"). Convive com o filtro de KPI. **Cards de KPI clicáveis = filtro** (Total/Pagos/A vencer/A vencer em 7 dias/Vencidas): clicar aplica o filtro (`KpiFilter`) a TODOS os gráficos; os KPIs seguem com os totais completos. **4 donuts** (situação · tipos de conta · **Tributos** = só guias tributárias detalhadas · formas de pagamento; tipos de conta colapsa os tributários numa fatia "Tributos" via `groupDocumentTypeLabel`/`isTaxDocumentType`) |
 | `/cobranca/envios` | `cobranca/CobrancaEnvios.tsx` | `cobranca_envios_log` (ver "Pipeline de cobrança de vencidos") |
 | `/cobranca/erros` | `cobranca/CobrancaErros.tsx` | `cobranca_erros_log` |
 
