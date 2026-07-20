@@ -214,8 +214,8 @@ export default function Dashboard() {
           <MonthlyFlow flow={data?.monthlyFlow ?? []} />
         </div>
 
-        {/* Donuts em 2 colunas (mais largos p/ caber R$ + contagem + %), modo dense. */}
-        <div className="grid grid-cols-1 xl:grid-cols-2 gap-2 mb-3">
+        {/* 4 donuts na mesma linha (xl), modo dense p/ caber R$ + % no espaço estreito. */}
+        <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-2 mb-3">
           <div className="card p-2.5">
             <div className="mb-2">
               <h3 className="text-sm font-semibold text-slate-800">Minha situação</h3>
