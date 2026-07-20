@@ -46,7 +46,7 @@ describe('Layout (sidebar)', () => {
     expect(screen.getByText('SU')).toBeInTheDocument(); // iniciais de "suporte@..."
     // Dashboard foi promovido a link ativo — nenhum item fica mais "breve".
     expect(screen.queryByText('breve')).not.toBeInTheDocument();
-    expect(screen.getByText('Dashboard')).toBeInTheDocument();
+    expect(screen.getByText('Dashboard de Vencimentos')).toBeInTheDocument();
   });
 
   it('aciona signOut ao clicar em sair', async () => {

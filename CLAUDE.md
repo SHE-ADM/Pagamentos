@@ -1521,7 +1521,7 @@ apps/frontend-vite/src/components/
 | **Envios** | E-mails (`/cobranca/envios`) · Log de erros (`/cobranca/erros`) — logs da cobrança automática de vencidos |
 | **Contas** | Gestão de contas (`/consulta`) · Cadastro de contas (`/contas`) · Cadastro de fornecedores (`/fornecedores`) |
 | **Tabelas** | Bancos (`/tabelas/bancos`) · Contas bancárias (`/tabelas/contas`) · Centro de custos (`/tabelas/centros-de-custo`) · Plano de contas (`/tabelas/plano-de-contas`) · Grupos de plano de contas (`/tabelas/grupos-plano-de-contas`) · Sub grupos de plano de contas (`/tabelas/subgrupos-plano-de-contas`) — CRUDs dos cadastros contábeis (ordem conforme `Layout.tsx`) |
-| **Análise** | Dashboard (`/dashboard`) |
+| **Análise** | Dashboard de Vencimentos (`/dashboard`) |
 
 > "Gestão de contas" aponta para `/consulta` (só o rótulo difere da rota). Ao promover um
 > item `breve` a ativo, troque o `<span … is-disabled>` por `<NavLink>` e remova o badge
