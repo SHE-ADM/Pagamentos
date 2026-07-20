@@ -125,7 +125,7 @@ function exportCsv(rows: FinancialAccountControl[]) {
   a.click();
 }
 
-// Rótulos de mês — mesmos do /dashboard (princípio de filtro por mês/ano reaproveitado).
+// Rótulos de mês — mesmos do Dashboard (princípio de filtro por mês/ano reaproveitado).
 const MONTHS = ['Jan', 'Fev', 'Mar', 'Abr', 'Mai', 'Jun', 'Jul', 'Ago', 'Set', 'Out', 'Nov', 'Dez'];
 const MONTHS_FULL = ['Janeiro', 'Fevereiro', 'Março', 'Abril', 'Maio', 'Junho', 'Julho', 'Agosto', 'Setembro', 'Outubro', 'Novembro', 'Dezembro'];
 
@@ -818,7 +818,7 @@ export default function Consulta() {
         </div>
 
         {/* Período: tipo de data (vencimento/emissão) + mês + ano + "Todas" — mesmo
-            princípio do /dashboard. O seletor "Tipo de data" fica AQUI, junto do período
+            princípio do Dashboard. O seletor "Tipo de data" fica AQUI, junto do período
             que ele controla (campo usado pelos botões de mês E pelo intervalo De/Até).
             Aplica imediatamente; o grid e o card "Valor total" seguem o período (cards de KPI ficam globais). */}
         <div className="flex items-center justify-start gap-3 flex-wrap mb-2">

@@ -150,7 +150,7 @@ export default function Layout({ children }: Readonly<{ children: ReactNode }>) 
           <p className="px-3 pt-2.5 pb-1 text-xs font-bold tracking-widest text-slate-400 uppercase">
             Análise
           </p>
-          <NavLink to="/dashboard" onClick={closeNav} className={({ isActive }) => navLink({ active: isActive })}>
+          <NavLink to="/dashboard_vencimentos" onClick={closeNav} className={({ isActive }) => navLink({ active: isActive })}>
             <BarChart2 size={16} /> Dashboard de Vencimentos
           </NavLink>
         </nav>

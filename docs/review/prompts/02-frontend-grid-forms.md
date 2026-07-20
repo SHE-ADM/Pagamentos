@@ -41,7 +41,7 @@
 
 <validacao>
   - npm run lint && npm run typecheck && npm test
-  - Teste manual: abrir /dashboard (mês/ano corretos) e /cobranca/erros (lista carrega).
+  - Teste manual: abrir /dashboard_vencimentos (mês/ano corretos) e /cobranca/erros (lista carrega).
   - Se adicionar cobertura, incluir um teste de cobrancaService montando a query de período e asseverando o
     formato `and=(occurred_at.gte.…,occurred_at.lte.…)`.
 </validacao>
