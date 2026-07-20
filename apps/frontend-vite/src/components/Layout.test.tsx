@@ -31,14 +31,19 @@ describe('Layout (sidebar)', () => {
     expect(screen.getByText('conteúdo')).toBeInTheDocument();
   });
 
-  it('mostra "Contas bancárias" no grupo Tabelas, logo abaixo de Bancos', () => {
+  it('ordena o grupo Tabelas: Plano de contas → Grupos → Sub grupos → Centro de custos → Contas bancárias → Bancos', () => {
     renderLayout();
-    const bancos = screen.getByText('Bancos');
-    const contas = screen.getByText('Contas bancárias');
+    const plano = screen.getByText('Plano de contas');
+    const grupos = screen.getByText('Grupos de plano de contas');
+    const subgrupos = screen.getByText('Sub grupos de plano de contas');
     const centro = screen.getByText('Centro de custos');
-    // Ordem no DOM: Bancos → Contas bancárias → Centro de custos.
-    expect(bancos.compareDocumentPosition(contas) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-    expect(contas.compareDocumentPosition(centro) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    const contas = screen.getByText('Contas bancárias');
+    const bancos = screen.getByText('Bancos');
+    expect(plano.compareDocumentPosition(grupos) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(grupos.compareDocumentPosition(subgrupos) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(subgrupos.compareDocumentPosition(centro) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(centro.compareDocumentPosition(contas) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(contas.compareDocumentPosition(bancos) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 
   it('exibe as iniciais do e-mail e não há mais itens "breve" (Dashboard ativo)', () => {
