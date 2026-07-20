@@ -117,8 +117,11 @@ export function listCompanies(): Promise<CompanyOption[]> {
   return call<CompanyOption[]>('/companies');
 }
 
-// Natureza contábil (Receitas/Despesas/Ativo/Passivo) — lookup do <select> "Natureza" do
-// CRUD de Grupos. Inclui o id 0 ("Não informado"), permitindo desclassificar um grupo.
-export function listFinancialTypeGroups(): Promise<TypeGroupOption[]> {
-  return call<TypeGroupOption[]>('/financial-type-groups');
+// Catálogo `financial_type_group` ESCOPADO (migration 094) — alimenta o <select>
+// "Natureza" do CRUD de Grupos (scope 'group': Receitas/Despesas/Ativo/Passivo) e "Tipo"
+// do CRUD de Sub grupos (scope 'subgroup': Despesas Fixas/Variáveis). Ambos incluem o id 0
+// ("Não informado", escopo 'both'), permitindo desclassificar. Sem `scope`, retorna todas.
+export function listFinancialTypeGroups(scope?: 'group' | 'subgroup'): Promise<TypeGroupOption[]> {
+  const qs = scope ? `?scope=${scope}` : '';
+  return call<TypeGroupOption[]>(`/financial-type-groups${qs}`);
 }

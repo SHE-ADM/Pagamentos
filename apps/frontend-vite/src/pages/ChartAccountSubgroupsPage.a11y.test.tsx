@@ -13,7 +13,10 @@ vi.mock('../services/chartAccountSubgroups', () => ({
   createChartAccountSubgroup: vi.fn(),
   updateChartAccountSubgroup: vi.fn(),
 }));
-vi.mock('../services/lookups', () => ({ listChartAccountGroups: vi.fn().mockResolvedValue([]) }));
+vi.mock('../services/lookups', () => ({
+  listChartAccountGroups: vi.fn().mockResolvedValue([]),
+  listFinancialTypeGroups: vi.fn().mockResolvedValue([]),
+}));
 
 import ChartAccountSubgroupsPage from './ChartAccountSubgroupsPage';
 import { listChartAccountSubgroupsPage } from '../services/chartAccountSubgroups';
@@ -23,6 +26,7 @@ const sample: ChartAccountSubgroup = {
   chart_account_group_id: 1,
   subgroup_code: '1.1',
   subgroup_description: 'Ativo Circulante',
+  type_group_id: 0,
 };
 
 beforeEach(() => {

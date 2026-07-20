@@ -29,13 +29,18 @@ export interface CompanyOption {
   trade_name: string | null;
 }
 
-// Linha do catálogo `financial_type_group` (NATUREZA contábil — lookup do <select>
-// "Natureza" no CRUD de Grupos, financial_chart_of_account_group.type_group_id). Poucas
-// linhas (0 Não informado + Receitas/Despesas/Ativo/Passivo). Ordenado por id.
+// Linha do catálogo `financial_type_group` — lookup dos <select>s "Natureza" (CRUD de
+// Grupos) e "Tipo" (CRUD de Sub grupos). O catálogo hospeda DUAS taxonomias distintas
+// (Natureza do grupo: Receitas/Despesas/Ativo/Passivo; Tipo do subgrupo: Despesas
+// Fixas/Variáveis), discriminadas por `applies_to` (migration 094). Ordenado por id.
 export interface TypeGroupOption {
   type_group_id: number;
   type_group_description: string | null;
 }
+
+// Escopo de aplicação de um type_group (discriminador `applies_to`). 'both' (id 0
+// "Não informado") aparece nos dois cadastros; os demais são exclusivos de um.
+export type TypeGroupScope = 'group' | 'subgroup';
 
 // Opção do 1º select da classificação contábil (cascata INVERTIDA Plano → Centro):
 // descrições DISTINTAS de planos postáveis. A mesma descrição ("Serviços Gerais") existe
@@ -217,17 +222,50 @@ export const companyService = {
 
 export const financialTypeGroupService = {
   /**
-   * Lista o catálogo `financial_type_group` (NATUREZA contábil — alimenta o <select>
-   * "Natureza" do CRUD de Grupos, financial_chart_of_account_group.type_group_id).
-   * Inclui o id 0 ("Não informado") para permitir desclassificar. Ordenado por id.
+   * Lista o catálogo `financial_type_group`, ESCOPADO por `applies_to` (migration 094).
+   * Alimenta o <select> "Natureza" (Grupos, scope 'group') e "Tipo" (Sub grupos, scope
+   * 'subgroup'). Com escopo, retorna as linhas do próprio escopo + as 'both' (o id 0
+   * "Não informado", que permite desclassificar); sem escopo, retorna TODAS (retrocompat).
+   * Escopar evita oferecer opções sem sentido (subgrupo com Natureza de grupo e vice-versa).
    * @throws {LookupServiceError} 500 em falha do banco.
    */
-  async list(): Promise<TypeGroupOption[]> {
-    const { data, error } = await getSupabaseAdmin()
+  async list(params: { scope?: TypeGroupScope } = {}): Promise<TypeGroupOption[]> {
+    let query = getSupabaseAdmin()
       .from(TYPE_GROUP_TABLE)
       .select('type_group_id,type_group_description')
       .order('type_group_id', { ascending: true });
+    if (params.scope) query = query.in('applies_to', ['both', params.scope]);
+    const { data, error } = await query;
     if (error) throw new LookupServiceError(error.message, 500);
     return (data ?? []) as TypeGroupOption[];
   },
 };
+
+/**
+ * Valida que o `type_group_id` referenciado é compatível com o cadastro (Finding 2 da
+ * revisão): impede atribuir a um grupo uma Natureza de subgrupo (Fixas/Variáveis) e
+ * vice-versa — a FK só garante EXISTÊNCIA, não validade semântica. Autoritativa em
+ * aplicação (única via de escrita destes cadastros é a Next API/service_role; não há
+ * pipeline gravando aqui), no mesmo espírito de lib/classification.ts.
+ *
+ * Retorna uma mensagem de erro (para 422) ou `null` quando válido. O id 0 ("Não
+ * informado", applies_to 'both') é sempre válido e pula a consulta ao banco.
+ * @throws {LookupServiceError} 500 em falha do banco.
+ */
+export async function validateTypeGroupScope(typeGroupId: number, scope: TypeGroupScope): Promise<string | null> {
+  if (typeGroupId === 0) return null;
+  const { data, error } = await getSupabaseAdmin()
+    .from(TYPE_GROUP_TABLE)
+    .select('applies_to')
+    .eq('type_group_id', typeGroupId)
+    .maybeSingle();
+  if (error) throw new LookupServiceError(error.message, 500);
+  if (!data) return scope === 'group' ? 'Natureza informada não existe' : 'Tipo informado não existe';
+  const applies = (data as { applies_to: string }).applies_to;
+  if (applies !== 'both' && applies !== scope) {
+    return scope === 'group'
+      ? 'Natureza inválida para grupo (use Receitas, Despesas, Ativo ou Passivo)'
+      : 'Tipo inválido para subgrupo (use Despesas Fixas ou Despesas Variáveis)';
+  }
+  return null;
+}

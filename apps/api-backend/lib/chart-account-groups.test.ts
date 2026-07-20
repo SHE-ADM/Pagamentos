@@ -40,12 +40,21 @@ describe('chartAccountGroupService', () => {
     ).rejects.toMatchObject({ status: 409 });
   });
 
-  it('create ok quando único', async () => {
+  it('create ok quando único (sem Natureza → não valida escopo)', async () => {
     resultQueue.push({ data: null, error: null }); // findByCode
     resultQueue.push({ data: { chart_account_group_id: 9, group_code: '9' }, error: null }); // create
     expect(await chartAccountGroupService.create({ group_code: '9', group_description: 'X' })).toMatchObject({
       chart_account_group_id: 9,
     });
+  });
+
+  it('create ok com Natureza de escopo group (valida o escopo e insere)', async () => {
+    resultQueue.push({ data: null, error: null }); // findByCode → único
+    resultQueue.push({ data: { applies_to: 'group' }, error: null }); // validateTypeGroupScope → ok
+    resultQueue.push({ data: { chart_account_group_id: 9, type_group_id: 2 }, error: null }); // create
+    expect(
+      await chartAccountGroupService.create({ group_code: '9', group_description: 'X', type_group_id: 2 }),
+    ).toMatchObject({ chart_account_group_id: 9 });
   });
 
   it('remove 409 para o sentinela id 0', async () => {
@@ -101,12 +110,20 @@ describe('chartAccountGroupService', () => {
     expect(builders[0].or).not.toHaveBeenCalled();
   });
 
-  it('create 422 quando a Natureza (type_group_id) não existe — FK 23503', async () => {
+  it('create 422 quando a Natureza não existe (validação de escopo, antes do insert)', async () => {
     resultQueue.push({ data: null, error: null }); // findByCode → único
-    resultQueue.push({ data: null, error: { code: '23503', message: 'violates foreign key constraint' } }); // create
+    resultQueue.push({ data: null, error: null }); // validateTypeGroupScope → não encontrado
     await expect(
       chartAccountGroupService.create({ group_code: '9', group_description: 'X', type_group_id: 999 }),
     ).rejects.toMatchObject({ status: 422, message: 'Natureza informada não existe' });
+  });
+
+  it('create 422 quando a Natureza é de escopo subgroup (Fixas/Variáveis)', async () => {
+    resultQueue.push({ data: null, error: null }); // findByCode → único
+    resultQueue.push({ data: { applies_to: 'subgroup' }, error: null }); // validateTypeGroupScope → escopo errado
+    await expect(
+      chartAccountGroupService.create({ group_code: '9', group_description: 'X', type_group_id: 5 }),
+    ).rejects.toMatchObject({ status: 422, message: expect.stringMatching(/Natureza inválida para grupo/) });
   });
 
   it('create 500 (genérico, sem vazar detalhe) em erro inesperado do banco', async () => {

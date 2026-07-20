@@ -47,6 +47,7 @@ describe('/api/chart-account-subgroups/:id', () => {
       chart_account_group_id: 1,
       subgroup_code: '1.1',
       subgroup_description: 'X',
+      type_group_id: 0,
     });
     expect((await PATCH(jsonReq(async () => ({ subgroup_description: 'X' })), ctx('5'))).status).toBe(200);
   });

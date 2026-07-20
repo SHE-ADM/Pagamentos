@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { chartAccountGroupEmbeddedSchema } from './chart-account-group.schema';
+import { chartAccountGroupEmbeddedSchema, financialTypeGroupEmbeddedSchema } from './chart-account-group.schema';
 
 // Cadastro `financial_chart_of_account_subgroup` — subgrupos do plano de contas
 // (meio da hierarquia: grupo → subgrupo → plano de contas). Tabela de CADASTRO
@@ -7,6 +7,11 @@ import { chartAccountGroupEmbeddedSchema } from './chart-account-group.schema';
 // de contas" (grupo Tabelas). PK `chart_account_subgroup_id` é SMALLINT IDENTITY
 // ALWAYS (gerada pelo banco); o id 0 é o sentinela "não informado" (fora do CRUD).
 // `chart_account_group_id` (FK → grupo) é NOT NULL → obrigatório.
+//
+// `type_group_id` (FK → financial_type_group) é o TIPO contábil do subgrupo —
+// mesmo padrão do grupo (chart-account-group.schema.ts), mas classificada por
+// subgrupo (granularidade fina: Despesas Fixas/Variáveis, ver migrations 092/093),
+// não herdada em bloco do grupo pai.
 
 // ── Leitura (linha do banco) ────────────────────────────────────────────────
 
@@ -15,8 +20,11 @@ export const chartAccountSubgroupSchema = z.object({
   chart_account_group_id: z.number().int(),
   subgroup_code: z.string().nullable(),
   subgroup_description: z.string().nullable(),
+  type_group_id: z.number().int(),
   // Embed opcional do grupo (JOIN) — presente quando o select inclui group(...).
   group: chartAccountGroupEmbeddedSchema.optional(),
+  // Embed opcional do Tipo (JOIN) — presente quando o select inclui type_group(...).
+  type_group: financialTypeGroupEmbeddedSchema.optional(),
 });
 
 // Embed (JOIN via financial_chart_of_account.chart_account_subgroup_id).
@@ -43,6 +51,9 @@ const editableSubgroupFields = {
     .max(MAX_DESCRIPTION, `Descrição deve ter no máximo ${MAX_DESCRIPTION} caracteres`),
   // FK obrigatória (NOT NULL no banco) — o grupo deve ser informado (> 0).
   chart_account_group_id: z.number().int().min(1, 'Grupo é obrigatório'),
+  // Tipo (FK financial_type_group). 0 = "Não informado" é válido; opcional para não
+  // exigir o campo em cargas que omitem (DB default 0).
+  type_group_id: z.number().int().min(0, 'Tipo inválido').optional(),
 };
 
 // ── Criação ─────────────────────────────────────────────────────────────────
@@ -54,12 +65,14 @@ export const chartAccountSubgroupUpdateSchema = z
     subgroup_code: editableSubgroupFields.subgroup_code.optional(),
     subgroup_description: editableSubgroupFields.subgroup_description.optional(),
     chart_account_group_id: editableSubgroupFields.chart_account_group_id.optional(),
+    type_group_id: editableSubgroupFields.type_group_id,
   })
   .refine(
     (d) =>
       d.subgroup_code !== undefined ||
       d.subgroup_description !== undefined ||
-      d.chart_account_group_id !== undefined,
+      d.chart_account_group_id !== undefined ||
+      d.type_group_id !== undefined,
     { message: 'Informe ao menos um campo para atualizar' },
   );
 
