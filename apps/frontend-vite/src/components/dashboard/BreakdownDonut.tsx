@@ -22,17 +22,16 @@ export function BreakdownDonut({ segs, colorFor, dense = false }: { segs: DonutS
     const b = ((start + s.value) / totalValue) * 360;
     return `${colorFor(s.label, i)} ${a}deg ${b}deg`;
   });
+  // `dense` (ex.: /dashboard_vencimentos) só reduz o círculo — fonte/gaps iguais ao padrão,
+  // liberando um pouco de largura para os 4 donuts caberem na mesma linha (xl).
   // Classes literais completas em cada ramo (Tailwind JIT — nunca concatenar nome de classe).
-  const wrapCls = dense ? 'flex items-center gap-2' : 'flex items-center gap-4';
-  const circleCls = dense ? 'relative w-[92px] h-[92px] shrink-0' : 'relative w-[120px] h-[120px] shrink-0';
-  const centerNumCls = dense
-    ? 'font-mono text-xs font-semibold text-slate-900 leading-none text-center'
-    : 'font-mono text-sm font-semibold text-slate-900 leading-none text-center';
-  const rowCls = dense ? 'flex items-center gap-1.5 donut-legend-dense' : 'flex items-center gap-2 text-xs';
-  const pctCls = dense ? 'text-slate-600 w-8 text-right' : 'text-slate-600 w-9 text-right';
-  const emptyCls = dense ? 'donut-legend-dense text-slate-500' : 'text-xs text-slate-500';
+  const circleCls = dense ? 'relative w-[108px] h-[108px] shrink-0' : 'relative w-[120px] h-[120px] shrink-0';
+  const centerNumCls = 'font-mono text-sm font-semibold text-slate-900 leading-none text-center';
+  const rowCls = 'flex items-center gap-2 text-xs';
+  const pctCls = 'text-slate-600 w-9 text-right';
+  const emptyCls = 'text-xs text-slate-500';
   return (
-    <div className={wrapCls}>
+    <div className="flex items-center gap-4">
       <div className={circleCls}>
         {/* gradiente cônico → inline style (sem equivalente Tailwind) */}
         <div className="w-full h-full rounded-full" style={{ background: `conic-gradient(${stops.join(', ') || 'var(--color-slate-200) 0deg 360deg'})` }} />
