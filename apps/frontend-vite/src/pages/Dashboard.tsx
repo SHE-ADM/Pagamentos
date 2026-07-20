@@ -230,7 +230,7 @@ export default function Dashboard() {
               <p className="text-xs text-slate-500">Por tipo de documento · {scope === 'all' ? 'Todas as contas' : MONTHS_FULL[month]}</p>
             </div>
             <BreakdownDonut
-              segs={(data?.documentTypeBreakdown ?? []).map((s) => ({ key: s.label, label: s.label, count: s.count }))}
+              segs={(data?.documentTypeBreakdown ?? []).map((s) => ({ key: s.label, label: s.label, count: s.count, value: s.value }))}
               colorFor={paletteColor}
             />
           </div>
@@ -241,7 +241,7 @@ export default function Dashboard() {
               <p className="text-xs text-slate-500">Por tipo de guia · {scope === 'all' ? 'Todas as contas' : MONTHS_FULL[month]}</p>
             </div>
             <BreakdownDonut
-              segs={(data?.taxTypeBreakdown ?? []).map((s) => ({ key: s.label, label: s.label, count: s.count }))}
+              segs={(data?.taxTypeBreakdown ?? []).map((s) => ({ key: s.label, label: s.label, count: s.count, value: s.value }))}
               colorFor={paletteColor}
             />
           </div>
@@ -252,7 +252,7 @@ export default function Dashboard() {
               <p className="text-xs text-slate-500">Por forma de pagamento · {scope === 'all' ? 'Todas as contas' : MONTHS_FULL[month]}</p>
             </div>
             <BreakdownDonut
-              segs={(data?.paymentMethodBreakdown ?? []).map((s) => ({ key: s.label, label: s.label, count: s.count }))}
+              segs={(data?.paymentMethodBreakdown ?? []).map((s) => ({ key: s.label, label: s.label, count: s.count, value: s.value }))}
               colorFor={paletteColor}
             />
           </div>
@@ -293,6 +293,6 @@ export default function Dashboard() {
 // Fica local porque só o dashboard de vencimentos tem o donut de situação (o financeiro
 // usa apenas Natureza/Tipo). Delega ao BreakdownDonut compartilhado.
 function StatusDonut({ data }: { data: DashboardData | null }) {
-  const segs = (data?.statusBreakdown ?? []).map((s) => ({ key: s.status, label: s.status, count: s.count }));
+  const segs = (data?.statusBreakdown ?? []).map((s) => ({ key: s.status, label: s.status, count: s.count, value: s.value }));
   return <BreakdownDonut segs={segs} colorFor={(label) => statusColor(label)} />;
 }
