@@ -480,8 +480,8 @@ asc); colunas reais do grid usam `sort=<coluna>&order=`. Testes: `lib/sort.test.
 | `financial_bank` | **Bancos** `/tabelas/bancos` | `banks.ts` + `banks/**` | PK `bank_id` **NÃO identity** → `create` grava `max+1`. `bank_code` CHAR(3). Delete bloqueado se referenciado por `financial_account` |
 | `financial_account` | **Contas bancárias** `/tabelas/contas` | `financial-accounts.ts` + `financial-accounts/**` | Contas bancárias/caixa (distinto de `/contas`=lançamentos). **Sem sentinela, sem FK reversa** → delete livre. `status_id`→**FK `status`** (migration 053; lookup `GET /api/statuses`; default 30="ativo"); `payment_type_id` **input numérico** (sem tabela de domínio); banco via lookup; saldo `NUMERIC` |
 | `financial_chart_of_account` | **Plano de contas** `/tabelas/plano-de-contas` | `chart-accounts.ts` + estende `chart-accounts/**` | **GET dual-mode preserva a CASCATA** (sem `page` = lookup por centro, só postáveis — `lib/lookups`; com `page` = CRUD — `lib/chart-accounts`). FKs opcionais centro/**grupo** (`chart_account_group_id` — FK direta, migration 058)/subgrupo (0="não informado"); `account_level`/`is_postable`. **Grid** (ordem): Código · Descrição · Centro de custo · Grupo · Sub Grupo (Nível e Lançável saíram do grid — seguem no form). **Todas as 5 colunas são ordenáveis** (server-side; as 3 de classificação pela descrição do embed via `alias(coluna)`). Delete bloqueado por `financial_account_control`/`supplier` |
-| `financial_chart_of_account_group` | **Grupos** `/tabelas/grupos-plano-de-contas` | `chart-account-groups.ts` + `chart-account-groups/**` | `group_type` CHAR(1) opcional. Delete bloqueado se referenciado por subgrupo |
-| `financial_chart_of_account_subgroup` | **Sub grupos** `/tabelas/subgrupos-plano-de-contas` | `chart-account-subgroups.ts` + `chart-account-subgroups/**` | FK `chart_account_group_id` **obrigatória** (NOT NULL; 23503→422). Delete bloqueado se referenciado por plano de contas |
+| `financial_chart_of_account_group` | **Grupos** `/tabelas/grupos-plano-de-contas` | `chart-account-groups.ts` + `chart-account-groups/**` | `group_type` CHAR(1) opcional (legado). **`type_group_id`→FK `financial_type_group`** = **NATUREZA** (lookup escopado `?scope=group`; ver "Escopo do `financial_type_group`"). Delete bloqueado se referenciado por subgrupo |
+| `financial_chart_of_account_subgroup` | **Sub grupos** `/tabelas/subgrupos-plano-de-contas` | `chart-account-subgroups.ts` + `chart-account-subgroups/**` | FK `chart_account_group_id` **obrigatória** (NOT NULL; 23503→422). **`type_group_id`→FK `financial_type_group`** = **TIPO** (Despesa Fixa/Variável — coluna "Tipo" no grid/form; lookup escopado `?scope=subgroup`; ver "Escopo do `financial_type_group`"). Delete bloqueado se referenciado por plano de contas |
 
 **Hierarquia:** grupo → subgrupo (`chart_account_group_id`) → plano de contas (`chart_account_subgroup_id`
 + `cost_center_id`). O plano de contas tem **também uma FK DIRETA ao grupo** (`chart_account_group_id`,
@@ -498,6 +498,29 @@ em `@sheild/shared` (`bank`/`financial-account`/
 como `NaN` (`valueAsNumber`) e são **normalizados para 0** nos forms antes do `safeParse` (0 dispara o
 `.min(1)` com a mensagem amigável). **Pendência conhecida:** `payment_type_id` é input numérico cru
 (não há tabela de domínio no banco) — melhoria futura.
+
+**Escopo do `financial_type_group` — `applies_to` (migration 094 — não regredir):** o catálogo
+`financial_type_group` hospeda **DUAS taxonomias distintas** referenciadas por `type_group_id`: a
+**NATUREZA** do grupo (`financial_chart_of_account_group` — Receitas/Despesas/Ativo/Passivo, ids 1-4,
+rótulo "Natureza") e o **TIPO** do subgrupo (`financial_chart_of_account_subgroup` — **Despesa Fixa/
+Variável**, ids 5-6, rótulo "Tipo"; a classificação Fixa/Variável dos 155 subgrupos foi feita pelas
+migrations **092/093**, por subgrupo, não herdando o grupo em bloco). As duas colunas são
+`SMALLINT NOT NULL DEFAULT 0` (0 = "Não informado") com FK ao mesmo catálogo. Como os dois selects
+liam o **mesmo** lookup, cada um oferecia as opções do outro (subgrupo com Natureza="Ativo", grupo com
+Tipo="Despesas Fixas") — sem sentido e sem guarda. A **coluna `applies_to`** (`'group'`/`'subgroup'`/
+`'both'`; CHECK; DEFAULT `'both'`) escopa cada linha (0→both, 1-4→group, 5-6→subgroup):
+- **Lookup escopado** (`financialTypeGroupService.list({scope})` → `applies_to IN ('both', scope)`;
+  rota `GET /api/financial-type-groups?scope=group|subgroup`; cliente `listFinancialTypeGroups(scope)`).
+  A página de Grupos pede `'group'`, a de Sub grupos `'subgroup'`; ambas recebem o id 0. **Sem `scope`
+  a rota retorna TODAS** (retrocompat) — mas todo consumidor hoje passa escopo.
+- **Validação autoritativa em aplicação** (`validateTypeGroupScope` em `lib/lookups.ts`, chamada em
+  `create`/`update` dos dois services): impede atribuir Natureza de subgrupo a um grupo e vice-versa
+  (→ **422**), pois a FK só garante EXISTÊNCIA, não validade semântica. Mesmo espírito de
+  `lib/classification.ts` (a única via de escrita destes cadastros é a Next API/service_role; não há
+  pipeline gravando aqui). id 0 pula a consulta; id inexistente → 422 amigável. Na EDIÇÃO, o form
+  reenvia o `type_group_id` atual — os dados são 100% consistentes com o escopo (0 linhas fora), então
+  editar registro histórico não dispara falso 422. Testes: `lib/lookups.test.ts` (escopo + validação),
+  `chart-account-{groups,subgroups}.test.ts` (create/update com escopo), a11y dos dois forms.
 
 **Lookups de classificação contábil — CASCATA INVERTIDA Plano → Centro (2026-07-18):** a pedido do
 usuário, o `ContaForm` e o `SupplierForm` escolhem o **Plano de contas PRIMEIRO** (por descrição) e o
@@ -3194,8 +3217,17 @@ local/agendada (ver flag `EMAIL_READER_ENABLED` acima e memória [[vercel-deploy
 ## Banco de dados (Supabase)
 
 Migrations em `supabase/migrations/`, aplicadas **manualmente no SQL Editor** em ordem
-numérica (`001` → `087`). **Próxima migration = `088`** (verificar sempre antes de criar nova).
-A **087** estende o CHECK de `financial_account_control.document_type` com **`comprovante`**
+numérica (`001` → `094`). **Próxima migration = `095`** (verificar sempre antes de criar nova).
+A **094** adiciona `financial_type_group.applies_to` (`'group'`/`'subgroup'`/`'both'` + CHECK) — o
+discriminador de ESCOPO que separa as duas taxonomias do catálogo (Natureza do grupo × Tipo Fixa/
+Variável do subgrupo) e escopa os lookups + a validação; ver "Escopo do `financial_type_group`".
+Idempotente (`ADD COLUMN IF NOT EXISTS` + UPDATE guardado); aplicada via Supabase MCP em 2026-07-20
+(Supabase compartilhada dev+prod → sem passo extra). As **091/092/093** são higiene/classificação de
+dados dos cadastros contábeis: **091** corrige `financial_chart_of_account_group` (`group_type` NULL→'D'
+nos códigos 26/63, sentinela id 0 `' '`→NULL, hard delete dos grupos órfãos 15/44); **092** classifica
+`financial_chart_of_account_subgroup.type_group_id` em Fixa/Variável herdando o grupo em bloco; **093**
+refina essa classificação POR SUBGRUPO (119 Fixa / 28 Variável / 8 não-despesa). Todas idempotentes,
+aplicadas via Supabase MCP em 2026-07-20. A **087** estende o CHECK de `financial_account_control.document_type` com **`comprovante`**
 (comprovante/recibo como DOCUMENTO da conta — ver "Normalização de `document_type`"); idempotente
 (DROP+recria), **sem backfill**. Mesmo padrão da 086: o array espelha 1:1 o enum `DOCUMENT_TYPES`
 (NÃO inclui `pix`, removido pela 075). **Aplicada via psql em 2026-07-18** (verificado: `comprovante`

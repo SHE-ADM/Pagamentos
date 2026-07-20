@@ -1,6 +1,7 @@
 // src/pages/ChartAccountSubgroupsPage.tsx — CRUD "Sub grupos de plano de contas"
 // (financial_chart_of_account_subgroup) sobre CrudTablePage. Carrega o lookup de
-// grupos (FK obrigatória) para o <select> do formulário.
+// grupos (FK obrigatória) e o de NATUREZA contábil (financial_type_group) para os
+// <select>s do formulário — mesmo padrão do ChartAccountGroupsPage.
 import { useEffect, useState } from 'react';
 import { ListTree } from 'lucide-react';
 import type { ChartAccountSubgroup, ChartAccountSubgroupCreateInput } from '@sheild/shared';
@@ -14,12 +15,13 @@ import {
   updateChartAccountSubgroup,
   deleteChartAccountSubgroup,
 } from '../services/chartAccountSubgroups';
-import { listChartAccountGroups } from '../services/lookups';
+import { listChartAccountGroups, listFinancialTypeGroups } from '../services/lookups';
 
 const optionLabel = (code?: string | null, desc?: string | null): string => [code, desc].filter(Boolean).join(' — ');
 
 export default function ChartAccountSubgroupsPage() {
   const [groupOptions, setGroupOptions] = useState<SelectOption[]>([]);
+  const [typeGroupOptions, setTypeGroupOptions] = useState<SelectOption[]>([]);
 
   useEffect(() => {
     void (async () => {
@@ -33,6 +35,19 @@ export default function ChartAccountSubgroupsPage() {
         );
       } catch {
         /* lookup indisponível — o form ainda valida "Grupo é obrigatório" */
+      }
+    })();
+  }, []);
+
+  useEffect(() => {
+    void (async () => {
+      try {
+        const types = await listFinancialTypeGroups('subgroup');
+        setTypeGroupOptions(
+          types.map((t) => ({ value: t.type_group_id, label: t.type_group_description ?? `#${t.type_group_id}` })),
+        );
+      } catch {
+        /* lookup indisponível — o form ainda envia type_group_id (default 0) */
       }
     })();
   }, []);
@@ -55,6 +70,7 @@ export default function ChartAccountSubgroupsPage() {
           mode={a.mode}
           defaultValues={a.row}
           groupOptions={groupOptions}
+          typeGroupOptions={typeGroupOptions}
           onSubmit={a.onSubmit}
           onCancel={a.onCancel}
           submitError={a.submitError}

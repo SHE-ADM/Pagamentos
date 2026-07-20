@@ -716,6 +716,14 @@ export function getChartAccountSubgroupColumns(
       render: (s) => joinCodeDesc(s.group?.group_code, s.group?.group_description),
     },
     {
+      key: 'type_group',
+      header: 'Tipo',
+      sortKey: 'type_group_id',
+      size: 160,
+      wrap: true,
+      render: (s) => s.type_group?.type_group_description ?? '—',
+    },
+    {
       key: '__actions__',
       header: 'Ações',
       size: onDelete ? ACTIONS_COL_SIZE_WITH_DELETE : ACTIONS_COL_SIZE,

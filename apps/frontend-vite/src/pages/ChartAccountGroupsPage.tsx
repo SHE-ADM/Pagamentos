@@ -22,7 +22,7 @@ export default function ChartAccountGroupsPage() {
   useEffect(() => {
     void (async () => {
       try {
-        const types = await listFinancialTypeGroups();
+        const types = await listFinancialTypeGroups('group');
         setTypeGroupOptions(
           types.map((t) => ({ value: t.type_group_id, label: t.type_group_description ?? `#${t.type_group_id}` })),
         );

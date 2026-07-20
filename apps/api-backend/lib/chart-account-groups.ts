@@ -15,6 +15,7 @@ import type { ZodError } from 'zod';
 import { getSupabaseAdmin } from './supabase-admin';
 import { resolveSort, type SortOrder } from './sort';
 import { resolveMatchingIds } from './search';
+import { validateTypeGroupScope } from './lookups';
 
 const TABLE = 'financial_chart_of_account_group';
 const SORTABLE_COLUMNS = ['group_code', 'group_description', 'group_type', 'type_group_id'] as const;
@@ -167,6 +168,7 @@ export const chartAccountGroupService = {
     if (!parsed.success) throw new ChartAccountGroupServiceError(formatZodError(parsed.error), 422);
 
     await this.assertCodeUnique(parsed.data.group_code);
+    await this.assertTypeGroupScope(parsed.data.type_group_id ?? 0);
 
     const { data, error } = await repository.create(parsed.data);
     if (error) throw mapWriteError(error);
@@ -180,11 +182,19 @@ export const chartAccountGroupService = {
     if (!parsed.success) throw new ChartAccountGroupServiceError(formatZodError(parsed.error), 422);
 
     if (parsed.data.group_code !== undefined) await this.assertCodeUnique(parsed.data.group_code, id);
+    if (parsed.data.type_group_id !== undefined) await this.assertTypeGroupScope(parsed.data.type_group_id);
 
     const { data, error } = await repository.update(id, parsed.data);
     if (error) throw mapWriteError(error);
     if (!data) throw new ChartAccountGroupServiceError('Grupo não encontrado', 404);
     return data as unknown as ChartAccountGroup;
+  },
+
+  // Impede atribuir ao grupo uma Natureza que não seja de escopo 'group' (Finding 2 —
+  // ver validateTypeGroupScope em lib/lookups.ts). 422 com mensagem amigável.
+  async assertTypeGroupScope(typeGroupId: number): Promise<void> {
+    const reason = await validateTypeGroupScope(typeGroupId, 'group');
+    if (reason) throw new ChartAccountGroupServiceError(reason, 422);
   },
 
   async remove(id: number): Promise<{ chart_account_group_id: number }> {

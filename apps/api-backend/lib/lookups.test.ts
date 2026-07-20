@@ -9,7 +9,7 @@ const builders: Record<string, ReturnType<typeof vi.fn>>[] = [];
 
 function makeBuilder(result: QueryResult) {
   const b: Record<string, ReturnType<typeof vi.fn>> & { then?: unknown } = {};
-  for (const m of ['select', 'is', 'not', 'or', 'order', 'limit', 'eq', 'gt']) {
+  for (const m of ['select', 'is', 'not', 'or', 'order', 'limit', 'eq', 'gt', 'in', 'maybeSingle']) {
     b[m] = vi.fn(() => b);
   }
   b.then = (onFulfilled: (v: QueryResult) => unknown, onRejected?: (e: unknown) => unknown) =>
@@ -21,7 +21,8 @@ function makeBuilder(result: QueryResult) {
 const fromMock = vi.fn(() => makeBuilder(resultQueue.shift() ?? { data: [], error: null }));
 vi.mock('@/lib/supabase-admin', () => ({ getSupabaseAdmin: () => ({ from: fromMock }) }));
 
-const { chartAccountService, costCenterService, financialTypeGroupService } = await import('./lookups');
+const { chartAccountService, costCenterService, financialTypeGroupService, validateTypeGroupScope } =
+  await import('./lookups');
 
 beforeEach(() => {
   resultQueue.length = 0;
@@ -112,5 +113,55 @@ describe('financialTypeGroupService.list (lookup de Natureza)', () => {
   it('propaga erro do banco como LookupServiceError 500', async () => {
     resultQueue.push({ data: null, error: { message: 'db down' } });
     await expect(financialTypeGroupService.list()).rejects.toMatchObject({ status: 500 });
+  });
+
+  it('sem escopo NÃO filtra applies_to (retrocompat)', async () => {
+    resultQueue.push({ data: [], error: null });
+    await financialTypeGroupService.list();
+    expect(builders[0].in).not.toHaveBeenCalled();
+  });
+
+  it('com escopo filtra applies_to por [both, scope]', async () => {
+    resultQueue.push({ data: [], error: null });
+    await financialTypeGroupService.list({ scope: 'subgroup' });
+    expect(builders[0].in).toHaveBeenCalledWith('applies_to', ['both', 'subgroup']);
+  });
+});
+
+describe('validateTypeGroupScope (Finding 2 — impede atribuição cross-taxonomia)', () => {
+  it('id 0 ("Não informado") é válido SEM consultar o banco', async () => {
+    expect(await validateTypeGroupScope(0, 'group')).toBeNull();
+    expect(await validateTypeGroupScope(0, 'subgroup')).toBeNull();
+    expect(fromMock).not.toHaveBeenCalled();
+  });
+
+  it('escopo compatível (subgroup ← subgroup) devolve null', async () => {
+    resultQueue.push({ data: { applies_to: 'subgroup' }, error: null });
+    expect(await validateTypeGroupScope(5, 'subgroup')).toBeNull();
+  });
+
+  it("escopo 'both' é válido em qualquer cadastro", async () => {
+    resultQueue.push({ data: { applies_to: 'both' }, error: null });
+    expect(await validateTypeGroupScope(9, 'group')).toBeNull();
+  });
+
+  it('Natureza de subgrupo (5) num GRUPO devolve mensagem', async () => {
+    resultQueue.push({ data: { applies_to: 'subgroup' }, error: null });
+    expect(await validateTypeGroupScope(5, 'group')).toMatch(/Natureza inválida para grupo/);
+  });
+
+  it('Tipo de grupo (2) num SUBGRUPO devolve mensagem', async () => {
+    resultQueue.push({ data: { applies_to: 'group' }, error: null });
+    expect(await validateTypeGroupScope(2, 'subgroup')).toMatch(/Tipo inválido para subgrupo/);
+  });
+
+  it('id inexistente devolve mensagem de "não existe" por escopo', async () => {
+    resultQueue.push({ data: null, error: null });
+    expect(await validateTypeGroupScope(999, 'subgroup')).toBe('Tipo informado não existe');
+  });
+
+  it('erro do banco propaga como 500', async () => {
+    resultQueue.push({ data: null, error: { message: 'db down' } });
+    await expect(validateTypeGroupScope(5, 'group')).rejects.toMatchObject({ status: 500 });
   });
 });

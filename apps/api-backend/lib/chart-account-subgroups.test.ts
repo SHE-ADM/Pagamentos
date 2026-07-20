@@ -34,12 +34,12 @@ describe('chartAccountSubgroupService', () => {
     expect(fromMock).not.toHaveBeenCalled();
   });
 
-  it('create mapeia FK inexistente (23503) para 422', async () => {
+  it('create mapeia FK inexistente (23503) para 422 — grupo ou Tipo', async () => {
     resultQueue.push({ data: null, error: null }); // findByCode → único
     resultQueue.push({ data: null, error: { code: '23503', message: 'fk' } }); // create → FK inválida
     await expect(
       chartAccountSubgroupService.create({ subgroup_code: '1.1', subgroup_description: 'X', chart_account_group_id: 999 }),
-    ).rejects.toMatchObject({ status: 422 });
+    ).rejects.toMatchObject({ status: 422, message: 'Grupo ou Tipo informado não existe' });
   });
 
   it('create 409 quando o código já existe', async () => {
@@ -70,13 +70,44 @@ describe('chartAccountSubgroupService', () => {
     expect(await chartAccountSubgroupService.remove(5)).toEqual({ chart_account_subgroup_id: 5 });
   });
 
-  it('busca cobre TODAS as colunas do grid (código, descrição, grupo embed)', async () => {
+  it('busca cobre TODAS as colunas do grid (código, descrição, grupo e Tipo embeds)', async () => {
     resultQueue.push({ data: [], count: 0, error: null }); // main query
     resultQueue.push({ data: [{ chart_account_group_id: 4 }], error: null }); // grupo ids (embed)
+    resultQueue.push({ data: [{ type_group_id: 5 }], error: null }); // tipo ids (embed)
     await chartAccountSubgroupService.list({ search: 'circulante' });
     const orArg = (builders[0].or.mock.calls[0]?.[0] ?? '') as string;
     expect(orArg).toContain('subgroup_code.ilike.%circulante%');
     expect(orArg).toContain('subgroup_description.ilike.%circulante%');
     expect(orArg).toContain('chart_account_group_id.in.(4)');
+    expect(orArg).toContain('type_group_id.in.(5)');
+  });
+
+  it('create envia type_group_id quando informado (valida o escopo antes do insert)', async () => {
+    resultQueue.push({ data: null, error: null }); // findByCode → único
+    resultQueue.push({ data: { applies_to: 'subgroup' }, error: null }); // validateTypeGroupScope → ok
+    resultQueue.push({
+      data: { chart_account_subgroup_id: 9, subgroup_code: '9.1', type_group_id: 5 },
+      error: null,
+    }); // create
+    const r = await chartAccountSubgroupService.create({
+      subgroup_code: '9.1',
+      subgroup_description: 'X',
+      chart_account_group_id: 1,
+      type_group_id: 5,
+    });
+    expect(r).toMatchObject({ chart_account_subgroup_id: 9, type_group_id: 5 });
+  });
+
+  it('create 422 quando o Tipo é de escopo group (Natureza de grupo)', async () => {
+    resultQueue.push({ data: null, error: null }); // findByCode → único
+    resultQueue.push({ data: { applies_to: 'group' }, error: null }); // validateTypeGroupScope → escopo errado
+    await expect(
+      chartAccountSubgroupService.create({
+        subgroup_code: '9.1',
+        subgroup_description: 'X',
+        chart_account_group_id: 1,
+        type_group_id: 2,
+      }),
+    ).rejects.toMatchObject({ status: 422, message: expect.stringMatching(/Tipo inválido para subgrupo/) });
   });
 });

@@ -16,10 +16,12 @@ import type { ZodError } from 'zod';
 import { getSupabaseAdmin } from './supabase-admin';
 import { resolveSort, type SortOrder } from './sort';
 import { resolveMatchingIds } from './search';
+import { validateTypeGroupScope } from './lookups';
 
 const TABLE = 'financial_chart_of_account_subgroup';
 // Colunas ordenáveis (própria tabela) — o grupo é embed de JOIN, não ordenável aqui.
-const SORTABLE_COLUMNS = ['subgroup_code', 'subgroup_description'] as const;
+// type_group_id é coluna própria (FK), ordenável direto (diferente do embed group).
+const SORTABLE_COLUMNS = ['subgroup_code', 'subgroup_description', 'type_group_id'] as const;
 const REFERENCING_TABLES = ['financial_chart_of_account'] as const;
 const REF_COLUMN = 'chart_account_subgroup_id';
 const SENTINEL_ID = 0;
@@ -28,10 +30,11 @@ const DEFAULT_LIMIT = 20;
 // devolver o cadastro completo ao <select> de subgrupos; a paginação do CRUD usa DEFAULT_LIMIT.
 const MAX_LIMIT = 1000;
 
-// Leitura com o grupo embutido (rótulo na grade).
+// Leitura com o grupo e o Tipo embutidos (rótulo na grade).
 const SELECT_WITH_GROUP =
-  'chart_account_subgroup_id,chart_account_group_id,subgroup_code,subgroup_description,' +
-  'group:financial_chart_of_account_group(group_code,group_description)';
+  'chart_account_subgroup_id,chart_account_group_id,subgroup_code,subgroup_description,type_group_id,' +
+  'group:financial_chart_of_account_group(group_code,group_description),' +
+  'type_group:financial_type_group(type_group_id,type_group_description)';
 
 export class ChartAccountSubgroupServiceError extends Error {
   status: number;
@@ -66,11 +69,13 @@ function sanitizeTerm(term: string): string {
 }
 
 // Mapeia erro do Postgres para status HTTP sem VAZAR detalhe interno (§3 M-2):
-// 23503 (FK) = grupo inexistente → 422; 23505 (UNIQUE) = código duplicado → 409
-// (defensivo — a unicidade já é checada em assertCodeUnique); qualquer outro é
-// inesperado (5xx) → o failFromError da rota loga e responde genérico (não vaza).
+// 23503 (FK) = grupo OU Tipo inexistente → 422 (mensagem combinada — mesmo padrão
+// de lib/chart-accounts.ts para múltiplas FKs, sem distinguir qual constraint falhou);
+// 23505 (UNIQUE) = código duplicado → 409 (defensivo — a unicidade já é checada em
+// assertCodeUnique); qualquer outro é inesperado (5xx) → o failFromError da rota loga
+// e responde genérico (não vaza).
 function mapWriteError(error: { code?: string; message: string }): ChartAccountSubgroupServiceError {
-  if (error.code === '23503') return new ChartAccountSubgroupServiceError('Grupo informado não existe', 422);
+  if (error.code === '23503') return new ChartAccountSubgroupServiceError('Grupo ou Tipo informado não existe', 422);
   if (error.code === '23505') return new ChartAccountSubgroupServiceError('Código já cadastrado', 409);
   return new ChartAccountSubgroupServiceError(error.message, 500);
 }
@@ -85,8 +90,8 @@ const repository = {
     if (params.search) {
       const term = sanitizeTerm(params.search);
       if (term) {
-        // Cobre TODAS as colunas do grid: código, descrição e Grupo (embed). O grupo
-        // vem de JOIN — resolvemos os ids que casam o termo e os injetamos no OR.
+        // Cobre TODAS as colunas do grid: código, descrição, Grupo e Tipo (embeds).
+        // Ambos vêm de JOIN — resolvemos os ids que casam o termo e os injetamos no OR.
         const clauses = [`subgroup_code.ilike.%${term}%`, `subgroup_description.ilike.%${term}%`];
         const groupIds = await resolveMatchingIds(
           'financial_chart_of_account_group',
@@ -95,6 +100,13 @@ const repository = {
           term,
         );
         if (groupIds.length > 0) clauses.push(`chart_account_group_id.in.(${groupIds.join(',')})`);
+        const typeGroupIds = await resolveMatchingIds(
+          'financial_type_group',
+          'type_group_id',
+          ['type_group_description'],
+          term,
+        );
+        if (typeGroupIds.length > 0) clauses.push(`type_group_id.in.(${typeGroupIds.join(',')})`);
         query = query.or(clauses.join(','));
       }
     }
@@ -169,6 +181,7 @@ export const chartAccountSubgroupService = {
     if (!parsed.success) throw new ChartAccountSubgroupServiceError(formatZodError(parsed.error), 422);
 
     await this.assertCodeUnique(parsed.data.subgroup_code);
+    await this.assertTypeGroupScope(parsed.data.type_group_id ?? 0);
 
     const { data, error } = await repository.create(parsed.data);
     if (error) throw mapWriteError(error);
@@ -182,11 +195,19 @@ export const chartAccountSubgroupService = {
     if (!parsed.success) throw new ChartAccountSubgroupServiceError(formatZodError(parsed.error), 422);
 
     if (parsed.data.subgroup_code !== undefined) await this.assertCodeUnique(parsed.data.subgroup_code, id);
+    if (parsed.data.type_group_id !== undefined) await this.assertTypeGroupScope(parsed.data.type_group_id);
 
     const { data, error } = await repository.update(id, parsed.data);
     if (error) throw mapWriteError(error);
     if (!data) throw new ChartAccountSubgroupServiceError('Subgrupo não encontrado', 404);
     return data as unknown as ChartAccountSubgroup;
+  },
+
+  // Impede atribuir ao subgrupo um Tipo que não seja de escopo 'subgroup' (Finding 2 —
+  // ver validateTypeGroupScope em lib/lookups.ts). 422 com mensagem amigável.
+  async assertTypeGroupScope(typeGroupId: number): Promise<void> {
+    const reason = await validateTypeGroupScope(typeGroupId, 'subgroup');
+    if (reason) throw new ChartAccountSubgroupServiceError(reason, 422);
   },
 
   async remove(id: number): Promise<{ chart_account_subgroup_id: number }> {
