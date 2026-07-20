@@ -1,5 +1,17 @@
 {
   "//": "Monorepo flat-config: faz a extensão ESLint rodar com cwd em cada app, achando o eslint.config.mjs e resolvendo tsconfigRootDir. Sem isso o editor acusa 'No tsconfigRootDir was set' / 'couldn't find an eslint.config file' nos componentes.",
   "eslint.workingDirectories": [{ "mode": "auto" }],
-  "eslint.validate": ["javascript", "javascriptreact", "typescript", "typescriptreact"]
+  "eslint.validate": ["javascript", "javascriptreact", "typescript", "typescriptreact"],
+
+  "//sonar": "Connected Mode do SonarQube for IDE. A conexao (org she-adm) e o vinculo do projeto ficam aqui; o TOKEN nao — a extensao o pede uma vez e guarda no cofre seguro do VS Code (SecretStorage), referenciado por connectionId. Assim o findings da IDE reflete o quality gate do CI (o lint local nao garante PR verde).",
+  "sonarlint.connectedMode.connections.sonarcloud": [
+    {
+      "connectionId": "she-adm",
+      "organizationKey": "she-adm"
+    }
+  ],
+  "sonarlint.connectedMode.project": {
+    "connectionId": "she-adm",
+    "projectKey": "SHE-ADM_email-financeiro"
+  }
 }
