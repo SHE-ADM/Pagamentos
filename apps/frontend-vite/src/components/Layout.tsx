@@ -146,12 +146,12 @@ export default function Layout({ children }: Readonly<{ children: ReactNode }>) 
             <Landmark size={16} /> Bancos
           </NavLink>
 
-          {/* Grupo 5 — Análise */}
+          {/* Grupo 5 — Dashboards */}
           <p className="px-3 pt-2.5 pb-1 text-xs font-bold tracking-widest text-slate-400 uppercase">
-            Análise
+            Dashboards
           </p>
           <NavLink to="/dashboard_vencimentos" onClick={closeNav} className={({ isActive }) => navLink({ active: isActive })}>
-            <BarChart2 size={16} /> Dashboard de Vencimentos
+            <BarChart2 size={16} /> Indicadores de Vencimentos
           </NavLink>
         </nav>
 
