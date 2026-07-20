@@ -3671,6 +3671,37 @@ def _real_boleto_amounts(rows: list) -> set:
     } - {None}
 
 
+# EXTRATO/DEMONSTRATIVO/RELATORIO que acompanha um BOLETO no mesmo e-mail: descreve
+# o MESMO debito de forma agregada (nao e um instrumento de pagamento), mas seu valor
+# pode DIFERIR do boleto (bruto x liquido), escapando da guarda de valor
+# (real_boleto_amounts). Sinal: termo de extrato/relatorio no NOME DO ARQUIVO ou na
+# DESCRICAO. Palavra inteira (\b) p/ nao casar substring acidental. NAO inclui 'fatura'
+# (comum em boleto legitimo) nem 'boleto' — um 2o boleto ESCANEADO cujo Vision nao leu
+# a linha digitavel (caso LMED) e uma VIA DE PAGAMENTO, nunca um 'extrato', entao a
+# regra abaixo nao o descarta. Caso de origem: Correios id 605
+# (Extrato_sintetico_07.pdf, R$5295,58) coexistindo com o boleto id 606 (R$5158,34).
+_STATEMENT_DOC_RE = re.compile(r"\b(extrato|extratos|demonstrativo|relatorio)\b")
+
+
+def _is_statement_document(row: dict) -> bool:
+    """True quando a linha e um EXTRATO/DEMONSTRATIVO/RELATORIO (documento que descreve
+    um debito de forma agregada, nao um instrumento de pagamento) SEM codigo de barras
+    proprio. Usado na regra fatura+boleto para descartar o extrato que acompanha o
+    boleto mesmo quando o valor DIFERE (bruto x liquido) — o que a guarda de valor
+    (real_boleto_amounts) nao pega. Comparacao sem acento sobre nome do arquivo +
+    descricao. NAO casa boleto real (tem barcode) nem 2o boleto escaneado (nao e
+    'extrato'), preservando o caso LMED."""
+    if _is_boleto_barcode(row.get("barcode")):
+        return False
+    blob = _strip_accents_lower(
+        f"{row.get('source_file') or ''} {row.get('description') or ''}"
+    )
+    # Normaliza separadores (inclui '_' do nome de arquivo, que e char de palavra e
+    # anularia o \b): "Extrato_sintetico_07.pdf" -> "extrato sintetico 07 pdf".
+    blob = re.sub(r"[\W_]+", " ", blob)
+    return bool(_STATEMENT_DOC_RE.search(blob))
+
+
 # Baixa/cancelamento de RECEBIVEL proprio — e-mail sobre titulos que a EMPRESA
 # EMITIU (relatorio de baixa/cancelamento), nao um documento que ela deve pagar.
 # Sinais: assunto de cobranca propria ("COBRANCA OTIMOTEX") ou o proprio relatorio
@@ -3890,6 +3921,21 @@ def extract_and_store_accounts(saved_pdfs: list, message_id: str,
                 and _amount_key(payload.get("amount")) in real_boleto_amounts):
             log.info(
                 f"    Fatura/relatorio ignorado — mesmo valor de um boleto no e-mail "
+                f"({row.get('source_file')})"
+            )
+            skipped_nonpayable += 1
+            continue
+
+        # Extrato/demonstrativo/relatorio acompanhando um BOLETO no mesmo e-mail →
+        # ignorado. Complementa a guarda de valor acima: o extrato descreve o MESMO
+        # debito de forma agregada e seu valor pode DIFERIR do boleto (bruto x liquido),
+        # escapando de real_boleto_amounts. So dispara com boleto real presente e para a
+        # linha SEM barcode reconhecida como extrato/relatorio; um 2o boleto ESCANEADO
+        # (caso LMED) nao casa esses termos e e mantido. Origem: Correios id 605
+        # (Extrato_sintetico) x boleto id 606, valores 5295,58 x 5158,34.
+        if has_real_boleto and _is_statement_document(row):
+            log.info(
+                f"    Extrato/relatorio ignorado — acompanha um boleto no e-mail "
                 f"({row.get('source_file')})"
             )
             skipped_nonpayable += 1

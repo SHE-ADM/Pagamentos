@@ -206,6 +206,74 @@ class ExtractAndStoreFaturaBoletoTest(unittest.TestCase):
         # A fatura ignorada NAO gera vinculo de anexo (nao ha conta a que vincular).
         self.assertEqual(ctrl.attachment_calls, [(1, "boleto.pdf")])
 
+    def test_extrato_valor_distinto_e_ignorado(self):
+        # Caso Correios (id 605/606): extrato SINTETICO (sem barcode, valor BRUTO) +
+        # boleto (linha digitavel, valor LIQUIDO). Valores DIFEREM, entao a guarda de
+        # valor nao o pega — mas o extrato descreve o MESMO debito → so o boleto vira
+        # conta. O sinal e o termo 'extrato' no nome/descricao, nao o valor.
+        rows = {
+            "Extrato_sintetico_07.pdf": _row(
+                "Extrato_sintetico_07.pdf", None, amount="5295.58"),
+            "Boleto_07_2026.pdf": _row(
+                "Boleto_07_2026.pdf", BOLETO_REAL, amount="5158.34"),
+        }
+        ctrl, saved, _ = self._run(
+            ["Extrato_sintetico_07.pdf", "Boleto_07_2026.pdf"], rows)
+        self.assertEqual(saved, 1)
+        self.assertEqual(ctrl.financial_calls[0]["barcode"], BOLETO_REAL)
+        self.assertEqual(float(ctrl.financial_calls[0]["amount"]), 5158.34)
+        self.assertEqual(ctrl.error_calls, [])          # extrato ignorado, nao e erro
+        self.assertEqual(ctrl.attachment_calls, [(1, "Boleto_07_2026.pdf")])
+
+    def test_extrato_por_descricao_e_ignorado(self):
+        # O sinal tambem vem da DESCRICAO (nome do arquivo generico).
+        r_extrato = _row("anexo1.pdf", None, amount="999.99")
+        r_extrato["description"] = "Extrato Sintetico de Fatura Correios."
+        rows = {
+            "anexo1.pdf": r_extrato,
+            "boleto.pdf": _row("boleto.pdf", BOLETO_REAL, amount="500.00"),
+        }
+        ctrl, saved, _ = self._run(["anexo1.pdf", "boleto.pdf"], rows)
+        self.assertEqual(saved, 1)
+        self.assertEqual(ctrl.financial_calls[0]["barcode"], BOLETO_REAL)
+
+    def test_extrato_sem_boleto_e_extraido(self):
+        # Sem boleto no e-mail, um extrato NAO e descartado (a regra so vale quando ha
+        # boleto real acompanhando) — segue o fluxo normal e vira conta/erro conforme os
+        # dados. Aqui, com valor, vira conta.
+        rows = {"Extrato_sintetico.pdf": _row("Extrato_sintetico.pdf", None, amount="100.00")}
+        ctrl, saved, _ = self._run(["Extrato_sintetico.pdf"], rows)
+        self.assertEqual(saved, 1)
+
+    def test_segundo_boleto_escaneado_nao_confundido_com_extrato(self):
+        # Nao regredir LMED: um 2o boleto escaneado (sem barcode, valor distinto) cujo
+        # nome/descricao NAO citam 'extrato' segue sendo mantido — _is_statement_document
+        # so descarta o que e reconhecidamente um extrato/relatorio.
+        rows = {
+            "boleto_p1.pdf": _row("boleto_p1.pdf", BOLETO_REAL, amount="2476.55"),
+            "boleto_p2.pdf": _row("boleto_p2.pdf", None, amount="1166.67"),
+        }
+        ctrl, saved, _ = self._run(["boleto_p1.pdf", "boleto_p2.pdf"], rows)
+        self.assertEqual(saved, 2)
+
+    def test_is_statement_document_helper(self):
+        # Unitario do detector: casa termos de extrato/relatorio; nao casa boleto (com
+        # barcode) nem substring acidental.
+        self.assertTrue(read_emails._is_statement_document(
+            {"source_file": "Extrato_sintetico_07.pdf", "barcode": None}))
+        self.assertTrue(read_emails._is_statement_document(
+            {"source_file": "x.pdf", "description": "Demonstrativo de servicos", "barcode": None}))
+        self.assertTrue(read_emails._is_statement_document(
+            {"source_file": "relatorio_consumo.pdf", "barcode": None}))
+        # Boleto real (tem barcode) nunca e "extrato".
+        self.assertFalse(read_emails._is_statement_document(
+            {"source_file": "Extrato.pdf", "barcode": BOLETO_REAL}))
+        # 'boleto'/'fatura' nao sao termos de extrato.
+        self.assertFalse(read_emails._is_statement_document(
+            {"source_file": "boleto_07.pdf", "barcode": None}))
+        self.assertFalse(read_emails._is_statement_document(
+            {"source_file": "fatura.pdf", "description": "Fatura mensal", "barcode": None}))
+
     def test_anexo_do_pipeline_herda_o_dono_da_conta(self):
         # Regressao: o call site usava payload.get("created_by"), que e SEMPRE None —
         # register_financial resolve o dono numa COPIA local do payload. O anexo caia no

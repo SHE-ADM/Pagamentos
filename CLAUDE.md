@@ -1913,6 +1913,28 @@ ordem inversa, valores distintos sem barcode, mesmo valor sem barcode ainda igno
 que coexistiam com o boleto do mesmo e-mail (ids 379/327/146/242/129/387/111; boletos
 380/328/147/243/130/388/112 preservados) — todos os pares tinham valor idêntico.
 
+**SEGUNDA GUARDA — EXTRATO/DEMONSTRATIVO/RELATÓRIO por NOME/DESCRIÇÃO, valor livre (id 605/606 —
+não regredir):** a guarda de valor acima só pega o não-pagável cujo valor **coincide** com o
+boleto. Um **extrato** descreve o mesmo débito de forma **agregada** e traz o **bruto**, que
+DIFERE do **líquido** do boleto — então escapa de `real_boleto_amounts`. Falha real (Correios,
+ e-mail "Sua Fatura Correios Empresas"): id **605** (`Extrato_sintetico_07.pdf`, sem barcode,
+R$ 5.295,58) coexistiu com o boleto id **606** (linha digitável, R$ 5.158,34) — valores distintos
++ `sk_supplier` distintos → nenhuma das guardas casou e as **duas** contas foram criadas. Correção
+(`read_emails.py`): `_is_statement_document(row)` (`_STATEMENT_DOC_RE` = `\b(extrato|extratos|
+demonstrativo|relatorio)\b`, sobre `source_file` + `description` sem acento, com **separadores
+normalizados** — `[\W_]+`→espaço, senão o `_` do nome de arquivo anularia o `\b`). No **Passo 2**,
+`if has_real_boleto and _is_statement_document(row)` descarta a linha (`skipped_nonpayable`, não
+`falha`), logo **após** a guarda de valor. **Escopo mínimo/robusto:** (a) só dispara com **boleto
+real presente** no e-mail (a regra fatura+boleto); (b) o detector já retorna `False` se a linha tem
+barcode; (c) **NÃO inclui `fatura`/`boleto`** nos termos — um **2º boleto ESCANEADO** cujo Vision
+não leu a linha digitável (caso LMED) é uma **via de pagamento**, nunca um "extrato", então **não**
+é descartado (não regride). Testes: `tests/test_fatura_boleto.py` (extrato por nome e por descrição
+descartado; extrato SEM boleto no e-mail ainda extraído; 2º boleto escaneado preservado; unitário
+do helper). **Limpeza retroativa** (2026-07-20): hard delete da conta **605** (o extrato); boleto
+606 preservado. **Deploy:** copiar só `read_emails.py` (o `extract_pdf.py` NÃO muda; sem `.env`,
+sem passo de banco). Validação (esperado `True`):
+`py -3 -c "import sys; sys.path.insert(0,'skills/email-reader/scripts'); import read_emails as R; print(R._is_statement_document({'source_file':'Extrato_sintetico_07.pdf','barcode':None}))"`
+
 ### Documentos NÃO-pagáveis pulados no Passo 2 (baixa de recebível, assinatura/marketing — não regredir)
 
 Duas guardas adicionais em `extract_and_store_accounts` **Passo 2**, no mesmo ponto e padrão
