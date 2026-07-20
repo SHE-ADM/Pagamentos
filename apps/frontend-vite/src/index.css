@@ -162,6 +162,14 @@
   line-height: 1rem;
 }
 
+@utility donut-legend-dense {
+  /* Legenda densa dos donuts (modo `dense` do BreakdownDonut, ex.: /dashboard_vencimentos).
+     font-size cru (0.65rem) — abaixo do menor token Tailwind (text-xs); mesmo precedente
+     de table-cell-secondary, para caber mais informação (R$ + contagem + %) sem truncar. */
+  font-size: 0.65rem;
+  line-height: 0.95rem;
+}
+
 @utility table-cell-secondary-silver {
   /* Linha secundária — variante prata (zinc) para o grid de /emails. */
   @apply px-3 py-1 text-zinc-500 border-b border-zinc-100 bg-zinc-50/30;
