@@ -24,6 +24,7 @@ const ChartAccountGroupsPage = lazy(() => import('./pages/ChartAccountGroupsPage
 const ChartAccountSubgroupsPage = lazy(() => import('./pages/ChartAccountSubgroupsPage'));
 const ContasNovaPage = lazy(() => import('./pages/ContasNovaPage'));
 const Dashboard = lazy(() => import('./pages/Dashboard'));
+const DashboardFinanceiro = lazy(() => import('./pages/DashboardFinanceiro'));
 const CobrancaEnvios = lazy(() => import('./pages/cobranca/CobrancaEnvios'));
 const CobrancaErros = lazy(() => import('./pages/cobranca/CobrancaErros'));
 
@@ -70,6 +71,7 @@ export default function App() {
                       <Route path="/tabelas/grupos-plano-de-contas" element={<ChartAccountGroupsPage />} />
                       <Route path="/tabelas/subgrupos-plano-de-contas" element={<ChartAccountSubgroupsPage />} />
                       <Route path="/dashboard_vencimentos" element={<Dashboard />} />
+                      <Route path="/dashboard_financeiro" element={<DashboardFinanceiro />} />
                       {/* Compat: rota antiga /dashboard → preserva bookmarks/histórico. */}
                       <Route path="/dashboard" element={<Navigate to="/dashboard_vencimentos" replace />} />
                       <Route path="/erros" element={<Erros />} />

@@ -6,6 +6,14 @@ import { z } from 'zod';
 // Tabelas). PK `chart_account_group_id` é SMALLINT IDENTITY ALWAYS (gerada pelo
 // banco); o id 0 é o sentinela "não informado" (preservado, fora do CRUD).
 
+// Ids fixos do catálogo `financial_type_group` (migration 094 — a coluna `applies_to`
+// separa as duas taxonomias: 'group'=Natureza ids 1-4, 'subgroup'=Tipo ids 5-6, 'both'=0).
+// Espelham o literal `g.type_group_id = 2` usado nas migrations 092/093 para selecionar
+// despesas. Fonte única para o filtro de "despesa" do dashboard financeiro e afins.
+export const TYPE_GROUP_ID_DESPESAS = 2; // Natureza do GRUPO ("Despesas")
+export const TYPE_GROUP_ID_DESPESA_FIXA = 5; // Tipo do SUBGRUPO ("Despesas Fixas")
+export const TYPE_GROUP_ID_DESPESA_VARIAVEL = 6; // Tipo do SUBGRUPO ("Despesas Variáveis")
+
 // ── Leitura (linha do banco) ────────────────────────────────────────────────
 
 // Embed da NATUREZA contábil (FK type_group_id → financial_type_group). Presente quando
