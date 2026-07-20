@@ -4140,6 +4140,19 @@ lê os arquivos do disco.
 > (esperado **`3 2 1`** — a ester vencendo até a menção a lebianco; lebianco; e outro usuário
 > `@otimotex.com.br` caindo no default.)
 
+> **DEPLOY 2026-07-20 — descartar extrato/relatório que acompanha o boleto (PENDENTE de cópia p/
+> prod):** a regra fatura+boleto ganhou uma 2ª guarda que descarta a linha SEM barcode reconhecida
+> como **extrato/demonstrativo/relatório** (por nome/descrição), mesmo com valor DISTINTO do boleto
+> — ver "SEGUNDA GUARDA — EXTRATO/DEMONSTRATIVO/RELATÓRIO". Deploy = copiar **só** `read_emails.py`
+> (`_STATEMENT_DOC_RE`/`_is_statement_document` + o branch `has_real_boleto and
+> _is_statement_document(row)` no Passo 2; **`extract_pdf.py` NÃO muda**). **Sem `.env`, sem
+> dependência nova, sem passo de banco.** **Degrada com segurança:** o `read_emails.py` ANTIGO segue
+> funcionando (só não descarta o extrato de valor distinto — a guarda de valor original permanece).
+> Como os deltas de `read_emails.py` são cumulativos, esta cópia carrega junto as pendências
+> anteriores (empresa por precedência de 2026-07-17 etc.). A limpeza retroativa (hard delete do id
+> 605) já valeu para dev+prod (mesma Supabase). Validação (esperado `True`):
+> `py -3 -c "import sys; sys.path.insert(0,'skills/email-reader/scripts'); import read_emails as R; print(R._is_statement_document({'source_file':'Extrato_sintetico_07.pdf','barcode':None}))"`
+
 ### Deploy manual da Cobrança de vencidos (envios) em produção (caso específico — não regredir)
 
 Mesma máquina/pasta dos recebimentos (`C:\Sheild\API\Pagamentos`); o scheduler de **envios**
