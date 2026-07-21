@@ -4,7 +4,8 @@
 // KPI (que aqui ABRE em "A vencer") — mas sem o gráfico mês a mês e com os gráficos
 // trocados para a dimensão contábil:
 //   • donut "Tipo" — despesas por Tipo do subgrupo (Fixa/Variável)
-//   • donut "Natureza" — despesas por GRUPO do plano de contas
+//   • donut "Despesas Fixas" — despesas FIXAS por GRUPO do plano de contas
+//   • donut "Despesas Variáveis" — idem, só as VARIÁVEIS (mesma dimensão, outro recorte)
 //   • rankings por VALOR (R$): CENTROS DE CUSTO + PLANO DE CONTAS (no lugar do de fornecedores
 //     e das "Contas críticas e prioritárias", que seguem só no de vencimentos)
 // Dados reais via getFinancialDashboardData (filtra group.type_group_id === Despesas).
@@ -16,8 +17,8 @@ import { getErrorMessage } from '../lib/getErrorMessage';
 import { useDashboardFilters } from '../hooks/useDashboardFilters';
 import Alert from '../components/atoms/Alert';
 import { MONTHS_FULL } from '../components/dashboard/constants';
-import { paletteColor } from '../components/dashboard/chartColors';
-import { BreakdownDonut } from '../components/dashboard/BreakdownDonut';
+import { ChartCard } from '../components/dashboard/ChartCard';
+import { DonutCard } from '../components/dashboard/DonutCard';
 import { DashboardHeader } from '../components/dashboard/DashboardHeader';
 import { KpiRow, type KpiEntry } from '../components/dashboard/KpiRow';
 import { RankingList } from '../components/dashboard/RankingList';
@@ -56,6 +57,10 @@ export default function DashboardFinanceiro() {
     { icon: AlertCircle, label: 'Vencidas', amount: k?.vencidasValue ?? 0, count: k?.vencidasCount ?? 0, tone: 'danger', filter: 'vencidas' },
   ];
 
+  // Rótulo do período, repetido no subtítulo dos 3 donuts (extraído do JSX — ternário
+  // inline repetido dispara S3358 no SonarLint).
+  const periodo = scope === 'all' ? 'Todas as contas' : MONTHS_FULL[month];
+
   return (
     <div className="flex flex-col h-full">
       <div className="h-0.5 bg-linear-to-r from-brand to-brand-dark" />
@@ -83,56 +88,46 @@ export default function DashboardFinanceiro() {
         {/* Faixa de KPIs (cards clicáveis = filtro; ver KpiCard/KpiRow) */}
         <KpiRow items={kpis} filter={filter} onToggle={filters.toggleFilter} />
 
-        {/* Donuts: Tipo (Fixa/Variável) e Natureza (por grupo) */}
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-3 mb-3">
-          <div className="card p-3">
-            <div className="mb-2">
-              <h3 className="text-sm font-semibold text-slate-800">Tipo</h3>
-              <p className="text-xs text-slate-500">Por tipo (fixa/variável) · {scope === 'all' ? 'Todas as contas' : MONTHS_FULL[month]}</p>
-            </div>
-            <BreakdownDonut
-              segs={(data?.tipoBreakdown ?? []).map((s) => ({ key: s.label, label: s.label, value: s.value }))}
-              colorFor={paletteColor}
-              size="lg"
-            />
-          </div>
-
-          <div className="card p-3">
-            <div className="mb-2">
-              <h3 className="text-sm font-semibold text-slate-800">Natureza</h3>
-              <p className="text-xs text-slate-500">Por grupo de despesa · {scope === 'all' ? 'Todas as contas' : MONTHS_FULL[month]}</p>
-            </div>
-            <BreakdownDonut
-              segs={(data?.naturezaBreakdown ?? []).map((s) => ({ key: s.label, label: s.label, value: s.value }))}
-              colorFor={paletteColor}
-              size="lg"
-            />
-          </div>
+        {/* Donuts: Tipo (Fixa/Variável) e, na sequência, o grupo de despesa recortado por
+            tipo — Despesas Fixas e Despesas Variáveis (nesta ordem). */}
+        <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3 mb-3">
+          <DonutCard
+            title="Tipo"
+            subtitle={`Por tipo (fixa/variável) · ${periodo}`}
+            slices={data?.tipoBreakdown}
+            size="lg"
+          />
+          <DonutCard
+            title="Despesas Fixas"
+            subtitle={`Por grupo de despesa · ${periodo}`}
+            slices={data?.despesaFixaBreakdown}
+            size="lg"
+          />
+          <DonutCard
+            title="Despesas Variáveis"
+            subtitle={`Por grupo de despesa · ${periodo}`}
+            slices={data?.despesaVariavelBreakdown}
+            size="lg"
+          />
         </div>
 
         {/* Rankings por VALOR (R$): centros de custo + plano de contas */}
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
-          <div className="card p-3">
-            <div className="flex items-center gap-2 mb-2">
-              <span className="flex h-6 w-6 items-center justify-center rounded-lg bg-brand/10 text-brand"><Building2 size={14} /></span>
-              <div>
-                <h3 className="text-sm font-semibold text-slate-800">Ranking de centros de custo</h3>
-                <p className="text-xs text-slate-500">Maiores valores por centro de custo no período</p>
-              </div>
-            </div>
+          <ChartCard
+            title="Ranking de centros de custo"
+            subtitle="Maiores valores por centro de custo no período"
+            icon={Building2}
+          >
             <RankingList rows={data?.costCenterRanking ?? []} />
-          </div>
+          </ChartCard>
 
-          <div className="card p-3">
-            <div className="flex items-center gap-2 mb-2">
-              <span className="flex h-6 w-6 items-center justify-center rounded-lg bg-brand/10 text-brand"><ListTree size={14} /></span>
-              <div>
-                <h3 className="text-sm font-semibold text-slate-800">Ranking de contas</h3>
-                <p className="text-xs text-slate-500">Maiores valores por plano de contas no período</p>
-              </div>
-            </div>
+          <ChartCard
+            title="Ranking de contas"
+            subtitle="Maiores valores por plano de contas no período"
+            icon={ListTree}
+          >
             <RankingList rows={data?.chartAccountRanking ?? []} />
-          </div>
+          </ChartCard>
         </div>
       </section>
     </div>

@@ -6,8 +6,6 @@
   --color-brand-light: #e1f5ee;
 
   --color-sidebar: #0f1623;
-  --color-sidebar-hover: #1a2333;
-  --color-sidebar-active: #ffffff14;
   --color-sidebar-border: #ffffff08;
 
   --color-surface: #ffffff;
@@ -46,7 +44,6 @@
 
   --color-ink-primary: #0f172a;
   --color-ink-secondary: #64748b;
-  --color-ink-muted: #94a3b8;
 
   --color-auth-navy: #5b5fa8;
 
@@ -136,13 +133,13 @@
 @utility card {
   @apply bg-surface border border-slate-200/80 rounded-xl shadow-xs
            hover:shadow-md transition-shadow;
-  animation: fadeInUp 0.2s ease-out both;
+  animation: var(--animate-fade-in-up);
 }
 
 @utility metric-card {
   @apply bg-surface rounded-lg p-2 border-l-2 border-brand shadow-xs
            hover:shadow-sm transition-shadow;
-  animation: fadeInUp 0.2s ease-out both;
+  animation: var(--animate-fade-in-up);
 }
 
 @utility table-header {
@@ -209,19 +206,4 @@
   * {
     @apply box-border;
   }
-}
-
-/* Micro-interações ------------------------------------------------------- */
-@keyframes fadeInUp {
-  from {
-    opacity: 0;
-    transform: translateY(6px);
-  }
-  to {
-    opacity: 1;
-    transform: translateY(0);
-  }
-}
-.animate-fade-in-up {
-  animation: fadeInUp 0.2s ease-out both;
 }

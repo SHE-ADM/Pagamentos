@@ -20,14 +20,20 @@ type Row = {
   chart_account: {
     account_code: string | null; account_description: string | null;
     group: { group_description: string | null; type_group_id: number } | null;
-    subgroup: { type_group: { type_group_description: string | null } | null } | null;
+    subgroup: { type_group: { type_group_id: number; type_group_description: string | null } | null } | null;
   } | null;
 };
+
+// Tipo do SUBGRUPO: o donut de Fixas/Variáveis recorta pelo ID (5/6), não pelo texto.
+const TIPO = {
+  fixa: { id: TYPE_GROUP_ID_DESPESA_FIXA, desc: 'Despesas Fixas' },
+  variavel: { id: TYPE_GROUP_ID_DESPESA_VARIAVEL, desc: 'Despesas Variáveis' },
+} as const;
 
 const desp = (
   amount: number, status_id: number, groupDesc: string,
   cc: { id: number; code: string; desc: string },
-  tipoDesc: string, ca: { id: number; code: string; desc: string }, due = '2026-01-10',
+  tipo: { id: number; desc: string }, ca: { id: number; code: string; desc: string }, due = '2026-01-10',
 ): Row => ({
   amount, status_id, due_date: due,
   cost_center_id: cc.id, chart_account_id: ca.id,
@@ -35,7 +41,7 @@ const desp = (
   chart_account: {
     account_code: ca.code, account_description: ca.desc,
     group: { group_description: groupDesc, type_group_id: TYPE_GROUP_ID_DESPESAS },
-    subgroup: { type_group: { type_group_description: tipoDesc } },
+    subgroup: { type_group: { type_group_id: tipo.id, type_group_description: tipo.desc } },
   },
 });
 
@@ -57,9 +63,9 @@ const naoDespesa = (amount: number): Row => ({
 });
 
 const MONTH_ROWS: Row[] = [
-  desp(100, 3, 'Folha de Pagamento', CC_ADM, 'Despesas Fixas', CA_SAL),
-  desp(300, 3, 'Transporte', CC_LOG, 'Despesas Variáveis', CA_FRE, '2026-01-15'),
-  desp(50, 8, 'Transporte', CC_LOG, 'Despesas Variáveis', CA_FRE, '2026-01-05'),
+  desp(100, 3, 'Folha de Pagamento', CC_ADM, TIPO.fixa, CA_SAL),
+  desp(300, 3, 'Transporte', CC_LOG, TIPO.variavel, CA_FRE, '2026-01-15'),
+  desp(50, 8, 'Transporte', CC_LOG, TIPO.variavel, CA_FRE, '2026-01-05'),
   naoDespesa(999),
 ];
 
@@ -95,14 +101,34 @@ describe('getFinancialDashboardData', () => {
     expect(d.kpis.pagoValue).toBe(50);
   });
 
-  it('Natureza = por GRUPO de despesa (sem o Passivo)', async () => {
+  it('Despesas Fixas/Variáveis = GRUPO de despesa recortado pelo Tipo do subgrupo', async () => {
     const d = await getFinancialDashboardData(0, 2026);
-    const labels = d.naturezaBreakdown.map((s) => s.label);
-    expect(labels).toContain('Transporte');
-    expect(labels).toContain('Folha de Pagamento');
+    // Fixa: só a conta de Folha (100). Variável: as duas de Transporte (300+50).
+    expect(d.despesaFixaBreakdown).toEqual([
+      expect.objectContaining({ label: 'Folha de Pagamento', count: 1, value: 100 }),
+    ]);
+    expect(d.despesaVariavelBreakdown).toEqual([
+      expect.objectContaining({ label: 'Transporte', count: 2, value: 350 }),
+    ]);
+    // A não-despesa (Passivo) fica fora dos dois.
+    const labels = [...d.despesaFixaBreakdown, ...d.despesaVariavelBreakdown].map((s) => s.label);
     expect(labels).not.toContain('Passivo Tributário');
-    // Transporte tem 2 contas (ids 2,4) → maior contagem, vem primeiro.
-    expect(d.naturezaBreakdown[0]).toMatchObject({ label: 'Transporte', count: 2 });
+  });
+
+  // O recorte é pelo type_group_id (catálogo), não pela descrição: subgrupo não
+  // classificado (id 0) não entra em NENHUM dos dois donuts.
+  it('despesa com subgrupo não classificado fica fora dos dois donuts', async () => {
+    serve([{
+      ...MONTH_ROWS[0],
+      chart_account: {
+        ...MONTH_ROWS[0].chart_account!,
+        subgroup: { type_group: { type_group_id: 0, type_group_description: 'Não informado' } },
+      },
+    }]);
+    const d = await getFinancialDashboardData(0, 2026);
+    expect(d.despesaFixaBreakdown).toHaveLength(0);
+    expect(d.despesaVariavelBreakdown).toHaveLength(0);
+    expect(d.kpis.totalCount).toBe(1); // segue contando como despesa nos KPIs
   });
 
   it('Tipo = Fixa/Variável (descrição do type_group do subgrupo)', async () => {
@@ -147,8 +173,8 @@ describe('getFinancialDashboardData', () => {
   it('centros HOMÔNIMOS não se fundem — viram linhas separadas, prefixadas pelo código', async () => {
     const gemeo = { id: 9, code: '09', desc: CC_ADM.desc }; // mesma descrição, outro id
     serve([
-      desp(100, 3, 'Folha de Pagamento', CC_ADM, 'Despesas Fixas', CA_SAL),
-      desp(250, 3, 'Folha de Pagamento', gemeo, 'Despesas Fixas', CA_SAL),
+      desp(100, 3, 'Folha de Pagamento', CC_ADM, TIPO.fixa, CA_SAL),
+      desp(250, 3, 'Folha de Pagamento', gemeo, TIPO.fixa, CA_SAL),
     ]);
     const d = await getFinancialDashboardData(0, 2026);
     expect(d.costCenterRanking).toHaveLength(2);

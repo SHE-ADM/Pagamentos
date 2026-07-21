@@ -5,8 +5,9 @@
 // larguras dinâmicas (exceção justificada — sem classe equivalente).
 // `size` controla SÓ o círculo (fonte/gaps da legenda são iguais nos três):
 //   sm  — /dashboard_vencimentos, onde 4 donuts dividem a mesma linha (xl)
-//   md  — padrão
-//   lg  — /dashboard_financeiro, onde só 2 donuts dividem a linha e sobra largura
+//   md  — padrão; hoje NENHUM call site o usa (os dois dashboards passam sm/lg), mas é o
+//         neutro do componente e está coberto por teste — não é código morto a remover
+//   lg  — /dashboard_financeiro, onde 3 donuts dividem a linha e sobra largura
 import { fmtMoney, fmtMoneyCompact } from '../../lib/format';
 
 type DonutSeg = { key: string; label: string; value: number };

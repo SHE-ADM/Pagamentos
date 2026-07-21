@@ -23,10 +23,8 @@ const MOCK: FinancialDashboardData = {
     aVencerCount: 52, aVencerValue: 20000, vencendoCount: 9, vencendoValue: 5000,
     vencidasCount: 8, vencidasValue: 4000,
   },
-  naturezaBreakdown: [
-    { label: 'Transporte', count: 40, value: 18000 },
-    { label: 'Folha de Pagamento', count: 30, value: 10000 },
-  ],
+  despesaFixaBreakdown: [{ label: 'Folha de Pagamento', count: 30, value: 10000 }],
+  despesaVariavelBreakdown: [{ label: 'Transporte', count: 40, value: 18000 }],
   tipoBreakdown: [
     { label: 'Despesas Variáveis', count: 55, value: 22000 },
     { label: 'Despesas Fixas', count: 35, value: 10000 },
