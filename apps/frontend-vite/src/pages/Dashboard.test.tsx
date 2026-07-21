@@ -88,6 +88,47 @@ describe('Dashboard', () => {
     expect(pagos).toHaveAttribute('aria-pressed', 'false');
   });
 
+  // Paridade visual com /dashboard_financeiro: os dois dashboards renderizam o MESMO
+  // KpiCard, então o destaque do card selecionado e a affordance de clique valem aqui
+  // também. Trava a paridade — se alguém voltar a inlinear o card só numa das páginas,
+  // este teste cai.
+  it('o card selecionado ganha o destaque completo (anel + selo + título de limpar)', async () => {
+    render(<Dashboard />);
+    await screen.findByText('Total a pagar no mês');
+    // Só os CARDS mostram "conta(s)" — descarta o botão "filtrando: … ✕" do cabeçalho.
+    const cards = (): HTMLElement[] =>
+      screen.getAllByRole('button').filter((b) => /conta\(s\)/.test(b.textContent ?? ''));
+
+    // Abre sem filtro ('total'): nenhum card marcado — diferente do financeiro, que abre
+    // em "A vencer". O destaque aparece ao clicar.
+    expect(cards().filter((b) => b.getAttribute('aria-pressed') === 'true')).toHaveLength(0);
+    expect(screen.queryByText('filtrando')).not.toBeInTheDocument();
+
+    const pagos = cards().find((b) => /Pagos/.test(b.textContent ?? ''));
+    expect(pagos).toBeDefined();
+    fireEvent.click(pagos as HTMLElement);
+
+    expect(pagos).toHaveAttribute('aria-pressed', 'true');
+    expect(pagos).toHaveAttribute('title', 'Limpar filtro');
+    expect(pagos?.className).toContain('ring-brand'); // anel do ativo (não o de foco)
+    expect(pagos?.textContent).toContain('filtrando'); // sinal não-cromático (WCAG 1.4.1)
+    // E só ele fica marcado.
+    expect(cards().filter((b) => b.getAttribute('aria-pressed') === 'true')).toHaveLength(1);
+  });
+
+  it('todo card de KPI mantém a affordance de clique (hover perceptível)', async () => {
+    render(<Dashboard />);
+    await screen.findByText('Total a pagar no mês');
+    const cards = screen.getAllByRole('button').filter((b) => /conta\(s\)/.test(b.textContent ?? ''));
+    expect(cards).toHaveLength(5);
+    for (const c of cards) {
+      expect(c.className).toContain('cursor-pointer');
+      expect(c.className).toContain('hover:bg-slate-50');
+      expect(c.className).toContain('hover:-translate-y-0.5');
+      expect(c.className).toContain('hover:shadow-md');
+    }
+  });
+
   // Filtro de EMPRESA — aplica NA HORA (o dashboard não tem "Buscar") e escopa tudo.
   it('escolher LEBIANCO recarrega o dashboard com skCompany=2', async () => {
     render(<Dashboard />);

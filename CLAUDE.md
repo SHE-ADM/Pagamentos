@@ -88,8 +88,9 @@ Estas regras se aplicam a **todo** código novo ou alterado neste projeto, sem e
   Cada valor de variante continua sendo uma **string literal completa** (compatível com o
   JIT). Componentes-referência: `StatusBadge` (mapa em `statusBadge.variants.ts`),
   `Alert` (banner de página — error/success/warning/info), `InlineMessage`, `AuthInput`,
-  `FilledTextField`, `AccentPillButton`, `GradientPillButton` e `DataGrid` (tema
-  `default`/`silver` + estados de linha/cabeçalho em `dataGrid.variants.ts`).
+  `FilledTextField`, `AccentPillButton`, `GradientPillButton`, `DataGrid` (tema
+  `default`/`silver` + estados de linha/cabeçalho em `dataGrid.variants.ts`) e `KpiCard`
+  (`tone` × `active` em `kpiCard.variants.ts` — ver "Destaque dos cards de KPI").
   Mantenha as definições `cva` que não são componentes em arquivo separado (`*.variants.ts`)
   para não disparar `react-refresh/only-export-components`. A exceção aceita é um `cva`
   **local e não exportado** dentro do próprio componente (ex.: `navLink` em `Layout.tsx`),
@@ -1505,10 +1506,14 @@ apps/frontend-vite/src/components/
 ├── dashboard/                 # primitivos de gráfico compartilhados pelos DOIS dashboards (vencimentos + financeiro)
 │   ├── constants.ts           #   MONTHS/MONTHS_FULL
 │   ├── chartColors.ts         #   statusColor (semântico por status) + paletteColor (cíclica) — só tokens --color-status-*
-│   ├── BreakdownDonut.tsx     #   donut genérico (conic-gradient + furo + legenda), prop {segs:{key,label,value}[], colorFor, dense?}. Arcos + % + ORDEM das fatias por VALOR (R$) desc; legenda = R$ (fmtMoney) + % em `text-xs` (SEM contagem de contas); furo central = TOTAL em R$ compacto (fmtMoneyCompact, ex.: "R$ 12,3 mil") rotulado "total". `dense` (usado em /dashboard_vencimentos) reduz **só o círculo** (108px vs 120px) — fonte/gaps iguais ao padrão do financeiro, liberando largura p/ os 4 caberem na mesma linha (xl)
-│   ├── MonthlyFlow.tsx        #   barras "mês a mês" (A pagar vs. Pago), prop {flow}
-│   ├── RankingList.tsx        #   ranking horizontal top-N por valor, prop {rows:{name,value,count}[]} (fornecedores | subgrupos)
-│   └── PriorityList.tsx       #   lista de contas críticas/prioritárias, prop {rows: PriorityAccount[]}
+│   ├── BreakdownDonut.tsx (+ .test.tsx)  #   donut genérico (conic-gradient + furo + legenda), prop {segs:{key,label,value}[], colorFor, size?}. Arcos + % + ORDEM das fatias por VALOR (R$) desc; legenda = R$ (fmtMoney) + % em `text-xs` (SEM contagem de contas); furo central = TOTAL em R$ compacto (fmtMoneyCompact, ex.: "R$ 12,3 mil") rotulado "total". **`size: 'sm'|'md'|'lg'`** (tipo `DonutSize`, exportado — substituiu o booleano `dense`) controla SÓ o círculo, com o furo proporcional: `sm`=108px/inset-3 (4 donuts na mesma linha em /dashboard_vencimentos) · `md`=120px/inset-3 (default, = comportamento do antigo `dense={false}`) · `lg`=176px/inset-5 + número central `text-base` (2 donuts em /dashboard_financeiro). Classes LITERAIS por tamanho (mapa `SIZE_CLS`) — nome computado não é gerado pelo JIT e o donut ficaria sem tamanho, em silêncio (travado no teste)
+│   ├── DashboardHeader.tsx (+ .test.tsx, .a11y.test.tsx)  #   CASCA dos dois dashboards: título + "filtrando: X ✕" e a barra empresa · escopo · mês · ano · Atualizar. Apresentacional puro; recebe title/subject/idPrefix + o objeto `filters` (hooks/useDashboardFilters). Ver "Casca compartilhada dos dashboards" abaixo
+│   ├── KpiRow.tsx (+ .test.tsx)  #   faixa dos 5 cards de KPI (grid + map sobre KpiCard); concentra a regra "o KPI 'total' nunca fica ativo"
+│   ├── KpiCard.tsx (+ .test.tsx)  #   card de KPI CLICÁVEL (= filtro) da faixa superior, compartilhado pelos DOIS dashboards (antes o bloco era duplicado literalmente nas duas páginas). Apresentacional puro: props {icon,label,amount,count,tone,active,onClick}; a página decide o que está ativo. Contagem em pt-BR (Intl, milhar com ponto)
+│   ├── kpiCard.variants.ts    #   cva do KpiCard (card/ícone/valor) por `tone` (neutral|success|muted|danger — tipo `KpiTone`, fonte única do array `kpis` das duas páginas) e `active`. Ver "Destaque dos cards de KPI" abaixo
+│   ├── MonthlyFlow.tsx        #   barras "mês a mês" (A pagar vs. Pago), prop {flow} — usado SÓ por /dashboard_vencimentos (o financeiro não tem esse gráfico)
+│   ├── RankingList.tsx        #   ranking horizontal top-N por valor, prop {rows:{name,value,count}[]} (fornecedores | subgrupos | plano de contas)
+│   └── PriorityList.tsx       #   lista de contas críticas/prioritárias, prop {rows: PriorityAccount[]} — usado SÓ por /dashboard_vencimentos
 ├── AuthLayout.tsx             # (gradient) wrapper full-page para Forgot/Reset
 ├── AttachmentViewer.tsx       # visualizador de PDF (signed URL do Storage) em <dialog> nativo (showModal: role/foco/trap/Esc nativos) + iframe SEM sandbox — o viewer PDF do Chrome (PDFium) não renderiza em iframe sandboxed, nem com allow-scripts (S5-1 introduziu e quebrou o boleto; revertido). NÃO reintroduzir sandbox; ver comentário no componente. `sourceFile` = chave CRUA do objeto (pipeline: nome flat; manual: `manual/{id}/…`); prop opcional `title` = nome amigável no cabeçalho (sem ela cairia a chave crua). Os botões (Fechar/Baixar/Nova aba) contêm o próprio clique — é montado dentro do <tr> de /consulta (ver "Contenção do clique")
 ├── Layout.tsx (+ Layout.test.tsx)   # sidebar; navLink = cva local (estado active); menu em 5 grupos (ver abaixo)
@@ -1528,7 +1533,7 @@ apps/frontend-vite/src/components/
 | **Envios** | E-mails (`/cobranca/envios`) · Log de erros (`/cobranca/erros`) — logs da cobrança automática de vencidos |
 | **Contas** | Gestão de contas (`/consulta`) · Cadastro de contas (`/contas`) · Cadastro de fornecedores (`/fornecedores`) |
 | **Tabelas** | Plano de contas (`/tabelas/plano-de-contas`) · Grupos de plano de contas (`/tabelas/grupos-plano-de-contas`) · Sub grupos de plano de contas (`/tabelas/subgrupos-plano-de-contas`) · Centro de custos (`/tabelas/centros-de-custo`) · Contas bancárias (`/tabelas/contas`) · Bancos (`/tabelas/bancos`) — CRUDs dos cadastros contábeis (ordem conforme `Layout.tsx`) |
-| **Dashboards** | Indicadores de Vencimentos (`/dashboard_vencimentos`) · Indicadores financeiros (`/dashboard_financeiro`) |
+| **Dashboards** | Indicadores financeiros (`/dashboard_financeiro`) · Indicadores de Vencimentos (`/dashboard_vencimentos`) — nessa ordem (o financeiro vem primeiro, pedido do usuário) |
 
 > "Gestão de contas" aponta para `/consulta` (só o rótulo difere da rota). Ao promover um
 > item `breve` a ativo, troque o `<span … is-disabled>` por `<NavLink>` e remova o badge
@@ -1547,7 +1552,10 @@ Hooks em `src/hooks/`: `useContainerBreakpoint.ts` (faixa `sm`/`md`/`lg` pela la
 colunas considerando sidebar/paddings), `useGridPreferences.ts` (estado de layout do grid —
 ordem/visibilidade/larguras/fixação/densidade — persistido em `localStorage` por `gridId`;
 setters no formato `OnChangeFn` do TanStack + `reset()`; aceita **`defaultPinning`/`defaultDensity`**
-semeados na 1ª carga e no `reset()` — prefs salvas prevalecem; ver seção do DataGrid) e
+semeados na 1ª carga e no `reset()` — prefs salvas prevalecem; ver seção do DataGrid),
+**`useDashboardFilters.ts`** (estado mês/ano/escopo/filtro de KPI/empresa compartilhado pelos
+DOIS dashboards + `toggleFilter`/`clearFilter`; **não** carrega dados — ver "Casca compartilhada
+dos dashboards") e
 `useGridColumns.ts` (metadados de coluna — `ColumnDef` com `size?`/`minSize?`/`wrap?` opcionais,
 `getConsultaColumns`, `getEmailColumns`; é módulo de **definições**, não um hook,
 apesar do nome). `getConsultaColumns(onToggleFlag, onStatusChange)` é factory porque as
@@ -1700,6 +1708,80 @@ Recebidos**=verde · **Falha**=vermelho · **Pendente + Ignorados + Duplicidades
 (`neutral`). Ordem dos cards: Total · Extraídos · Recebidos · Pendente · Duplicidades ·
 Ignorados · Falha. Ao mudar a cor de um status, mexer **só** no `STATUS_VARIANT`
 (`statusBadge.variants.ts`) — o card herda pelo `CARD_TONE` apontando o mesmo token.
+
+### Destaque dos cards de KPI (`KpiCard`, `kpiCard.variants.ts`) — não regredir
+
+Os 5 cards da faixa superior dos **dois** dashboards são botões que aplicam o filtro de KPI.
+O bloco era **duplicado literalmente** em `Dashboard.tsx` e `DashboardFinanceiro.tsx`; virou o
+componente compartilhado `KpiCard` + `cva` — qualquer ajuste vale para as duas telas de uma vez
+(há teste de paridade em `Dashboard.test.tsx`). Estados e as razões de cada escolha:
+
+| Estado | Classes | Por quê |
+|---|---|---|
+| Repouso | `bg-white border-l-4` + cor do `tone` | barra lateral de 4px (era 2px) — visível sem depender de hover |
+| **Hover** | `hover:bg-slate-50 hover:shadow-md hover:-translate-y-0.5` | o hover antigo (`shadow-xs`→`shadow-sm`) era imperceptível e o card não parecia clicável. `-translate-y` é **transform** — não desloca os vizinhos (engrossar a borda no hover deslocaria) |
+| **Ativo** (filtro em vigor) | `ring-2 ring-brand ring-offset-1 ring-offset-white shadow-md` + selo **"filtrando"** no corpo | o selo é **exigência da WCAG 1.4.1**: sem ele o anel colorido seria o ÚNICO indicador do estado |
+| **Foco** (teclado) | `focus-visible:ring-2 focus-visible:ring-brand-dark focus-visible:ring-offset-2` | **cor e halo DIFERENTES do ativo** (WCAG 2.4.7). Eram iguais (`ring-brand` nos dois) e chegar por teclado ao card já selecionado não mudava nada na tela |
+| Movimento reduzido | `motion-reduce:transition-none motion-reduce:hover:translate-y-0` | respeita `prefers-reduced-motion`; o hover continua legível pelo fundo + sombra |
+
+**Armadilhas travadas por teste** (`KpiCard.test.tsx`), não reintroduzir:
+
+- **Nada de `hover:ring-*`** — disputaria `--tw-ring-width` com o anel do ativo e o hover
+  **apagaria** o destaque do card selecionado.
+- **`bg-slate-50` é o limite do hover**: é o tom mais escuro em que TODO texto do card ainda
+  cumpre AA (`slate-500` = 4,55). Com `bg-slate-100` o `slate-500` cai para 4,34 e reprova.
+- **Não tintar o CARD de `bg-brand-light`** (ideia descartada na revisão): derrubaria
+  `slate-500` para 4,19 e `status-success-fg` para 4,42 — abaixo dos 4,5 de AA. A tintura
+  ficou só no selo (`brand-dark` sobre `brand-light` = 5,46).
+- `ring-offset-white` **explícito** nos dois anéis — a cor do halo depende do fundo atrás do
+  card (hoje o `<main>` é branco) e o default do Tailwind não é contrato.
+
+Todos esses pares estão no `COMPLIANT` de `tests/contrast-usage.a11y.test.ts` (o jsdom não avalia
+`color-contrast`, então a asserção numérica é a única rede aqui).
+
+**Ativo ≠ aberto filtrado:** o card só fica marcado quando `filter === kpiFilter` e o KPI não é
+`total`. `/dashboard_financeiro` **abre** com "A vencer" marcado; `/dashboard_vencimentos` abre em
+`total`, sem nenhum card marcado.
+
+### Casca compartilhada dos dashboards (`useDashboardFilters` + `DashboardHeader` + `KpiRow`) — não reduplicar
+
+As duas telas compartilham **três** peças; juntas, elas são a "casca" do dashboard. O cabeçalho
+era **84 linhas duplicadas literalmente** (com 3 diferenças: título, assunto do subtítulo e o
+`id`/`name` do `<select>`), e as páginas ainda duplicavam **o estado** — seis `useState`, o
+`toggleFilter` e os blocos de chamada dos componentes:
+
+| Peça | Papel |
+|---|---|
+| `hooks/useDashboardFilters.ts` | **Estado** mês/ano/escopo/filtro/empresa + `toggleFilter`/`clearFilter` + as opções de empresa. Parametrizado pelo filtro inicial (`'total'` no de vencimentos, `'aVencer'` no financeiro) |
+| `DashboardHeader.tsx` | Título + "filtrando: X ✕" e a barra **empresa · escopo · mês · ano · Atualizar**. Recebe `title`/`subject`/`idPrefix` + o objeto `filters` |
+| `KpiRow.tsx` | A faixa dos 5 cards (grid + `map` sobre `KpiCard`). **A regra do "ativo" mora aqui**: o KPI `total` é a AUSÊNCIA de filtro, então nunca aparece selecionado |
+
+Com isso as páginas caíram de **301→181** e **264→140** linhas, e sobrou nelas só o que é
+realmente específico: o serviço que chamam, o array `kpis` e os gráficos.
+
+- **O hook NÃO carrega dados de propósito:** `load()`/`data`/`loading`/`error` ficam na página,
+  porque cada dashboard chama um serviço distinto (`getDashboardData` ×
+  `getFinancialDashboardData`) com formato de resposta próprio — puxar isso para o hook exigiria
+  genéricos e um parâmetro de serviço, acoplando-o ao que cada página tem de particular.
+- **O header recebe UM objeto `filters`, não 12 props soltas.** Com props soltas, as duas páginas
+  repetiriam a mesma lista linha a linha na chamada — foi exatamente o que reprovou o quality gate
+  do SonarCloud por **duplicação no código novo** (6,3% > 3%) na primeira tentativa desta extração.
+- **Apresentacional puro:** o header não tem estado nem busca dados; só renderiza e delega.
+- **`KPI_FILTER_LABEL` mora aqui** (fonte única) — as páginas não o redeclaram mais.
+- **`idPrefix`** gera `id`/`name` distintos por página (`dashboard-company` ·
+  `dashboard-financeiro-company`): as telas não coexistem no DOM, mas ids separados mantêm o
+  autofill/histórico do Chrome sem misturar.
+- **Meses no escopo `all`:** ficam esmaecidos + `pointer-events-none` + `aria-hidden` **e
+  `disabled`**. O `disabled` **não é redundante** — sem ele os botões seguiam na ordem de TAB
+  dentro de um contêiner `aria-hidden`, ou seja, o teclado alcançava um controle que o leitor de
+  tela não anuncia (axe `aria-hidden-focus`, WCAG 4.1.2). Era um defeito **pré-existente** nas duas
+  páginas, que a extração expôs; travado em `DashboardHeader.test.tsx`.
+- **A faixa `h-0.5 bg-linear-to-r` acima do header NÃO entrou no componente** de propósito: ela é
+  padrão de **todas** as 6 páginas (Consulta, Emails, cobrança…), não da casca do dashboard —
+  embuti-la aqui deixaria 2 páginas com a faixa dentro do header e 4 com ela solta.
+
+Testes: `DashboardHeader.test.tsx` (identidade, os 5 controles, ✕ do filtro, loading) +
+`DashboardHeader.a11y.test.tsx` (axe nos dois estados que mudam a árvore acessível).
 
 ### Guia de cores — grid de dados (`DataGrid`, `dataGrid.variants.ts`)
 
@@ -3016,8 +3098,8 @@ faturas SIEG em `ignorado`; o handler A1 (baixar o boleto real) segue como melho
 | `/tabelas/plano-de-contas` | `ChartAccountsPage.tsx` | `financial_chart_of_account` (CRUD via Next API) |
 | `/tabelas/grupos-plano-de-contas` | `ChartAccountGroupsPage.tsx` | `financial_chart_of_account_group` (CRUD via Next API) |
 | `/tabelas/subgrupos-plano-de-contas` | `ChartAccountSubgroupsPage.tsx` | `financial_chart_of_account_subgroup` (CRUD via Next API) |
-| `/dashboard_vencimentos` | `Dashboard.tsx` | `financial_account_control` (KPIs/gráficos por mês ou geral; `getDashboardData`). **Filtro por EMPRESA** (`<select>` "Empresa", 1º dos controles; vazio = TODAS; hook `useCompanyOptions`): 5º parâmetro `skCompany` de `getDashboardData`, aplicado nas **DUAS** leituras (escopo + ano — senão o gráfico anual mostraria as duas empresas). Aqui ele escopa **TUDO** (KPIs, donuts e gráfico anual), diferente de `/consulta` (cujos KPIs gerais são globais), porque no dashboard todo indicador deriva do escopo; e **aplica na hora** (não há "Buscar"). Convive com o filtro de KPI. **Cards de KPI clicáveis = filtro** (Total/Pagos/A vencer/A vencer em 7 dias/Vencidas): clicar aplica o filtro (`KpiFilter`) a TODOS os gráficos; os KPIs seguem com os totais completos. **4 donuts** (situação · tipos de conta · **Tributos** = só guias tributárias detalhadas · formas de pagamento; tipos de conta colapsa os tributários numa fatia "Tributos" via `groupDocumentTypeLabel`/`isTaxDocumentType`). Todos os donuts (aqui e no financeiro) têm arcos + % + ORDEM por **VALOR (R$)** desc, legenda com R$ **sem contagem de contas** e furo central com o **total em R$** — ver `BreakdownDonut`; os de vencimentos usam o modo `dense` (4 na mesma linha no `xl`; só o círculo é menor — 108px) |
-| `/dashboard_financeiro` | `DashboardFinanceiro.tsx` | `financial_account_control` **escopado a DESPESAS** (`getFinancialDashboardData`). Variante do dashboard focada em despesa — conta cujo plano de contas tem grupo com Natureza = "Despesas" (`chart_account.group.type_group_id === TYPE_GROUP_ID_DESPESAS` = 2, migration 094; conta sem classificação é excluída). **Mantém** os 5 KPIs, filtro de EMPRESA, mês/ano, escopo e o gráfico mês a mês (todos só de despesa; o read do ano também é filtrado a despesa, senão o anual somaria receitas/passivos). **Troca os gráficos**: só **2 donuts** — "Natureza" (despesas por GRUPO, `naturezaBreakdown` por `group_description`) e "Tipo" (Despesa Fixa/Variável, `tipoBreakdown` pela descrição do `type_group` do SUBGRUPO — do catálogo, sem literal); e o ranking de fornecedores vira **ranking de SUBGRUPOS** de despesa (`subgroupRanking`, top 6 por valor). Contas críticas/prioritárias inalteradas (essenciais + vencidas, escopadas a despesa). **Embed ampliado de 3 níveis** no read do mês (`chart_account → group/subgroup → type_group`), espelhando os aliases/FKs do `SELECT_WITH_EMBEDS` + `type_group_id`/`type_group`. Os primitivos de gráfico (`BreakdownDonut`/`MonthlyFlow`/`RankingList`/`PriorityList` + cores) foram **extraídos** para `components/dashboard/`, compartilhados com o dashboard de vencimentos (só o donut de situação `StatusDonut` ficou local em `Dashboard.tsx`) |
+| `/dashboard_vencimentos` | `Dashboard.tsx` | `financial_account_control` (KPIs/gráficos por mês ou geral; `getDashboardData`). **Filtro por EMPRESA** (`<select>` "Empresa", 1º dos controles; vazio = TODAS; hook `useCompanyOptions`): 5º parâmetro `skCompany` de `getDashboardData`, aplicado nas **DUAS** leituras (escopo + ano — senão o gráfico anual mostraria as duas empresas). Aqui ele escopa **TUDO** (KPIs, donuts e gráfico anual), diferente de `/consulta` (cujos KPIs gerais são globais), porque no dashboard todo indicador deriva do escopo; e **aplica na hora** (não há "Buscar"). Convive com o filtro de KPI. **Cards de KPI clicáveis = filtro** (Total/Pagos/A vencer/A vencer em 7 dias/Vencidas): clicar aplica o filtro (`KpiFilter`) a TODOS os gráficos; os KPIs seguem com os totais completos. **4 donuts** (situação · tipos de conta · **Tributos** = só guias tributárias detalhadas · formas de pagamento; tipos de conta colapsa os tributários numa fatia "Tributos" via `groupDocumentTypeLabel`/`isTaxDocumentType`). Todos os donuts (aqui e no financeiro) têm arcos + % + ORDEM por **VALOR (R$)** desc, legenda com R$ **sem contagem de contas** e furo central com o **total em R$** — ver `BreakdownDonut`; os de vencimentos usam `size="sm"` (4 na mesma linha no `xl`; só o círculo é menor — 108px). Abre em `total` (sem card marcado), diferente do financeiro |
+| `/dashboard_financeiro` | `DashboardFinanceiro.tsx` | `financial_account_control` **escopado a DESPESAS** (`getFinancialDashboardData`). Variante do dashboard focada em despesa — conta cujo plano de contas tem grupo com Natureza = "Despesas" (`chart_account.group.type_group_id === TYPE_GROUP_ID_DESPESAS` = 2, migration 094; conta sem classificação é excluída). **Mantém** os 5 KPIs, filtro de EMPRESA, mês/ano e escopo (todos só de despesa). **ABRE FILTRADO no KPI "A vencer"** (`useState<KpiFilter>('aVencer')` — pedido do usuário): os CARDS seguem com os totais completos do mês e só os gráficos filtram, então o card "Despesas no mês" e o furo dos donuts mostram números diferentes de propósito; o card "A vencer" já abre com o destaque de selecionado (ver "Destaque dos cards de KPI") e o ✕ do cabeçalho (ou clicar no card) limpa para `total`. **NÃO tem o gráfico "Movimentações mês a mês"** (removido a pedido do usuário) — por isso faz **leitura ÚNICA** (só o mês; o read do ANO existia apenas para alimentar aquele gráfico e foi eliminado junto, com `monthlyFlow` fora de `FinancialDashboardData`). **Gráficos**: **2 donuts `size="lg"`** na ordem **"Tipo"** (Despesa Fixa/Variável, `tipoBreakdown` pela descrição do `type_group` do SUBGRUPO — do catálogo, sem literal) e depois **"Natureza"** (despesas por GRUPO, `naturezaBreakdown` por `group_description`); e **DOIS rankings por VALOR (R$)** — **subgrupos** (`subgroupRanking`) e **plano de contas** (`chartAccountRanking`) —, ambos **top 12** (`RANKING_TOP_N`, aproveitando o espaço do gráfico removido) via o helper único `rankBy`. A chave do ranking de plano de contas é **`código — descrição`**: a mesma descrição existe em vários centros como códigos DISTINTOS, então agregar só por descrição fundiria contas diferentes. **NÃO tem "Contas críticas e prioritárias"** (removido — segue só no de vencimentos; `PriorityList`/`classifyPriority`/`priorityAccounts` permanecem intactos lá). **Embed ampliado de 3 níveis** no read do mês (`chart_account → group/subgroup → type_group` + `account_code`/`account_description`), espelhando os aliases/FKs do `SELECT_WITH_EMBEDS`. `ExpenseMonthRow` **não herda `MonthRow`** — declara só `amount`/`status_id`/`due_date` + classificação, para o tipo não prometer campos que o `select` não traz. Os primitivos de gráfico (`BreakdownDonut`/`KpiCard`/`RankingList` + cores) ficam em `components/dashboard/`, compartilhados com o de vencimentos (só o donut de situação `StatusDonut` é local em `Dashboard.tsx`) |
 | `/cobranca/envios` | `cobranca/CobrancaEnvios.tsx` | `cobranca_envios_log` (ver "Pipeline de cobrança de vencidos") |
 | `/cobranca/erros` | `cobranca/CobrancaErros.tsx` | `cobranca_erros_log` |
 

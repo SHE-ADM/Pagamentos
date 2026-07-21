@@ -32,10 +32,7 @@ const MOCK: FinancialDashboardData = {
     { label: 'Despesas Fixas', count: 35, value: 10000 },
   ],
   subgroupRanking: [{ name: 'Fretes', value: 15000, count: 25 }],
-  monthlyFlow: Array.from({ length: 12 }, (_, m) => ({ month: m, aPagar: 1000 * (m + 1), pago: 400 * (m + 1) })),
-  priorityAccounts: [
-    { id: 2, kind: 'agua', supplier: 'Sabesp', due: '2026-01-03', amount: 566, status: 'vencido', critical: true },
-  ],
+  chartAccountRanking: [{ name: '4.4.01 — GNRE a Recolher', value: 12000, count: 8 }],
 };
 
 describe('DashboardFinanceiro — acessibilidade (WCAG AA)', () => {

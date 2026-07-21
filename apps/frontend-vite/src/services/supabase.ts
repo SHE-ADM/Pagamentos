@@ -1007,16 +1007,20 @@ export async function getDashboardData(month: number, year: number, scope: Dashb
 // ── dashboard financeiro (DESPESAS) ──────────────────────────────────────────
 // Variante do dashboard escopada a DESPESAS (conta cujo plano de contas tem grupo com
 // Natureza = "Despesas", i.e. group.type_group_id === TYPE_GROUP_ID_DESPESAS — migration
-// 094). Mantém KPIs, filtros (empresa/mês/escopo/KPI) e o gráfico mês a mês; troca os
+// 094). Mantém KPIs e filtros (empresa/mês/escopo/KPI), mas NÃO tem o gráfico mês a mês
+// (por isso lê só o mês, não o ano); troca os
 // donuts por Natureza (por GRUPO de despesa) + Tipo (Fixa/Variável, pelo type_group do
-// SUBGRUPO) e o ranking de fornecedores por ranking de SUBGRUPO. Prioritárias inalteradas.
-// Reusa os mesmos helpers de getDashboardData (num, breakdownBy, matchesKpiFilter,
-// classifyPriority, supplierName). `month` é 0-indexed.
+// SUBGRUPO); e traz DOIS rankings por VALOR (R$) — SUBGRUPO e PLANO DE CONTAS — no lugar
+// do ranking de fornecedores e das "Contas críticas e prioritárias" (que seguem só no
+// dashboard de vencimentos). Reusa os helpers de getDashboardData (num, breakdownBy,
+// matchesKpiFilter). `month` é 0-indexed.
 
 // Embed aninhado (3 níveis) da classificação contábil — espelha os aliases/FKs já
 // validados em SELECT_WITH_EMBEDS, acrescentando type_group_id + a folha type_group para
 // (a) identificar despesa pelo grupo e (b) rotular o Tipo (Fixa/Variável) do subgrupo.
 type ExpenseChartAccount = {
+  account_code: string | null;
+  account_description: string | null;
   group?: { group_code: string | null; group_description: string | null; type_group_id: number } | null;
   subgroup?: {
     subgroup_code: string | null;
@@ -1026,8 +1030,12 @@ type ExpenseChartAccount = {
   } | null;
 } | null;
 
-type ExpenseMonthRow = MonthRow & { chart_account?: ExpenseChartAccount };
-type ExpenseYearRow = YearRow & { chart_account?: { group?: { type_group_id: number } | null } | null };
+// Linha do mês no dashboard financeiro: só o que os KPIs/gráficos daqui consomem
+// (valor, situação, vencimento + classificação). Não herda MonthRow — os campos de
+// fornecedor/descrição só serviam às "Contas prioritárias", removidas desta tela.
+type ExpenseMonthRow = Pick<FinancialAccountControl, 'amount' | 'status_id' | 'due_date'> & {
+  chart_account?: ExpenseChartAccount;
+};
 
 export interface FinancialDashboardData {
   month: number; year: number; scope: DashboardScope;
@@ -1035,14 +1043,16 @@ export interface FinancialDashboardData {
   naturezaBreakdown: LabelSlice[]; // por GRUPO de despesa (group_description)
   tipoBreakdown: LabelSlice[]; // Despesa Fixa/Variável (type_group do subgrupo)
   subgroupRanking: SupplierRank[]; // top subgrupos de despesa por VALOR
-  monthlyFlow: MonthlyFlow[];
-  priorityAccounts: PriorityAccount[];
+  chartAccountRanking: SupplierRank[]; // top contas do PLANO DE CONTAS por VALOR
 }
 
 // Despesa = o plano de contas da conta pertence a um grupo cuja Natureza é "Despesas".
 // Conta sem classificação (chart_account nulo / grupo ausente) NÃO é despesa (excluída).
 const isExpenseRow = (r: { chart_account?: { group?: { type_group_id: number } | null } | null }): boolean =>
   r.chart_account?.group?.type_group_id === TYPE_GROUP_ID_DESPESAS;
+
+// Linhas exibidas em cada ranking do dashboard financeiro (subgrupo e plano de contas).
+const RANKING_TOP_N = 12;
 
 export async function getFinancialDashboardData(month: number, year: number, scope: DashboardScope = 'month', filter: KpiFilter = 'total', skCompany?: number): Promise<FinancialDashboardData> {
   const companyFilter = skCompany ? { sk_company: `eq.${skCompany}` } : {};
@@ -1051,33 +1061,24 @@ export async function getFinancialDashboardData(month: number, year: number, sco
   const todayStr = new Date().toISOString().slice(0, 10);
   const in7 = new Date(Date.now() + 7 * 86400000).toISOString().slice(0, 10);
 
-  // Read do mês: embed aninhado da classificação (grupo/subgrupo + type_group).
-  // Read do ano: só o suficiente para (a) somar o mês a mês e (b) filtrar despesa.
-  const [monthRowsAll, yearRowsAll] = await Promise.all([
-    query<ExpenseMonthRow[]>('financial_account_control', {
-      select:
-        'id,amount,status_id,due_date,document_type,payment_method,description,supplier(trade_name,legal_name),' +
-        'chart_account:financial_chart_of_account(chart_account_group_id,chart_account_subgroup_id,' +
-        'group:financial_chart_of_account_group(group_code,group_description,type_group_id),' +
-        'subgroup:financial_chart_of_account_subgroup(subgroup_code,subgroup_description,type_group_id,' +
-        'type_group:financial_type_group(type_group_description)))',
-      status_id: `neq.${STATUS_ID_CANCELADO}`,
-      ...companyFilter,
-      ...(scope === 'month' ? { and: `(due_date.gte.${first},due_date.lte.${last})` } : {}),
-      limit: scope === 'month' ? 5000 : 20000,
-    }),
-    query<ExpenseYearRow[]>('financial_account_control', {
-      select: 'amount,status_id,due_date,chart_account:financial_chart_of_account(group:financial_chart_of_account_group(type_group_id))',
-      status_id: `neq.${STATUS_ID_CANCELADO}`,
-      ...companyFilter,
-      and: `(due_date.gte.${year}-01-01,due_date.lte.${year}-12-31)`,
-      limit: 20000,
-    }),
-  ]);
+  // Leitura ÚNICA (a do ANO saiu junto com o gráfico mês a mês): embed aninhado da
+  // classificação (grupo/subgrupo + type_group).
+  const monthRowsAll = await query<ExpenseMonthRow[]>('financial_account_control', {
+    select:
+      'amount,status_id,due_date,' +
+      'chart_account:financial_chart_of_account(account_code,account_description,' +
+      'chart_account_group_id,chart_account_subgroup_id,' +
+      'group:financial_chart_of_account_group(group_code,group_description,type_group_id),' +
+      'subgroup:financial_chart_of_account_subgroup(subgroup_code,subgroup_description,type_group_id,' +
+      'type_group:financial_type_group(type_group_description)))',
+    status_id: `neq.${STATUS_ID_CANCELADO}`,
+    ...companyFilter,
+    ...(scope === 'month' ? { and: `(due_date.gte.${first},due_date.lte.${last})` } : {}),
+    limit: scope === 'month' ? 5000 : 20000,
+  });
 
-  // Escopo DESPESAS aplicado às DUAS leituras antes de qualquer agregação.
+  // Escopo DESPESAS aplicado antes de qualquer agregação.
   const monthRows = monthRowsAll.filter(isExpenseRow);
-  const yearRows = yearRowsAll.filter(isExpenseRow);
 
   // KPIs (sobre as despesas do mês — conjunto completo, sem o filtro de KPI clicado).
   const sum = (rows: ExpenseMonthRow[]): number => rows.reduce((s, r) => s + num(r.amount), 0);
@@ -1095,7 +1096,6 @@ export async function getFinancialDashboardData(month: number, year: number, sco
 
   // Filtro do KPI clicado: só afeta os gráficos (os cards mantêm os totais).
   const fMonth = filter === 'total' ? monthRows : monthRows.filter((r) => matchesKpiFilter(r, filter, todayStr, in7));
-  const fYear = filter === 'total' ? yearRows : yearRows.filter((r) => matchesKpiFilter(r, filter, todayStr, in7));
 
   // Donut "Natureza": por GRUPO de despesa (group_description). Top 8 + "outros".
   const naturezaBreakdown = breakdownBy(fMonth, (r) => r.chart_account?.group?.group_description ?? null);
@@ -1103,48 +1103,31 @@ export async function getFinancialDashboardData(month: number, year: number, sco
   // catálogo, sem literal). Despesa sempre tem subgrupo Fixa/Variável (migrations 092/093).
   const tipoBreakdown = breakdownBy(fMonth, (r) => r.chart_account?.subgroup?.type_group?.type_group_description ?? null);
 
-  // Ranking de SUBGRUPOS de despesa (top 6 por VALOR).
-  const subMap = new Map<string, { value: number; count: number }>();
-  for (const r of fMonth) {
-    const k = r.chart_account?.subgroup?.subgroup_description ?? 'não informado';
-    const cur = subMap.get(k) ?? { value: 0, count: 0 };
-    cur.value += num(r.amount); cur.count += 1;
-    subMap.set(k, cur);
-  }
-  const subgroupRanking: SupplierRank[] = [...subMap.entries()]
-    .map(([name, v]) => ({ name, ...v }))
-    .sort((a, b) => b.value - a.value)
-    .slice(0, 6);
+  // Rankings por VALOR (R$) — mesma agregação, chaves diferentes. Top 12 cada (o espaço
+  // liberado pelo gráfico mês a mês passou a caber mais linhas).
+  const rankBy = (pick: (r: ExpenseMonthRow) => string | null): SupplierRank[] => {
+    const map = new Map<string, { value: number; count: number }>();
+    for (const r of fMonth) {
+      const k = pick(r) ?? 'não informado';
+      const cur = map.get(k) ?? { value: 0, count: 0 };
+      cur.value += num(r.amount); cur.count += 1;
+      map.set(k, cur);
+    }
+    return [...map.entries()]
+      .map(([name, v]) => ({ name, ...v }))
+      .sort((a, b) => b.value - a.value)
+      .slice(0, RANKING_TOP_N);
+  };
 
-  // Movimentações mês a mês (12 baldes) — só despesas.
-  const buckets: MonthlyFlow[] = Array.from({ length: 12 }, (_, m) => ({ month: m, aPagar: 0, pago: 0 }));
-  for (const r of fYear) {
-    if (!r.due_date) continue;
-    const m = Number(r.due_date.slice(5, 7)) - 1;
-    if (m < 0 || m > 11) continue;
-    buckets[m].aPagar += num(r.amount);
-    if (r.status_id === STATUS_ID_PAGO) buckets[m].pago += num(r.amount);
-  }
+  // Ranking de SUBGRUPOS de despesa.
+  const subgroupRanking = rankBy((r) => r.chart_account?.subgroup?.subgroup_description ?? null);
+  // Ranking do PLANO DE CONTAS (`código — descrição`; a mesma descrição existe em vários
+  // centros como códigos distintos, então o código faz parte da chave — ver CLAUDE.md).
+  const chartAccountRanking = rankBy((r) => {
+    const ca = r.chart_account;
+    if (!ca?.account_description) return null;
+    return ca.account_code ? `${ca.account_code} — ${ca.account_description}` : ca.account_description;
+  });
 
-  // Contas críticas / prioritárias (mesma lógica: essenciais OU vencidas), só despesas.
-  const priorityAccounts: PriorityAccount[] = fMonth
-    .map((r): PriorityAccount | null => {
-      const kind = classifyPriority(`${supplierName(r)} ${r.description ?? ''} ${r.document_type ?? ''}`);
-      const isVencido = r.status_id === STATUS_ID_VENCIDO;
-      if (!kind && !isVencido) return null;
-      return {
-        id: r.id, kind: kind ?? 'outro', supplier: supplierName(r),
-        due: r.due_date, amount: r.amount,
-        status: STATUS_NAME_BY_ID[r.status_id] ?? 'pendente',
-        critical: isVencido,
-      };
-    })
-    .filter((x): x is PriorityAccount => x !== null)
-    .sort((a, b) => {
-      if (a.critical !== b.critical) return a.critical ? -1 : 1;
-      return (a.due ?? '').localeCompare(b.due ?? '');
-    })
-    .slice(0, 7);
-
-  return { month, year, scope, kpis, naturezaBreakdown, tipoBreakdown, subgroupRanking, monthlyFlow: buckets, priorityAccounts };
+  return { month, year, scope, kpis, naturezaBreakdown, tipoBreakdown, subgroupRanking, chartAccountRanking };
 }
