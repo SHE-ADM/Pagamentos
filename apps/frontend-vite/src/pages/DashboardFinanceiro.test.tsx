@@ -23,9 +23,11 @@ const MOCK: FinancialDashboardData = {
     vencendoCount: 9, vencendoValue: 5000,
     vencidasCount: 8, vencidasValue: 4000,
   },
-  naturezaBreakdown: [
-    { label: 'Transporte', count: 40, value: 18000 },
+  despesaFixaBreakdown: [
     { label: 'Folha de Pagamento', count: 30, value: 10000 },
+  ],
+  despesaVariavelBreakdown: [
+    { label: 'Transporte', count: 40, value: 18000 },
     { label: 'Despesas com Serviços', count: 20, value: 4000 },
   ],
   tipoBreakdown: [
@@ -119,13 +121,16 @@ describe('DashboardFinanceiro', () => {
     );
   });
 
-  it('renderiza os donuts Natureza e Tipo', async () => {
+  it('renderiza os donuts Tipo, Despesas Fixas e Despesas Variáveis (nesta ordem)', async () => {
     render(<DashboardFinanceiro />);
-    expect(await screen.findByText('Natureza')).toBeInTheDocument();
-    expect(screen.getByText('Tipo')).toBeInTheDocument();
-    // fatias das legendas
+    expect(await screen.findByRole('heading', { name: 'Tipo' })).toBeInTheDocument();
+    const titulos = screen
+      .getAllByRole('heading', { level: 3 })
+      .map((h) => h.textContent);
+    expect(titulos.slice(0, 3)).toEqual(['Tipo', 'Despesas Fixas', 'Despesas Variáveis']);
+    // fatias das legendas (cada donut com o seu recorte)
+    expect(screen.getByText('Folha de Pagamento')).toBeInTheDocument();
     expect(screen.getByText('Transporte')).toBeInTheDocument();
-    expect(screen.getByText('Despesas Variáveis')).toBeInTheDocument();
   });
 
   it('renderiza os rankings de centros de custo e de plano de contas', async () => {

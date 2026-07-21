@@ -10,8 +10,9 @@ import { getErrorMessage } from '../lib/getErrorMessage';
 import { useDashboardFilters } from '../hooks/useDashboardFilters';
 import Alert from '../components/atoms/Alert';
 import { MONTHS_FULL } from '../components/dashboard/constants';
-import { statusColor, paletteColor } from '../components/dashboard/chartColors';
-import { BreakdownDonut, type DonutSize } from '../components/dashboard/BreakdownDonut';
+import { statusColor } from '../components/dashboard/chartColors';
+import { ChartCard } from '../components/dashboard/ChartCard';
+import { DonutCard } from '../components/dashboard/DonutCard';
 import { DashboardHeader } from '../components/dashboard/DashboardHeader';
 import { KpiRow, type KpiEntry } from '../components/dashboard/KpiRow';
 import { MonthlyFlow } from '../components/dashboard/MonthlyFlow';
@@ -51,6 +52,10 @@ export default function Dashboard() {
     { icon: TrendingUp, label: 'A vencer em 7 dias', amount: k?.vencendoValue ?? 0, count: k?.vencendoCount ?? 0, tone: 'muted', filter: 'vencendo7' },
     { icon: AlertCircle, label: 'Vencidas', amount: k?.vencidasValue ?? 0, count: k?.vencidasCount ?? 0, tone: 'danger', filter: 'vencidas' },
   ];
+
+  // Rótulo do período, repetido no subtítulo dos 4 donuts (extraído do JSX — ternário
+  // inline repetido dispara S3358 no SonarLint).
+  const periodo = scope === 'all' ? 'Todas as contas' : MONTHS_FULL[month];
 
   return (
     <div className="flex flex-col h-full">
@@ -96,86 +101,59 @@ export default function Dashboard() {
 
         {/* 4 donuts na mesma linha (xl), círculo `sm` p/ caber R$ + % no espaço estreito. */}
         <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-2 mb-3">
-          <div className="card p-2.5">
-            <div className="mb-2">
-              <h3 className="text-sm font-semibold text-slate-800">Minha situação</h3>
-              <p className="text-xs text-slate-500">Por status · {scope === 'all' ? 'Todas as contas' : MONTHS_FULL[month]}</p>
-            </div>
-            <StatusDonut data={data} size="sm" />
-          </div>
-
-          <div className="card p-2.5">
-            <div className="mb-2">
-              <h3 className="text-sm font-semibold text-slate-800">Tipos de contas</h3>
-              <p className="text-xs text-slate-500">Por tipo de documento · {scope === 'all' ? 'Todas as contas' : MONTHS_FULL[month]}</p>
-            </div>
-            <BreakdownDonut
-              segs={(data?.documentTypeBreakdown ?? []).map((s) => ({ key: s.label, label: s.label, value: s.value }))}
-              colorFor={paletteColor}
-              size="sm"
-            />
-          </div>
-
-          <div className="card p-2.5">
-            <div className="mb-2">
-              <h3 className="text-sm font-semibold text-slate-800">Tributos</h3>
-              <p className="text-xs text-slate-500">Por tipo de guia · {scope === 'all' ? 'Todas as contas' : MONTHS_FULL[month]}</p>
-            </div>
-            <BreakdownDonut
-              segs={(data?.taxTypeBreakdown ?? []).map((s) => ({ key: s.label, label: s.label, value: s.value }))}
-              colorFor={paletteColor}
-              size="sm"
-            />
-          </div>
-
-          <div className="card p-2.5">
-            <div className="mb-2">
-              <h3 className="text-sm font-semibold text-slate-800">Tipos de pagamentos</h3>
-              <p className="text-xs text-slate-500">Por forma de pagamento · {scope === 'all' ? 'Todas as contas' : MONTHS_FULL[month]}</p>
-            </div>
-            <BreakdownDonut
-              segs={(data?.paymentMethodBreakdown ?? []).map((s) => ({ key: s.label, label: s.label, value: s.value }))}
-              colorFor={paletteColor}
-              size="sm"
-            />
-          </div>
+          {/* Situação: cor SEMÂNTICA por status (não a paleta cíclica dos demais). As
+              fatias vêm com a chave `status`, então o adaptador é local. */}
+          <DonutCard
+            title="Minha situação"
+            subtitle={`Por status · ${periodo}`}
+            slices={(data?.statusBreakdown ?? []).map((s) => ({ label: s.status, value: s.value }))}
+            colorFor={(label) => statusColor(label)}
+            size="sm"
+            dense
+          />
+          <DonutCard
+            title="Tipos de contas"
+            subtitle={`Por tipo de documento · ${periodo}`}
+            slices={data?.documentTypeBreakdown}
+            size="sm"
+            dense
+          />
+          <DonutCard
+            title="Tributos"
+            subtitle={`Por tipo de guia · ${periodo}`}
+            slices={data?.taxTypeBreakdown}
+            size="sm"
+            dense
+          />
+          <DonutCard
+            title="Tipos de pagamentos"
+            subtitle={`Por forma de pagamento · ${periodo}`}
+            slices={data?.paymentMethodBreakdown}
+            size="sm"
+            dense
+          />
         </div>
 
         {/* Ranking + Prioritárias */}
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
-          <div className="card p-3">
-            <div className="flex items-center gap-2 mb-2">
-              <span className="flex h-6 w-6 items-center justify-center rounded-lg bg-brand/10 text-brand"><Building2 size={14} /></span>
-              <div>
-                <h3 className="text-sm font-semibold text-slate-800">Ranking de fornecedores</h3>
-                <p className="text-xs text-slate-500">Maiores valores no período</p>
-              </div>
-            </div>
+          <ChartCard
+            title="Ranking de fornecedores"
+            subtitle="Maiores valores no período"
+            icon={Building2}
+          >
             <RankingList rows={data?.supplierRanking ?? []} />
-          </div>
+          </ChartCard>
 
-          <div className="card p-3">
-            <div className="flex items-center gap-2 mb-2">
-              <span className="flex h-6 w-6 items-center justify-center rounded-lg bg-status-error-solid/10 text-status-error-fg"><Zap size={14} /></span>
-              <div>
-                <h3 className="text-sm font-semibold text-slate-800">Contas críticas e prioritárias</h3>
-                <p className="text-xs text-slate-500">Água, luz, internet, aluguel, tributos e vencidas</p>
-              </div>
-            </div>
+          <ChartCard
+            title="Contas críticas e prioritárias"
+            subtitle="Água, luz, internet, aluguel, tributos e vencidas"
+            icon={Zap}
+            tone="danger"
+          >
             <PriorityList rows={data?.priorityAccounts ?? []} />
-          </div>
+          </ChartCard>
         </div>
       </section>
     </div>
   );
-}
-
-// ── sub-componente local (não exportado) ────────────────────────────────────
-
-// Situação por status: cor semântica por nome de status (ignora o índice da paleta).
-// Fica local porque só o dashboard de vencimentos tem o donut de situação (o financeiro
-// usa apenas Natureza/Tipo). Delega ao BreakdownDonut compartilhado.
-function StatusDonut({ data, size }: { data: DashboardData | null; size?: DonutSize }) {
-  const segs = (data?.statusBreakdown ?? []).map((s) => ({ key: s.status, label: s.status, value: s.value }));
-  return <BreakdownDonut segs={segs} colorFor={(label) => statusColor(label)} size={size} />;
 }

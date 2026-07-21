@@ -17,6 +17,8 @@ import {
   STATUS_ID_A_VENCER,
   STATUS_NAME_BY_ID,
   TYPE_GROUP_ID_DESPESAS,
+  TYPE_GROUP_ID_DESPESA_FIXA,
+  TYPE_GROUP_ID_DESPESA_VARIAVEL,
 } from '@sheild/shared';
 import { supabase } from '../lib/supabaseClient';
 
@@ -784,6 +786,10 @@ export interface PriorityAccount {
   due: string | null; amount: number | null; status: string; critical: boolean;
 }
 export type DashboardScope = 'month' | 'all';
+// Teto das leituras dos dashboards (o PostgREST exige um limit). Nomeados para os dois
+// dashboards não divergirem e para a guarda de truncagem comparar contra o MESMO número.
+const MONTH_READ_LIMIT = 5000;
+const ALL_READ_LIMIT = 20000;
 // Filtro por KPI clicado no topo do Dashboard. 'total' = sem filtro (padrão).
 // Os cards de KPI seguem mostrando os totais completos; só os gráficos filtram.
 export type KpiFilter = 'total' | 'pago' | 'aVencer' | 'vencendo7' | 'vencidas';
@@ -823,6 +829,24 @@ type YearRow = Pick<FinancialAccountControl, 'amount' | 'status_id' | 'due_date'
 
 const num = (v: number | null | undefined): number => Number(v) || 0;
 const supplierName = (r: MonthRow): string => r.supplier?.trade_name ?? r.supplier?.legal_name ?? 'Sem fornecedor';
+
+/**
+ * Sinaliza leitura TRUNCADA pelo `limit` do PostgREST.
+ *
+ * Os dashboards agregam no cliente sobre um read com teto fixo. Batido o teto, o KPI e o
+ * gráfico ficam ERRADOS sem nenhum sinal na tela — a falha mais perigosa aqui é a
+ * silenciosa. Não dá para "consertar" no cliente (exigiria paginar ou agregar no banco),
+ * mas registrar deixa a causa rastreável quando os números não fecharem. Rows == limit é
+ * fortíssimo indício de corte (empate exato é possível, daí o texto "possivelmente").
+ */
+function warnIfTruncated(rows: readonly unknown[], limit: number, label: string): void {
+  if (rows.length >= limit) {
+    console.warn(
+      `[dashboard] leitura "${label}" possivelmente TRUNCADA em ${limit} linhas — ` +
+        'os totais podem estar subestimados. Aumentar o limite ou agregar no banco.',
+    );
+  }
+}
 
 // Agrega linhas por um campo de rótulo → Top N por contagem + fatia "outros".
 // Rótulo ausente (null) vira "não informado". Genérica sobre o tipo de linha (basta ter
@@ -906,7 +930,7 @@ export async function getDashboardData(month: number, year: number, scope: Dashb
       status_id: `neq.${STATUS_ID_CANCELADO}`,
       ...companyFilter,
       ...(scope === 'month' ? { and: `(due_date.gte.${first},due_date.lte.${last})` } : {}),
-      limit: scope === 'month' ? 5000 : 20000,
+      limit: scope === 'month' ? MONTH_READ_LIMIT : ALL_READ_LIMIT,
     }),
     // Contas do ano inteiro (só os campos do gráfico) para as movimentações mês a mês.
     query<YearRow[]>('financial_account_control', {
@@ -914,9 +938,11 @@ export async function getDashboardData(month: number, year: number, scope: Dashb
       status_id: `neq.${STATUS_ID_CANCELADO}`,
       ...companyFilter,
       and: `(due_date.gte.${year}-01-01,due_date.lte.${year}-12-31)`,
-      limit: 20000,
+      limit: ALL_READ_LIMIT,
     }),
   ]);
+  warnIfTruncated(monthRows, scope === 'month' ? MONTH_READ_LIMIT : ALL_READ_LIMIT, 'contas do escopo');
+  warnIfTruncated(yearRows, ALL_READ_LIMIT, 'contas do ano');
 
   // KPIs
   const sum = (rows: MonthRow[]): number => rows.reduce((s, r) => s + num(r.amount), 0);
@@ -1022,8 +1048,10 @@ type ExpenseChartAccount = {
   account_code: string | null;
   account_description: string | null;
   group?: { group_description: string | null; type_group_id: number } | null;
-  // Do subgrupo só interessa a folha type_group (rótulo Fixa/Variável do donut "Tipo").
-  subgroup?: { type_group?: { type_group_description: string | null } | null } | null;
+  // Do subgrupo só interessa a folha type_group: o `type_group_description` rotula o donut
+  // "Tipo" e o `type_group_id` (5=Fixa / 6=Variável) SEPARA os donuts de despesa fixa e
+  // variável — o corte é pelo ID, nunca pelo texto (a descrição é livre no catálogo).
+  subgroup?: { type_group?: { type_group_id: number; type_group_description: string | null } | null } | null;
 } | null;
 
 // Linha do mês no dashboard financeiro: só o que os KPIs/gráficos daqui consomem
@@ -1067,7 +1095,11 @@ const rankEntry = (
 export interface FinancialDashboardData {
   month: number; year: number; scope: DashboardScope;
   kpis: DashboardKpis;
-  naturezaBreakdown: LabelSlice[]; // por GRUPO de despesa (group_description)
+  // Por GRUPO de despesa (group_description), recortado pelo Tipo do SUBGRUPO: um donut
+  // só com as despesas FIXAS (type_group 5) e outro só com as VARIÁVEIS (type_group 6).
+  // Despesa cujo subgrupo não está classificado fica fora dos dois (não há terceiro balde).
+  despesaFixaBreakdown: LabelSlice[];
+  despesaVariavelBreakdown: LabelSlice[];
   tipoBreakdown: LabelSlice[]; // Despesa Fixa/Variável (type_group do subgrupo)
   costCenterRanking: SupplierRank[]; // top CENTROS DE CUSTO por VALOR
   chartAccountRanking: SupplierRank[]; // top contas do PLANO DE CONTAS por VALOR
@@ -1097,12 +1129,14 @@ export async function getFinancialDashboardData(month: number, year: number, sco
       'chart_account:financial_chart_of_account(account_code,account_description,' +
       'group:financial_chart_of_account_group(group_description,type_group_id),' +
       'subgroup:financial_chart_of_account_subgroup(' +
-      'type_group:financial_type_group(type_group_description)))',
+      'type_group:financial_type_group(type_group_id,type_group_description)))',
     status_id: `neq.${STATUS_ID_CANCELADO}`,
     ...companyFilter,
     ...(scope === 'month' ? { and: `(due_date.gte.${first},due_date.lte.${last})` } : {}),
-    limit: scope === 'month' ? 5000 : 20000,
+    limit: scope === 'month' ? MONTH_READ_LIMIT : ALL_READ_LIMIT,
   });
+
+  warnIfTruncated(monthRowsAll, scope === 'month' ? MONTH_READ_LIMIT : ALL_READ_LIMIT, 'despesas do escopo');
 
   // Escopo DESPESAS aplicado antes de qualquer agregação.
   const monthRows = monthRowsAll.filter(isExpenseRow);
@@ -1124,8 +1158,23 @@ export async function getFinancialDashboardData(month: number, year: number, sco
   // Filtro do KPI clicado: só afeta os gráficos (os cards mantêm os totais).
   const fMonth = filter === 'total' ? monthRows : monthRows.filter((r) => matchesKpiFilter(r, filter, todayStr, in7));
 
-  // Donut "Natureza": por GRUPO de despesa (group_description). Top 8 + "outros".
-  const naturezaBreakdown = breakdownBy(fMonth, (r) => r.chart_account?.group?.group_description ?? null);
+  // Donuts "Despesas Fixas" e "Despesas Variáveis": mesma dimensão (GRUPO de despesa,
+  // group_description), recortada pelo Tipo do SUBGRUPO. O corte é pelo `type_group_id`
+  // (5/6, constantes do catálogo) e NÃO pela descrição — o texto é livre e renomear a
+  // linha do catálogo esvaziaria os donuts em silêncio.
+  // Partição numa passada só; despesa com subgrupo não classificado (id 0 / embed ausente)
+  // não entra em nenhum dos dois — não há terceiro balde, por decisão de produto.
+  const fixaRows: ExpenseMonthRow[] = [];
+  const variavelRows: ExpenseMonthRow[] = [];
+  for (const r of fMonth) {
+    const tipo = r.chart_account?.subgroup?.type_group?.type_group_id;
+    if (tipo === TYPE_GROUP_ID_DESPESA_FIXA) fixaRows.push(r);
+    else if (tipo === TYPE_GROUP_ID_DESPESA_VARIAVEL) variavelRows.push(r);
+  }
+  const porGrupo = (rows: ExpenseMonthRow[]): LabelSlice[] =>
+    breakdownBy(rows, (r) => r.chart_account?.group?.group_description ?? null);
+  const despesaFixaBreakdown = porGrupo(fixaRows);
+  const despesaVariavelBreakdown = porGrupo(variavelRows);
   // Donut "Tipo": Despesa Fixa/Variável (descrição do type_group do SUBGRUPO — vem do
   // catálogo, sem literal). Despesa sempre tem subgrupo Fixa/Variável (migrations 092/093).
   const tipoBreakdown = breakdownBy(fMonth, (r) => r.chart_account?.subgroup?.type_group?.type_group_description ?? null);
@@ -1172,5 +1221,5 @@ export async function getFinancialDashboardData(month: number, year: number, sco
     return e?.code ? { ...e, label: `${e.code} — ${e.label}` } : e;
   });
 
-  return { month, year, scope, kpis, naturezaBreakdown, tipoBreakdown, costCenterRanking, chartAccountRanking };
+  return { month, year, scope, kpis, despesaFixaBreakdown, despesaVariavelBreakdown, tipoBreakdown, costCenterRanking, chartAccountRanking };
 }
