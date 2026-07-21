@@ -11,7 +11,6 @@
       ]
     },
     {
-      "//": "Assets do build trazem HASH DE CONTEUDO no nome (index-CLNzY0MZ.js): um deploy novo gera nomes novos, entao o arquivo sob um dado nome nunca muda e pode ser cacheado para sempre. Sem isto o Vercel os serve com max-age=0, must-revalidate — o navegador refaz um pedido condicional para CADA chunk a cada carga (304s), o que so gasta latencia. NAO vale para /index.html, que NAO entra neste `source` e segue revalidando sempre: e ele quem aponta para os nomes novos.",
       "source": "/assets/(.*)",
       "headers": [
         {
