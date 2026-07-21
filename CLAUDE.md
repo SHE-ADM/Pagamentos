@@ -1654,7 +1654,6 @@ Telas de auth usam **essencialmente** estes tokens:
 | `loginGreen-placeholder` | `#437355` | placeholder (`placeholder:text-loginGreen-placeholder`) — AA ≥4.5:1 sobre o campo |
 | `loginGreen-field` | `#eef9f3` | fundo dos campos |
 | `loginGreen-fieldFocus` | `#e4f6ec` | fundo em foco |
-| `loginGreen-surface` | `#e6f5ec` | definido no `@theme` mas **sem uso atual** — candidato a remoção |
 | `loginGreen-socialBg` | `#f4fcf7` | fundo dos círculos sociais |
 | `loginGreen-border` | `#94D0AE` | borda principal (frame externo) |
 | `loginGreen-borderLight` | `#c6e8d3` | borda secundária |
@@ -1683,9 +1682,16 @@ cumprem WCAG AA (verificado em `tests/contrast.a11y.test.ts`).
 > `index.css` os `@utility` órfãos `btn-ghost` e `table-row-hover`, o token duplicado
 > `loginGreen-accentDark` (= `accentHover`) e os `@utility active`/`is-disabled` **standalone**
 > (o `@utility nav-link` já cobre os estados via `&.active`/`&.is-disabled` — o uso
-> `nav-link is-disabled` segue intacto). Pendência conhecida: o `@keyframes fadeInUp` ainda é
-> definido 2× (em `@theme` + standalone) — consolidação adiada por risco de quebrar a animação
-> de `card`/`metric-card` (que usam `animation: fadeInUp` cru).
+> `nav-link is-disabled` segue intacto), o token `loginGreen-surface` e — na varredura de
+> 2026-07-21 — os tokens órfãos `sidebar-hover`, `sidebar-active` e `ink-muted` (este último
+> já abandonado por reprovar AA: #94a3b8 sobre branco = 2,5:1; mantê-lo definido convidava a
+> reintroduzir uma cor não-AA). O `@keyframes fadeInUp` **foi consolidado**: o bloco standalone
+> (keyframe duplicado + `.animate-fade-in-up` que duplicava a utility do `@theme`) saiu, e
+> `card`/`metric-card` passaram de `animation: fadeInUp` cru para `animation:
+> var(--animate-fade-in-up)` — assim os três consomem a MESMA fonte e a animação não some em
+> silêncio se a utility deixar de ser usada (o `@keyframes` do `@theme` só é emitido enquanto
+> houver uso). Verificado no CSS BUILDADO: 6 regras de animação → 4, sem duplicata, com
+> `card`/`metric-card` preservados.
 
 | Token | fg / bg | Uso |
 |---|---|---|
