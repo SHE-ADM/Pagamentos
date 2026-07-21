@@ -12,57 +12,49 @@ import { getFinancialDashboardData } from './supabase';
 
 // Linha do read do MÊS (embed de classificação de 3 níveis).
 type Row = {
-  id: number; amount: number; status_id: number; due_date: string;
-  document_type: string | null; payment_method: string | null; description: string | null;
-  supplier: { trade_name: string | null; legal_name: string | null } | null;
+  amount: number; status_id: number; due_date: string;
   chart_account: {
+    account_code: string | null; account_description: string | null;
     group: { group_code: string | null; group_description: string | null; type_group_id: number } | null;
     subgroup: { subgroup_code: string | null; subgroup_description: string | null; type_group_id: number; type_group: { type_group_description: string | null } | null } | null;
   } | null;
 };
 
 const desp = (
-  id: number, amount: number, status_id: number, groupDesc: string, subDesc: string,
-  tipoId: number, tipoDesc: string, due = '2026-01-10',
+  amount: number, status_id: number, groupDesc: string, subDesc: string,
+  tipoId: number, tipoDesc: string, accCode: string, accDesc: string, due = '2026-01-10',
 ): Row => ({
-  id, amount, status_id, due_date: due, document_type: 'boleto', payment_method: 'boleto', description: null,
-  supplier: { trade_name: `Forn ${id}`, legal_name: null },
+  amount, status_id, due_date: due,
   chart_account: {
+    account_code: accCode, account_description: accDesc,
     group: { group_code: null, group_description: groupDesc, type_group_id: TYPE_GROUP_ID_DESPESAS },
     subgroup: { subgroup_code: null, subgroup_description: subDesc, type_group_id: tipoId, type_group: { type_group_description: tipoDesc } },
   },
 });
 
 // Conta NÃO-despesa (Passivo, type_group_id=4) — deve ser EXCLUÍDA de tudo.
-const naoDespesa = (id: number, amount: number): Row => ({
-  id, amount, status_id: 3, due_date: '2026-01-20', document_type: 'boleto', payment_method: 'boleto', description: null,
-  supplier: { trade_name: `Passivo ${id}`, legal_name: null },
-  chart_account: { group: { group_code: null, group_description: 'Passivo Tributário', type_group_id: 4 }, subgroup: null },
+const naoDespesa = (amount: number): Row => ({
+  amount, status_id: 3, due_date: '2026-01-20',
+  chart_account: {
+    account_code: '2.1.01', account_description: 'Tributos a Recolher',
+    group: { group_code: null, group_description: 'Passivo Tributário', type_group_id: 4 },
+    subgroup: null,
+  },
 });
 
 const MONTH_ROWS: Row[] = [
-  desp(1, 100, 3, 'Folha de Pagamento', 'Salários', TYPE_GROUP_ID_DESPESA_FIXA, 'Despesas Fixas'),
-  desp(2, 300, 3, 'Transporte', 'Fretes', TYPE_GROUP_ID_DESPESA_VARIAVEL, 'Despesas Variáveis', '2026-01-15'),
-  desp(4, 50, 8, 'Transporte', 'Fretes', TYPE_GROUP_ID_DESPESA_VARIAVEL, 'Despesas Variáveis', '2026-01-05'),
-  naoDespesa(3, 999),
-];
-
-// Read do ANO (só amount/status/due + grupo p/ filtro de despesa).
-const YEAR_ROWS = [
-  { amount: 100, status_id: 3, due_date: '2026-01-10', chart_account: { group: { type_group_id: TYPE_GROUP_ID_DESPESAS } } },
-  { amount: 999, status_id: 3, due_date: '2026-02-10', chart_account: { group: { type_group_id: 4 } } }, // não-despesa
-  { amount: 200, status_id: 8, due_date: '2026-03-10', chart_account: { group: { type_group_id: TYPE_GROUP_ID_DESPESAS } } },
+  desp(100, 3, 'Folha de Pagamento', 'Salários', TYPE_GROUP_ID_DESPESA_FIXA, 'Despesas Fixas', '6.1.01', 'Salários e Ordenados'),
+  desp(300, 3, 'Transporte', 'Fretes', TYPE_GROUP_ID_DESPESA_VARIAVEL, 'Despesas Variáveis', '4.5.01', 'Fretes sobre Compras', '2026-01-15'),
+  desp(50, 8, 'Transporte', 'Fretes', TYPE_GROUP_ID_DESPESA_VARIAVEL, 'Despesas Variáveis', '4.5.01', 'Fretes sobre Compras', '2026-01-05'),
+  naoDespesa(999),
 ];
 
 beforeEach(() => {
   vi.unstubAllGlobals();
-  // Roteia pelo conteúdo do `select`: o read do mês traz document_type; o do ano não.
+  // Leitura única (a do ANO saiu junto com o gráfico mês a mês).
   vi.stubGlobal(
     'fetch',
-    vi.fn((url: string) => {
-      const body = url.includes('document_type') ? MONTH_ROWS : YEAR_ROWS;
-      return Promise.resolve({ ok: true, json: () => Promise.resolve(body) });
-    }),
+    vi.fn(() => Promise.resolve({ ok: true, json: () => Promise.resolve(MONTH_ROWS) })),
   );
 });
 
@@ -107,10 +99,15 @@ describe('getFinancialDashboardData', () => {
     expect(d.subgroupRanking[1]).toMatchObject({ name: 'Salários', value: 100, count: 1 });
   });
 
-  it('mês a mês só soma despesas (Passivo de fevereiro fica de fora)', async () => {
+  it('ranking de plano de contas ordenado por VALOR (código — descrição, sem o Passivo)', async () => {
     const d = await getFinancialDashboardData(0, 2026);
-    expect(d.monthlyFlow[0]).toMatchObject({ month: 0, aPagar: 100 }); // jan (despesa)
-    expect(d.monthlyFlow[1]).toMatchObject({ month: 1, aPagar: 0 }); // fev (só o Passivo → excluído)
-    expect(d.monthlyFlow[2]).toMatchObject({ month: 2, aPagar: 200, pago: 200 }); // mar (despesa paga)
+    expect(d.chartAccountRanking[0]).toMatchObject({ name: '4.5.01 — Fretes sobre Compras', value: 350, count: 2 });
+    expect(d.chartAccountRanking[1]).toMatchObject({ name: '6.1.01 — Salários e Ordenados', value: 100, count: 1 });
+    expect(d.chartAccountRanking.map((r) => r.name)).not.toContain('2.1.01 — Tributos a Recolher');
+  });
+
+  it('faz uma ÚNICA leitura (o read do ano saiu com o gráfico mês a mês)', async () => {
+    await getFinancialDashboardData(0, 2026);
+    expect(globalThis.fetch).toHaveBeenCalledTimes(1);
   });
 });

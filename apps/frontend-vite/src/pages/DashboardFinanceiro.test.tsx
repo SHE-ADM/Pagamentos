@@ -36,10 +36,9 @@ const MOCK: FinancialDashboardData = {
     { name: 'Fretes', value: 15000, count: 25 },
     { name: 'Salários', value: 9000, count: 15 },
   ],
-  monthlyFlow: Array.from({ length: 12 }, (_, m) => ({ month: m, aPagar: 1000 * (m + 1), pago: 400 * (m + 1) })),
-  priorityAccounts: [
-    { id: 1, kind: 'luz', supplier: 'CPFL Energia', due: '2026-01-08', amount: 1174.8, status: 'a vencer', critical: false },
-    { id: 2, kind: 'agua', supplier: 'Sabesp', due: '2026-01-03', amount: 566, status: 'vencido', critical: true },
+  chartAccountRanking: [
+    { name: '4.4.01 — GNRE a Recolher', value: 12000, count: 8 },
+    { name: '6.4.01 — IPTU', value: 3000, count: 2 },
   ],
 };
 
@@ -53,11 +52,42 @@ describe('DashboardFinanceiro', () => {
     ]);
   });
 
-  it('abre no mês atual e renderiza os KPIs de despesa', async () => {
+  it('abre no mês atual, filtrado por "A vencer", e renderiza os KPIs de despesa', async () => {
     render(<DashboardFinanceiro />);
     expect(await screen.findByText('Despesas no mês')).toBeInTheDocument();
     expect(screen.getByText('Vencidas')).toBeInTheDocument();
-    expect(supabase.getFinancialDashboardData).toHaveBeenCalledWith(new Date().getMonth(), new Date().getFullYear(), 'month', 'total', undefined);
+    // Default de abertura = KPI "A vencer" (não 'total').
+    expect(supabase.getFinancialDashboardData).toHaveBeenCalledWith(new Date().getMonth(), new Date().getFullYear(), 'month', 'aVencer', undefined);
+    expect(screen.getByText(/filtrando: A vencer/i)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /A vencer em 7 dias/i })).toHaveAttribute('aria-pressed', 'false');
+  });
+
+  it('o card "A vencer" já ABRE visualmente marcado como ativo', async () => {
+    render(<DashboardFinanceiro />);
+    await screen.findByText('Despesas no mês');
+    // Só os CARDS mostram "conta(s)" — descarta o botão "filtrando: … ✕" do cabeçalho,
+    // que também contém "A vencer" e "filtrando".
+    const cards = screen.getAllByRole('button').filter((b) => /conta\(s\)/.test(b.textContent ?? ''));
+    expect(cards).toHaveLength(5);
+
+    const marcados = cards.filter((b) => b.getAttribute('aria-pressed') === 'true');
+    expect(marcados).toHaveLength(1); // exatamente um card ativo na abertura
+    const aVencer = marcados[0];
+    expect(aVencer.textContent).toMatch(/A vencer(?! em 7)/);
+    expect(aVencer).toHaveAttribute('title', 'Limpar filtro');
+    expect(aVencer.className).toContain('ring-brand'); // anel de destaque (não o de foco)
+    expect(aVencer.textContent).toContain('filtrando'); // sinal não-cromático (WCAG 1.4.1)
+  });
+
+  it('o ✕ do cabeçalho limpa o filtro inicial "A vencer"', async () => {
+    render(<DashboardFinanceiro />);
+    fireEvent.click(await screen.findByText(/filtrando: A vencer/i));
+    await vi.waitFor(() =>
+      expect(supabase.getFinancialDashboardData).toHaveBeenLastCalledWith(
+        expect.any(Number), expect.any(Number), 'month', 'total', undefined,
+      ),
+    );
+    expect(screen.queryByText(/filtrando:/i)).not.toBeInTheDocument();
   });
 
   it('clicar num KPI aplica o filtro e clicar de novo o limpa', async () => {
@@ -84,7 +114,7 @@ describe('DashboardFinanceiro', () => {
     fireEvent.change(screen.getByLabelText('Filtrar por empresa'), { target: { value: '2' } });
     await vi.waitFor(() =>
       expect(supabase.getFinancialDashboardData).toHaveBeenLastCalledWith(
-        expect.any(Number), expect.any(Number), 'month', 'total', 2,
+        expect.any(Number), expect.any(Number), 'month', 'aVencer', 2,
       ),
     );
   });
@@ -98,11 +128,20 @@ describe('DashboardFinanceiro', () => {
     expect(screen.getByText('Despesas Variáveis')).toBeInTheDocument();
   });
 
-  it('renderiza o ranking de subgrupos e as contas prioritárias', async () => {
+  it('renderiza os rankings de subgrupos e de plano de contas', async () => {
     render(<DashboardFinanceiro />);
     expect(await screen.findByText('Ranking de subgrupos')).toBeInTheDocument();
     expect(screen.getByText('Fretes')).toBeInTheDocument();
     expect(screen.getByText('Salários')).toBeInTheDocument();
-    expect(screen.getByText('Sabesp')).toBeInTheDocument();
+
+    expect(screen.getByText('Ranking de contas')).toBeInTheDocument();
+    expect(screen.getByText('4.4.01 — GNRE a Recolher')).toBeInTheDocument();
+    expect(screen.getByText('6.4.01 — IPTU')).toBeInTheDocument();
+  });
+
+  it('não exibe mais as contas críticas e prioritárias', async () => {
+    render(<DashboardFinanceiro />);
+    await screen.findByText('Ranking de contas');
+    expect(screen.queryByText('Contas críticas e prioritárias')).not.toBeInTheDocument();
   });
 });

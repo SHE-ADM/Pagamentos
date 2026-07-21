@@ -101,6 +101,21 @@ const COMPLIANT: Pair[] = [
   { fg: 'zinc-500', bg: 'white', min: 4.5, where: 'labels e título do painel de detalhe (/emails)' },
   { fg: 'ink-secondary', bg: 'white', min: 4.5, where: 'StatusBadge vazio "—" + fallback de Suspense (App.tsx)' },
   { fg: 'slate-500', bg: 'slate-50', min: 4.5, where: 'texto "Carregando anexo…" sobre o corpo do modal (AttachmentViewer)' },
+  // Card de KPI dos dashboards (KpiCard/kpiCard.variants). O hover escurece o card para
+  // `bg-slate-50`, então TODO texto do card precisa passar sobre ele — é o que limita a
+  // escolha do tom: com `bg-slate-100` o slate-500 cairia a 4,34 e reprovaria.
+  { fg: 'slate-500', bg: 'slate-50', min: 4.5, where: 'rótulo/"conta(s)" do card de KPI no hover (dashboards)' },
+  { fg: 'slate-800', bg: 'slate-50', min: 4.5, where: 'valor do card de KPI neutro no hover (dashboards)' },
+  { fg: 'status-success-fg', bg: 'slate-50', min: 4.5, where: 'valor do card de KPI "Pagas" no hover (dashboards)' },
+  { fg: 'status-error-fg', bg: 'slate-50', min: 4.5, where: 'valor do card de KPI "Vencidas" no hover (dashboards)' },
+  // Selo "filtrando" do card ativo. Tintar o CARD todo de brand-light foi descartado:
+  // derrubaria slate-500 (4,19) e status-success-fg (4,42) abaixo de AA.
+  { fg: 'brand-dark', bg: 'brand-light', min: 4.5, where: 'selo "filtrando" do card de KPI ativo (dashboards)' },
+  // Anéis do card de KPI — componente de UI (1.4.11, ≥3). São CORES DIFERENTES de
+  // propósito: com o mesmo anel nos dois estados, o foco por teclado ficaria invisível
+  // sobre o card já ativo (2.4.7).
+  { fg: 'brand', bg: 'white', min: 3, where: 'anel do card de KPI ATIVO (dashboards)' },
+  { fg: 'brand-dark', bg: 'white', min: 3, where: 'anel de FOCO do card de KPI (dashboards)' },
   { fg: 'amber-600', bg: 'white', min: 3, where: 'ícone KPI "Sem valor" (Erros)' },
   { fg: 'amber-600', bg: 'amber-50', min: 3, where: 'ícone FileWarning "anexo não encontrado" (AttachmentViewer)' },
   { fg: 'orange-600', bg: 'white', min: 3, where: 'ícone KPI "Sem fornecedor" (Erros)' },
