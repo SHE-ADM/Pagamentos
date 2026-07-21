@@ -3320,6 +3320,20 @@ Topologia (team **`sheild`** = `team_z1BPf9qevCGsfohGRhm52iBn`):
 | `pagamentos-web` | Frontend (Vite SPA) | **pag.otimotex.com.br** (alias de produção) |
 | `pagamentos-api-backend` | Next API de dados | `pagamentos-alpha-six.vercel.app` (rewrite `/data-api` em `apps/frontend-vite/vercel.json`) |
 
+**Cache dos assets + `vercel.json` (não regredir):** `apps/frontend-vite/vercel.json` marca
+`/assets/(.*)` como `public, max-age=31536000, immutable` — seguro porque TODO arquivo do build
+carrega hash de conteúdo no nome (`index-CLNzY0MZ.js`), então um deploy novo gera nomes novos.
+O **`/index.html` NÃO casa essa `source`** e segue no default do Vercel (`max-age=0,
+must-revalidate`): é ele que aponta para os nomes novos, e cacheá-lo prenderia o usuário na
+versão antiga. **Medição antes da mudança:** o HTML já revalidava certo; quem estava fora do
+ideal eram os assets, que refaziam um 304 por chunk a cada carga (com muitas rotas lazy, só
+latência). **ARMADILHA REAL — o Vercel valida o `vercel.json` ANTES do build:** um erro de
+schema não aparece nos logs de build, o deploy vai a `ERROR` e o alias de produção **fica preso
+no deploy anterior** (aconteceu: a chave `"//"` usada como comentário derrubou o deploy de
+produção — *"headers[1] should NOT have additional property `//`"*). **JSON não tem comentário**:
+documente aqui, nunca dentro do arquivo. Guarda em `apps/frontend-vite/tests/vercel-config.test.ts`
+(propriedades extras em raiz/headers/rewrites + as regras que não podem regredir).
+
 **O repo NÃO tem `.vercel/project.json`** — para inspecionar deploys (estado/commit), descubra o
 team/projeto via Vercel MCP (`list_teams` → `list_projects` → `list_deployments`). O deploy de
 produção correto é o `state=READY` + `target=production` cujo `githubCommitSha` casa o merge em
