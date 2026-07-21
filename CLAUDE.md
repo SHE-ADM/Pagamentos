@@ -1507,7 +1507,8 @@ apps/frontend-vite/src/components/
 │   ├── constants.ts           #   MONTHS/MONTHS_FULL
 │   ├── chartColors.ts         #   statusColor (semântico por status) + paletteColor (cíclica) — só tokens --color-status-*
 │   ├── BreakdownDonut.tsx (+ .test.tsx)  #   donut genérico (conic-gradient + furo + legenda), prop {segs:{key,label,value}[], colorFor, size?}. Arcos + % + ORDEM das fatias por VALOR (R$) desc; legenda = R$ (fmtMoney) + % em `text-xs` (SEM contagem de contas); furo central = TOTAL em R$ compacto (fmtMoneyCompact, ex.: "R$ 12,3 mil") rotulado "total". **`size: 'sm'|'md'|'lg'`** (tipo `DonutSize`, exportado — substituiu o booleano `dense`) controla SÓ o círculo, com o furo proporcional: `sm`=108px/inset-3 (4 donuts na mesma linha em /dashboard_vencimentos) · `md`=120px/inset-3 (default, = comportamento do antigo `dense={false}`) · `lg`=176px/inset-5 + número central `text-base` (2 donuts em /dashboard_financeiro). Classes LITERAIS por tamanho (mapa `SIZE_CLS`) — nome computado não é gerado pelo JIT e o donut ficaria sem tamanho, em silêncio (travado no teste)
-│   ├── DashboardHeader.tsx (+ .test.tsx, .a11y.test.tsx)  #   CASCA dos dois dashboards: título + "filtrando: X ✕" e a barra empresa · escopo · mês · ano · Atualizar. Apresentacional puro (estado fica na página); parametrizado por title/subject/idPrefix. Ver "Casca compartilhada dos dashboards" abaixo
+│   ├── DashboardHeader.tsx (+ .test.tsx, .a11y.test.tsx)  #   CASCA dos dois dashboards: título + "filtrando: X ✕" e a barra empresa · escopo · mês · ano · Atualizar. Apresentacional puro; recebe title/subject/idPrefix + o objeto `filters` (hooks/useDashboardFilters). Ver "Casca compartilhada dos dashboards" abaixo
+│   ├── KpiRow.tsx (+ .test.tsx)  #   faixa dos 5 cards de KPI (grid + map sobre KpiCard); concentra a regra "o KPI 'total' nunca fica ativo"
 │   ├── KpiCard.tsx (+ .test.tsx)  #   card de KPI CLICÁVEL (= filtro) da faixa superior, compartilhado pelos DOIS dashboards (antes o bloco era duplicado literalmente nas duas páginas). Apresentacional puro: props {icon,label,amount,count,tone,active,onClick}; a página decide o que está ativo. Contagem em pt-BR (Intl, milhar com ponto)
 │   ├── kpiCard.variants.ts    #   cva do KpiCard (card/ícone/valor) por `tone` (neutral|success|muted|danger — tipo `KpiTone`, fonte única do array `kpis` das duas páginas) e `active`. Ver "Destaque dos cards de KPI" abaixo
 │   ├── MonthlyFlow.tsx        #   barras "mês a mês" (A pagar vs. Pago), prop {flow} — usado SÓ por /dashboard_vencimentos (o financeiro não tem esse gráfico)
@@ -1551,7 +1552,10 @@ Hooks em `src/hooks/`: `useContainerBreakpoint.ts` (faixa `sm`/`md`/`lg` pela la
 colunas considerando sidebar/paddings), `useGridPreferences.ts` (estado de layout do grid —
 ordem/visibilidade/larguras/fixação/densidade — persistido em `localStorage` por `gridId`;
 setters no formato `OnChangeFn` do TanStack + `reset()`; aceita **`defaultPinning`/`defaultDensity`**
-semeados na 1ª carga e no `reset()` — prefs salvas prevalecem; ver seção do DataGrid) e
+semeados na 1ª carga e no `reset()` — prefs salvas prevalecem; ver seção do DataGrid),
+**`useDashboardFilters.ts`** (estado mês/ano/escopo/filtro de KPI/empresa compartilhado pelos
+DOIS dashboards + `toggleFilter`/`clearFilter`; **não** carrega dados — ver "Casca compartilhada
+dos dashboards") e
 `useGridColumns.ts` (metadados de coluna — `ColumnDef` com `size?`/`minSize?`/`wrap?` opcionais,
 `getConsultaColumns`, `getEmailColumns`; é módulo de **definições**, não um hook,
 apesar do nome). `getConsultaColumns(onToggleFlag, onStatusChange)` é factory porque as
@@ -1739,16 +1743,30 @@ Todos esses pares estão no `COMPLIANT` de `tests/contrast-usage.a11y.test.ts` (
 `total`. `/dashboard_financeiro` **abre** com "A vencer" marcado; `/dashboard_vencimentos` abre em
 `total`, sem nenhum card marcado.
 
-### Casca compartilhada dos dashboards (`DashboardHeader`) — não reduplicar
+### Casca compartilhada dos dashboards (`useDashboardFilters` + `DashboardHeader` + `KpiRow`) — não reduplicar
 
-O cabeçalho das duas telas (título + indicador do filtro de KPI, e a barra **empresa · escopo ·
-mês · ano · Atualizar**) era **84 linhas duplicadas literalmente**, com apenas 3 diferenças:
-título, assunto do subtítulo e o `id`/`name` do `<select>`. Virou
-`components/dashboard/DashboardHeader.tsx`, parametrizado por `title` / `subject` / `idPrefix`.
+As duas telas compartilham **três** peças; juntas, elas são a "casca" do dashboard. O cabeçalho
+era **84 linhas duplicadas literalmente** (com 3 diferenças: título, assunto do subtítulo e o
+`id`/`name` do `<select>`), e as páginas ainda duplicavam **o estado** — seis `useState`, o
+`toggleFilter` e os blocos de chamada dos componentes:
 
-- **Apresentacional puro:** não tem estado nem busca dados. Mês/ano/escopo/filtro/empresa e o
-  `load()` continuam na página; o header só renderiza e avisa por callbacks
-  (`onMonthChange`/`onYearChange`/`onScopeChange`/`onClearFilter`/`onCompanyChange`/`onRefresh`).
+| Peça | Papel |
+|---|---|
+| `hooks/useDashboardFilters.ts` | **Estado** mês/ano/escopo/filtro/empresa + `toggleFilter`/`clearFilter` + as opções de empresa. Parametrizado pelo filtro inicial (`'total'` no de vencimentos, `'aVencer'` no financeiro) |
+| `DashboardHeader.tsx` | Título + "filtrando: X ✕" e a barra **empresa · escopo · mês · ano · Atualizar**. Recebe `title`/`subject`/`idPrefix` + o objeto `filters` |
+| `KpiRow.tsx` | A faixa dos 5 cards (grid + `map` sobre `KpiCard`). **A regra do "ativo" mora aqui**: o KPI `total` é a AUSÊNCIA de filtro, então nunca aparece selecionado |
+
+Com isso as páginas caíram de **301→181** e **264→140** linhas, e sobrou nelas só o que é
+realmente específico: o serviço que chamam, o array `kpis` e os gráficos.
+
+- **O hook NÃO carrega dados de propósito:** `load()`/`data`/`loading`/`error` ficam na página,
+  porque cada dashboard chama um serviço distinto (`getDashboardData` ×
+  `getFinancialDashboardData`) com formato de resposta próprio — puxar isso para o hook exigiria
+  genéricos e um parâmetro de serviço, acoplando-o ao que cada página tem de particular.
+- **O header recebe UM objeto `filters`, não 12 props soltas.** Com props soltas, as duas páginas
+  repetiriam a mesma lista linha a linha na chamada — foi exatamente o que reprovou o quality gate
+  do SonarCloud por **duplicação no código novo** (6,3% > 3%) na primeira tentativa desta extração.
+- **Apresentacional puro:** o header não tem estado nem busca dados; só renderiza e delega.
 - **`KPI_FILTER_LABEL` mora aqui** (fonte única) — as páginas não o redeclaram mais.
 - **`idPrefix`** gera `id`/`name` distintos por página (`dashboard-company` ·
   `dashboard-financeiro-company`): as telas não coexistem no DOM, mas ids separados mantêm o

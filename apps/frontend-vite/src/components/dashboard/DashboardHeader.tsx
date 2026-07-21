@@ -8,8 +8,8 @@
 // Apresentacional puro: NÃO tem estado nem busca dados. Quem guarda mês/ano/escopo/filtro/
 // empresa e dispara o reload continua sendo a página — o header só renderiza e avisa.
 import { RefreshCw } from 'lucide-react';
-import type { SelectOption } from '../atoms/LabeledSelect';
-import type { DashboardScope, KpiFilter } from '../../services/supabase';
+import type { KpiFilter } from '../../services/supabase';
+import type { DashboardFilters } from '../../hooks/useDashboardFilters';
 import { MONTHS, MONTHS_FULL } from './constants';
 
 // Rótulo pt-BR do filtro ativo (fonte única — as páginas não redeclaram).
@@ -27,27 +27,18 @@ type Props = Readonly<{
    * ids distintos mantêm o autofill do Chrome e o histórico de formulário separados.
    */
   idPrefix: string;
-  month: number;
-  year: number;
-  scope: DashboardScope;
-  filter: KpiFilter;
-  /** undefined = TODAS as empresas. */
-  skCompany: number | undefined;
-  companyOptions: SelectOption[];
+  /** Estado + handlers dos filtros (useDashboardFilters) — um objeto em vez de 12 props
+   *  soltas, que as duas páginas teriam de repetir linha a linha na chamada. */
+  filters: DashboardFilters;
   loading: boolean;
-  onMonthChange: (month: number) => void;
-  onYearChange: (year: number) => void;
-  onScopeChange: (scope: DashboardScope) => void;
-  /** Limpa o filtro de KPI (volta a 'total') — o ✕ ao lado de "filtrando: …". */
-  onClearFilter: () => void;
-  onCompanyChange: (skCompany: number | undefined) => void;
   onRefresh: () => void;
 }>;
 
-export function DashboardHeader({
-  title, subject, idPrefix, month, year, scope, filter, skCompany, companyOptions, loading,
-  onMonthChange, onYearChange, onScopeChange, onClearFilter, onCompanyChange, onRefresh,
-}: Props) {
+export function DashboardHeader({ title, subject, idPrefix, filters, loading, onRefresh }: Props) {
+  const {
+    month, year, scope, filter, skCompany, companyOptions,
+    setMonth, setYear, setScope, setSkCompany, clearFilter,
+  } = filters;
   const selectId = `${idPrefix}-company`;
   return (
     <div className="px-6 py-2 border-b border-slate-200 bg-white flex items-center justify-between gap-4 flex-wrap">
@@ -58,7 +49,7 @@ export function DashboardHeader({
           {filter !== 'total' && (
             <>
               {' · '}
-              <button type="button" onClick={onClearFilter} className="font-medium text-brand-dark hover:underline">
+              <button type="button" onClick={clearFilter} className="font-medium text-brand-dark hover:underline">
                 filtrando: {KPI_FILTER_LABEL[filter]} ✕
               </button>
             </>
@@ -75,7 +66,7 @@ export function DashboardHeader({
           aria-label="Filtrar por empresa"
           className="input w-36 text-xs"
           value={skCompany == null ? '' : String(skCompany)}
-          onChange={(e) => onCompanyChange(e.target.value ? Number(e.target.value) : undefined)}
+          onChange={(e) => setSkCompany(e.target.value ? Number(e.target.value) : undefined)}
         >
           <option value="">Empresa</option>
           {companyOptions.map((c) => (
@@ -87,14 +78,14 @@ export function DashboardHeader({
         {/* Escopo: mês selecionado vs. todas as contas */}
         <div className="inline-flex rounded-md border border-slate-200 bg-slate-50 p-0.5" role="group" aria-label="Escopo do dashboard">
           <button
-            onClick={() => onScopeChange('month')}
+            onClick={() => setScope('month')}
             aria-pressed={scope === 'month'}
             className={`text-xs font-medium px-2.5 py-1 rounded-sm transition-colors ${scope === 'month' ? 'bg-white text-slate-800 shadow-xs' : 'text-slate-500 hover:text-slate-700'}`}
           >
             Este mês
           </button>
           <button
-            onClick={() => onScopeChange('all')}
+            onClick={() => setScope('all')}
             aria-pressed={scope === 'all'}
             className={`text-xs font-medium px-2.5 py-1 rounded-sm transition-colors ${scope === 'all' ? 'bg-white text-slate-800 shadow-xs' : 'text-slate-500 hover:text-slate-700'}`}
           >
@@ -111,7 +102,7 @@ export function DashboardHeader({
           {MONTHS.map((m, i) => (
             <button
               key={m}
-              onClick={() => onMonthChange(i)}
+              onClick={() => setMonth(i)}
               disabled={scope === 'all'}
               aria-label={`Mês ${MONTHS_FULL[i]}`}
               aria-pressed={i === month}
@@ -125,7 +116,7 @@ export function DashboardHeader({
           {[year - 1, year, year + 1].map((y) => (
             <button
               key={y}
-              onClick={() => onYearChange(y)}
+              onClick={() => setYear(y)}
               aria-pressed={y === year}
               className={`text-xs font-medium px-2.5 py-1 rounded-md border transition-colors ${y === year ? 'bg-brand-dark border-brand-dark text-white' : 'bg-white border-slate-200 text-slate-600 hover:bg-slate-50'}`}
             >

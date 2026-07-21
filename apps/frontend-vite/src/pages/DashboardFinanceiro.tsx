@@ -11,29 +11,20 @@
 // Estilo 100% Tailwind; primitivos de gráfico reusados de components/dashboard/.
 import { useEffect, useState, useCallback } from 'react';
 import { FileText, CheckCircle2, Clock, TrendingUp, AlertCircle, Layers, ListTree } from 'lucide-react';
-import type { LucideIcon } from 'lucide-react';
-import { getFinancialDashboardData, type FinancialDashboardData, type DashboardScope, type KpiFilter } from '../services/supabase';
+import { getFinancialDashboardData, type FinancialDashboardData } from '../services/supabase';
 import { getErrorMessage } from '../lib/getErrorMessage';
-import { useCompanyOptions } from '../hooks/useCompanyOptions';
+import { useDashboardFilters } from '../hooks/useDashboardFilters';
 import Alert from '../components/atoms/Alert';
 import { MONTHS_FULL } from '../components/dashboard/constants';
 import { paletteColor } from '../components/dashboard/chartColors';
 import { BreakdownDonut } from '../components/dashboard/BreakdownDonut';
 import { DashboardHeader } from '../components/dashboard/DashboardHeader';
-import { KpiCard } from '../components/dashboard/KpiCard';
-import type { KpiTone } from '../components/dashboard/kpiCard.variants';
+import { KpiRow, type KpiEntry } from '../components/dashboard/KpiRow';
 import { RankingList } from '../components/dashboard/RankingList';
 
 export default function DashboardFinanceiro() {
-  // Inicializador LAZY — não chamar new Date() no corpo do render (impureza; React Compiler).
-  const [month, setMonth] = useState(() => new Date().getMonth());
-  const [year, setYear] = useState(() => new Date().getFullYear());
-  const [scope, setScope] = useState<DashboardScope>('month');
-  // Abre FILTRADO por "A vencer" (pedido do usuário) — os cards de KPI seguem com os
-  // totais completos; clicar no card ativo (ou no ✕ do cabeçalho) volta para 'total'.
-  const [filter, setFilter] = useState<KpiFilter>('aVencer');
-  const [skCompany, setSkCompany] = useState<number | undefined>(undefined);
-  const companyOptions = useCompanyOptions();
+  const filters = useDashboardFilters('aVencer');
+  const { month, year, scope, filter } = filters;
   const [data, setData] = useState<FinancialDashboardData | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -42,15 +33,14 @@ export default function DashboardFinanceiro() {
     setLoading(true);
     setError(null);
     try {
-      setData(await getFinancialDashboardData(month, year, scope, filter, skCompany));
+      setData(await getFinancialDashboardData(month, year, scope, filter, filters.skCompany));
     } catch (e) {
       setError(getErrorMessage(e));
     } finally {
       setLoading(false);
     }
-  }, [month, year, scope, filter, skCompany]);
+  }, [month, year, scope, filter, filters.skCompany]);
 
-  const toggleFilter = (f: KpiFilter): void => setFilter((cur) => (cur === f ? 'total' : f));
 
   useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect
@@ -58,7 +48,7 @@ export default function DashboardFinanceiro() {
   }, [load]);
 
   const k = data?.kpis;
-  const kpis: { icon: LucideIcon; label: string; amount: number; count: number; tone: KpiTone; filter: KpiFilter }[] = [
+  const kpis: KpiEntry[] = [
     { icon: FileText, label: scope === 'all' ? 'Total de despesas' : 'Despesas no mês', amount: k?.totalValue ?? 0, count: k?.totalCount ?? 0, tone: 'neutral', filter: 'total' },
     { icon: CheckCircle2, label: 'Pagas', amount: k?.pagoValue ?? 0, count: k?.pagoCount ?? 0, tone: 'success', filter: 'pago' },
     { icon: Clock, label: 'A vencer', amount: k?.aVencerValue ?? 0, count: k?.aVencerCount ?? 0, tone: 'muted', filter: 'aVencer' },
@@ -73,18 +63,8 @@ export default function DashboardFinanceiro() {
         title="Indicadores financeiros"
         subject="Despesas"
         idPrefix="dashboard-financeiro"
-        month={month}
-        year={year}
-        scope={scope}
-        filter={filter}
-        skCompany={skCompany}
-        companyOptions={companyOptions}
+        filters={filters}
         loading={loading}
-        onMonthChange={setMonth}
-        onYearChange={setYear}
-        onScopeChange={setScope}
-        onClearFilter={() => setFilter('total')}
-        onCompanyChange={setSkCompany}
         onRefresh={load}
       />
 
@@ -100,22 +80,8 @@ export default function DashboardFinanceiro() {
           </Alert>
         )}
 
-        {/* Faixa de KPIs (cards clicáveis = filtro; ver KpiCard) */}
-        <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-5 gap-2 mb-3">
-          {kpis.map(({ icon, label, amount, count, tone, filter: kpiFilter }) => (
-            <KpiCard
-              key={label}
-              icon={icon}
-              label={label}
-              amount={amount}
-              count={count}
-              tone={tone}
-              // 'total' nunca fica "ativo" — é o estado SEM filtro.
-              active={filter === kpiFilter && kpiFilter !== 'total'}
-              onClick={() => toggleFilter(kpiFilter)}
-            />
-          ))}
-        </div>
+        {/* Faixa de KPIs (cards clicáveis = filtro; ver KpiCard/KpiRow) */}
+        <KpiRow items={kpis} filter={filter} onToggle={filters.toggleFilter} />
 
         {/* Donuts: Tipo (Fixa/Variável) e Natureza (por grupo) */}
         <div className="grid grid-cols-1 md:grid-cols-2 gap-3 mb-3">
