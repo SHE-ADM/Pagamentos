@@ -12,8 +12,13 @@ export function RankingList({ rows, emptyLabel = 'Sem contas no período.' }: { 
   if (!rows.length) return <p className="text-xs text-slate-500 py-4">{emptyLabel}</p>;
   return (
     <div>
+      {/* A key inclui a posição porque `name` NÃO é garantidamente único: o ranking de
+          fornecedores agrega por nome, e os cadastros de centro/plano não têm UNIQUE em
+          descrição — dois homônimos gerariam key duplicada (React renderiza errado). A
+          lista é estática (recriada a cada carga, sem reordenação incremental), então a
+          posição é uma key estável o bastante. */}
       {rows.map((r, i) => (
-        <div key={r.name} className="flex items-center gap-2 py-0.5">
+        <div key={`${r.name}#${i}`} className="flex items-center gap-2 py-0.5">
           <span className={`shrink-0 h-5 w-5 rounded-full text-xs font-bold flex items-center justify-center ${i < 3 ? 'bg-brand-dark text-white' : 'bg-slate-200 text-slate-600'}`}>{i + 1}</span>
           <div className="flex-1 min-w-0">
             <div className="flex justify-between gap-2 mb-0.5">

@@ -5,12 +5,12 @@
 // trocados para a dimensão contábil:
 //   • donut "Tipo" — despesas por Tipo do subgrupo (Fixa/Variável)
 //   • donut "Natureza" — despesas por GRUPO do plano de contas
-//   • rankings por VALOR (R$): SUBGRUPOS + PLANO DE CONTAS (no lugar do de fornecedores
+//   • rankings por VALOR (R$): CENTROS DE CUSTO + PLANO DE CONTAS (no lugar do de fornecedores
 //     e das "Contas críticas e prioritárias", que seguem só no de vencimentos)
 // Dados reais via getFinancialDashboardData (filtra group.type_group_id === Despesas).
 // Estilo 100% Tailwind; primitivos de gráfico reusados de components/dashboard/.
 import { useEffect, useState, useCallback } from 'react';
-import { FileText, CheckCircle2, Clock, TrendingUp, AlertCircle, Layers, ListTree } from 'lucide-react';
+import { FileText, CheckCircle2, Clock, TrendingUp, AlertCircle, Building2, ListTree } from 'lucide-react';
 import { getFinancialDashboardData, type FinancialDashboardData } from '../services/supabase';
 import { getErrorMessage } from '../lib/getErrorMessage';
 import { useDashboardFilters } from '../hooks/useDashboardFilters';
@@ -110,17 +110,17 @@ export default function DashboardFinanceiro() {
           </div>
         </div>
 
-        {/* Rankings por VALOR (R$): subgrupos + plano de contas */}
+        {/* Rankings por VALOR (R$): centros de custo + plano de contas */}
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
           <div className="card p-3">
             <div className="flex items-center gap-2 mb-2">
-              <span className="flex h-6 w-6 items-center justify-center rounded-lg bg-brand/10 text-brand"><Layers size={14} /></span>
+              <span className="flex h-6 w-6 items-center justify-center rounded-lg bg-brand/10 text-brand"><Building2 size={14} /></span>
               <div>
-                <h3 className="text-sm font-semibold text-slate-800">Ranking de subgrupos</h3>
-                <p className="text-xs text-slate-500">Maiores valores por subgrupo no período</p>
+                <h3 className="text-sm font-semibold text-slate-800">Ranking de centros de custo</h3>
+                <p className="text-xs text-slate-500">Maiores valores por centro de custo no período</p>
               </div>
             </div>
-            <RankingList rows={data?.subgroupRanking ?? []} />
+            <RankingList rows={data?.costCenterRanking ?? []} />
           </div>
 
           <div className="card p-3">
