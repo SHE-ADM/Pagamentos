@@ -16,10 +16,3 @@ export const MONTHS_FULL = [
   'Novembro',
   'Dezembro',
 ];
-
-// Fatia do donut "Tipo" que agrupa as contas SEM plano de contas (`chart_account_id = 0`).
-// Fica aqui — módulo de constantes sem dependência — porque o rótulo é produzido pelo
-// serviço (services/supabase.ts, ao montar o breakdown) e consumido pela cor do gráfico
-// (chartColors.ts). Fonte única: os dois lados comparam contra ESTA constante, nunca contra
-// o literal — divergir de um acento faria a fatia perder o vermelho, em silêncio.
-export const UNCLASSIFIED_LABEL = 'Sem Definição';

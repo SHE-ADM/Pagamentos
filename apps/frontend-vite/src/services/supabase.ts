@@ -21,9 +21,6 @@ import {
   TYPE_GROUP_ID_DESPESA_VARIAVEL,
 } from '@sheild/shared';
 import { supabase } from '../lib/supabaseClient';
-// Rótulo da fatia de contas sem plano no donut "Tipo" — fonte única compartilhada com a
-// cor do gráfico (components/dashboard/chartColors.ts). Ver constants.ts.
-import { UNCLASSIFIED_LABEL } from '../components/dashboard/constants';
 
 // Situação é filtrada/ordenada por status_id (fonte única). Ordenar a coluna
 // "Situação" continua ALFABÉTICO pelo NOME (decisão de negócio — id ≠ ordem), via o
@@ -1113,12 +1110,6 @@ export interface FinancialDashboardData {
 const isExpenseRow = (r: { chart_account?: { group?: { type_group_id: number } | null } | null }): boolean =>
   r.chart_account?.group?.type_group_id === TYPE_GROUP_ID_DESPESAS;
 
-// Conta SEM plano de contas (FK no sentinela 0). Distinta da conta CLASSIFICADA em um plano
-// que não é despesa (Passivo etc.), que continua fora da tela: aqui o usuário ainda não
-// classificou; lá ele classificou como outra coisa.
-const isUnclassifiedRow = (r: { chart_account_id: number | null }): boolean =>
-  !r.chart_account_id || r.chart_account_id <= 0;
-
 // Linhas exibidas em cada ranking do dashboard financeiro (centro de custo e plano de contas).
 const RANKING_TOP_N = 12;
 
@@ -1186,22 +1177,7 @@ export async function getFinancialDashboardData(month: number, year: number, sco
   const despesaVariavelBreakdown = porGrupo(variavelRows);
   // Donut "Tipo": Despesa Fixa/Variável (descrição do type_group do SUBGRUPO — vem do
   // catálogo, sem literal). Despesa sempre tem subgrupo Fixa/Variável (migrations 092/093).
-  //
-  // Só ESTE donut recebe também as contas SEM PLANO DE CONTAS, na fatia "Sem Definição"
-  // (vermelho vivo — ver tipoColor). São contas que o resto da tela NÃO enxerga: sem
-  // classificação elas não passam por `isExpenseRow`, então ficam fora dos KPIs, dos donuts
-  // de Fixas/Variáveis e dos rankings. Expô-las aqui transforma o donut na única superfície
-  // que mostra o que falta classificar — hoje 97 contas / R$ 1,76 mi.
-  //
-  // CONSEQUÊNCIA ACEITA: o total no centro deste donut fica MAIOR que o card "Despesas no
-  // mês" e que a soma dos outros dois donuts. É deliberado — o universo aqui é "despesas +
-  // pendentes de classificação", não "despesas".
-  const unclassifiedAll = monthRowsAll.filter(isUnclassifiedRow);
-  const fUnclassified =
-    filter === 'total' ? unclassifiedAll : unclassifiedAll.filter((r) => matchesKpiFilter(r, filter, todayStr, in7));
-  const tipoBreakdown = breakdownBy([...fMonth, ...fUnclassified], (r) =>
-    isUnclassifiedRow(r) ? UNCLASSIFIED_LABEL : (r.chart_account?.subgroup?.type_group?.type_group_description ?? null),
-  );
+  const tipoBreakdown = breakdownBy(fMonth, (r) => r.chart_account?.subgroup?.type_group?.type_group_description ?? null);
 
   // Rankings por VALOR (R$) — mesma agregação, dimensões diferentes. Top 12 cada (o
   // espaço liberado pelo gráfico mês a mês passou a caber mais linhas).
