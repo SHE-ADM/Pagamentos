@@ -33,6 +33,7 @@ const MOCK: FinancialDashboardData = {
   tipoBreakdown: [
     { label: 'Despesas Variáveis', count: 55, value: 22000 },
     { label: 'Despesas Fixas', count: 35, value: 10000 },
+    { label: 'Sem Definição', count: 12, value: 7000 },
   ],
   costCenterRanking: [
     { name: 'Logística', value: 15000, count: 25 },
@@ -131,6 +132,17 @@ describe('DashboardFinanceiro', () => {
     // fatias das legendas (cada donut com o seu recorte)
     expect(screen.getByText('Folha de Pagamento')).toBeInTheDocument();
     expect(screen.getByText('Transporte')).toBeInTheDocument();
+  });
+
+  it('mostra "Sem Definição" no donut Tipo, em vermelho vivo', async () => {
+    const { container } = render(<DashboardFinanceiro />);
+    expect(await screen.findByText('Sem Definição')).toBeInTheDocument();
+    // O swatch da legenda carrega a cor inline — trava o destaque visual da pendência.
+    const swatches = [...container.querySelectorAll('span[style*="background"]')];
+    const vermelho = swatches.filter((s) =>
+      (s.getAttribute('style') ?? '').includes('--color-status-error-solid'),
+    );
+    expect(vermelho).toHaveLength(1);
   });
 
   it('renderiza os rankings de centros de custo e de plano de contas', async () => {

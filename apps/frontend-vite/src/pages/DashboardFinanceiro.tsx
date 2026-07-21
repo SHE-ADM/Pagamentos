@@ -3,7 +3,8 @@
 // dashboard de vencimentos (pages/Dashboard.tsx) — 5 KPIs e filtros de empresa/mês/escopo/
 // KPI (que aqui ABRE em "A vencer") — mas sem o gráfico mês a mês e com os gráficos
 // trocados para a dimensão contábil:
-//   • donut "Tipo" — despesas por Tipo do subgrupo (Fixa/Variável)
+//   • donut "Tipo" — despesas por Tipo do subgrupo (Fixa/Variável) + a fatia
+//     "Sem Definição" (vermelho vivo) com as contas ainda sem plano de contas
 //   • donut "Despesas Fixas" — despesas FIXAS por GRUPO do plano de contas
 //   • donut "Despesas Variáveis" — idem, só as VARIÁVEIS (mesma dimensão, outro recorte)
 //   • rankings por VALOR (R$): CENTROS DE CUSTO + PLANO DE CONTAS (no lugar do de fornecedores
@@ -17,6 +18,7 @@ import { getErrorMessage } from '../lib/getErrorMessage';
 import { useDashboardFilters } from '../hooks/useDashboardFilters';
 import Alert from '../components/atoms/Alert';
 import { MONTHS_FULL } from '../components/dashboard/constants';
+import { tipoColor } from '../components/dashboard/chartColors';
 import { ChartCard } from '../components/dashboard/ChartCard';
 import { DonutCard } from '../components/dashboard/DonutCard';
 import { DashboardHeader } from '../components/dashboard/DashboardHeader';
@@ -91,10 +93,15 @@ export default function DashboardFinanceiro() {
         {/* Donuts: Tipo (Fixa/Variável) e, na sequência, o grupo de despesa recortado por
             tipo — Despesas Fixas e Despesas Variáveis (nesta ordem). */}
         <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3 mb-3">
+          {/* Único donut que também mostra as contas SEM plano de contas ("Sem Definição",
+              em vermelho vivo): sem classificação elas ficam fora do resto da tela, então
+              este é o lugar onde a pendência aparece. Por isso o total daqui é MAIOR que o
+              card "Despesas no mês" — ver o comentário em getFinancialDashboardData. */}
           <DonutCard
             title="Tipo"
-            subtitle={`Por tipo (fixa/variável) · ${periodo}`}
+            subtitle={`Por tipo (fixa/variável/sem definição) · ${periodo}`}
             slices={data?.tipoBreakdown}
+            colorFor={tipoColor}
             size="lg"
           />
           <DonutCard
