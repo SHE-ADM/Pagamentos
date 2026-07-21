@@ -32,9 +32,9 @@ const MOCK: FinancialDashboardData = {
     { label: 'Despesas Variáveis', count: 55, value: 22000 },
     { label: 'Despesas Fixas', count: 35, value: 10000 },
   ],
-  subgroupRanking: [
-    { name: 'Fretes', value: 15000, count: 25 },
-    { name: 'Salários', value: 9000, count: 15 },
+  costCenterRanking: [
+    { name: 'Logística', value: 15000, count: 25 },
+    { name: 'Administrativo', value: 9000, count: 15 },
   ],
   chartAccountRanking: [
     { name: '4.4.01 — GNRE a Recolher', value: 12000, count: 8 },
@@ -128,11 +128,11 @@ describe('DashboardFinanceiro', () => {
     expect(screen.getByText('Despesas Variáveis')).toBeInTheDocument();
   });
 
-  it('renderiza os rankings de subgrupos e de plano de contas', async () => {
+  it('renderiza os rankings de centros de custo e de plano de contas', async () => {
     render(<DashboardFinanceiro />);
-    expect(await screen.findByText('Ranking de subgrupos')).toBeInTheDocument();
-    expect(screen.getByText('Fretes')).toBeInTheDocument();
-    expect(screen.getByText('Salários')).toBeInTheDocument();
+    expect(await screen.findByText('Ranking de centros de custo')).toBeInTheDocument();
+    expect(screen.getByText('Logística')).toBeInTheDocument();
+    expect(screen.getByText('Administrativo')).toBeInTheDocument();
 
     expect(screen.getByText('Ranking de contas')).toBeInTheDocument();
     expect(screen.getByText('4.4.01 — GNRE a Recolher')).toBeInTheDocument();

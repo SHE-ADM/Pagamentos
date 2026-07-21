@@ -1010,7 +1010,7 @@ export async function getDashboardData(month: number, year: number, scope: Dashb
 // 094). Mantém KPIs e filtros (empresa/mês/escopo/KPI), mas NÃO tem o gráfico mês a mês
 // (por isso lê só o mês, não o ano); troca os
 // donuts por Natureza (por GRUPO de despesa) + Tipo (Fixa/Variável, pelo type_group do
-// SUBGRUPO); e traz DOIS rankings por VALOR (R$) — SUBGRUPO e PLANO DE CONTAS — no lugar
+// SUBGRUPO); e traz DOIS rankings por VALOR (R$) — CENTRO DE CUSTO e PLANO DE CONTAS — no lugar
 // do ranking de fornecedores e das "Contas críticas e prioritárias" (que seguem só no
 // dashboard de vencimentos). Reusa os helpers de getDashboardData (num, breakdownBy,
 // matchesKpiFilter). `month` é 0-indexed.
@@ -1021,20 +1021,47 @@ export async function getDashboardData(month: number, year: number, scope: Dashb
 type ExpenseChartAccount = {
   account_code: string | null;
   account_description: string | null;
-  group?: { group_code: string | null; group_description: string | null; type_group_id: number } | null;
-  subgroup?: {
-    subgroup_code: string | null;
-    subgroup_description: string | null;
-    type_group_id: number;
-    type_group?: { type_group_description: string | null } | null;
-  } | null;
+  group?: { group_description: string | null; type_group_id: number } | null;
+  // Do subgrupo só interessa a folha type_group (rótulo Fixa/Variável do donut "Tipo").
+  subgroup?: { type_group?: { type_group_description: string | null } | null } | null;
 } | null;
 
 // Linha do mês no dashboard financeiro: só o que os KPIs/gráficos daqui consomem
 // (valor, situação, vencimento + classificação). Não herda MonthRow — os campos de
 // fornecedor/descrição só serviam às "Contas prioritárias", removidas desta tela.
-type ExpenseMonthRow = Pick<FinancialAccountControl, 'amount' | 'status_id' | 'due_date'> & {
+// O CENTRO DE CUSTO vem da própria conta (`cost_center_id`), não do plano: é a coluna que
+// o CRUD grava e que /consulta exibe — o plano tem um centro, mas quem manda é a conta.
+type ExpenseMonthRow = Pick<
+  FinancialAccountControl,
+  'amount' | 'status_id' | 'due_date' | 'cost_center_id' | 'chart_account_id'
+> & {
+  cost_center?: { cost_center_code: string | null; cost_center_description: string | null } | null;
   chart_account?: ExpenseChartAccount;
+};
+
+// Uma entrada de ranking ANTES da agregação: `key` é a identidade (id da FK), `label` o
+// texto exibido e `code` o desambiguador usado quando dois ids têm o mesmo label.
+interface RankPick { key: string; label: string; code: string | null }
+// Linha sem a dimensão (FK no sentinela 0 / embed ausente) — todas somam num balde só.
+const UNRANKED: RankPick = { key: '∅', label: 'não informado', code: null };
+
+/**
+ * Monta a entrada de ranking de uma dimensão, ou `null` quando a conta não a tem.
+ *
+ * O **sentinela id 0** ("não informado") EXISTE nos dois cadastros — com descrição NULL —,
+ * então o embed vem PREENCHIDO e testar só `embed != null` não basta: sem o corte por
+ * `id > 0` a linha apareceria no ranking como um rótulo técnico (`#0`) em vez de cair no
+ * balde "não informado". Descrição vazia recebe o mesmo tratamento.
+ */
+const rankEntry = (
+  prefix: string,
+  id: number | null | undefined,
+  label: string | null | undefined,
+  code: string | null | undefined,
+): RankPick | null => {
+  const desc = (label ?? '').trim();
+  if (!id || id <= 0 || !desc) return null;
+  return { key: `${prefix}:${id}`, label: desc, code: code ?? null };
 };
 
 export interface FinancialDashboardData {
@@ -1042,7 +1069,7 @@ export interface FinancialDashboardData {
   kpis: DashboardKpis;
   naturezaBreakdown: LabelSlice[]; // por GRUPO de despesa (group_description)
   tipoBreakdown: LabelSlice[]; // Despesa Fixa/Variável (type_group do subgrupo)
-  subgroupRanking: SupplierRank[]; // top subgrupos de despesa por VALOR
+  costCenterRanking: SupplierRank[]; // top CENTROS DE CUSTO por VALOR
   chartAccountRanking: SupplierRank[]; // top contas do PLANO DE CONTAS por VALOR
 }
 
@@ -1051,7 +1078,7 @@ export interface FinancialDashboardData {
 const isExpenseRow = (r: { chart_account?: { group?: { type_group_id: number } | null } | null }): boolean =>
   r.chart_account?.group?.type_group_id === TYPE_GROUP_ID_DESPESAS;
 
-// Linhas exibidas em cada ranking do dashboard financeiro (subgrupo e plano de contas).
+// Linhas exibidas em cada ranking do dashboard financeiro (centro de custo e plano de contas).
 const RANKING_TOP_N = 12;
 
 export async function getFinancialDashboardData(month: number, year: number, scope: DashboardScope = 'month', filter: KpiFilter = 'total', skCompany?: number): Promise<FinancialDashboardData> {
@@ -1065,11 +1092,11 @@ export async function getFinancialDashboardData(month: number, year: number, sco
   // classificação (grupo/subgrupo + type_group).
   const monthRowsAll = await query<ExpenseMonthRow[]>('financial_account_control', {
     select:
-      'amount,status_id,due_date,' +
+      'amount,status_id,due_date,cost_center_id,chart_account_id,' +
+      'cost_center:financial_cost_center(cost_center_code,cost_center_description),' +
       'chart_account:financial_chart_of_account(account_code,account_description,' +
-      'chart_account_group_id,chart_account_subgroup_id,' +
-      'group:financial_chart_of_account_group(group_code,group_description,type_group_id),' +
-      'subgroup:financial_chart_of_account_subgroup(subgroup_code,subgroup_description,type_group_id,' +
+      'group:financial_chart_of_account_group(group_description,type_group_id),' +
+      'subgroup:financial_chart_of_account_subgroup(' +
       'type_group:financial_type_group(type_group_description)))',
     status_id: `neq.${STATUS_ID_CANCELADO}`,
     ...companyFilter,
@@ -1103,31 +1130,47 @@ export async function getFinancialDashboardData(month: number, year: number, sco
   // catálogo, sem literal). Despesa sempre tem subgrupo Fixa/Variável (migrations 092/093).
   const tipoBreakdown = breakdownBy(fMonth, (r) => r.chart_account?.subgroup?.type_group?.type_group_description ?? null);
 
-  // Rankings por VALOR (R$) — mesma agregação, chaves diferentes. Top 12 cada (o espaço
-  // liberado pelo gráfico mês a mês passou a caber mais linhas).
-  const rankBy = (pick: (r: ExpenseMonthRow) => string | null): SupplierRank[] => {
-    const map = new Map<string, { value: number; count: number }>();
+  // Rankings por VALOR (R$) — mesma agregação, dimensões diferentes. Top 12 cada (o
+  // espaço liberado pelo gráfico mês a mês passou a caber mais linhas).
+  //
+  // Agrega pela IDENTIDADE do cadastro (o id da FK), NUNCA pelo texto: nem
+  // `financial_cost_center` nem `financial_chart_of_account` têm UNIQUE em descrição
+  // (só a PK; o CRUD valida o CÓDIGO, e só na aplicação). Agregando por texto, dois
+  // cadastros homônimos virariam UMA linha somada — dado errado e silencioso — e ainda
+  // colidiriam na `key` do RankingList. O texto entra só como RÓTULO.
+  const rankBy = (pick: (r: ExpenseMonthRow) => RankPick | null): SupplierRank[] => {
+    const map = new Map<string, { value: number; count: number; label: string; code: string | null }>();
     for (const r of fMonth) {
-      const k = pick(r) ?? 'não informado';
-      const cur = map.get(k) ?? { value: 0, count: 0 };
+      const p = pick(r) ?? UNRANKED;
+      const cur = map.get(p.key) ?? { value: 0, count: 0, label: p.label, code: p.code };
       cur.value += num(r.amount); cur.count += 1;
-      map.set(k, cur);
+      map.set(p.key, cur);
     }
-    return [...map.entries()]
-      .map(([name, v]) => ({ name, ...v }))
+    const rows = [...map.values()];
+    // Rótulos iguais vindos de ids DIFERENTES: prefixa o código para o usuário distinguir
+    // as duas linhas (e para a `key` do RankingList continuar única).
+    const repetidos = new Set(rows.map((r) => r.label).filter((l, i, all) => all.indexOf(l) !== i));
+    return rows
+      .map((r) => ({
+        name: repetidos.has(r.label) && r.code ? `${r.code} — ${r.label}` : r.label,
+        value: r.value,
+        count: r.count,
+      }))
       .sort((a, b) => b.value - a.value)
       .slice(0, RANKING_TOP_N);
   };
 
-  // Ranking de SUBGRUPOS de despesa.
-  const subgroupRanking = rankBy((r) => r.chart_account?.subgroup?.subgroup_description ?? null);
-  // Ranking do PLANO DE CONTAS (`código — descrição`; a mesma descrição existe em vários
-  // centros como códigos distintos, então o código faz parte da chave — ver CLAUDE.md).
+  // Ranking de CENTROS DE CUSTO — rótulo = só a descrição (hoje as 14 são distintas), com
+  // o código entrando apenas se dois centros forem homônimos.
+  const costCenterRanking = rankBy((r) =>
+    rankEntry('cc', r.cost_center_id, r.cost_center?.cost_center_description, r.cost_center?.cost_center_code),
+  );
+  // Ranking do PLANO DE CONTAS — rótulo SEMPRE `código — descrição`: a mesma descrição se
+  // repete em vários centros como códigos distintos, então o código é parte da identificação.
   const chartAccountRanking = rankBy((r) => {
-    const ca = r.chart_account;
-    if (!ca?.account_description) return null;
-    return ca.account_code ? `${ca.account_code} — ${ca.account_description}` : ca.account_description;
+    const e = rankEntry('ca', r.chart_account_id, r.chart_account?.account_description, r.chart_account?.account_code);
+    return e?.code ? { ...e, label: `${e.code} — ${e.label}` } : e;
   });
 
-  return { month, year, scope, kpis, naturezaBreakdown, tipoBreakdown, subgroupRanking, chartAccountRanking };
+  return { month, year, scope, kpis, naturezaBreakdown, tipoBreakdown, costCenterRanking, chartAccountRanking };
 }
