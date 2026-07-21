@@ -138,34 +138,6 @@ describe('getFinancialDashboardData', () => {
     expect(labels).toContain('Despesas Variáveis');
   });
 
-  // O donut "Tipo" é o ÚNICO que mostra as contas sem plano de contas — no resto da tela
-  // elas não existem (não passam por isExpenseRow).
-  it('Tipo inclui as contas SEM plano de contas como "Sem Definição"', async () => {
-    serve([
-      MONTH_ROWS[0], // despesa fixa, 100
-      { ...MONTH_ROWS[0], amount: 900, chart_account_id: 0, chart_account: null },
-    ]);
-    const d = await getFinancialDashboardData(0, 2026);
-    expect(d.tipoBreakdown).toEqual(
-      expect.arrayContaining([expect.objectContaining({ label: 'Sem Definição', count: 1, value: 900 })]),
-    );
-    // ...e SÓ nele: KPIs, Fixas/Variáveis e rankings seguem só com a despesa classificada.
-    expect(d.kpis.totalCount).toBe(1);
-    expect(d.kpis.totalValue).toBe(100);
-    expect(d.despesaFixaBreakdown.map((s) => s.label)).not.toContain('Sem Definição');
-    expect(d.despesaVariavelBreakdown.map((s) => s.label)).not.toContain('Sem Definição');
-    expect(d.costCenterRanking.reduce((t, r) => t + r.value, 0)).toBe(100);
-  });
-
-  // Conta CLASSIFICADA num plano que não é despesa (Passivo) não é "sem definição" — o
-  // usuário classificou, só não como despesa. Ela continua fora de TUDO, inclusive do Tipo.
-  it('não confunde "sem plano" com "plano que não é despesa"', async () => {
-    serve([MONTH_ROWS[0], naoDespesa(500)]);
-    const d = await getFinancialDashboardData(0, 2026);
-    expect(d.tipoBreakdown.map((s) => s.label)).not.toContain('Sem Definição');
-    expect(d.tipoBreakdown.reduce((t, s) => t + s.value, 0)).toBe(100);
-  });
-
   it('ranking de CENTROS DE CUSTO ordenado por VALOR (sem o Passivo)', async () => {
     const d = await getFinancialDashboardData(0, 2026);
     expect(d.costCenterRanking[0]).toMatchObject({ name: 'Logística', value: 350, count: 2 });

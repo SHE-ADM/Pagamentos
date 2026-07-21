@@ -21,9 +21,6 @@ import {
   TYPE_GROUP_ID_DESPESA_VARIAVEL,
 } from '@sheild/shared';
 import { supabase } from '../lib/supabaseClient';
-// Rótulo da fatia de contas sem plano no donut "Tipo" — fonte única compartilhada com a
-// cor do gráfico (components/dashboard/chartColors.ts). Ver constants.ts.
-import { UNCLASSIFIED_LABEL } from '../components/dashboard/constants';
 
 // Situação é filtrada/ordenada por status_id (fonte única). Ordenar a coluna
 // "Situação" continua ALFABÉTICO pelo NOME (decisão de negócio — id ≠ ordem), via o
@@ -908,6 +905,63 @@ function matchesKpiFilter(
   }
 }
 
+/**
+ * Janela de datas dos dashboards, em ISO (YYYY-MM-DD), como o PostgREST espera.
+ *
+ * `first`/`last` delimitam o mes pedido; `todayStr`/`in7` sao o "hoje" e o "hoje + 7 dias"
+ * usados pelos KPIs de vencimento. Os dois dashboards compartilham ESTA definicao — antes
+ * cada um tinha a sua copia, e um ajuste de borda em um deles nao chegaria ao outro.
+ *
+ * O mes usa UTC (a coluna do banco e `date`, sem hora, entao o fuso local deslocaria a
+ * borda); `todayStr` usa a data corrente do ambiente, coerente com a baixa automatica.
+ */
+function dashboardWindow(
+  month: number,
+  year: number,
+): { first: string; last: string; todayStr: string; in7: string } {
+  const iso = (d: Date): string => d.toISOString().slice(0, 10);
+  return {
+    first: iso(new Date(Date.UTC(year, month, 1))),
+    last: iso(new Date(Date.UTC(year, month + 1, 0))), // dia 0 do mes seguinte = ultimo do mes
+    todayStr: iso(new Date()),
+    in7: iso(new Date(Date.now() + 7 * 86400000)),
+  };
+}
+
+// Teto da leitura conforme o escopo — fonte unica para o `limit` da query E para a guarda
+// de truncagem, que precisam comparar contra o MESMO numero.
+const readLimit = (scope: DashboardScope): number => (scope === 'month' ? MONTH_READ_LIMIT : ALL_READ_LIMIT);
+
+/**
+ * Os 5 KPIs dos dashboards a partir das linhas do escopo.
+ *
+ * Era um bloco DUPLICADO literalmente nos dois dashboards. Sao indicadores financeiros: com
+ * duas copias, corrigir a regra de "a vencer em 7 dias" numa tela e nao na outra faria as
+ * duas mostrarem numeros diferentes para a mesma pergunta, sem erro visivel. Generica sobre
+ * o tipo da linha (basta ter valor, situacao e vencimento).
+ *
+ * O conjunto aqui e sempre o COMPLETO do escopo: o filtro de KPI clicado afeta so os
+ * graficos, nunca os cards (senao clicar num card zeraria os demais).
+ */
+function computeKpis<T extends { amount: number | null; status_id: number; due_date: string | null }>(
+  rows: T[],
+  todayStr: string,
+  in7: string,
+): DashboardKpis {
+  const sum = (rs: T[]): number => rs.reduce((acc, r) => acc + num(r.amount), 0);
+  const pagoRows = rows.filter((r) => r.status_id === STATUS_ID_PAGO);
+  const aVencerRows = rows.filter((r) => r.status_id === STATUS_ID_A_VENCER);
+  const vencendoRows = aVencerRows.filter((r) => r.due_date && r.due_date >= todayStr && r.due_date <= in7);
+  const vencidasRows = rows.filter((r) => r.status_id === STATUS_ID_VENCIDO);
+  return {
+    totalCount: rows.length, totalValue: sum(rows),
+    pagoCount: pagoRows.length, pagoValue: sum(pagoRows),
+    aVencerCount: aVencerRows.length, aVencerValue: sum(aVencerRows),
+    vencendoCount: vencendoRows.length, vencendoValue: sum(vencendoRows),
+    vencidasCount: vencidasRows.length, vencidasValue: sum(vencidasRows),
+  };
+}
+
 // `scope` = 'month' (mês selecionado, padrão) ou 'all' (todas as contas, sem filtro
 // de data nos painéis). O gráfico de movimentações sempre reflete o `year`.
 // `filter` = KPI clicado no topo: os cards mantêm os totais completos, mas TODOS
@@ -919,10 +973,7 @@ export async function getDashboardData(month: number, year: number, scope: Dashb
   // Filtro de empresa pela FK — aplicado nas DUAS leituras (escopo + ano), senão o
   // gráfico de movimentações mensais mostraria as duas empresas.
   const companyFilter = skCompany ? { sk_company: `eq.${skCompany}` } : {};
-  const first = new Date(Date.UTC(year, month, 1)).toISOString().slice(0, 10);
-  const last = new Date(Date.UTC(year, month + 1, 0)).toISOString().slice(0, 10);
-  const todayStr = new Date().toISOString().slice(0, 10);
-  const in7 = new Date(Date.now() + 7 * 86400000).toISOString().slice(0, 10);
+  const { first, last, todayStr, in7 } = dashboardWindow(month, year);
 
   // Contas do escopo (exclui cancelado) com embed do fornecedor.
   // 'month' → filtra pelo intervalo do mês; 'all' → todas as contas.
@@ -933,7 +984,7 @@ export async function getDashboardData(month: number, year: number, scope: Dashb
       status_id: `neq.${STATUS_ID_CANCELADO}`,
       ...companyFilter,
       ...(scope === 'month' ? { and: `(due_date.gte.${first},due_date.lte.${last})` } : {}),
-      limit: scope === 'month' ? MONTH_READ_LIMIT : ALL_READ_LIMIT,
+      limit: readLimit(scope),
     }),
     // Contas do ano inteiro (só os campos do gráfico) para as movimentações mês a mês.
     query<YearRow[]>('financial_account_control', {
@@ -944,22 +995,11 @@ export async function getDashboardData(month: number, year: number, scope: Dashb
       limit: ALL_READ_LIMIT,
     }),
   ]);
-  warnIfTruncated(monthRows, scope === 'month' ? MONTH_READ_LIMIT : ALL_READ_LIMIT, 'contas do escopo');
+  warnIfTruncated(monthRows, readLimit(scope), 'contas do escopo');
   warnIfTruncated(yearRows, ALL_READ_LIMIT, 'contas do ano');
 
   // KPIs
-  const sum = (rows: MonthRow[]): number => rows.reduce((s, r) => s + num(r.amount), 0);
-  const pagoRows = monthRows.filter((r) => r.status_id === STATUS_ID_PAGO);
-  const aVencerRows = monthRows.filter((r) => r.status_id === STATUS_ID_A_VENCER);
-  const vencendoRows = aVencerRows.filter((r) => r.due_date && r.due_date >= todayStr && r.due_date <= in7);
-  const vencidasRows = monthRows.filter((r) => r.status_id === STATUS_ID_VENCIDO);
-  const kpis: DashboardKpis = {
-    totalCount: monthRows.length, totalValue: sum(monthRows),
-    pagoCount: pagoRows.length, pagoValue: sum(pagoRows),
-    aVencerCount: aVencerRows.length, aVencerValue: sum(aVencerRows),
-    vencendoCount: vencendoRows.length, vencendoValue: sum(vencendoRows),
-    vencidasCount: vencidasRows.length, vencidasValue: sum(vencidasRows),
-  };
+  const kpis = computeKpis(monthRows, todayStr, in7);
 
   // Aplica o filtro do KPI clicado APENAS aos gráficos (os KPIs acima usam o
   // conjunto completo). 'total' => sem filtro (evita recriar os arrays à toa).
@@ -1113,21 +1153,12 @@ export interface FinancialDashboardData {
 const isExpenseRow = (r: { chart_account?: { group?: { type_group_id: number } | null } | null }): boolean =>
   r.chart_account?.group?.type_group_id === TYPE_GROUP_ID_DESPESAS;
 
-// Conta SEM plano de contas (FK no sentinela 0). Distinta da conta CLASSIFICADA em um plano
-// que não é despesa (Passivo etc.), que continua fora da tela: aqui o usuário ainda não
-// classificou; lá ele classificou como outra coisa.
-const isUnclassifiedRow = (r: { chart_account_id: number | null }): boolean =>
-  !r.chart_account_id || r.chart_account_id <= 0;
-
 // Linhas exibidas em cada ranking do dashboard financeiro (centro de custo e plano de contas).
 const RANKING_TOP_N = 12;
 
 export async function getFinancialDashboardData(month: number, year: number, scope: DashboardScope = 'month', filter: KpiFilter = 'total', skCompany?: number): Promise<FinancialDashboardData> {
   const companyFilter = skCompany ? { sk_company: `eq.${skCompany}` } : {};
-  const first = new Date(Date.UTC(year, month, 1)).toISOString().slice(0, 10);
-  const last = new Date(Date.UTC(year, month + 1, 0)).toISOString().slice(0, 10);
-  const todayStr = new Date().toISOString().slice(0, 10);
-  const in7 = new Date(Date.now() + 7 * 86400000).toISOString().slice(0, 10);
+  const { first, last, todayStr, in7 } = dashboardWindow(month, year);
 
   // Leitura ÚNICA (a do ANO saiu junto com o gráfico mês a mês): embed aninhado da
   // classificação (grupo/subgrupo + type_group).
@@ -1142,27 +1173,16 @@ export async function getFinancialDashboardData(month: number, year: number, sco
     status_id: `neq.${STATUS_ID_CANCELADO}`,
     ...companyFilter,
     ...(scope === 'month' ? { and: `(due_date.gte.${first},due_date.lte.${last})` } : {}),
-    limit: scope === 'month' ? MONTH_READ_LIMIT : ALL_READ_LIMIT,
+    limit: readLimit(scope),
   });
 
-  warnIfTruncated(monthRowsAll, scope === 'month' ? MONTH_READ_LIMIT : ALL_READ_LIMIT, 'despesas do escopo');
+  warnIfTruncated(monthRowsAll, readLimit(scope), 'despesas do escopo');
 
   // Escopo DESPESAS aplicado antes de qualquer agregação.
   const monthRows = monthRowsAll.filter(isExpenseRow);
 
   // KPIs (sobre as despesas do mês — conjunto completo, sem o filtro de KPI clicado).
-  const sum = (rows: ExpenseMonthRow[]): number => rows.reduce((s, r) => s + num(r.amount), 0);
-  const pagoRows = monthRows.filter((r) => r.status_id === STATUS_ID_PAGO);
-  const aVencerRows = monthRows.filter((r) => r.status_id === STATUS_ID_A_VENCER);
-  const vencendoRows = aVencerRows.filter((r) => r.due_date && r.due_date >= todayStr && r.due_date <= in7);
-  const vencidasRows = monthRows.filter((r) => r.status_id === STATUS_ID_VENCIDO);
-  const kpis: DashboardKpis = {
-    totalCount: monthRows.length, totalValue: sum(monthRows),
-    pagoCount: pagoRows.length, pagoValue: sum(pagoRows),
-    aVencerCount: aVencerRows.length, aVencerValue: sum(aVencerRows),
-    vencendoCount: vencendoRows.length, vencendoValue: sum(vencendoRows),
-    vencidasCount: vencidasRows.length, vencidasValue: sum(vencidasRows),
-  };
+  const kpis = computeKpis(monthRows, todayStr, in7);
 
   // Filtro do KPI clicado: só afeta os gráficos (os cards mantêm os totais).
   const fMonth = filter === 'total' ? monthRows : monthRows.filter((r) => matchesKpiFilter(r, filter, todayStr, in7));
@@ -1186,22 +1206,7 @@ export async function getFinancialDashboardData(month: number, year: number, sco
   const despesaVariavelBreakdown = porGrupo(variavelRows);
   // Donut "Tipo": Despesa Fixa/Variável (descrição do type_group do SUBGRUPO — vem do
   // catálogo, sem literal). Despesa sempre tem subgrupo Fixa/Variável (migrations 092/093).
-  //
-  // Só ESTE donut recebe também as contas SEM PLANO DE CONTAS, na fatia "Sem Definição"
-  // (vermelho vivo — ver tipoColor). São contas que o resto da tela NÃO enxerga: sem
-  // classificação elas não passam por `isExpenseRow`, então ficam fora dos KPIs, dos donuts
-  // de Fixas/Variáveis e dos rankings. Expô-las aqui transforma o donut na única superfície
-  // que mostra o que falta classificar — hoje 97 contas / R$ 1,76 mi.
-  //
-  // CONSEQUÊNCIA ACEITA: o total no centro deste donut fica MAIOR que o card "Despesas no
-  // mês" e que a soma dos outros dois donuts. É deliberado — o universo aqui é "despesas +
-  // pendentes de classificação", não "despesas".
-  const unclassifiedAll = monthRowsAll.filter(isUnclassifiedRow);
-  const fUnclassified =
-    filter === 'total' ? unclassifiedAll : unclassifiedAll.filter((r) => matchesKpiFilter(r, filter, todayStr, in7));
-  const tipoBreakdown = breakdownBy([...fMonth, ...fUnclassified], (r) =>
-    isUnclassifiedRow(r) ? UNCLASSIFIED_LABEL : (r.chart_account?.subgroup?.type_group?.type_group_description ?? null),
-  );
+  const tipoBreakdown = breakdownBy(fMonth, (r) => r.chart_account?.subgroup?.type_group?.type_group_description ?? null);
 
   // Rankings por VALOR (R$) — mesma agregação, dimensões diferentes. Top 12 cada (o
   // espaço liberado pelo gráfico mês a mês passou a caber mais linhas).

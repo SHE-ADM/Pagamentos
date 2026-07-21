@@ -1,6 +1,6 @@
 // src/components/dashboard/ChartCard.tsx
 // Casca de um card de gráfico/lista dos dashboards: moldura + título + subtítulo (+ ícone).
-// Existia DUPLICADA em 11 blocos entre pages/Dashboard.tsx e pages/DashboardFinanceiro.tsx —
+// Existia DUPLICADA em 10 blocos entre pages/Dashboard.tsx e pages/DashboardFinanceiro.tsx —
 // mesmo markup, só mudando os textos. Além do custo de manutenção, duplicação em código
 // novo reprova o quality gate do SonarCloud (já aconteceu neste repo).
 //
@@ -9,19 +9,8 @@
 // para o layout e os testes das duas páginas não regredirem.
 import type { ReactNode } from 'react';
 import type { LucideIcon } from 'lucide-react';
-
-// Tom do ícone — classes LITERAIS completas (Tailwind JIT não gera nome computado).
-const TONE_CLS = {
-  brand: 'flex h-6 w-6 items-center justify-center rounded-lg bg-brand/10 text-brand',
-  danger: 'flex h-6 w-6 items-center justify-center rounded-lg bg-status-error-solid/10 text-status-error-fg',
-} as const;
-
-// Não exportado: só o contrato de props usa (export sem consumidor = órfão no ts-prune).
-type ChartCardTone = keyof typeof TONE_CLS;
-
-// `dense` = padding menor (p-2.5), usado onde 4 donuts dividem a mesma linha (xl) em
-// /dashboard_vencimentos; o padrão (p-3) vale para os demais cards.
-const PADDING_CLS = { normal: 'card p-3', dense: 'card p-2.5' } as const;
+import { cn } from '../../lib/cn';
+import { chartCardFrame, chartCardIcon, type ChartCardTone } from './chartCard.variants';
 
 interface ChartCardProps {
   title: string;
@@ -40,12 +29,15 @@ export function ChartCard({
   title,
   subtitle,
   icon: Icon,
-  tone = 'brand',
+  tone,
   dense = false,
   className,
   children,
 }: Readonly<ChartCardProps>) {
-  const frameCls = PADDING_CLS[dense ? 'dense' : 'normal'] + (className ? ` ${className}` : '');
+  // `cn` (clsx + tailwind-merge) e não concatenação: a classe do chamador precisa VENCER a
+  // da variante quando as duas mexem no mesmo utilitário. Com `+`, um `className="p-4"`
+  // produziria "p-3 p-4" e quem ganha passaria a depender da ordem no CSS, não da intenção.
+  const frameCls = cn(chartCardFrame({ dense }), className);
   const heading = (
     <div>
       <h3 className="text-sm font-semibold text-slate-800">{title}</h3>
@@ -57,7 +49,7 @@ export function ChartCard({
     <div className={frameCls}>
       {Icon ? (
         <div className="flex items-center gap-2 mb-2">
-          <span className={TONE_CLS[tone]}>
+          <span className={cn(chartCardIcon({ tone }))}>
             <Icon size={14} />
           </span>
           {heading}

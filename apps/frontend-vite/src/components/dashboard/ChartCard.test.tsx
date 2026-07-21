@@ -60,4 +60,17 @@ describe('ChartCard', () => {
     );
     expect(container.firstElementChild).toHaveClass('card', 'p-3', 'mb-3');
   });
+
+  // Merge por tailwind-merge, não concatenação: com `+` sairia "p-3 p-4" e o vencedor
+  // dependeria da ordem no CSS, não da intenção de quem chamou.
+  it('deixa a classe do chamador VENCER a da variante no mesmo utilitário', () => {
+    const { container } = render(
+      <ChartCard title="T" subtitle="S" className="p-4">
+        <span />
+      </ChartCard>,
+    );
+    const frame = container.firstElementChild;
+    expect(frame).toHaveClass('card', 'p-4');
+    expect(frame).not.toHaveClass('p-3');
+  });
 });

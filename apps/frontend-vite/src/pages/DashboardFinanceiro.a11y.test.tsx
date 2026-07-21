@@ -28,7 +28,6 @@ const MOCK: FinancialDashboardData = {
   tipoBreakdown: [
     { label: 'Despesas Variáveis', count: 55, value: 22000 },
     { label: 'Despesas Fixas', count: 35, value: 10000 },
-    { label: 'Sem Definição', count: 12, value: 7000 },
   ],
   costCenterRanking: [{ name: 'Logística', value: 15000, count: 25 }],
   chartAccountRanking: [{ name: '4.4.01 — GNRE a Recolher', value: 12000, count: 8 }],
