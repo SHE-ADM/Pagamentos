@@ -23,16 +23,22 @@ export function RankingList({
   rows: RankRow[];
   emptyLabel?: string;
   onSelect?: (row: RankRow) => void;
-  // Linhas mais compactas (menos padding/gap) para caber mais registros na mesma altura —
+  // Linhas um pouco mais compactas (padding/margem verticais reduzidos a 1px, gap menor) —
   // opt-in: usado pelos rankings de /dashboard_despesas (centro de custo e contas), que têm
   // até 12 linhas; o ranking de fornecedores de /dashboard_vencimentos não liga (inalterado).
   dense?: boolean;
 }) {
   const max = Math.max(1, ...rows.map((r) => r.value));
   if (!rows.length) return <p className="text-xs text-slate-500 py-4">{emptyLabel}</p>;
-  const badgeCls = dense ? 'h-4 w-4' : 'h-5 w-5';
-  const rowCls = dense ? 'flex items-center gap-1.5 py-0' : 'flex items-center gap-2 py-0.5';
-  const contentMbCls = dense ? 'mb-0' : 'mb-0.5';
+  // Badge de posição SEM redução (h-5 w-5 nos dois modos, 2026-07-22): reduzi-lo deixava o
+  // ranking "muito compactado" visualmente (feedback do usuário) sem ganho de altura real —
+  // a linha de texto+barra já é mais alta que o badge nos dois casos (ver conta abaixo).
+  const badgeCls = 'h-5 w-5';
+  // `py-px`/`mb-px` (1px), não `py-0`/`mb-0`: compactação um pouco mais SUAVE (pedido do
+  // usuário 2026-07-22) — ainda cabe mais linhas que o normal (py-0.5/mb-0.5), mas sem
+  // ficar tão apertado quanto a 1ª versão (que zerava padding/margem por completo).
+  const rowCls = dense ? 'flex items-center gap-1.5 py-px' : 'flex items-center gap-2 py-0.5';
+  const contentMbCls = dense ? 'mb-px' : 'mb-0.5';
   return (
     <div>
       {/* A key inclui a posição porque `name` NÃO é garantidamente único: o ranking de

@@ -73,13 +73,14 @@ describe('RankingList', () => {
     expect(screen.getByText('4 conta(s)')).toBeInTheDocument();
   });
 
-  it('`dense` reduz a altura da linha (padding vertical zerado) sem remover nenhuma informação', () => {
+  it('`dense` reduz um pouco a altura da linha (padding/margem verticais a 1px) sem remover nenhuma informação', () => {
     const { container: normal } = render(<RankingList rows={ROWS} />);
     const { container: compact } = render(<RankingList rows={ROWS} dense />);
-    // A linha em modo dense usa py-0 (sem padding vertical) — a normal usa py-0.5.
+    // A linha em modo dense usa py-px (1px) — a normal usa py-0.5 (2px); compactação SUAVE,
+    // não zerada (feedback do usuário: a 1ª versão, com py-0, ficou "muito compactado").
     expect(normal.querySelector('.py-0\\.5')).not.toBeNull();
     expect(compact.querySelector('.py-0\\.5')).toBeNull();
-    expect(compact.querySelector('.py-0')).not.toBeNull();
+    expect(compact.querySelector('.py-px')).not.toBeNull();
     // Conteúdo (nome/valor/contagem) continua todo presente, só mais compacto.
     const dense = within(compact);
     expect(dense.getByText('Compras')).toBeInTheDocument();
