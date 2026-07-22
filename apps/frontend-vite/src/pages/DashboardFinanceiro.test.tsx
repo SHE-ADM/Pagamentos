@@ -181,8 +181,8 @@ describe('DashboardFinanceiro', () => {
     render(<DashboardFinanceiro />);
     await screen.findByRole('heading', { name: 'Classificação Financeira' });
     const ringOf = (title: string): HTMLElement | null =>
-      (screen.getByRole('heading', { name: title }).closest('.card') as HTMLElement | null)
-        ?.querySelector('.relative.shrink-0') as HTMLElement | null;
+      screen.getByRole('heading', { name: title }).closest<HTMLElement>('.card')
+        ?.querySelector<HTMLElement>('.relative.shrink-0') ?? null;
     const tipo = ringOf('Classificação Financeira');
     const custoMerc = ringOf('Custos de Mercadorias');
     const fixa = ringOf('Despesas Fixas');
@@ -196,7 +196,7 @@ describe('DashboardFinanceiro', () => {
     expect(variavel?.style.width).toBe('124px');
     // Furo (inset) também igual — acompanha o diâmetro, que agora é único.
     const holeOf = (el: HTMLElement | null): string | undefined =>
-      (el?.closest('.relative')?.querySelector('.rounded-full.bg-white') as HTMLElement | null)?.style.inset;
+      el?.closest<HTMLElement>('.relative')?.querySelector<HTMLElement>('.rounded-full.bg-white')?.style.inset;
     expect(holeOf(custoMerc)).toBe(holeOf(tipo));
     expect(holeOf(fixa)).toBe(holeOf(tipo));
     expect(holeOf(variavel)).toBe(holeOf(tipo));
