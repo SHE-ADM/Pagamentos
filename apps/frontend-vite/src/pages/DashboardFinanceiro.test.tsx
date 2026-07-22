@@ -153,6 +153,15 @@ describe('DashboardFinanceiro', () => {
     expect(screen.getByText('Transporte')).toBeInTheDocument();
   });
 
+  it('o subtítulo do donut "Classificação Financeira" reflete o KPI ativo', async () => {
+    render(<DashboardFinanceiro />);
+    // Abre filtrado por "A vencer" → sufixo "- A vencer" no subtítulo (período = mês atual).
+    expect(await screen.findByText(/^Por tipo \(fixa\/variável\) · .+ - A vencer$/)).toBeInTheDocument();
+    // Limpar o filtro (✕) → volta a 'total', sem sufixo de KPI.
+    fireEvent.click(screen.getByText(/filtrando: A vencer/i));
+    expect(await screen.findByText(/^Por tipo \(fixa\/variável\) · [^-]+$/)).toBeInTheDocument();
+  });
+
   it('renderiza os rankings de centros de custo e de plano de contas', async () => {
     render(<DashboardFinanceiro />);
     expect(await screen.findByText('Ranking de centros de custo')).toBeInTheDocument();

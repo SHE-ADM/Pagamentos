@@ -8,14 +8,8 @@
 // Apresentacional puro: NÃO tem estado nem busca dados. Quem guarda mês/ano/escopo/filtro/
 // empresa e dispara o reload continua sendo a página — o header só renderiza e avisa.
 import { RefreshCw } from 'lucide-react';
-import type { KpiFilter } from '../../services/supabase';
 import type { DashboardFilters } from '../../hooks/useDashboardFilters';
-import { MONTHS, MONTHS_FULL } from './constants';
-
-// Rótulo pt-BR do filtro ativo (fonte única — as páginas não redeclaram).
-const KPI_FILTER_LABEL: Record<KpiFilter, string> = {
-  total: 'Todos', pago: 'Pagos', aVencer: 'A vencer', vencendo7: 'A vencer em 7 dias', vencidas: 'Vencidas',
-};
+import { MONTHS, MONTHS_FULL, KPI_FILTER_LABEL } from './constants';
 
 type Props = Readonly<{
   /** Título da página (h1). */
