@@ -1,5 +1,5 @@
 // src/pages/DashboardFinanceiro.tsx
-// Dashboard financeiro escopado a DESPESAS (Indicadores financeiros). Mesma casca do
+// Dashboard financeiro escopado a DESPESAS (Indicadores de despesas). Mesma casca do
 // dashboard de vencimentos (pages/Dashboard.tsx) — 5 KPIs e filtros de empresa/mês/escopo/
 // KPI (que aqui ABRE em "A vencer") — mas sem o gráfico mês a mês e com os gráficos
 // trocados para a dimensão contábil:
@@ -65,7 +65,7 @@ export default function DashboardFinanceiro() {
     <div className="flex flex-col h-full">
       <div className="h-0.5 bg-linear-to-r from-brand to-brand-dark" />
       <DashboardHeader
-        title="Indicadores financeiros"
+        title="Indicadores de despesas"
         subject="Despesas"
         idPrefix="dashboard-financeiro"
         filters={filters}

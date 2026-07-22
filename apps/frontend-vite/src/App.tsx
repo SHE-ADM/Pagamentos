@@ -71,7 +71,7 @@ export default function App() {
                       <Route path="/tabelas/grupos-plano-de-contas" element={<ChartAccountGroupsPage />} />
                       <Route path="/tabelas/subgrupos-plano-de-contas" element={<ChartAccountSubgroupsPage />} />
                       <Route path="/dashboard_vencimentos" element={<Dashboard />} />
-                      <Route path="/dashboard_financeiro" element={<DashboardFinanceiro />} />
+                      <Route path="/dashboard_despesas" element={<DashboardFinanceiro />} />
                       {/* Compat: rota antiga /dashboard → preserva bookmarks/histórico. */}
                       <Route path="/dashboard" element={<Navigate to="/dashboard_vencimentos" replace />} />
                       <Route path="/erros" element={<Erros />} />

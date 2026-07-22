@@ -32,7 +32,7 @@ export interface DashboardFilters {
 
 /**
  * @param initialFilter filtro de KPI na abertura. `/dashboard_vencimentos` abre sem
- * filtro ('total'); `/dashboard_financeiro` abre em 'aVencer'.
+ * filtro ('total'); `/dashboard_despesas` abre em 'aVencer'.
  */
 export function useDashboardFilters(initialFilter: KpiFilter = 'total'): DashboardFilters {
   // Inicializadores LAZY — `new Date()` no corpo do render é impuro (React Compiler).

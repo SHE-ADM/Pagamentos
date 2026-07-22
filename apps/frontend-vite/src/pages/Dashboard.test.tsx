@@ -88,7 +88,7 @@ describe('Dashboard', () => {
     expect(pagos).toHaveAttribute('aria-pressed', 'false');
   });
 
-  // Paridade visual com /dashboard_financeiro: os dois dashboards renderizam o MESMO
+  // Paridade visual com /dashboard_despesas: os dois dashboards renderizam o MESMO
   // KpiCard, então o destaque do card selecionado e a affordance de clique valem aqui
   // também. Trava a paridade — se alguém voltar a inlinear o card só numa das páginas,
   // este teste cai.
