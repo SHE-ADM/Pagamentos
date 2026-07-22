@@ -11,8 +11,10 @@ import { z } from 'zod';
 // Espelham o literal `g.type_group_id = 2` usado nas migrations 092/093 para selecionar
 // despesas. Fonte única para o filtro de "despesa" do dashboard financeiro e afins.
 export const TYPE_GROUP_ID_DESPESAS = 2; // Natureza do GRUPO ("Despesas")
+export const TYPE_GROUP_ID_CUSTO = 8; // Natureza do GRUPO ("Custo")
 export const TYPE_GROUP_ID_DESPESA_FIXA = 5; // Tipo do SUBGRUPO ("Despesas Fixas")
 export const TYPE_GROUP_ID_DESPESA_VARIAVEL = 6; // Tipo do SUBGRUPO ("Despesas Variáveis")
+export const TYPE_GROUP_ID_CUSTO_MERCADORIAS = 7; // Tipo do SUBGRUPO ("Custos de Mercadorias")
 
 // ── Leitura (linha do banco) ────────────────────────────────────────────────
 
