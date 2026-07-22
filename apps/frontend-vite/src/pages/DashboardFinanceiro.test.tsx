@@ -1,6 +1,6 @@
 // src/pages/DashboardFinanceiro.test.tsx
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, fireEvent } from '@testing-library/react';
+import { render, screen, fireEvent, within } from '@testing-library/react';
 
 // Lookup do filtro "Empresa" (useCompanyOptions) — evita rede no teste.
 const listCompaniesMock = vi.fn();
@@ -39,12 +39,12 @@ const MOCK: FinancialDashboardData = {
     { label: 'Custos de Mercadorias', count: 10, value: 6000 },
   ],
   costCenterRanking: [
-    { key: 'cc:4', name: 'Logística', value: 15000, count: 25 },
-    { key: 'cc:1', name: 'Administrativo', value: 9000, count: 15 },
+    { key: 'cc:4', name: 'Logística', value: 15000, count: 25, pct: 62.5 },
+    { key: 'cc:1', name: 'Administrativo', value: 9000, count: 15, pct: 37.5 },
   ],
   subgroupRanking: [
-    { key: 'sg:44', name: '4.4.01 — GNRE a Recolher', value: 12000, count: 8 },
-    { key: 'sg:64', name: '6.4.01 — IPTU', value: 3000, count: 2 },
+    { key: 'sg:44', name: '4.4.01 — GNRE a Recolher', value: 12000, count: 8, pct: 80 },
+    { key: 'sg:64', name: '6.4.01 — IPTU', value: 3000, count: 2, pct: 20 },
   ],
   // Uma conta cujo cost_center_id (4) casa a linha 'Logística' (key cc:4) — o clique no
   // ranking filtra por essa key e o card de detalhe mostra o fornecedor dela. A 2ª conta
@@ -221,6 +221,27 @@ describe('DashboardFinanceiro', () => {
     expect(screen.getByText('Ranking de contas')).toBeInTheDocument();
     expect(screen.getByText('4.4.01 — GNRE a Recolher')).toBeInTheDocument();
     expect(screen.getByText('6.4.01 — IPTU')).toBeInTheDocument();
+  });
+
+  it('rankings de centro de custo e de contas mostram % de contas (não mais "N conta(s)") em linhas compactas', async () => {
+    render(<DashboardFinanceiro />);
+    const costCenterCard = (await screen.findByText('Ranking de centros de custo')).closest<HTMLElement>('.card');
+    const subgroupCard = screen.getByText('Ranking de contas').closest<HTMLElement>('.card');
+    if (!costCenterCard || !subgroupCard) throw new Error('card não encontrado');
+
+    // Célula da direita = percentual do total de contas do escopo, não mais a contagem crua.
+    expect(within(costCenterCard).getByText('63%')).toBeInTheDocument(); // Math.round(62.5)
+    expect(within(costCenterCard).getByText('38%')).toBeInTheDocument(); // Math.round(37.5)
+    expect(within(subgroupCard).getByText('80%')).toBeInTheDocument();
+    expect(within(subgroupCard).getByText('20%')).toBeInTheDocument();
+    // "conta(s)" não aparece mais DENTRO desses dois cards (segue existindo alhures na
+    // página, ex.: os cards de KPI — por isso o escopo é o card, não a página inteira).
+    expect(within(costCenterCard).queryByText(/conta\(s\)/)).not.toBeInTheDocument();
+    expect(within(subgroupCard).queryByText(/conta\(s\)/)).not.toBeInTheDocument();
+
+    // `dense`: as linhas dos dois rankings usam py-0 (sem padding vertical) — não `py-0.5`.
+    expect(screen.getByRole('button', { name: /Logística/ }).className).toContain('py-0');
+    expect(screen.getByRole('button', { name: /Logística/ }).className).not.toContain('py-0.5');
   });
 
   it('não exibe mais as contas críticas e prioritárias', async () => {

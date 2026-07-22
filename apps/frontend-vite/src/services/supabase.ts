@@ -783,7 +783,10 @@ export interface LabelSlice { label: string; count: number; value: number }
 // `key` = a identidade do balde (RankPick.key: `cc:<id>`/`sg:<id>`/`sup:<nome>`/`∅`). É o que
 // o drill-down usa para reproduzir EXATAMENTE as contas daquela linha do ranking (ver
 // filterExpenseDetailRows) — nunca o `name`, que pode ser homônimo/prefixado por código.
-export interface SupplierRank { key: string; name: string; value: number; count: number }
+// `pct` (opcional) = % do TOTAL de registros do escopo (não da soma dos valores exibidos no
+// top-N) que esta linha representa — só `rankBy` (dashboard financeiro) o preenche; o
+// ranking de fornecedores (vencimentos) não, e o RankingList mostra `count` nesse caso.
+export interface SupplierRank { key: string; name: string; value: number; count: number; pct?: number }
 export interface MonthlyFlow { month: number; aPagar: number; pago: number }
 export type PriorityKind = 'agua' | 'luz' | 'internet' | 'telefone' | 'aluguel' | 'tributo' | 'outro';
 export interface PriorityAccount {
@@ -1369,12 +1372,18 @@ export async function getFinancialDashboardData(month: number, year: number, sco
     // Rótulos iguais vindos de ids DIFERENTES: prefixa o código para o usuário distinguir
     // as duas linhas (e para a `key` do RankingList continuar única).
     const repetidos = new Set(rows.map((r) => r.label).filter((l, i, all) => all.indexOf(l) !== i));
+    // % do TOTAL de registros do escopo (fMonth, ANTES do corte top-N) — não da soma dos
+    // valores exibidos. Cada `count` de bucket soma exatamente a `total` (todo registro de
+    // fMonth cai em algum bucket, inclusive o sentinela UNRANKED), então as % de TODOS os
+    // buckets somam 100% mesmo que o top-N exibido não some.
+    const total = fMonth.length;
     return rows
       .map((r) => ({
         key: r.key,
         name: repetidos.has(r.label) && r.code ? `${r.code} — ${r.label}` : r.label,
         value: r.value,
         count: r.count,
+        pct: total ? (r.count / total) * 100 : 0,
       }))
       .sort((a, b) => b.value - a.value)
       .slice(0, RANKING_TOP_N);
