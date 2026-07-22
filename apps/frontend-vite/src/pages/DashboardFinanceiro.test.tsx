@@ -30,9 +30,13 @@ const MOCK: FinancialDashboardData = {
     { label: 'Transporte', count: 40, value: 18000 },
     { label: 'Despesas com Serviços', count: 20, value: 4000 },
   ],
+  custoMercadoriasBreakdown: [
+    { label: 'Custos', count: 10, value: 6000 },
+  ],
   tipoBreakdown: [
     { label: 'Despesas Variáveis', count: 55, value: 22000 },
     { label: 'Despesas Fixas', count: 35, value: 10000 },
+    { label: 'Custos de Mercadorias', count: 10, value: 6000 },
   ],
   costCenterRanking: [
     { key: 'cc:4', name: 'Logística', value: 15000, count: 25 },
@@ -43,7 +47,9 @@ const MOCK: FinancialDashboardData = {
     { key: 'sg:64', name: '6.4.01 — IPTU', value: 3000, count: 2 },
   ],
   // Uma conta cujo cost_center_id (4) casa a linha 'Logística' (key cc:4) — o clique no
-  // ranking filtra por essa key e o card de detalhe mostra o fornecedor dela.
+  // ranking filtra por essa key e o card de detalhe mostra o fornecedor dela. A 2ª conta
+  // (CUSTO, subgrupo tipo 7) prova que o donut "Custos de Mercadorias" passa typeGroupId=7
+  // (o drill devolve SÓ ela, nunca a de tipo 6).
   detailRows: [
     {
       id: 1, amount: 500, status_id: 3, due_date: '2026-07-10', cost_center_id: 4,
@@ -55,6 +61,19 @@ const MOCK: FinancialDashboardData = {
         subgroup: {
           chart_account_subgroup_id: 22, subgroup_code: '4.5', subgroup_description: 'Transportadoras',
           type_group: { type_group_id: 6, type_group_description: 'Despesas Variáveis' },
+        },
+      },
+    },
+    {
+      id: 2, amount: 700, status_id: 3, due_date: '2026-07-12', cost_center_id: 5,
+      supplier: { trade_name: 'Fornecedor CM', legal_name: null },
+      cost_center: { cost_center_code: '05', cost_center_description: 'Produção' },
+      chart_account: {
+        account_code: '3.1.01', account_description: 'Compras de Mercadorias',
+        group: { group_description: 'Custos', type_group_id: 8 },
+        subgroup: {
+          chart_account_subgroup_id: 31, subgroup_code: '3.1', subgroup_description: 'Mercadorias',
+          type_group: { type_group_id: 7, type_group_description: 'Custos de Mercadorias' },
         },
       },
     },
@@ -141,16 +160,17 @@ describe('DashboardFinanceiro', () => {
     );
   });
 
-  it('renderiza os donuts Tipo, Despesas Fixas e Despesas Variáveis (nesta ordem)', async () => {
+  it('renderiza os 4 donuts na ordem Classificação → Custos de Mercadorias → Fixas → Variáveis', async () => {
     render(<DashboardFinanceiro />);
     expect(await screen.findByRole('heading', { name: 'Classificação Financeira' })).toBeInTheDocument();
     const titulos = screen
       .getAllByRole('heading', { level: 3 })
       .map((h) => h.textContent);
-    expect(titulos.slice(0, 3)).toEqual(['Classificação Financeira', 'Despesas Fixas', 'Despesas Variáveis']);
+    expect(titulos.slice(0, 4)).toEqual(['Classificação Financeira', 'Custos de Mercadorias', 'Despesas Fixas', 'Despesas Variáveis']);
     // fatias das legendas (cada donut com o seu recorte)
     expect(screen.getByText('Folha de Pagamento')).toBeInTheDocument();
     expect(screen.getByText('Transporte')).toBeInTheDocument();
+    expect(screen.getByText('Custos')).toBeInTheDocument();
   });
 
   it('o subtítulo do donut "Classificação Financeira" mostra mês + KPI (sem "Por tipo…")', async () => {
@@ -200,5 +220,17 @@ describe('DashboardFinanceiro', () => {
     // A fatia "Transporte" do donut de despesas variáveis é um botão da legenda.
     fireEvent.click(screen.getByRole('button', { name: /Transporte/ }));
     expect(await screen.findByRole('heading', { name: 'Despesas Variáveis · Transporte' })).toBeInTheDocument();
+  });
+
+  it('o donut "Custos de Mercadorias" filtra o detalhe por typeGroupId=7 (não vaza tipo 6)', async () => {
+    render(<DashboardFinanceiro />);
+    await screen.findByRole('heading', { name: 'Custos de Mercadorias' });
+    // A fatia 'Custos' do donut CM (nome acessível concatena SEM espaço: "CustosR$…";
+    // a fatia da Classificação é "Custos de MercadoriasR$…" e não casa este regex).
+    fireEvent.click(screen.getByRole('button', { name: /^CustosR\$/ }));
+    expect(await screen.findByRole('heading', { name: 'Custos de Mercadorias · Custos' })).toBeInTheDocument();
+    // Só a conta de subgrupo tipo 7 entra; a de tipo 6 (Fornecedor ABC) fica fora.
+    expect(screen.getByText('Fornecedor CM')).toBeInTheDocument();
+    expect(screen.queryByText('Fornecedor ABC')).toBeNull();
   });
 });

@@ -17,8 +17,10 @@ import {
   STATUS_ID_A_VENCER,
   STATUS_NAME_BY_ID,
   TYPE_GROUP_ID_DESPESAS,
+  TYPE_GROUP_ID_CUSTO,
   TYPE_GROUP_ID_DESPESA_FIXA,
   TYPE_GROUP_ID_DESPESA_VARIAVEL,
+  TYPE_GROUP_ID_CUSTO_MERCADORIAS,
 } from '@sheild/shared';
 import { supabase } from '../lib/supabaseClient';
 
@@ -1105,28 +1107,29 @@ export async function getDashboardData(month: number, year: number, scope: Dashb
   return { month, year, scope, kpis, statusBreakdown, documentTypeBreakdown, taxTypeBreakdown, paymentMethodBreakdown, supplierRanking, monthlyFlow: buckets, priorityAccounts };
 }
 
-// ── dashboard financeiro (DESPESAS) ──────────────────────────────────────────
-// Variante do dashboard escopada a DESPESAS (conta cujo plano de contas tem grupo com
-// Natureza = "Despesas", i.e. group.type_group_id === TYPE_GROUP_ID_DESPESAS — migration
-// 094). Mantém KPIs e filtros (empresa/mês/escopo/KPI), mas NÃO tem o gráfico mês a mês
-// (por isso lê só o mês, não o ano); troca os
-// donuts por Natureza (por GRUPO de despesa) + Tipo (Fixa/Variável, pelo type_group do
-// SUBGRUPO); e traz DOIS rankings por VALOR (R$) — CENTRO DE CUSTO e PLANO DE CONTAS — no lugar
-// do ranking de fornecedores e das "Contas críticas e prioritárias" (que seguem só no
-// dashboard de vencimentos). Reusa os helpers de getDashboardData (num, breakdownBy,
-// matchesKpiFilter). `month` é 0-indexed.
+// ── dashboard financeiro (DESPESAS + CUSTO) ──────────────────────────────────
+// Variante do dashboard escopada a DESPESAS + CUSTO (conta cujo plano de contas tem grupo
+// com Natureza "Despesas" OU "Custo", i.e. group.type_group_id ∈ {TYPE_GROUP_ID_DESPESAS,
+// TYPE_GROUP_ID_CUSTO} — migration 094; decisão do usuário 2026-07-22). Mantém KPIs e
+// filtros (empresa/mês/escopo/KPI), mas NÃO tem o gráfico mês a mês (por isso lê só o mês,
+// não o ano); traz 4 donuts — Classificação Financeira (Tipo do subgrupo: Fixa/Variável/
+// Custos de Mercadorias) + os 3 por GRUPO recortados pelo Tipo (7/5/6) — e DOIS rankings
+// por VALOR (R$) — CENTRO DE CUSTO e SUBGRUPO — no lugar do ranking de fornecedores e das
+// "Contas críticas e prioritárias" (que seguem só no dashboard de vencimentos). Reusa os
+// helpers de getDashboardData (num, breakdownBy, matchesKpiFilter). `month` é 0-indexed.
 
 // Embed aninhado (3 níveis) da classificação contábil — espelha os aliases/FKs já
 // validados em SELECT_WITH_EMBEDS, acrescentando type_group_id + a folha type_group para
-// (a) identificar despesa pelo grupo e (b) rotular o Tipo (Fixa/Variável) do subgrupo.
+// (a) identificar o ESCOPO pelo grupo (Natureza 2/8) e (b) rotular o Tipo do subgrupo.
 type ExpenseChartAccount = {
   account_code: string | null;
   account_description: string | null;
   group?: { group_description: string | null; type_group_id: number } | null;
   // Do subgrupo interessam: (a) a folha type_group — `type_group_description` rotula o donut
-  // "Tipo" e `type_group_id` (5=Fixa / 6=Variável) SEPARA os donuts de despesa fixa e variável
-  // (corte pelo ID, nunca pelo texto); (b) a identidade/rótulo do próprio subgrupo
-  // (`chart_account_subgroup_id`/`subgroup_code`/`subgroup_description`), base do "Ranking de contas".
+  // "Classificação Financeira" e `type_group_id` (5=Fixa / 6=Variável / 7=Custos de
+  // Mercadorias) SEPARA os 3 donuts por grupo (corte pelo ID, nunca pelo texto); (b) a
+  // identidade/rótulo do próprio subgrupo (`chart_account_subgroup_id`/`subgroup_code`/
+  // `subgroup_description`), base do "Ranking de contas".
   subgroup?: {
     chart_account_subgroup_id: number;
     subgroup_code: string | null;
@@ -1183,12 +1186,13 @@ const rankEntry = (
 export interface FinancialDashboardData {
   month: number; year: number; scope: DashboardScope;
   kpis: DashboardKpis;
-  // Por GRUPO de despesa (group_description), recortado pelo Tipo do SUBGRUPO: um donut
-  // só com as despesas FIXAS (type_group 5) e outro só com as VARIÁVEIS (type_group 6).
-  // Despesa cujo subgrupo não está classificado fica fora dos dois (não há terceiro balde).
+  // Por GRUPO (group_description), recortado pelo Tipo do SUBGRUPO: um donut só com as
+  // despesas FIXAS (type_group 5), um com as VARIÁVEIS (6) e um com os CUSTOS DE
+  // MERCADORIAS (7). Conta cujo subgrupo não está classificado fica fora dos três.
   despesaFixaBreakdown: LabelSlice[];
   despesaVariavelBreakdown: LabelSlice[];
-  tipoBreakdown: LabelSlice[]; // Despesa Fixa/Variável (type_group do subgrupo)
+  custoMercadoriasBreakdown: LabelSlice[];
+  tipoBreakdown: LabelSlice[]; // Fixa/Variável/Custos de Mercadorias (type_group do subgrupo)
   costCenterRanking: SupplierRank[]; // top CENTROS DE CUSTO por VALOR
   subgroupRanking: SupplierRank[]; // top SUBGRUPOS de plano de contas por VALOR (card "Ranking de contas")
   // Linhas que alimentam os 5 gráficos (= fMonth, já recortado por escopo/empresa/KPI). O
@@ -1198,11 +1202,14 @@ export interface FinancialDashboardData {
 }
 
 // Qual gráfico foi clicado. Donuts identificam o balde pelo `label`; rankings pela `bucketKey`.
-type ExpenseDrillChart = 'tipo' | 'fixa' | 'variavel' | 'costCenter' | 'subgroup';
+// 'grupoTipo' = os donuts POR GRUPO recortados pelo Tipo do subgrupo (Despesas Fixas /
+// Variáveis / Custos de Mercadorias) — genérico via `typeGroupId`, em vez de um case por donut.
+type ExpenseDrillChart = 'tipo' | 'grupoTipo' | 'costCenter' | 'subgroup';
 export interface ExpenseDrillTarget {
   chart: ExpenseDrillChart;
-  label?: string;     // donuts: rótulo da fatia clicada (pode ser 'outros' / 'não informado')
-  bucketKey?: string; // rankings: RankPick.key da linha clicada (SupplierRank.key)
+  label?: string;       // donuts: rótulo da fatia clicada (pode ser 'outros' / 'não informado')
+  bucketKey?: string;   // rankings: RankPick.key da linha clicada (SupplierRank.key)
+  typeGroupId?: number; // 'grupoTipo': o Tipo do subgrupo que recorta o donut (5/6/7)
 }
 
 // Casa as linhas de UM balde de donut (reproduz breakdownBy): fatia própria → rótulo igual;
@@ -1236,14 +1243,18 @@ const sgKeyOf = (r: ExpenseDetailRow): string =>
 export function filterExpenseDetailRows(
   rows: ExpenseDetailRow[], target: ExpenseDrillTarget,
 ): ExpenseDetailRow[] {
-  const { chart, label, bucketKey } = target;
+  const { chart, label, bucketKey, typeGroupId } = target;
   switch (chart) {
     case 'tipo':
       return matchDonutBucket(rows, tipoDescOf, label ?? '');
-    case 'fixa':
-      return matchDonutBucket(rows.filter((r) => tipoOf(r) === TYPE_GROUP_ID_DESPESA_FIXA), grupoOf, label ?? '');
-    case 'variavel':
-      return matchDonutBucket(rows.filter((r) => tipoOf(r) === TYPE_GROUP_ID_DESPESA_VARIAVEL), grupoOf, label ?? '');
+    case 'grupoTipo':
+      // Donut por GRUPO recortado pelo Tipo do subgrupo informado (5/6/7) — o MESMO
+      // pré-filtro da partição que gera os breakdowns, então reproduz a fatia exata.
+      // Alvo sem typeGroupId é malformado → nada casa. A guarda é REAL (não só o teste):
+      // sem ela, `tipoOf(r) === undefined` casaria linha SEM embed de subgrupo
+      // (undefined === undefined) e o ramo "outros" devolveria as não-classificadas.
+      if (typeGroupId == null) return [];
+      return matchDonutBucket(rows.filter((r) => tipoOf(r) === typeGroupId), grupoOf, label ?? '');
     case 'costCenter':
       return rows.filter((r) => ccKeyOf(r) === bucketKey);
     case 'subgroup':
@@ -1253,10 +1264,14 @@ export function filterExpenseDetailRows(
   }
 }
 
-// Despesa = o plano de contas da conta pertence a um grupo cuja Natureza é "Despesas".
-// Conta sem classificação (chart_account nulo / grupo ausente) NÃO é despesa (excluída).
-const isExpenseRow = (r: { chart_account?: { group?: { type_group_id: number } | null } | null }): boolean =>
-  r.chart_account?.group?.type_group_id === TYPE_GROUP_ID_DESPESAS;
+// Escopo do dashboard = grupo do plano de contas com Natureza "Despesas" OU "Custo"
+// (type_group_id 2 ou 8 — decisão do usuário 2026-07-22: custo de mercadoria é conta a
+// pagar e entra em TODA métrica). Conta sem classificação (chart_account nulo / grupo
+// ausente / outra natureza, ex. Passivo) fica FORA de tudo.
+const isExpenseRow = (r: { chart_account?: { group?: { type_group_id: number } | null } | null }): boolean => {
+  const tg = r.chart_account?.group?.type_group_id;
+  return tg === TYPE_GROUP_ID_DESPESAS || tg === TYPE_GROUP_ID_CUSTO;
+};
 
 // Linhas exibidas em cada ranking do dashboard financeiro (centro de custo e plano de contas).
 const RANKING_TOP_N = 12;
@@ -1293,25 +1308,28 @@ export async function getFinancialDashboardData(month: number, year: number, sco
   // Filtro do KPI clicado: só afeta os gráficos (os cards mantêm os totais).
   const fMonth = filter === 'total' ? monthRows : monthRows.filter((r) => matchesKpiFilter(r, filter, todayStr, in7));
 
-  // Donuts "Despesas Fixas" e "Despesas Variáveis": mesma dimensão (GRUPO de despesa,
-  // group_description), recortada pelo Tipo do SUBGRUPO. O corte é pelo `type_group_id`
-  // (5/6, constantes do catálogo) e NÃO pela descrição — o texto é livre e renomear a
-  // linha do catálogo esvaziaria os donuts em silêncio.
-  // Partição numa passada só; despesa com subgrupo não classificado (id 0 / embed ausente)
-  // não entra em nenhum dos dois — não há terceiro balde, por decisão de produto.
+  // Donuts "Despesas Fixas", "Despesas Variáveis" e "Custos de Mercadorias": mesma dimensão
+  // (GRUPO, group_description), recortada pelo Tipo do SUBGRUPO. O corte é pelo
+  // `type_group_id` (5/6/7, constantes do catálogo) e NÃO pela descrição — o texto é livre
+  // e renomear a linha do catálogo esvaziaria os donuts em silêncio.
+  // Partição numa passada só; conta com subgrupo não classificado (id 0 / embed ausente)
+  // não entra em nenhum dos três — não há balde residual, por decisão de produto.
   const fixaRows: ExpenseMonthRow[] = [];
   const variavelRows: ExpenseMonthRow[] = [];
+  const custoMercRows: ExpenseMonthRow[] = [];
   for (const r of fMonth) {
     const tipo = r.chart_account?.subgroup?.type_group?.type_group_id;
     if (tipo === TYPE_GROUP_ID_DESPESA_FIXA) fixaRows.push(r);
     else if (tipo === TYPE_GROUP_ID_DESPESA_VARIAVEL) variavelRows.push(r);
+    else if (tipo === TYPE_GROUP_ID_CUSTO_MERCADORIAS) custoMercRows.push(r);
   }
   const porGrupo = (rows: ExpenseMonthRow[]): LabelSlice[] =>
     breakdownBy(rows, (r) => r.chart_account?.group?.group_description ?? null);
   const despesaFixaBreakdown = porGrupo(fixaRows);
   const despesaVariavelBreakdown = porGrupo(variavelRows);
-  // Donut "Tipo": Despesa Fixa/Variável (descrição do type_group do SUBGRUPO — vem do
-  // catálogo, sem literal). Despesa sempre tem subgrupo Fixa/Variável (migrations 092/093).
+  const custoMercadoriasBreakdown = porGrupo(custoMercRows);
+  // Donut "Classificação Financeira": Fixa/Variável/Custos de Mercadorias (descrição do
+  // type_group do SUBGRUPO — vem do catálogo, sem literal; migrations 092/093).
   const tipoBreakdown = breakdownBy(fMonth, (r) => r.chart_account?.subgroup?.type_group?.type_group_description ?? null);
 
   // Rankings por VALOR (R$) — mesma agregação, dimensões diferentes. Top 12 cada (o
@@ -1366,5 +1384,5 @@ export async function getFinancialDashboardData(month: number, year: number, sco
     ),
   );
 
-  return { month, year, scope, kpis, despesaFixaBreakdown, despesaVariavelBreakdown, tipoBreakdown, costCenterRanking, subgroupRanking, detailRows: fMonth };
+  return { month, year, scope, kpis, despesaFixaBreakdown, despesaVariavelBreakdown, custoMercadoriasBreakdown, tipoBreakdown, costCenterRanking, subgroupRanking, detailRows: fMonth };
 }

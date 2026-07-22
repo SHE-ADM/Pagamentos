@@ -1,5 +1,11 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { TYPE_GROUP_ID_DESPESAS, TYPE_GROUP_ID_DESPESA_FIXA, TYPE_GROUP_ID_DESPESA_VARIAVEL } from '@sheild/shared';
+import {
+  TYPE_GROUP_ID_DESPESAS,
+  TYPE_GROUP_ID_CUSTO,
+  TYPE_GROUP_ID_DESPESA_FIXA,
+  TYPE_GROUP_ID_DESPESA_VARIAVEL,
+  TYPE_GROUP_ID_CUSTO_MERCADORIAS,
+} from '@sheild/shared';
 
 
 // Sessão mockada — o wrapper query() lê o token pela sessão.
@@ -27,10 +33,11 @@ type Row = {
   } | null;
 };
 
-// Tipo do SUBGRUPO: o donut de Fixas/Variáveis recorta pelo ID (5/6), não pelo texto.
+// Tipo do SUBGRUPO: os donuts por grupo recortam pelo ID (5/6/7), não pelo texto.
 const TIPO = {
   fixa: { id: TYPE_GROUP_ID_DESPESA_FIXA, desc: 'Despesas Fixas' },
   variavel: { id: TYPE_GROUP_ID_DESPESA_VARIAVEL, desc: 'Despesas Variáveis' },
+  custoMerc: { id: TYPE_GROUP_ID_CUSTO_MERCADORIAS, desc: 'Custos de Mercadorias' },
 } as const;
 
 const desp = (
@@ -38,13 +45,15 @@ const desp = (
   cc: { id: number; code: string; desc: string },
   tipo: { id: number; desc: string },
   ca: { id: number; code: string; desc: string; sg: { id: number; code: string; desc: string } }, due = '2026-01-10',
+  // Natureza do GRUPO — o escopo do dashboard aceita Despesas (2) OU Custo (8).
+  groupTg: number = TYPE_GROUP_ID_DESPESAS,
 ): Row => ({
   amount, status_id, due_date: due,
   cost_center_id: cc.id, chart_account_id: ca.id,
   cost_center: { cost_center_code: cc.code, cost_center_description: cc.desc },
   chart_account: {
     account_code: ca.code, account_description: ca.desc,
-    group: { group_description: groupDesc, type_group_id: TYPE_GROUP_ID_DESPESAS },
+    group: { group_description: groupDesc, type_group_id: groupTg },
     subgroup: {
       chart_account_subgroup_id: ca.sg.id, subgroup_code: ca.sg.code, subgroup_description: ca.sg.desc,
       type_group: { type_group_id: tipo.id, type_group_description: tipo.desc },
@@ -54,9 +63,11 @@ const desp = (
 
 const CC_ADM = { id: 1, code: '01', desc: 'Administrativo' };
 const CC_LOG = { id: 4, code: '04', desc: 'Logística' };
+const CC_PRO = { id: 5, code: '05', desc: 'Produção' };
 // O ranking de contas agrega pelo SUBGRUPO (sg) do plano; cada conta o carrega no `ca`.
 const CA_SAL = { id: 11, code: '6.1.01', desc: 'Salários e Ordenados', sg: { id: 61, code: '6.1', desc: 'Pessoal' } };
 const CA_FRE = { id: 22, code: '4.5.01', desc: 'Fretes sobre Compras', sg: { id: 45, code: '4.5', desc: 'Fretes' } };
+const CA_MER = { id: 33, code: '3.1.01', desc: 'Compras de Mercadorias', sg: { id: 31, code: '3.1', desc: 'Mercadorias' } };
 
 // Conta NÃO-despesa (Passivo, type_group_id=4) — deve ser EXCLUÍDA de tudo.
 const naoDespesa = (amount: number): Row => ({
@@ -74,6 +85,8 @@ const MONTH_ROWS: Row[] = [
   desp(100, 3, 'Folha de Pagamento', CC_ADM, TIPO.fixa, CA_SAL),
   desp(300, 3, 'Transporte', CC_LOG, TIPO.variavel, CA_FRE, '2026-01-15'),
   desp(50, 8, 'Transporte', CC_LOG, TIPO.variavel, CA_FRE, '2026-01-05'),
+  // Conta de CUSTO (grupo Natureza 8, subgrupo Custos de Mercadorias) — ENTRA no escopo.
+  desp(200, 3, 'Custos', CC_PRO, TIPO.custoMerc, CA_MER, '2026-01-12', TYPE_GROUP_ID_CUSTO),
   naoDespesa(999),
 ];
 
@@ -94,38 +107,45 @@ beforeEach(() => {
 describe('constantes de type_group (guarda — migration 094)', () => {
   it('mantém os ids do catálogo', () => {
     expect(TYPE_GROUP_ID_DESPESAS).toBe(2);
+    expect(TYPE_GROUP_ID_CUSTO).toBe(8);
     expect(TYPE_GROUP_ID_DESPESA_FIXA).toBe(5);
     expect(TYPE_GROUP_ID_DESPESA_VARIAVEL).toBe(6);
+    expect(TYPE_GROUP_ID_CUSTO_MERCADORIAS).toBe(7);
   });
 });
 
 describe('getFinancialDashboardData', () => {
-  it('exclui contas NÃO-despesa dos KPIs (Passivo fora)', async () => {
+  it('escopo = Despesas + Custo nos KPIs (Passivo fora, Custo DENTRO)', async () => {
     const d = await getFinancialDashboardData(0, 2026);
-    // 3 despesas (ids 1,2,4); a conta 3 (Passivo 999) é excluída.
-    expect(d.kpis.totalCount).toBe(3);
-    expect(d.kpis.totalValue).toBe(450);
-    expect(d.kpis.pagoCount).toBe(1); // id 4
+    // 3 despesas (100+300+50) + 1 custo (200); o Passivo (999) é excluído.
+    expect(d.kpis.totalCount).toBe(4);
+    expect(d.kpis.totalValue).toBe(650);
+    expect(d.kpis.pagoCount).toBe(1);
     expect(d.kpis.pagoValue).toBe(50);
   });
 
-  it('Despesas Fixas/Variáveis = GRUPO de despesa recortado pelo Tipo do subgrupo', async () => {
+  it('Fixas/Variáveis/Custos de Mercadorias = GRUPO recortado pelo Tipo do subgrupo', async () => {
     const d = await getFinancialDashboardData(0, 2026);
     // Fixa: só a conta de Folha (100). Variável: as duas de Transporte (300+50).
+    // Custos de Mercadorias: só a conta de Custos (200).
     expect(d.despesaFixaBreakdown).toEqual([
       expect.objectContaining({ label: 'Folha de Pagamento', count: 1, value: 100 }),
     ]);
     expect(d.despesaVariavelBreakdown).toEqual([
       expect.objectContaining({ label: 'Transporte', count: 2, value: 350 }),
     ]);
-    // A não-despesa (Passivo) fica fora dos dois.
+    expect(d.custoMercadoriasBreakdown).toEqual([
+      expect.objectContaining({ label: 'Custos', count: 1, value: 200 }),
+    ]);
+    // Cada recorte é exclusivo do seu tipo, e o Passivo fica fora dos três.
     const labels = [...d.despesaFixaBreakdown, ...d.despesaVariavelBreakdown].map((s) => s.label);
+    expect(labels).not.toContain('Custos');
     expect(labels).not.toContain('Passivo Tributário');
   });
 
   // O recorte é pelo type_group_id (catálogo), não pela descrição: subgrupo não
-  // classificado (id 0) não entra em NENHUM dos dois donuts.
-  it('despesa com subgrupo não classificado fica fora dos dois donuts', async () => {
+  // classificado (id 0) não entra em NENHUM dos três donuts por grupo.
+  it('conta com subgrupo não classificado fica fora dos três donuts por grupo', async () => {
     serve([{
       ...MONTH_ROWS[0],
       chart_account: {
@@ -136,21 +156,24 @@ describe('getFinancialDashboardData', () => {
     const d = await getFinancialDashboardData(0, 2026);
     expect(d.despesaFixaBreakdown).toHaveLength(0);
     expect(d.despesaVariavelBreakdown).toHaveLength(0);
-    expect(d.kpis.totalCount).toBe(1); // segue contando como despesa nos KPIs
+    expect(d.custoMercadoriasBreakdown).toHaveLength(0);
+    expect(d.kpis.totalCount).toBe(1); // segue contando no escopo dos KPIs
   });
 
-  it('Tipo = Fixa/Variável (descrição do type_group do subgrupo)', async () => {
+  it('Classificação Financeira = Fixa/Variável/Custos de Mercadorias (type_group do subgrupo)', async () => {
     const d = await getFinancialDashboardData(0, 2026);
     const labels = d.tipoBreakdown.map((s) => s.label);
     expect(labels).toContain('Despesas Fixas');
     expect(labels).toContain('Despesas Variáveis');
+    expect(labels).toContain('Custos de Mercadorias');
   });
 
   it('ranking de CENTROS DE CUSTO ordenado por VALOR (sem o Passivo)', async () => {
     const d = await getFinancialDashboardData(0, 2026);
     expect(d.costCenterRanking[0]).toMatchObject({ name: 'Logística', value: 350, count: 2 });
-    expect(d.costCenterRanking[1]).toMatchObject({ name: 'Administrativo', value: 100, count: 1 });
-    // A conta não-despesa (Passivo, centro "Fiscal") fica fora de tudo.
+    expect(d.costCenterRanking[1]).toMatchObject({ name: 'Produção', value: 200, count: 1 });
+    expect(d.costCenterRanking[2]).toMatchObject({ name: 'Administrativo', value: 100, count: 1 });
+    // A conta fora do escopo (Passivo, centro "Fiscal") fica fora de tudo.
     expect(d.costCenterRanking.map((r) => r.name)).not.toContain('Fiscal');
   });
 
@@ -197,10 +220,12 @@ describe('getFinancialDashboardData', () => {
 
   it('ranking de contas (por SUBGRUPO) ordenado por VALOR, sem o Passivo', async () => {
     const d = await getFinancialDashboardData(0, 2026);
-    // Agrega pelo subgrupo do plano: Fretes (300+50) > Pessoal (100). O Passivo é excluído.
-    expect(d.subgroupRanking).toHaveLength(2);
+    // Agrega pelo subgrupo do plano: Fretes (300+50) > Mercadorias (200) > Pessoal (100).
+    // O Passivo é excluído; o subgrupo de CUSTO entra (escopo 2+8).
+    expect(d.subgroupRanking).toHaveLength(3);
     expect(d.subgroupRanking[0]).toMatchObject({ name: 'Fretes', value: 350, count: 2 });
-    expect(d.subgroupRanking[1]).toMatchObject({ name: 'Pessoal', value: 100, count: 1 });
+    expect(d.subgroupRanking[1]).toMatchObject({ name: 'Mercadorias', value: 200, count: 1 });
+    expect(d.subgroupRanking[2]).toMatchObject({ name: 'Pessoal', value: 100, count: 1 });
   });
 
   it('faz uma ÚNICA leitura (o read do ano saiu com o gráfico mês a mês)', async () => {

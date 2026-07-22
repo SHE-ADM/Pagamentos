@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { TYPE_GROUP_ID_DESPESA_FIXA, TYPE_GROUP_ID_DESPESA_VARIAVEL } from '@sheild/shared';
+import { TYPE_GROUP_ID_DESPESA_FIXA, TYPE_GROUP_ID_DESPESA_VARIAVEL, TYPE_GROUP_ID_CUSTO_MERCADORIAS } from '@sheild/shared';
 
 // O módulo importa o client (auth) no topo — mock leve, os testes aqui são 100% puros.
 vi.mock('../lib/supabaseClient', () => ({
@@ -42,8 +42,9 @@ const mkRow = (amount: number, o: Opts = {}): ExpenseDetailRow => ({
   },
 });
 
-const F = TYPE_GROUP_ID_DESPESA_FIXA;      // 5
-const V = TYPE_GROUP_ID_DESPESA_VARIAVEL;  // 6
+const F = TYPE_GROUP_ID_DESPESA_FIXA;       // 5
+const V = TYPE_GROUP_ID_DESPESA_VARIAVEL;   // 6
+const CM = TYPE_GROUP_ID_CUSTO_MERCADORIAS; // 7
 
 describe('filterExpenseDetailRows — donut "Tipo"', () => {
   it('retorna só as linhas do type_group_description clicado', () => {
@@ -57,19 +58,31 @@ describe('filterExpenseDetailRows — donut "Tipo"', () => {
   });
 });
 
-describe('filterExpenseDetailRows — donuts Fixa/Variável (grupo recortado pelo tipo)', () => {
+describe('filterExpenseDetailRows — donuts por GRUPO recortados pelo tipo (grupoTipo)', () => {
   const rows = [
     mkRow(100, { tipoId: F, groupDesc: 'Folha', sgId: 1 }),
     mkRow(300, { tipoId: F, groupDesc: 'Serviços', sgId: 2 }),
     mkRow(999, { tipoId: V, groupDesc: 'Folha', sgId: 3 }), // MESMO grupo, mas VARIÁVEL
+    mkRow(777, { tipoId: CM, groupDesc: 'Custos', sgId: 4, tipoDesc: 'Custos de Mercadorias' }),
   ];
-  it('fixa: só o grupo clicado E do tipo FIXA (não vaza a linha variável de mesmo grupo)', () => {
-    const out = filterExpenseDetailRows(rows, { chart: 'fixa', label: 'Folha' });
+  it('FIXA: só o grupo clicado E do tipo 5 (não vaza a linha variável de mesmo grupo)', () => {
+    const out = filterExpenseDetailRows(rows, { chart: 'grupoTipo', typeGroupId: F, label: 'Folha' });
     expect(out.map((r) => r.amount)).toEqual([100]);
   });
-  it('variavel: só o grupo clicado E do tipo VARIÁVEL', () => {
-    const out = filterExpenseDetailRows(rows, { chart: 'variavel', label: 'Folha' });
+  it('VARIÁVEL: só o grupo clicado E do tipo 6', () => {
+    const out = filterExpenseDetailRows(rows, { chart: 'grupoTipo', typeGroupId: V, label: 'Folha' });
     expect(out.map((r) => r.amount)).toEqual([999]);
+  });
+  it('CUSTO DE MERCADORIAS: só o grupo clicado E do tipo 7', () => {
+    const out = filterExpenseDetailRows(rows, { chart: 'grupoTipo', typeGroupId: CM, label: 'Custos' });
+    expect(out.map((r) => r.amount)).toEqual([777]);
+  });
+  it('sem typeGroupId, não casa nada (guarda contra alvo malformado)', () => {
+    // A linha SEM subgrupo é o caso que fura sem a guarda: tipoOf() devolve undefined e
+    // `undefined === undefined` casaria — o ramo "outros" devolveria as não-classificadas.
+    const comSemSubgrupo = [...rows, mkRow(555, { sgId: null, groupDesc: 'Folha' })];
+    expect(filterExpenseDetailRows(comSemSubgrupo, { chart: 'grupoTipo', label: 'Folha' })).toEqual([]);
+    expect(filterExpenseDetailRows(comSemSubgrupo, { chart: 'grupoTipo', label: 'outros' })).toEqual([]);
   });
 });
 
@@ -117,10 +130,10 @@ describe('topBucketLabels + fatia "outros"', () => {
     expect(top.has('G9')).toBe(false);
   });
   it('clicar numa fatia própria retorna só aquele grupo', () => {
-    expect(filterExpenseDetailRows(rows, { chart: 'fixa', label: 'G1' })).toHaveLength(2);
+    expect(filterExpenseDetailRows(rows, { chart: 'grupoTipo', typeGroupId: F, label: 'G1' })).toHaveLength(2);
   });
   it('clicar em "outros" retorna o COMPLEMENTO (o grupo fora do top-8)', () => {
-    const outros = filterExpenseDetailRows(rows, { chart: 'fixa', label: 'outros' });
+    const outros = filterExpenseDetailRows(rows, { chart: 'grupoTipo', typeGroupId: F, label: 'outros' });
     expect(outros).toHaveLength(1);
     expect(outros[0].chart_account?.group?.group_description).toBe('G9');
   });

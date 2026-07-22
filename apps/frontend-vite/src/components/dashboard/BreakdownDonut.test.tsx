@@ -37,7 +37,7 @@ describe('BreakdownDonut', () => {
     expect(container.querySelector('.inset-3')).not.toBeNull();
   });
 
-  it('size="lg" aumenta o círculo E o furo (anel proporcional) — /dashboard_despesas', () => {
+  it('size="lg" aumenta o círculo E o furo (anel proporcional) — API sem call site atual', () => {
     const { container } = render(<BreakdownDonut segs={SEGS} colorFor={color} size="lg" />);
     expect(circleOf(container)?.className).toContain('w-[176px]');
     // Furo maior junto com o diâmetro: com inset-3 o anel ficaria fino demais no lg.
