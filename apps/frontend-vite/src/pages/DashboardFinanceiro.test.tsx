@@ -153,13 +153,14 @@ describe('DashboardFinanceiro', () => {
     expect(screen.getByText('Transporte')).toBeInTheDocument();
   });
 
-  it('o subtítulo do donut "Classificação Financeira" reflete o KPI ativo', async () => {
+  it('o subtítulo do donut "Classificação Financeira" mostra mês + KPI (sem "Por tipo…")', async () => {
     render(<DashboardFinanceiro />);
-    // Abre filtrado por "A vencer" → sufixo "- A vencer" no subtítulo (período = mês atual).
-    expect(await screen.findByText(/^Por tipo \(fixa\/variável\) · .+ - A vencer$/)).toBeInTheDocument();
-    // Limpar o filtro (✕) → volta a 'total', sem sufixo de KPI.
+    // Abre filtrado por "A vencer" → subtítulo = "<mês> - A vencer", SEM o prefixo antigo.
+    const sub = await screen.findByText(/ - A vencer$/);
+    expect(sub.textContent).not.toMatch(/Por tipo/);
+    // Limpar o filtro (✕) → volta a 'total' → só o mês, sem sufixo de KPI.
     fireEvent.click(screen.getByText(/filtrando: A vencer/i));
-    expect(await screen.findByText(/^Por tipo \(fixa\/variável\) · [^-]+$/)).toBeInTheDocument();
+    await vi.waitFor(() => expect(screen.queryByText(/ - A vencer$/)).toBeNull());
   });
 
   it('renderiza os rankings de centros de custo e de plano de contas', async () => {
