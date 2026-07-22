@@ -3,7 +3,8 @@
 // GRUPO type_group_id 2 e 8). Mesma casca do dashboard de vencimentos (pages/Dashboard.tsx)
 // — 5 KPIs e filtros de empresa/mês/escopo/KPI (que aqui ABRE em "A vencer") — mas sem o
 // gráfico mês a mês e com os gráficos trocados para a dimensão contábil (4 donuts em 2 linhas
-// de 2, top-6 + "outros" — no máximo 7 fatias visíveis cada):
+// de 2, size="sm"+dense, top-6 + "outros" — no máximo 7 fatias visíveis cada; compactos de
+// propósito para sobrar altura de viewport aos rankings abaixo, que não têm scroll próprio):
 //   • donut "Classificação Financeira" — por Tipo do subgrupo (Fixa/Variável/Custos de Mercadorias)
 //   • donut "Custos de Mercadorias" — custos (Tipo 7) por GRUPO do plano de contas
 //   • donut "Despesas Fixas" — despesas FIXAS (Tipo 5) por GRUPO
@@ -124,34 +125,40 @@ export default function DashboardFinanceiro() {
             natural do grid já põe Fixas/Variáveis na linha de baixo, sem reordenar o DOM):
             linha 1 = Classificação Financeira (por Tipo do subgrupo) + Custos de Mercadorias;
             linha 2 = Despesas Fixas + Despesas Variáveis (GRUPO recortado por tipo).
-            size="lg": com só 2 por linha, cabe um anel maior. */}
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mb-3">
+            size="sm" + dense (padding/anel/gaps reduzidos — pedido do usuário 2026-07-22):
+            os 4 donuts ocupam menos altura para sobrar mais viewport para os rankings abaixo,
+            que mostram até 12 linhas cada e não têm scroll próprio. */}
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 mb-2">
           <DonutCard
             title="Classificação Financeira"
             subtitle={`${periodo}${kpiSuffix}`}
             slices={data?.tipoBreakdown}
-            size="lg"
+            size="sm"
+            dense
             onSliceSelect={(label) => openDrill({ chart: 'tipo', label }, `Classificação Financeira · ${label}`)}
           />
           <DonutCard
             title="Custos de Mercadorias"
             subtitle={`Por grupo · ${periodo}`}
             slices={data?.custoMercadoriasBreakdown}
-            size="lg"
+            size="sm"
+            dense
             onSliceSelect={(label) => openDrill({ chart: 'grupoTipo', typeGroupId: TYPE_GROUP_ID_CUSTO_MERCADORIAS, label }, `Custos de Mercadorias · ${label}`)}
           />
           <DonutCard
             title="Despesas Fixas"
             subtitle={`Por grupo · ${periodo}`}
             slices={data?.despesaFixaBreakdown}
-            size="lg"
+            size="sm"
+            dense
             onSliceSelect={(label) => openDrill({ chart: 'grupoTipo', typeGroupId: TYPE_GROUP_ID_DESPESA_FIXA, label }, `Despesas Fixas · ${label}`)}
           />
           <DonutCard
             title="Despesas Variáveis"
             subtitle={`Por grupo · ${periodo}`}
             slices={data?.despesaVariavelBreakdown}
-            size="lg"
+            size="sm"
+            dense
             onSliceSelect={(label) => openDrill({ chart: 'grupoTipo', typeGroupId: TYPE_GROUP_ID_DESPESA_VARIAVEL, label }, `Despesas Variáveis · ${label}`)}
           />
         </div>
