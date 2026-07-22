@@ -22,7 +22,7 @@ import {
 import { getErrorMessage } from '../lib/getErrorMessage';
 import { useDashboardFilters } from '../hooks/useDashboardFilters';
 import Alert from '../components/atoms/Alert';
-import { MONTHS_FULL } from '../components/dashboard/constants';
+import { MONTHS_FULL, KPI_FILTER_LABEL } from '../components/dashboard/constants';
 import { ChartCard } from '../components/dashboard/ChartCard';
 import { DonutCard } from '../components/dashboard/DonutCard';
 import { DashboardHeader } from '../components/dashboard/DashboardHeader';
@@ -82,6 +82,9 @@ export default function DashboardFinanceiro() {
   // Rótulo do período, repetido no subtítulo dos 3 donuts (extraído do JSX — ternário
   // inline repetido dispara S3358 no SonarLint).
   const periodo = scope === 'all' ? 'Todas as contas' : MONTHS_FULL[month];
+  // Sufixo do KPI ativo no subtítulo do donut "Classificação Financeira" (ex.: "· Julho -
+  // A vencer"). 'total' = sem filtro → sem sufixo.
+  const kpiSuffix = filter === 'total' ? '' : ` - ${KPI_FILTER_LABEL[filter]}`;
 
   return (
     <div className="flex flex-col h-full">
@@ -115,7 +118,7 @@ export default function DashboardFinanceiro() {
         <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3 mb-3">
           <DonutCard
             title="Classificação Financeira"
-            subtitle={`Por tipo (fixa/variável) · ${periodo}`}
+            subtitle={`Por tipo (fixa/variável) · ${periodo}${kpiSuffix}`}
             slices={data?.tipoBreakdown}
             size="lg"
             onSliceSelect={(label) => openDrill({ chart: 'tipo', label }, `Classificação Financeira · ${label}`)}
