@@ -1,6 +1,6 @@
 // src/components/dashboard/KpiCard.tsx
 // Card de KPI clicável (= filtro) da faixa superior dos dashboards, compartilhado por
-// /dashboard_vencimentos e /dashboard_financeiro — antes o bloco era duplicado literalmente
+// /dashboard_vencimentos e /dashboard_despesas — antes o bloco era duplicado literalmente
 // nas duas páginas, então qualquer ajuste visual precisava ser feito (e lembrado) duas vezes.
 // Apresentacional puro: quem decide o que está ativo e o que fazer no clique é a página.
 import type { LucideIcon } from 'lucide-react';

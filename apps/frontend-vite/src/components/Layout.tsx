@@ -151,8 +151,8 @@ export default function Layout({ children }: Readonly<{ children: ReactNode }>) 
           <p className="px-3 pt-2.5 pb-1 text-xs font-bold tracking-widest text-slate-400 uppercase">
             Dashboards
           </p>
-          <NavLink to="/dashboard_financeiro" onClick={closeNav} className={({ isActive }) => navLink({ active: isActive })}>
-            <PieChart size={16} /> Indicadores financeiros
+          <NavLink to="/dashboard_despesas" onClick={closeNav} className={({ isActive }) => navLink({ active: isActive })}>
+            <PieChart size={16} /> Indicadores de despesas
           </NavLink>
           <NavLink to="/dashboard_vencimentos" onClick={closeNav} className={({ isActive }) => navLink({ active: isActive })}>
             <BarChart2 size={16} /> Indicadores de Vencimentos

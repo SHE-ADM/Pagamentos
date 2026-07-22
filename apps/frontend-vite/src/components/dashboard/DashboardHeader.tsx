@@ -1,7 +1,7 @@
 // src/components/dashboard/DashboardHeader.tsx
 // Cabeçalho dos dashboards: título + indicador do filtro de KPI ativo, e a barra de
 // controles (empresa · escopo · mês · ano · Atualizar). Compartilhado por
-// /dashboard_vencimentos e /dashboard_financeiro — o bloco era duplicado LITERALMENTE nas
+// /dashboard_vencimentos e /dashboard_despesas — o bloco era duplicado LITERALMENTE nas
 // duas páginas (84 linhas com apenas três diferenças: título, o assunto do subtítulo e o
 // id/name do <select>), então corrigir um detalhe ali exigia lembrar de fazê-lo duas vezes.
 //

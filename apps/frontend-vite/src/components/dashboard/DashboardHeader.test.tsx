@@ -31,7 +31,7 @@ const makeFilters = (over: Partial<DashboardFilters> = {}): DashboardFilters => 
 });
 
 const base = {
-  title: 'Indicadores financeiros',
+  title: 'Indicadores de despesas',
   subject: 'Despesas',
   idPrefix: 'dashboard-financeiro',
   loading: false,
@@ -41,7 +41,7 @@ const base = {
 describe('DashboardHeader', () => {
   it('mostra título e o assunto do período no subtítulo', () => {
     render(<DashboardHeader {...base} filters={makeFilters()} />);
-    expect(screen.getByRole('heading', { name: 'Indicadores financeiros' })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Indicadores de despesas' })).toBeInTheDocument();
     expect(screen.getByText(`Despesas · ${MONTHS_FULL[6]} 2026`, { exact: false })).toBeInTheDocument();
   });
 
