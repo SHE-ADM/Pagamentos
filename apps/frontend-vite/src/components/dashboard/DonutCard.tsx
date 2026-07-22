@@ -23,6 +23,9 @@ interface DonutCardProps {
   slices: readonly DonutSlice[] | undefined;
   size?: DonutSize;
   dense?: boolean;
+  /** Diâmetro CONTÍNUO (px) que sobrepõe `size` — repassado ao BreakdownDonut. Ver o
+   *  comentário de `diameterPx` em BreakdownDonut.tsx (escala proporcional entre donuts). */
+  diameterPx?: number;
   /** Cor por fatia; o padrão é a paleta cíclica (situação usa a semântica). */
   colorFor?: (label: string, i: number) => string;
   /** Ao clicar numa fatia da legenda, recebe o RÓTULO da fatia (drill-down). Sem ele, o
@@ -36,6 +39,7 @@ export function DonutCard({
   slices,
   size,
   dense = false,
+  diameterPx,
   colorFor = paletteColor,
   onSliceSelect,
 }: Readonly<DonutCardProps>) {
@@ -49,6 +53,7 @@ export function DonutCard({
         segs={segs}
         colorFor={colorFor}
         size={size}
+        diameterPx={diameterPx}
         onSelect={onSliceSelect ? (seg) => onSliceSelect(seg.label) : undefined}
       />
     </ChartCard>

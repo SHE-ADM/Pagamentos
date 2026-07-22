@@ -38,6 +38,22 @@ import { KpiRow, type KpiEntry } from '../components/dashboard/KpiRow';
 import { RankingList } from '../components/dashboard/RankingList';
 import { ExpenseDetailModal } from '../components/dashboard/ExpenseDetailModal';
 
+// Diâmetro do anel dos 4 donuts ESCALADO proporcionalmente ao valor total (R$) de cada um
+// ENTRE SI — o de maior valor fica no MAX; os demais escalam linearmente até o MIN (nunca
+// menor, para o texto central continuar legível). Pedido do usuário 2026-07-22.
+const DONUT_MIN_PX = 84;
+const DONUT_MAX_PX = 124;
+
+function sumSliceValues(slices: readonly { value: number }[] | undefined): number {
+  return (slices ?? []).reduce((s, x) => s + x.value, 0);
+}
+
+function scaledDonutDiameter(value: number, maxValue: number): number {
+  if (maxValue <= 0) return DONUT_MIN_PX;
+  const ratio = Math.min(1, Math.max(0, value / maxValue));
+  return Math.round(DONUT_MIN_PX + ratio * (DONUT_MAX_PX - DONUT_MIN_PX));
+}
+
 export default function DashboardFinanceiro() {
   const filters = useDashboardFilters('aVencer');
   const { month, year, scope, filter } = filters;
@@ -94,6 +110,16 @@ export default function DashboardFinanceiro() {
   // "Julho - A vencer"). 'total' = sem filtro → só o mês, sem sufixo.
   const kpiSuffix = filter === 'total' ? '' : ` - ${KPI_FILTER_LABEL[filter]}`;
 
+  // Totais (R$) de cada donut, para escalar o anel proporcionalmente entre os 4 (ver
+  // scaledDonutDiameter). Com `data` nulo (carregando), todos ficam no MIN (maxTotal=0).
+  const donutTotals = {
+    tipo: sumSliceValues(data?.tipoBreakdown),
+    custoMerc: sumSliceValues(data?.custoMercadoriasBreakdown),
+    fixa: sumSliceValues(data?.despesaFixaBreakdown),
+    variavel: sumSliceValues(data?.despesaVariavelBreakdown),
+  };
+  const maxDonutTotal = Math.max(donutTotals.tipo, donutTotals.custoMerc, donutTotals.fixa, donutTotals.variavel);
+
   return (
     <div className="flex flex-col h-full">
       <div className="h-0.5 bg-linear-to-r from-brand to-brand-dark" />
@@ -125,9 +151,11 @@ export default function DashboardFinanceiro() {
             natural do grid já põe Fixas/Variáveis na linha de baixo, sem reordenar o DOM):
             linha 1 = Classificação Financeira (por Tipo do subgrupo) + Custos de Mercadorias;
             linha 2 = Despesas Fixas + Despesas Variáveis (GRUPO recortado por tipo).
-            size="sm" + dense (padding/anel/gaps reduzidos — pedido do usuário 2026-07-22):
-            os 4 donuts ocupam menos altura para sobrar mais viewport para os rankings abaixo,
-            que mostram até 12 linhas cada e não têm scroll próprio. */}
+            size="sm" + dense (padding/gaps reduzidos — pedido do usuário 2026-07-22): os 4
+            donuts ocupam menos altura para sobrar mais viewport para os rankings abaixo, que
+            mostram até 12 linhas cada e não têm scroll próprio. `diameterPx` sobrepõe o
+            diâmetro de `size` com uma escala PROPORCIONAL ao valor (R$) de cada donut entre
+            si (ver scaledDonutDiameter) — pedido do usuário na mesma data. */}
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 mb-2">
           <DonutCard
             title="Classificação Financeira"
@@ -135,6 +163,7 @@ export default function DashboardFinanceiro() {
             slices={data?.tipoBreakdown}
             size="sm"
             dense
+            diameterPx={scaledDonutDiameter(donutTotals.tipo, maxDonutTotal)}
             onSliceSelect={(label) => openDrill({ chart: 'tipo', label }, `Classificação Financeira · ${label}`)}
           />
           <DonutCard
@@ -143,6 +172,7 @@ export default function DashboardFinanceiro() {
             slices={data?.custoMercadoriasBreakdown}
             size="sm"
             dense
+            diameterPx={scaledDonutDiameter(donutTotals.custoMerc, maxDonutTotal)}
             onSliceSelect={(label) => openDrill({ chart: 'grupoTipo', typeGroupId: TYPE_GROUP_ID_CUSTO_MERCADORIAS, label }, `Custos de Mercadorias · ${label}`)}
           />
           <DonutCard
@@ -151,6 +181,7 @@ export default function DashboardFinanceiro() {
             slices={data?.despesaFixaBreakdown}
             size="sm"
             dense
+            diameterPx={scaledDonutDiameter(donutTotals.fixa, maxDonutTotal)}
             onSliceSelect={(label) => openDrill({ chart: 'grupoTipo', typeGroupId: TYPE_GROUP_ID_DESPESA_FIXA, label }, `Despesas Fixas · ${label}`)}
           />
           <DonutCard
@@ -159,6 +190,7 @@ export default function DashboardFinanceiro() {
             slices={data?.despesaVariavelBreakdown}
             size="sm"
             dense
+            diameterPx={scaledDonutDiameter(donutTotals.variavel, maxDonutTotal)}
             onSliceSelect={(label) => openDrill({ chart: 'grupoTipo', typeGroupId: TYPE_GROUP_ID_DESPESA_VARIAVEL, label }, `Despesas Variáveis · ${label}`)}
           />
         </div>

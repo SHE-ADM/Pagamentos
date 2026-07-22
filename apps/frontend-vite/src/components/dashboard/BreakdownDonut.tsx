@@ -7,7 +7,14 @@
 //   sm  — /dashboard_vencimentos (4 donuts dividem a mesma linha no xl)
 //   md  — padrão; hoje NENHUM call site o usa, mas é o neutro do componente e está coberto
 //         por teste — não é código morto a remover
-//   lg  — /dashboard_despesas (4 donuts em 2 linhas de 2 — cabe um anel maior que o sm)
+//   lg  — sem call site atual; API do componente, coberto por teste
+// `diameterPx` (opcional) SOBREPÕE o círculo/furo de `size` com um diâmetro CONTÍNUO em px —
+// usado por /dashboard_despesas para escalar os 4 donuts PROPORCIONALMENTE ao valor total
+// (R$) de cada um entre si (o maior valor = o maior anel). Inline style, não classe: é um
+// número computado em runtime a partir do dado, sem token Tailwind discreto que sirva (mesma
+// exceção já adotada no gradiente cônico abaixo e nas barras de RankingList). Sem
+// `diameterPx`, o comportamento é 100% o de antes (token fixo via `size`).
+import type { CSSProperties } from 'react';
 import { fmtMoney, fmtMoneyCompact } from '../../lib/format';
 
 type DonutSeg = { key: string; label: string; value: number };
@@ -16,14 +23,20 @@ type DonutSeg = { key: string; label: string; value: number };
 export type DonutSize = 'sm' | 'md' | 'lg';
 
 // Classes literais completas por tamanho (Tailwind JIT — nunca concatenar nome de classe).
-// `hole` acompanha o diâmetro para a espessura do anel ficar proporcional.
+// `hole` acompanha o diâmetro para a espessura do anel ficar proporcional. Fonte do valor
+// central: `font-sans` (NÃO `font-mono`) + `font-normal` (SEM negrito) — pedido do usuário
+// 2026-07-22; o `font-mono` permanece só na legenda (valores por fatia), fora de escopo.
 const SIZE_CLS: Record<DonutSize, { circle: string; hole: string; centerNum: string }> = {
-  sm: { circle: 'relative w-[108px] h-[108px] shrink-0', hole: 'absolute inset-3', centerNum: 'font-mono text-sm font-semibold text-slate-900 leading-none text-center' },
-  md: { circle: 'relative w-[120px] h-[120px] shrink-0', hole: 'absolute inset-3', centerNum: 'font-mono text-sm font-semibold text-slate-900 leading-none text-center' },
-  lg: { circle: 'relative w-[176px] h-[176px] shrink-0', hole: 'absolute inset-5', centerNum: 'font-mono text-base font-semibold text-slate-900 leading-none text-center' },
+  sm: { circle: 'relative w-[108px] h-[108px] shrink-0', hole: 'absolute inset-3', centerNum: 'font-sans text-sm font-normal text-slate-900 leading-none text-center' },
+  md: { circle: 'relative w-[120px] h-[120px] shrink-0', hole: 'absolute inset-3', centerNum: 'font-sans text-sm font-normal text-slate-900 leading-none text-center' },
+  lg: { circle: 'relative w-[176px] h-[176px] shrink-0', hole: 'absolute inset-5', centerNum: 'font-sans text-base font-normal text-slate-900 leading-none text-center' },
 };
 
-export function BreakdownDonut({ segs, colorFor, size = 'md', onSelect }: { segs: DonutSeg[]; colorFor: (label: string, i: number) => string; size?: DonutSize; onSelect?: (seg: DonutSeg) => void }) {
+// Espessura do anel quando o diâmetro é DINÂMICO: mesma proporção furo/diâmetro do preset
+// "sm" (inset-3 = 12px sobre 108px ≈ 11%), para o anel manter a aparência dos demais.
+const DYNAMIC_HOLE_RATIO = 0.11;
+
+export function BreakdownDonut({ segs, colorFor, size = 'md', onSelect, diameterPx }: { segs: DonutSeg[]; colorFor: (label: string, i: number) => string; size?: DonutSize; onSelect?: (seg: DonutSeg) => void; diameterPx?: number }) {
   // Ordena as fatias por VALOR (R$) decrescente — legenda e arcos na mesma ordem.
   const ordered = [...segs].sort((a, b) => b.value - a.value);
   // Arcos, % e total central proporcionais ao VALOR (R$) — a contagem de contas saiu do gráfico.
@@ -36,16 +49,22 @@ export function BreakdownDonut({ segs, colorFor, size = 'md', onSelect }: { segs
     const b = ((start + s.value) / totalValue) * 360;
     return `${colorFor(s.label, i)} ${a}deg ${b}deg`;
   });
-  const { circle: circleCls, hole: holeCls, centerNum: centerNumCls } = SIZE_CLS[size];
+  const preset = SIZE_CLS[size];
+  const isDynamic = diameterPx != null;
+  const circleCls = isDynamic ? 'relative shrink-0' : preset.circle;
+  const circleStyle: CSSProperties | undefined = isDynamic ? { width: diameterPx, height: diameterPx } : undefined;
+  const holeCls = isDynamic ? 'absolute' : preset.hole;
+  const holeStyle: CSSProperties | undefined = isDynamic ? { inset: Math.round(diameterPx! * DYNAMIC_HOLE_RATIO) } : undefined;
+  const centerNumCls = preset.centerNum; // tamanho de fonte segue o tier de `size`, independente do diâmetro dinâmico
   const rowCls = 'flex items-center gap-2 text-xs';
   const pctCls = 'text-slate-600 w-9 text-right';
   const emptyCls = 'text-xs text-slate-500';
   return (
     <div className="flex items-center gap-4">
-      <div className={circleCls}>
+      <div className={circleCls} style={circleStyle}>
         {/* gradiente cônico → inline style (sem equivalente Tailwind) */}
         <div className="w-full h-full rounded-full" style={{ background: `conic-gradient(${stops.join(', ') || 'var(--color-slate-200) 0deg 360deg'})` }} />
-        <div className={`${holeCls} rounded-full bg-white flex flex-col items-center justify-center shadow-[inset_0_1px_2px_rgba(0,0,0,0.04)]`}>
+        <div className={`${holeCls} rounded-full bg-white flex flex-col items-center justify-center shadow-[inset_0_1px_2px_rgba(0,0,0,0.04)]`} style={holeStyle}>
           <span className={centerNumCls}>{fmtMoneyCompact(sumValue)}</span>
           <span className="text-xs text-slate-500 mt-0.5">total</span>
         </div>
