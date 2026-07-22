@@ -3,7 +3,7 @@
 // dashboard de vencimentos (pages/Dashboard.tsx) — 5 KPIs e filtros de empresa/mês/escopo/
 // KPI (que aqui ABRE em "A vencer") — mas sem o gráfico mês a mês e com os gráficos
 // trocados para a dimensão contábil:
-//   • donut "Tipo" — despesas por Tipo do subgrupo (Fixa/Variável)
+//   • donut "Classificação Financeira" — despesas por Tipo do subgrupo (Fixa/Variável)
 //   • donut "Despesas Fixas" — despesas FIXAS por GRUPO do plano de contas
 //   • donut "Despesas Variáveis" — idem, só as VARIÁVEIS (mesma dimensão, outro recorte)
 //   • rankings por VALOR (R$): CENTROS DE CUSTO + PLANO DE CONTAS (no lugar do de fornecedores
@@ -114,11 +114,11 @@ export default function DashboardFinanceiro() {
             tipo — Despesas Fixas e Despesas Variáveis (nesta ordem). */}
         <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3 mb-3">
           <DonutCard
-            title="Tipo"
+            title="Classificação Financeira"
             subtitle={`Por tipo (fixa/variável) · ${periodo}`}
             slices={data?.tipoBreakdown}
             size="lg"
-            onSliceSelect={(label) => openDrill({ chart: 'tipo', label }, `Tipo · ${label}`)}
+            onSliceSelect={(label) => openDrill({ chart: 'tipo', label }, `Classificação Financeira · ${label}`)}
           />
           <DonutCard
             title="Despesas Fixas"

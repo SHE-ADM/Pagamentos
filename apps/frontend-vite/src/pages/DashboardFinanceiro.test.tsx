@@ -143,11 +143,11 @@ describe('DashboardFinanceiro', () => {
 
   it('renderiza os donuts Tipo, Despesas Fixas e Despesas Variáveis (nesta ordem)', async () => {
     render(<DashboardFinanceiro />);
-    expect(await screen.findByRole('heading', { name: 'Tipo' })).toBeInTheDocument();
+    expect(await screen.findByRole('heading', { name: 'Classificação Financeira' })).toBeInTheDocument();
     const titulos = screen
       .getAllByRole('heading', { level: 3 })
       .map((h) => h.textContent);
-    expect(titulos.slice(0, 3)).toEqual(['Tipo', 'Despesas Fixas', 'Despesas Variáveis']);
+    expect(titulos.slice(0, 3)).toEqual(['Classificação Financeira', 'Despesas Fixas', 'Despesas Variáveis']);
     // fatias das legendas (cada donut com o seu recorte)
     expect(screen.getByText('Folha de Pagamento')).toBeInTheDocument();
     expect(screen.getByText('Transporte')).toBeInTheDocument();
