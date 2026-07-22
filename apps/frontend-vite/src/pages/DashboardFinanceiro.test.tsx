@@ -173,23 +173,33 @@ describe('DashboardFinanceiro', () => {
     expect(screen.getByText('Custos')).toBeInTheDocument();
   });
 
-  it('o anel escala PROPORCIONALMENTE ao valor total (R$) de cada donut entre si', async () => {
+  it('os 4 anéis usam o MESMO diâmetro — o gerado para o maior valor (R$) do conjunto', async () => {
+    // Correção 2026-07-22: a 1ª versão escalava CADA donut proporcionalmente ao seu próprio
+    // total, o que com valores próximos (ex.: 340k vs 324k) produzia uma diferença de ~1px —
+    // visualmente incoerente. Agora todos os 4 usam o diâmetro do MAIOR total (aqui o de
+    // "Classificação Financeira", superset dos demais) — nunca assimétrico, nunca por acaso.
     render(<DashboardFinanceiro />);
     await screen.findByRole('heading', { name: 'Classificação Financeira' });
     const ringOf = (title: string): HTMLElement | null =>
       (screen.getByRole('heading', { name: title }).closest('.card') as HTMLElement | null)
         ?.querySelector('.relative.shrink-0') as HTMLElement | null;
-    // tipoBreakdown soma 38000 (22000+10000+6000) — é o MAIOR total dos 4 (superset dos
-    // demais) → ratio 1 → diâmetro no MÁXIMO da escala.
     const tipo = ringOf('Classificação Financeira');
-    // custoMercadoriasBreakdown soma 6000 — o MENOR total dos 4 → diâmetro bem menor.
     const custoMerc = ringOf('Custos de Mercadorias');
+    const fixa = ringOf('Despesas Fixas');
+    const variavel = ringOf('Despesas Variáveis');
+    // tipoBreakdown soma 38000 (22000+10000+6000) — é o MAIOR total dos 4 → diâmetro no MÁXIMO.
     expect(tipo?.style.width).toBe('124px');
-    expect(parseFloat(custoMerc?.style.width ?? '0')).toBeLessThan(parseFloat(tipo?.style.width ?? '0'));
-    // Furo (inset) acompanha o diâmetro — nunca um valor fixo entre donuts de tamanhos diferentes.
-    const tipoHole = tipo?.closest('.relative')?.querySelector('.rounded-full.bg-white') as HTMLElement | null;
-    const custoHole = custoMerc?.closest('.relative')?.querySelector('.rounded-full.bg-white') as HTMLElement | null;
-    expect(tipoHole?.style.inset).not.toBe(custoHole?.style.inset);
+    // Os outros três — de totais BEM diferentes entre si (6000/10000/22000) — recebem o
+    // MESMO diâmetro do maior, não um valor proporcional ao próprio total.
+    expect(custoMerc?.style.width).toBe('124px');
+    expect(fixa?.style.width).toBe('124px');
+    expect(variavel?.style.width).toBe('124px');
+    // Furo (inset) também igual — acompanha o diâmetro, que agora é único.
+    const holeOf = (el: HTMLElement | null): string | undefined =>
+      (el?.closest('.relative')?.querySelector('.rounded-full.bg-white') as HTMLElement | null)?.style.inset;
+    expect(holeOf(custoMerc)).toBe(holeOf(tipo));
+    expect(holeOf(fixa)).toBe(holeOf(tipo));
+    expect(holeOf(variavel)).toBe(holeOf(tipo));
   });
 
   it('o subtítulo do donut "Classificação Financeira" mostra mês + KPI (sem "Por tipo…")', async () => {
