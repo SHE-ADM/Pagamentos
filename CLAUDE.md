@@ -1776,7 +1776,7 @@ realmente específico: o serviço que chamam, o array `kpis` e os gráficos.
   repetiriam a mesma lista linha a linha na chamada — foi exatamente o que reprovou o quality gate
   do SonarCloud por **duplicação no código novo** (6,3% > 3%) na primeira tentativa desta extração.
 - **Apresentacional puro:** o header não tem estado nem busca dados; só renderiza e delega.
-- **`KPI_FILTER_LABEL` mora em `components/dashboard/constants.ts`** (fonte única — constante PURA, sem componente, para ser importável por páginas sem disparar `react-refresh/only-export-components`). Consumido pelo `DashboardHeader` (chip "filtrando: X") **e** pelo subtítulo do donut "Classificação Financeira" de `/dashboard_despesas`, que anexa o KPI ativo — ex.: `Por tipo (fixa/variável) · Julho - A vencer` (sem sufixo quando o filtro é `total`).
+- **`KPI_FILTER_LABEL` mora em `components/dashboard/constants.ts`** (fonte única — constante PURA, sem componente, para ser importável por páginas sem disparar `react-refresh/only-export-components`). Consumido pelo `DashboardHeader` (chip "filtrando: X") **e** pelo subtítulo do donut "Classificação Financeira" de `/dashboard_despesas`, que mostra **mês + KPI ativo** — ex.: `Julho - A vencer` (só o mês quando o filtro é `total`).
 - **`idPrefix`** gera `id`/`name` distintos por página (`dashboard-company` ·
   `dashboard-financeiro-company`): as telas não coexistem no DOM, mas ids separados mantêm o
   autofill/histórico do Chrome sem misturar.
