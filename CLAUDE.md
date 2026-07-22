@@ -4083,6 +4083,15 @@ ajuste. **Atualizar produção = copiar manualmente** os arquivos alterados (ex.
 scripts de `scheduler\`) — não há `git pull` lá. Requer Python 3.12 + `pdfplumber`
 instalados na máquina. Guia: `scheduler/INSTALL.md`.
 
+> **A máquina de PRODUÇÃO fica em OUTRO LOCAL FÍSICO (não regredir):** a máquina de
+> desenvolvimento **NÃO enxerga** `C:\Sheild\API\Pagamentos` (o caminho nem existe no
+> dev), então **o Claude não consegue copiar arquivos nem validar em produção a partir
+> daqui**. Todo deploy do pipeline Python (reader, cobrança, backup, baixa) é feito
+> **manualmente NA máquina de produção**, por quem tem acesso a ela. O papel do Claude é
+> deixar o fix canônico em `main` (via commit/PR/merge) e **entregar o passo de cópia +
+> comando de validação**; a execução em produção é do operador. Os avisos "PENDENTE de
+> cópia p/ prod" abaixo listam o que ainda falta aplicar lá.
+
 ### Deploy manual do Email Reader em produção (caso específico — não regredir)
 
 > **DEPLOY 2026-07-17 — split multi-pagável genérico (PENDENTE de cópia p/ prod):** o
