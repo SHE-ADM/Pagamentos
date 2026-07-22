@@ -35,12 +35,29 @@ const MOCK: FinancialDashboardData = {
     { label: 'Despesas Fixas', count: 35, value: 10000 },
   ],
   costCenterRanking: [
-    { name: 'Logística', value: 15000, count: 25 },
-    { name: 'Administrativo', value: 9000, count: 15 },
+    { key: 'cc:4', name: 'Logística', value: 15000, count: 25 },
+    { key: 'cc:1', name: 'Administrativo', value: 9000, count: 15 },
   ],
   subgroupRanking: [
-    { name: '4.4.01 — GNRE a Recolher', value: 12000, count: 8 },
-    { name: '6.4.01 — IPTU', value: 3000, count: 2 },
+    { key: 'sg:44', name: '4.4.01 — GNRE a Recolher', value: 12000, count: 8 },
+    { key: 'sg:64', name: '6.4.01 — IPTU', value: 3000, count: 2 },
+  ],
+  // Uma conta cujo cost_center_id (4) casa a linha 'Logística' (key cc:4) — o clique no
+  // ranking filtra por essa key e o card de detalhe mostra o fornecedor dela.
+  detailRows: [
+    {
+      id: 1, amount: 500, status_id: 3, due_date: '2026-07-10', cost_center_id: 4,
+      supplier: { trade_name: 'Fornecedor ABC', legal_name: null },
+      cost_center: { cost_center_code: '04', cost_center_description: 'Logística' },
+      chart_account: {
+        account_code: '4.5.01', account_description: 'Fretes',
+        group: { group_description: 'Transporte', type_group_id: 2 },
+        subgroup: {
+          chart_account_subgroup_id: 22, subgroup_code: '4.5', subgroup_description: 'Transportadoras',
+          type_group: { type_group_id: 6, type_group_description: 'Despesas Variáveis' },
+        },
+      },
+    },
   ],
 };
 
@@ -67,9 +84,12 @@ describe('DashboardFinanceiro', () => {
   it('o card "A vencer" já ABRE visualmente marcado como ativo', async () => {
     render(<DashboardFinanceiro />);
     await screen.findByText('Despesas no mês');
-    // Só os CARDS mostram "conta(s)" — descarta o botão "filtrando: … ✕" do cabeçalho,
-    // que também contém "A vencer" e "filtrando".
-    const cards = screen.getAllByRole('button').filter((b) => /conta\(s\)/.test(b.textContent ?? ''));
+    // Isola os 5 KpiCards pela INTERSEÇÃO: têm aria-pressed (como os botões de mês/ano/escopo
+    // do cabeçalho) E "conta(s)" (como os botões de ranking/legenda de donut). Só os KPIs têm
+    // os dois — cada filtro sozinho pega botões demais.
+    const cards = screen
+      .getAllByRole('button')
+      .filter((b) => b.hasAttribute('aria-pressed') && /conta\(s\)/.test(b.textContent ?? ''));
     expect(cards).toHaveLength(5);
 
     const marcados = cards.filter((b) => b.getAttribute('aria-pressed') === 'true');
@@ -148,5 +168,27 @@ describe('DashboardFinanceiro', () => {
     render(<DashboardFinanceiro />);
     await screen.findByText('Ranking de contas');
     expect(screen.queryByText('Contas críticas e prioritárias')).not.toBeInTheDocument();
+  });
+
+  it('clicar numa linha do ranking abre o card de detalhe com as contas do balde', async () => {
+    render(<DashboardFinanceiro />);
+    await screen.findByText('Ranking de centros de custo');
+    // O modal fica oculto até o clique.
+    expect(screen.queryByRole('heading', { name: /Centro de custo · Logística/ })).toBeNull();
+
+    fireEvent.click(screen.getByRole('button', { name: /Logística/ }));
+
+    expect(await screen.findByRole('heading', { name: 'Centro de custo · Logística' })).toBeInTheDocument();
+    expect(screen.getByText('Fornecedor ABC')).toBeInTheDocument();       // fornecedor da conta filtrada
+    expect(screen.getByText('4.5.01 — Fretes')).toBeInTheDocument();      // plano de conta
+    expect(screen.getByText('1 conta(s) · Total R$ 500,00')).toBeInTheDocument();
+  });
+
+  it('clicar numa fatia da legenda de um donut abre o card de detalhe', async () => {
+    render(<DashboardFinanceiro />);
+    await screen.findByRole('heading', { name: 'Despesas Variáveis' });
+    // A fatia "Transporte" do donut de despesas variáveis é um botão da legenda.
+    fireEvent.click(screen.getByRole('button', { name: /Transporte/ }));
+    expect(await screen.findByRole('heading', { name: 'Despesas Variáveis · Transporte' })).toBeInTheDocument();
   });
 });

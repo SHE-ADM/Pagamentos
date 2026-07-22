@@ -3,8 +3,9 @@
 // mapeamento de `size` → classes LITERAIS do círculo/furo (Tailwind JIT não gera CSS
 // para nome de classe computado, então a regressão seria silenciosa: o donut renderiza,
 // só que sem tamanho).
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { render, screen } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { BreakdownDonut } from './BreakdownDonut';
 
 const SEGS = [
@@ -47,5 +48,18 @@ describe('BreakdownDonut', () => {
   it('sem fatias, não quebra na divisão por zero e mostra o vazio', () => {
     render(<BreakdownDonut segs={[]} colorFor={color} />);
     expect(screen.getByText('Sem contas no período.')).toBeInTheDocument();
+  });
+
+  it('sem onSelect, as fatias NÃO são botões (não-interativas — regressão dos call sites de vencimentos)', () => {
+    render(<BreakdownDonut segs={SEGS} colorFor={color} />);
+    expect(screen.queryByRole('button')).toBeNull();
+  });
+
+  it('com onSelect, cada fatia vira <button> e o clique devolve o seg', async () => {
+    const onSelect = vi.fn();
+    render(<BreakdownDonut segs={SEGS} colorFor={color} onSelect={onSelect} />);
+    expect(screen.getAllByRole('button')).toHaveLength(2);
+    await userEvent.click(screen.getByRole('button', { name: /Despesas Variáveis/ }));
+    expect(onSelect).toHaveBeenCalledWith(expect.objectContaining({ label: 'Despesas Variáveis', value: 300 }));
   });
 });

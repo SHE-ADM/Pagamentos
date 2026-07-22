@@ -1,7 +1,8 @@
 // src/components/dashboard/RankingList.test.tsx
 // Ranking horizontal compartilhado (fornecedores | centros de custo | plano de contas).
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { render, screen } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { RankingList } from './RankingList';
 
 const ROWS = [
@@ -33,5 +34,22 @@ describe('RankingList', () => {
     expect(screen.getAllByText('Administrativo')).toHaveLength(2);
     expect(screen.getByText('R$ 300,00')).toBeInTheDocument();
     expect(screen.getByText('R$ 100,00')).toBeInTheDocument();
+  });
+
+  it('sem onSelect, as linhas NÃO são botões (não-interativas — regressão de vencimentos)', () => {
+    render(<RankingList rows={ROWS} />);
+    expect(screen.queryByRole('button')).toBeNull();
+  });
+
+  it('com onSelect, cada linha vira <button> e o clique devolve a row (com a key do balde)', async () => {
+    const onSelect = vi.fn();
+    const rows = [
+      { key: 'cc:1', name: 'Compras', value: 1500, count: 12 },
+      { key: 'cc:4', name: 'Logística', value: 500, count: 4 },
+    ];
+    render(<RankingList rows={rows} onSelect={onSelect} />);
+    expect(screen.getAllByRole('button')).toHaveLength(2);
+    await userEvent.click(screen.getByRole('button', { name: /Compras/ }));
+    expect(onSelect).toHaveBeenCalledWith(expect.objectContaining({ key: 'cc:1', name: 'Compras' }));
   });
 });

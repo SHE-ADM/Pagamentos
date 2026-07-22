@@ -12,7 +12,13 @@
 // Estilo 100% Tailwind; primitivos de gráfico reusados de components/dashboard/.
 import { useEffect, useState, useCallback } from 'react';
 import { FileText, CheckCircle2, Clock, TrendingUp, AlertCircle, Building2, ListTree } from 'lucide-react';
-import { getFinancialDashboardData, type FinancialDashboardData } from '../services/supabase';
+import {
+  getFinancialDashboardData,
+  filterExpenseDetailRows,
+  type FinancialDashboardData,
+  type ExpenseDetailRow,
+  type ExpenseDrillTarget,
+} from '../services/supabase';
 import { getErrorMessage } from '../lib/getErrorMessage';
 import { useDashboardFilters } from '../hooks/useDashboardFilters';
 import Alert from '../components/atoms/Alert';
@@ -22,6 +28,7 @@ import { DonutCard } from '../components/dashboard/DonutCard';
 import { DashboardHeader } from '../components/dashboard/DashboardHeader';
 import { KpiRow, type KpiEntry } from '../components/dashboard/KpiRow';
 import { RankingList } from '../components/dashboard/RankingList';
+import { ExpenseDetailModal } from '../components/dashboard/ExpenseDetailModal';
 
 export default function DashboardFinanceiro() {
   const filters = useDashboardFilters('aVencer');
@@ -29,10 +36,25 @@ export default function DashboardFinanceiro() {
   const [data, setData] = useState<FinancialDashboardData | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Card de detalhe (drill-down): as contas de uma fatia/linha clicada, filtradas EM MEMÓRIA
+  // a partir de data.detailRows (= as linhas que geraram os gráficos). Sem leitura extra.
+  const [drill, setDrill] = useState<{ title: string; rows: ExpenseDetailRow[] } | null>(null);
+  const openDrill = (target: ExpenseDrillTarget, title: string): void => {
+    if (!data) return;
+    const rows = filterExpenseDetailRows(data.detailRows, target);
+    // Uma fatia/linha renderizada sempre tem ≥1 conta correspondente; abrir vazio só
+    // ocorreria por identidade de balde inválida (ex.: bucketKey ausente) — não abre.
+    if (!rows.length) return;
+    setDrill({ title, rows });
+  };
 
   const load = useCallback(async () => {
     setLoading(true);
     setError(null);
+    // Fecha o card de detalhe ao recarregar: o modal guarda um SNAPSHOT de detailRows; se os
+    // dados mudam (mês/empresa/KPI), o snapshot ficaria obsoleto. Hoje é defensivo (o
+    // <dialog> modal deixa os controles inertes), mas cobre qualquer refetch futuro.
+    setDrill(null);
     try {
       setData(await getFinancialDashboardData(month, year, scope, filter, filters.skCompany));
     } catch (e) {
@@ -96,18 +118,21 @@ export default function DashboardFinanceiro() {
             subtitle={`Por tipo (fixa/variável) · ${periodo}`}
             slices={data?.tipoBreakdown}
             size="lg"
+            onSliceSelect={(label) => openDrill({ chart: 'tipo', label }, `Tipo · ${label}`)}
           />
           <DonutCard
             title="Despesas Fixas"
             subtitle={`Por grupo de despesa · ${periodo}`}
             slices={data?.despesaFixaBreakdown}
             size="lg"
+            onSliceSelect={(label) => openDrill({ chart: 'fixa', label }, `Despesas Fixas · ${label}`)}
           />
           <DonutCard
             title="Despesas Variáveis"
             subtitle={`Por grupo de despesa · ${periodo}`}
             slices={data?.despesaVariavelBreakdown}
             size="lg"
+            onSliceSelect={(label) => openDrill({ chart: 'variavel', label }, `Despesas Variáveis · ${label}`)}
           />
         </div>
 
@@ -118,7 +143,10 @@ export default function DashboardFinanceiro() {
             subtitle="Maiores valores por centro de custo no período"
             icon={Building2}
           >
-            <RankingList rows={data?.costCenterRanking ?? []} />
+            <RankingList
+              rows={data?.costCenterRanking ?? []}
+              onSelect={(row) => openDrill({ chart: 'costCenter', bucketKey: row.key }, `Centro de custo · ${row.name}`)}
+            />
           </ChartCard>
 
           <ChartCard
@@ -126,10 +154,20 @@ export default function DashboardFinanceiro() {
             subtitle="Maiores valores por sub grupo de contas no período"
             icon={ListTree}
           >
-            <RankingList rows={data?.subgroupRanking ?? []} />
+            <RankingList
+              rows={data?.subgroupRanking ?? []}
+              onSelect={(row) => openDrill({ chart: 'subgroup', bucketKey: row.key }, `Conta · ${row.name}`)}
+            />
           </ChartCard>
         </div>
       </section>
+
+      <ExpenseDetailModal
+        open={!!drill}
+        title={drill?.title ?? ''}
+        rows={drill?.rows ?? []}
+        onClose={() => setDrill(null)}
+      />
     </div>
   );
 }
