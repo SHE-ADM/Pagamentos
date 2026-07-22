@@ -23,7 +23,7 @@ const SIZE_CLS: Record<DonutSize, { circle: string; hole: string; centerNum: str
   lg: { circle: 'relative w-[176px] h-[176px] shrink-0', hole: 'absolute inset-5', centerNum: 'font-mono text-base font-semibold text-slate-900 leading-none text-center' },
 };
 
-export function BreakdownDonut({ segs, colorFor, size = 'md' }: { segs: DonutSeg[]; colorFor: (label: string, i: number) => string; size?: DonutSize }) {
+export function BreakdownDonut({ segs, colorFor, size = 'md', onSelect }: { segs: DonutSeg[]; colorFor: (label: string, i: number) => string; size?: DonutSize; onSelect?: (seg: DonutSeg) => void }) {
   // Ordena as fatias por VALOR (R$) decrescente — legenda e arcos na mesma ordem.
   const ordered = [...segs].sort((a, b) => b.value - a.value);
   // Arcos, % e total central proporcionais ao VALOR (R$) — a contagem de contas saiu do gráfico.
@@ -51,14 +51,32 @@ export function BreakdownDonut({ segs, colorFor, size = 'md' }: { segs: DonutSeg
         </div>
       </div>
       <div className="flex-1 min-w-0 flex flex-col gap-1">
-        {ordered.map((s, i) => (
-          <div key={s.key} className={rowCls}>
-            <span className="h-2.5 w-2.5 rounded-xs shrink-0" style={{ background: colorFor(s.label, i) }} />
-            <span className="text-slate-700 capitalize flex-1 truncate">{s.label}</span>
-            <span className="font-mono text-slate-900 font-semibold whitespace-nowrap">{fmtMoney(s.value)}</span>
-            <span className={pctCls}>{Math.round((s.value / totalValue) * 100)}%</span>
-          </div>
-        ))}
+        {ordered.map((s, i) => {
+          // Conteúdo idêntico em ambos os modos — só o invólucro muda (button vs div).
+          const inner = (
+            <>
+              <span className="h-2.5 w-2.5 rounded-xs shrink-0" style={{ background: colorFor(s.label, i) }} />
+              <span className="text-slate-700 capitalize flex-1 truncate">{s.label}</span>
+              <span className="font-mono text-slate-900 font-semibold whitespace-nowrap">{fmtMoney(s.value)}</span>
+              <span className={pctCls}>{Math.round((s.value / totalValue) * 100)}%</span>
+            </>
+          );
+          // Com onSelect a fatia vira <button> real (foco/teclado/nome acessível de graça —
+          // evita S1082); sem ele, mantém o <div> não-interativo dos demais call sites.
+          return onSelect ? (
+            <button
+              key={s.key}
+              type="button"
+              onClick={() => onSelect(s)}
+              title={`Ver contas de ${s.label}`}
+              className={`${rowCls} w-full text-left rounded px-1 -mx-1 hover:bg-slate-50 cursor-pointer focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-brand-dark`}
+            >
+              {inner}
+            </button>
+          ) : (
+            <div key={s.key} className={rowCls}>{inner}</div>
+          );
+        })}
         {!ordered.length && <span className={emptyCls}>Sem contas no período.</span>}
       </div>
     </div>

@@ -25,6 +25,9 @@ interface DonutCardProps {
   dense?: boolean;
   /** Cor por fatia; o padrão é a paleta cíclica (situação usa a semântica). */
   colorFor?: (label: string, i: number) => string;
+  /** Ao clicar numa fatia da legenda, recebe o RÓTULO da fatia (drill-down). Sem ele, o
+   *  donut fica não-interativo (comportamento atual dos demais call sites). */
+  onSliceSelect?: (label: string) => void;
 }
 
 export function DonutCard({
@@ -34,6 +37,7 @@ export function DonutCard({
   size,
   dense = false,
   colorFor = paletteColor,
+  onSliceSelect,
 }: Readonly<DonutCardProps>) {
   // `key` = o próprio label: as fatias vêm de uma agregação por label (breakdownBy usa um
   // Map cujas chaves são os labels), então são únicas por construção.
@@ -41,7 +45,12 @@ export function DonutCard({
   // Sem `icon`: o donut nunca leva ícone (a casca com ícone serve aos rankings/listas).
   return (
     <ChartCard title={title} subtitle={subtitle} dense={dense}>
-      <BreakdownDonut segs={segs} colorFor={colorFor} size={size} />
+      <BreakdownDonut
+        segs={segs}
+        colorFor={colorFor}
+        size={size}
+        onSelect={onSliceSelect ? (seg) => onSliceSelect(seg.label) : undefined}
+      />
     </ChartCard>
   );
 }

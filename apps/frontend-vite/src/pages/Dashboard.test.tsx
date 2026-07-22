@@ -41,8 +41,8 @@ const MOCK: DashboardData = {
     { label: 'ted', count: 48, value: 12121.73 },
   ],
   supplierRanking: [
-    { name: 'Avance Info/Adm/Farmácia', value: 19493.41, count: 12 },
-    { name: 'CPFL Energia', value: 6420.3, count: 3 },
+    { key: 'sup:Avance', name: 'Avance Info/Adm/Farmácia', value: 19493.41, count: 12 },
+    { key: 'sup:CPFL', name: 'CPFL Energia', value: 6420.3, count: 3 },
   ],
   monthlyFlow: Array.from({ length: 12 }, (_, m) => ({ month: m, aPagar: 1000 * (m + 1), pago: 500 * (m + 1) })),
   priorityAccounts: [

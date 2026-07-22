@@ -15,7 +15,7 @@ import { STATUS_IDS } from '@sheild/shared';
 import StatusBadge from '../components/StatusBadge';
 import CheckToggle from '../components/atoms/CheckToggle';
 import StatusSelectCell, { type StatusOption } from '../components/atoms/StatusSelectCell';
-import type { FinancialAccountFlag } from '../services/supabase';
+import type { FinancialAccountFlag, ExpenseDetailRow } from '../services/supabase';
 // Formatters de exibição: fonte única em src/lib/format.ts (compartilhada com Consulta.tsx/Emails.tsx).
 import { fmtDate, fmtDateTime, fmtMoney, fmtCnpj, fmtCpf, fmtChartAccountFull } from '../lib/format';
 
@@ -442,6 +442,47 @@ export function getCostCenterColumns(
       size: onDelete ? ACTIONS_COL_SIZE_WITH_DELETE : ACTIONS_COL_SIZE,
       align: 'center',
       render: (c) => actionsCell(c, costCenterLabel(c), onEdit, onDelete),
+    },
+  ];
+}
+
+/**
+ * Colunas do card de DETALHE (drill-down) dos gráficos de /dashboard_despesas — enxutas e
+ * read-only. NÃO reusa getConsultaColumns/fmtChartAccountFull (tipados ao
+ * FinancialAccountControl completo, com curadoria); ExpenseDetailRow só carrega
+ * supplier + chart_account + vencimento/valor. "Plano de conta" mostra só o plano
+ * (`código — descrição`), não a hierarquia enriquecida — decisão do usuário.
+ */
+export function getExpenseDetailColumns(): ColumnDef<ExpenseDetailRow>[] {
+  return [
+    {
+      key: 'supplier',
+      header: 'Fornecedor',
+      size: 200,
+      wrap: true,
+      render: (r) => r.supplier?.trade_name ?? r.supplier?.legal_name ?? '—',
+    },
+    {
+      key: 'chart_account',
+      header: 'Plano de conta',
+      size: 260,
+      wrap: true,
+      render: (r) =>
+        [r.chart_account?.account_code, r.chart_account?.account_description]
+          .filter(Boolean).join(' — ') || '—',
+    },
+    {
+      key: 'due_date',
+      header: 'Vencimento',
+      size: 110,
+      render: (r) => fmtDate(r.due_date),
+    },
+    {
+      key: 'amount',
+      header: 'Valor',
+      align: 'right',
+      size: 120,
+      render: (r) => fmtMoney(r.amount),
     },
   ];
 }

@@ -778,7 +778,10 @@ export interface DashboardKpis {
 export interface StatusSlice { status: string; count: number; value: number }
 // Fatia genérica de donut por rótulo (tipos de conta / formas de pagamento).
 export interface LabelSlice { label: string; count: number; value: number }
-export interface SupplierRank { name: string; value: number; count: number }
+// `key` = a identidade do balde (RankPick.key: `cc:<id>`/`sg:<id>`/`sup:<nome>`/`∅`). É o que
+// o drill-down usa para reproduzir EXATAMENTE as contas daquela linha do ranking (ver
+// filterExpenseDetailRows) — nunca o `name`, que pode ser homônimo/prefixado por código.
+export interface SupplierRank { key: string; name: string; value: number; count: number }
 export interface MonthlyFlow { month: number; aPagar: number; pago: number }
 export type PriorityKind = 'agua' | 'luz' | 'internet' | 'telefone' | 'aluguel' | 'tributo' | 'outro';
 export interface PriorityAccount {
@@ -848,10 +851,15 @@ function warnIfTruncated(rows: readonly unknown[], limit: number, label: string)
   }
 }
 
+// Top-N (por contagem) de fatias PRÓPRIAS num donut antes da fatia sintética "outros".
+// Fonte ÚNICA: usada como default de `breakdownBy` E de `topBucketLabels`/`matchDonutBucket`
+// (drill-down) — se um dia mudar, os dois lados mudam juntos e a fatia/detalhe não divergem.
+const DONUT_TOP_N = 8;
+
 // Agrega linhas por um campo de rótulo → Top N por contagem + fatia "outros".
 // Rótulo ausente (null) vira "não informado". Genérica sobre o tipo de linha (basta ter
 // `amount`) — serve tanto MonthRow (vencimentos) quanto ExpenseMonthRow (financeiro).
-function breakdownBy<T extends { amount: number | null }>(rows: T[], pick: (r: T) => string | null, topN = 8): LabelSlice[] {
+function breakdownBy<T extends { amount: number | null }>(rows: T[], pick: (r: T) => string | null, topN = DONUT_TOP_N): LabelSlice[] {
   const map = new Map<string, { count: number; value: number }>();
   for (const r of rows) {
     const k = pick(r) ?? 'não informado';
@@ -859,16 +867,37 @@ function breakdownBy<T extends { amount: number | null }>(rows: T[], pick: (r: T
     cur.count += 1; cur.value += num(r.amount);
     map.set(k, cur);
   }
-  const all = [...map.entries()]
-    .map(([label, v]) => ({ label, ...v }))
-    .sort((a, b) => b.count - a.count);
-  if (all.length <= topN) return all;
-  const top = all.slice(0, topN);
-  const rest = all.slice(topN).reduce(
-    (acc, x) => ({ count: acc.count + x.count, value: acc.value + x.value }),
-    { count: 0, value: 0 },
+  // Top-N pela MESMA seleção que o drill-down usa (topBucketLabels) — assim a fatia e o
+  // detalhe nunca divergem. A ordem de saída é irrelevante (o BreakdownDonut reordena por
+  // VALOR); rótulo fora do top-N é somado na fatia sintética "outros".
+  const top = topBucketLabels(rows, pick, topN);
+  const result: LabelSlice[] = [];
+  const rest = { count: 0, value: 0 };
+  for (const [label, v] of map) {
+    if (top.has(label)) result.push({ label, ...v });
+    else { rest.count += v.count; rest.value += v.value; }
+  }
+  if (rest.count > 0) result.push({ label: 'outros', ...rest });
+  return result;
+}
+
+// Conjunto de rótulos que viram fatia PRÓPRIA no `breakdownBy` (Top-N por contagem, mesma
+// ordenação `count desc → slice(0,topN)`); um rótulo fora deste conjunto caiu na fatia
+// sintética "outros". Fonte da verdade do balde compartilhada entre o donut e o matcher do
+// drill-down (filterExpenseDetailRows), para o detalhe reproduzir a fatia sem divergir.
+// Guarda de não-divergência com `breakdownBy` em supabase.drill.test.ts.
+export function topBucketLabels<T extends { amount: number | null }>(
+  rows: T[], pick: (r: T) => string | null, topN = DONUT_TOP_N,
+): Set<string> {
+  const count = new Map<string, number>();
+  for (const r of rows) {
+    const k = pick(r) ?? 'não informado';
+    count.set(k, (count.get(k) ?? 0) + 1);
+  }
+  if (count.size <= topN) return new Set(count.keys());
+  return new Set(
+    [...count.entries()].sort((a, b) => b[1] - a[1]).slice(0, topN).map(([label]) => label),
   );
-  return [...top, { label: 'outros', ...rest }];
 }
 
 // Documentos tributários (guias de arrecadação) — agrupados num único rótulo
@@ -1035,7 +1064,10 @@ export async function getDashboardData(month: number, year: number, scope: Dashb
     supMap.set(k, cur);
   }
   const supplierRanking: SupplierRank[] = [...supMap.entries()]
-    .map(([name, v]) => ({ name, ...v }))
+    // key = identidade do balde deste ranking (agrega por NOME do fornecedor); mantém o
+    // contrato SupplierRank compartilhado com o dashboard financeiro. Este ranking não tem
+    // drill-down, mas a key deve existir e ser única por balde.
+    .map(([name, v]) => ({ key: `sup:${name}`, name, ...v }))
     .sort((a, b) => b.value - a.value)
     .slice(0, 6);
 
@@ -1110,11 +1142,18 @@ type ExpenseChartAccount = {
 // o CRUD grava e que /consulta exibe — o plano tem um centro, mas quem manda é a conta.
 type ExpenseMonthRow = Pick<
   FinancialAccountControl,
-  'amount' | 'status_id' | 'due_date' | 'cost_center_id'
+  'id' | 'amount' | 'status_id' | 'due_date' | 'cost_center_id'
 > & {
+  // `supplier` alimenta a coluna Fornecedor do card de detalhe (drill-down). Embed simples
+  // (não `!inner`): `sk_supplier` é NOT NULL, então o objeto vem sempre.
+  supplier?: { trade_name: string | null; legal_name: string | null } | null;
   cost_center?: { cost_center_code: string | null; cost_center_description: string | null } | null;
   chart_account?: ExpenseChartAccount;
 };
+
+// Linha do card de detalhe (drill-down) dos gráficos de /dashboard_despesas: é a MESMA linha
+// já lida para os gráficos (fMonth), com `id` + `supplier`. Nenhuma leitura extra por clique.
+export type ExpenseDetailRow = ExpenseMonthRow;
 
 // Uma entrada de ranking ANTES da agregação: `key` é a identidade (id da FK), `label` o
 // texto exibido e `code` o desambiguador usado quando dois ids têm o mesmo label.
@@ -1152,6 +1191,66 @@ export interface FinancialDashboardData {
   tipoBreakdown: LabelSlice[]; // Despesa Fixa/Variável (type_group do subgrupo)
   costCenterRanking: SupplierRank[]; // top CENTROS DE CUSTO por VALOR
   subgroupRanking: SupplierRank[]; // top SUBGRUPOS de plano de contas por VALOR (card "Ranking de contas")
+  // Linhas que alimentam os 5 gráficos (= fMonth, já recortado por escopo/empresa/KPI). O
+  // card de detalhe (drill-down) filtra ESTE array em memória via filterExpenseDetailRows —
+  // sem leitura extra e sempre um subconjunto EXATO do que a fatia/linha contou.
+  detailRows: ExpenseDetailRow[];
+}
+
+// Qual gráfico foi clicado. Donuts identificam o balde pelo `label`; rankings pela `bucketKey`.
+type ExpenseDrillChart = 'tipo' | 'fixa' | 'variavel' | 'costCenter' | 'subgroup';
+export interface ExpenseDrillTarget {
+  chart: ExpenseDrillChart;
+  label?: string;     // donuts: rótulo da fatia clicada (pode ser 'outros' / 'não informado')
+  bucketKey?: string; // rankings: RankPick.key da linha clicada (SupplierRank.key)
+}
+
+// Casa as linhas de UM balde de donut (reproduz breakdownBy): fatia própria → rótulo igual;
+// fatia sintética "outros" → tudo que NÃO está no top-N. `rows` já vem pré-filtrado (ex.: só
+// type_group 5 para o donut "Despesas Fixas"), então o top-N é calculado sobre esse recorte.
+function matchDonutBucket(
+  rows: ExpenseDetailRow[], pick: (r: ExpenseDetailRow) => string | null, label: string,
+): ExpenseDetailRow[] {
+  const top = topBucketLabels(rows, pick);
+  const norm = (r: ExpenseDetailRow): string => pick(r) ?? 'não informado';
+  return top.has(label) ? rows.filter((r) => norm(r) === label) : rows.filter((r) => !top.has(norm(r)));
+}
+
+const tipoOf = (r: ExpenseDetailRow): number | null | undefined =>
+  r.chart_account?.subgroup?.type_group?.type_group_id;
+const tipoDescOf = (r: ExpenseDetailRow): string | null =>
+  r.chart_account?.subgroup?.type_group?.type_group_description ?? null;
+const grupoOf = (r: ExpenseDetailRow): string | null => r.chart_account?.group?.group_description ?? null;
+const ccKeyOf = (r: ExpenseDetailRow): string =>
+  rankEntry('cc', r.cost_center_id, r.cost_center?.cost_center_description, r.cost_center?.cost_center_code)?.key
+  ?? UNRANKED.key;
+const sgKeyOf = (r: ExpenseDetailRow): string =>
+  rankEntry('sg', r.chart_account?.subgroup?.chart_account_subgroup_id,
+    r.chart_account?.subgroup?.subgroup_description, r.chart_account?.subgroup?.subgroup_code)?.key
+  ?? UNRANKED.key;
+
+/**
+ * Contas que compõem a fatia/linha clicada — MESMO recorte usado na agregação de cada
+ * gráfico (por isso reproduz a contagem/valor exibidos). Puro e testável.
+ */
+export function filterExpenseDetailRows(
+  rows: ExpenseDetailRow[], target: ExpenseDrillTarget,
+): ExpenseDetailRow[] {
+  const { chart, label, bucketKey } = target;
+  switch (chart) {
+    case 'tipo':
+      return matchDonutBucket(rows, tipoDescOf, label ?? '');
+    case 'fixa':
+      return matchDonutBucket(rows.filter((r) => tipoOf(r) === TYPE_GROUP_ID_DESPESA_FIXA), grupoOf, label ?? '');
+    case 'variavel':
+      return matchDonutBucket(rows.filter((r) => tipoOf(r) === TYPE_GROUP_ID_DESPESA_VARIAVEL), grupoOf, label ?? '');
+    case 'costCenter':
+      return rows.filter((r) => ccKeyOf(r) === bucketKey);
+    case 'subgroup':
+      return rows.filter((r) => sgKeyOf(r) === bucketKey);
+    default:
+      return [];
+  }
 }
 
 // Despesa = o plano de contas da conta pertence a um grupo cuja Natureza é "Despesas".
@@ -1170,7 +1269,8 @@ export async function getFinancialDashboardData(month: number, year: number, sco
   // classificação (grupo/subgrupo + type_group).
   const monthRowsAll = await query<ExpenseMonthRow[]>('financial_account_control', {
     select:
-      'amount,status_id,due_date,cost_center_id,' +
+      'id,amount,status_id,due_date,cost_center_id,' +
+      'supplier(trade_name,legal_name),' +
       'cost_center:financial_cost_center(cost_center_code,cost_center_description),' +
       'chart_account:financial_chart_of_account(account_code,account_description,' +
       'group:financial_chart_of_account_group(group_description,type_group_id),' +
@@ -1230,12 +1330,15 @@ export async function getFinancialDashboardData(month: number, year: number, sco
       cur.value += num(r.amount); cur.count += 1;
       map.set(p.key, cur);
     }
-    const rows = [...map.values()];
+    // entries() preserva a `key` do balde (identidade) além de value/count/label/code — o
+    // drill-down casa por essa key, então ela precisa sair no objeto de ranking.
+    const rows = [...map.entries()].map(([key, v]) => ({ key, ...v }));
     // Rótulos iguais vindos de ids DIFERENTES: prefixa o código para o usuário distinguir
     // as duas linhas (e para a `key` do RankingList continuar única).
     const repetidos = new Set(rows.map((r) => r.label).filter((l, i, all) => all.indexOf(l) !== i));
     return rows
       .map((r) => ({
+        key: r.key,
         name: repetidos.has(r.label) && r.code ? `${r.code} — ${r.label}` : r.label,
         value: r.value,
         count: r.count,
@@ -1263,5 +1366,5 @@ export async function getFinancialDashboardData(month: number, year: number, sco
     ),
   );
 
-  return { month, year, scope, kpis, despesaFixaBreakdown, despesaVariavelBreakdown, tipoBreakdown, costCenterRanking, subgroupRanking };
+  return { month, year, scope, kpis, despesaFixaBreakdown, despesaVariavelBreakdown, tipoBreakdown, costCenterRanking, subgroupRanking, detailRows: fMonth };
 }
