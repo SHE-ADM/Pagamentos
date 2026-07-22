@@ -853,7 +853,7 @@ function warnIfTruncated(rows: readonly unknown[], limit: number, label: string)
   }
 }
 
-// Top-N (por contagem) de fatias PRÓPRIAS num donut antes da fatia sintética "outros".
+// Top-N (por VALOR — R$) de fatias PRÓPRIAS num donut antes da fatia sintética "outros".
 // Fonte ÚNICA: usada como default de `breakdownBy` E de `topBucketLabels`/`matchDonutBucket`
 // (drill-down) — se um dia mudar, os dois lados mudam juntos e a fatia/detalhe não divergem.
 // = 6 para o donut nunca exibir mais que 7 LINHAS no total (6 categorias reais + a fatia
@@ -861,7 +861,7 @@ function warnIfTruncated(rows: readonly unknown[], limit: number, label: string)
 // como um dos 7 itens).
 const DONUT_TOP_N = 6;
 
-// Agrega linhas por um campo de rótulo → Top N por contagem + fatia "outros".
+// Agrega linhas por um campo de rótulo → Top N por VALOR (R$) + fatia "outros".
 // Rótulo ausente (null) vira "não informado". Genérica sobre o tipo de linha (basta ter
 // `amount`) — serve tanto MonthRow (vencimentos) quanto ExpenseMonthRow (financeiro).
 function breakdownBy<T extends { amount: number | null }>(rows: T[], pick: (r: T) => string | null, topN = DONUT_TOP_N): LabelSlice[] {
@@ -886,22 +886,34 @@ function breakdownBy<T extends { amount: number | null }>(rows: T[], pick: (r: T
   return result;
 }
 
-// Conjunto de rótulos que viram fatia PRÓPRIA no `breakdownBy` (Top-N por contagem, mesma
-// ordenação `count desc → slice(0,topN)`); um rótulo fora deste conjunto caiu na fatia
-// sintética "outros". Fonte da verdade do balde compartilhada entre o donut e o matcher do
-// drill-down (filterExpenseDetailRows), para o detalhe reproduzir a fatia sem divergir.
-// Guarda de não-divergência com `breakdownBy` em supabase.drill.test.ts.
+// Conjunto de rótulos que viram fatia PRÓPRIA no `breakdownBy` (Top-N por VALOR — R$ —
+// somado por rótulo, mesmo critério `sum(amount) desc → slice(0,topN)`); um rótulo fora
+// deste conjunto caiu na fatia sintética "outros". Fonte da verdade do balde compartilhada
+// entre o donut e o matcher do drill-down (filterExpenseDetailRows), para o detalhe
+// reproduzir a fatia sem divergir. Guarda de não-divergência com `breakdownBy` em
+// supabase.drill.test.ts.
+//
+// POR QUE VALOR, NÃO CONTAGEM (não regredir — bug real corrigido em 2026-07-22): o donut
+// exibe arco/%/ordem por VALOR, então a seleção do top-N precisa usar o MESMO critério —
+// senão um grupo com POUCAS contas de valor ALTO (ex.: "Serviços Gerais": 2 contas, R$20 mil)
+// perde para um grupo com MUITAS contas de valor BAIXO (ex.: "Despesas com Utilidades": 5
+// contas, R$8 mil) e cai em "outros" apesar de valer mais — dado financeiro relevante
+// escondido atrás de ruído. Caso de origem: conta da PANIFICADORA BELGA (fornecedor,
+// R$20.100,80, grupo "Serviços Gerais", subgrupo "Copa e Cozinha" — corretamente classificado
+// como Despesas Fixas) aparecia em "outros" do donut "Despesas Fixas" só porque o grupo tinha
+// poucas contas, não por erro de relacionamento/join (verificado: FK direta e FK via subgrupo
+// do plano de contas eram consistentes, ambas apontando para o mesmo grupo).
 export function topBucketLabels<T extends { amount: number | null }>(
   rows: T[], pick: (r: T) => string | null, topN = DONUT_TOP_N,
 ): Set<string> {
-  const count = new Map<string, number>();
+  const valueByLabel = new Map<string, number>();
   for (const r of rows) {
     const k = pick(r) ?? 'não informado';
-    count.set(k, (count.get(k) ?? 0) + 1);
+    valueByLabel.set(k, (valueByLabel.get(k) ?? 0) + num(r.amount));
   }
-  if (count.size <= topN) return new Set(count.keys());
+  if (valueByLabel.size <= topN) return new Set(valueByLabel.keys());
   return new Set(
-    [...count.entries()].sort((a, b) => b[1] - a[1]).slice(0, topN).map(([label]) => label),
+    [...valueByLabel.entries()].sort((a, b) => b[1] - a[1]).slice(0, topN).map(([label]) => label),
   );
 }
 

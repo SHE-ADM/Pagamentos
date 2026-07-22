@@ -66,8 +66,8 @@ describe('BreakdownDonut', () => {
   it('o valor central usa fonte sans SEM negrito (não font-mono/font-semibold)', () => {
     const { container } = render(<BreakdownDonut segs={SEGS} colorFor={color} />);
     // 1º <span> dentro do furo = o valor central (fmtMoneyCompact); o 2º é o rótulo "total".
-    const centerValue = container.querySelector('.rounded-full.bg-white span') as HTMLElement | null;
-    // `\s` (não espaço literal) porque o Intl formata "R$" + NBSP ( ), não espaço comum.
+    const centerValue = container.querySelector('.rounded-full.bg-white span');
+    // `\s` (não espaço literal) porque o Intl formata "R$" + NBSP (U+00A0), não espaço comum.
     expect(centerValue?.textContent).toMatch(/^R\$\s?400/);
     expect(centerValue?.className).toContain('font-sans');
     expect(centerValue?.className).toContain('font-normal');
@@ -79,12 +79,12 @@ describe('BreakdownDonut', () => {
     const { container } = render(<BreakdownDonut segs={SEGS} colorFor={color} size="lg" diameterPx={100} />);
     // Wrapper do círculo: sempre "relative shrink-0" (fixo ou dinâmico) — não depende de
     // uma classe w-[Npx], que só existe no caminho por `size` (preset).
-    const circle = container.querySelector('.relative.shrink-0') as HTMLElement | null;
+    const circle = container.querySelector<HTMLElement>('.relative.shrink-0');
     expect(circle?.className).not.toMatch(/w-\[\d+px\]/);
     expect(circle?.style.width).toBe('100px');
     expect(circle?.style.height).toBe('100px');
     // Furo = 11% do diâmetro (mesma razão do preset "sm"), arredondado.
-    const hole = container.querySelector('.rounded-full.bg-white') as HTMLElement | null;
+    const hole = container.querySelector<HTMLElement>('.rounded-full.bg-white');
     expect(hole?.style.inset).toBe('11px');
   });
 
