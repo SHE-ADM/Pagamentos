@@ -856,7 +856,10 @@ function warnIfTruncated(rows: readonly unknown[], limit: number, label: string)
 // Top-N (por contagem) de fatias PRÓPRIAS num donut antes da fatia sintética "outros".
 // Fonte ÚNICA: usada como default de `breakdownBy` E de `topBucketLabels`/`matchDonutBucket`
 // (drill-down) — se um dia mudar, os dois lados mudam juntos e a fatia/detalhe não divergem.
-const DONUT_TOP_N = 8;
+// = 6 para o donut nunca exibir mais que 7 LINHAS no total (6 categorias reais + a fatia
+// sintética "outros", quando houver sobra — decisão do usuário 2026-07-22: "outros" CONTA
+// como um dos 7 itens).
+const DONUT_TOP_N = 6;
 
 // Agrega linhas por um campo de rótulo → Top N por contagem + fatia "outros".
 // Rótulo ausente (null) vira "não informado". Genérica sobre o tipo de linha (basta ter

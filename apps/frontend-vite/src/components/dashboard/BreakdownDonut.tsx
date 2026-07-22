@@ -4,11 +4,10 @@
 // Natureza/Tipo (financeiro). Estilo 100% Tailwind; inline só no gradiente cônico e nas
 // larguras dinâmicas (exceção justificada — sem classe equivalente).
 // `size` controla SÓ o círculo (fonte/gaps da legenda são iguais nos três):
-//   sm  — os DOIS dashboards (4 donuts dividem a mesma linha no xl)
-//   md  — padrão; hoje NENHUM call site o usa (os dois dashboards passam sm), mas é o
-//         neutro do componente e está coberto por teste — não é código morto a remover
-//   lg  — sem call site atual (era o /dashboard_despesas até os 4 donuts numa linha em
-//         2026-07-22); parte da API do componente, coberto por teste
+//   sm  — /dashboard_vencimentos (4 donuts dividem a mesma linha no xl)
+//   md  — padrão; hoje NENHUM call site o usa, mas é o neutro do componente e está coberto
+//         por teste — não é código morto a remover
+//   lg  — /dashboard_despesas (4 donuts em 2 linhas de 2 — cabe um anel maior que o sm)
 import { fmtMoney, fmtMoneyCompact } from '../../lib/format';
 
 type DonutSeg = { key: string; label: string; value: number };
