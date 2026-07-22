@@ -1091,10 +1091,16 @@ type ExpenseChartAccount = {
   account_code: string | null;
   account_description: string | null;
   group?: { group_description: string | null; type_group_id: number } | null;
-  // Do subgrupo só interessa a folha type_group: o `type_group_description` rotula o donut
-  // "Tipo" e o `type_group_id` (5=Fixa / 6=Variável) SEPARA os donuts de despesa fixa e
-  // variável — o corte é pelo ID, nunca pelo texto (a descrição é livre no catálogo).
-  subgroup?: { type_group?: { type_group_id: number; type_group_description: string | null } | null } | null;
+  // Do subgrupo interessam: (a) a folha type_group — `type_group_description` rotula o donut
+  // "Tipo" e `type_group_id` (5=Fixa / 6=Variável) SEPARA os donuts de despesa fixa e variável
+  // (corte pelo ID, nunca pelo texto); (b) a identidade/rótulo do próprio subgrupo
+  // (`chart_account_subgroup_id`/`subgroup_code`/`subgroup_description`), base do "Ranking de contas".
+  subgroup?: {
+    chart_account_subgroup_id: number;
+    subgroup_code: string | null;
+    subgroup_description: string | null;
+    type_group?: { type_group_id: number; type_group_description: string | null } | null;
+  } | null;
 } | null;
 
 // Linha do mês no dashboard financeiro: só o que os KPIs/gráficos daqui consomem
@@ -1104,7 +1110,7 @@ type ExpenseChartAccount = {
 // o CRUD grava e que /consulta exibe — o plano tem um centro, mas quem manda é a conta.
 type ExpenseMonthRow = Pick<
   FinancialAccountControl,
-  'amount' | 'status_id' | 'due_date' | 'cost_center_id' | 'chart_account_id'
+  'amount' | 'status_id' | 'due_date' | 'cost_center_id'
 > & {
   cost_center?: { cost_center_code: string | null; cost_center_description: string | null } | null;
   chart_account?: ExpenseChartAccount;
@@ -1145,7 +1151,7 @@ export interface FinancialDashboardData {
   despesaVariavelBreakdown: LabelSlice[];
   tipoBreakdown: LabelSlice[]; // Despesa Fixa/Variável (type_group do subgrupo)
   costCenterRanking: SupplierRank[]; // top CENTROS DE CUSTO por VALOR
-  chartAccountRanking: SupplierRank[]; // top contas do PLANO DE CONTAS por VALOR
+  subgroupRanking: SupplierRank[]; // top SUBGRUPOS de plano de contas por VALOR (card "Ranking de contas")
 }
 
 // Despesa = o plano de contas da conta pertence a um grupo cuja Natureza é "Despesas".
@@ -1164,11 +1170,11 @@ export async function getFinancialDashboardData(month: number, year: number, sco
   // classificação (grupo/subgrupo + type_group).
   const monthRowsAll = await query<ExpenseMonthRow[]>('financial_account_control', {
     select:
-      'amount,status_id,due_date,cost_center_id,chart_account_id,' +
+      'amount,status_id,due_date,cost_center_id,' +
       'cost_center:financial_cost_center(cost_center_code,cost_center_description),' +
       'chart_account:financial_chart_of_account(account_code,account_description,' +
       'group:financial_chart_of_account_group(group_description,type_group_id),' +
-      'subgroup:financial_chart_of_account_subgroup(' +
+      'subgroup:financial_chart_of_account_subgroup(chart_account_subgroup_id,subgroup_code,subgroup_description,' +
       'type_group:financial_type_group(type_group_id,type_group_description)))',
     status_id: `neq.${STATUS_ID_CANCELADO}`,
     ...companyFilter,
@@ -1243,12 +1249,19 @@ export async function getFinancialDashboardData(month: number, year: number, sco
   const costCenterRanking = rankBy((r) =>
     rankEntry('cc', r.cost_center_id, r.cost_center?.cost_center_description, r.cost_center?.cost_center_code),
   );
-  // Ranking do PLANO DE CONTAS — rótulo SEMPRE `código — descrição`: a mesma descrição se
-  // repete em vários centros como códigos distintos, então o código é parte da identificação.
-  const chartAccountRanking = rankBy((r) => {
-    const e = rankEntry('ca', r.chart_account_id, r.chart_account?.account_description, r.chart_account?.account_code);
-    return e?.code ? { ...e, label: `${e.code} — ${e.label}` } : e;
-  });
+  // Ranking por SUBGRUPO do plano de contas (o card mantém o rótulo "Ranking de contas"):
+  // agrega pela IDENTIDADE do subgrupo (`chart_account_subgroup_id`) — nunca pelo texto, que
+  // não é UNIQUE no cadastro —, com rótulo = descrição do subgrupo (código prefixado só quando
+  // dois subgrupos forem homônimos, via rankBy). Contas cujo plano não tem subgrupo (sentinela
+  // id 0 / embed ausente) caem no balde "não informado".
+  const subgroupRanking = rankBy((r) =>
+    rankEntry(
+      'sg',
+      r.chart_account?.subgroup?.chart_account_subgroup_id,
+      r.chart_account?.subgroup?.subgroup_description,
+      r.chart_account?.subgroup?.subgroup_code,
+    ),
+  );
 
-  return { month, year, scope, kpis, despesaFixaBreakdown, despesaVariavelBreakdown, tipoBreakdown, costCenterRanking, chartAccountRanking };
+  return { month, year, scope, kpis, despesaFixaBreakdown, despesaVariavelBreakdown, tipoBreakdown, costCenterRanking, subgroupRanking };
 }

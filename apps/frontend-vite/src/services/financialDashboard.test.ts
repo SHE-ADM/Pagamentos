@@ -20,7 +20,10 @@ type Row = {
   chart_account: {
     account_code: string | null; account_description: string | null;
     group: { group_description: string | null; type_group_id: number } | null;
-    subgroup: { type_group: { type_group_id: number; type_group_description: string | null } | null } | null;
+    subgroup: {
+      chart_account_subgroup_id: number; subgroup_code: string | null; subgroup_description: string | null;
+      type_group: { type_group_id: number; type_group_description: string | null } | null;
+    } | null;
   } | null;
 };
 
@@ -33,7 +36,8 @@ const TIPO = {
 const desp = (
   amount: number, status_id: number, groupDesc: string,
   cc: { id: number; code: string; desc: string },
-  tipo: { id: number; desc: string }, ca: { id: number; code: string; desc: string }, due = '2026-01-10',
+  tipo: { id: number; desc: string },
+  ca: { id: number; code: string; desc: string; sg: { id: number; code: string; desc: string } }, due = '2026-01-10',
 ): Row => ({
   amount, status_id, due_date: due,
   cost_center_id: cc.id, chart_account_id: ca.id,
@@ -41,14 +45,18 @@ const desp = (
   chart_account: {
     account_code: ca.code, account_description: ca.desc,
     group: { group_description: groupDesc, type_group_id: TYPE_GROUP_ID_DESPESAS },
-    subgroup: { type_group: { type_group_id: tipo.id, type_group_description: tipo.desc } },
+    subgroup: {
+      chart_account_subgroup_id: ca.sg.id, subgroup_code: ca.sg.code, subgroup_description: ca.sg.desc,
+      type_group: { type_group_id: tipo.id, type_group_description: tipo.desc },
+    },
   },
 });
 
 const CC_ADM = { id: 1, code: '01', desc: 'Administrativo' };
 const CC_LOG = { id: 4, code: '04', desc: 'Logística' };
-const CA_SAL = { id: 11, code: '6.1.01', desc: 'Salários e Ordenados' };
-const CA_FRE = { id: 22, code: '4.5.01', desc: 'Fretes sobre Compras' };
+// O ranking de contas agrega pelo SUBGRUPO (sg) do plano; cada conta o carrega no `ca`.
+const CA_SAL = { id: 11, code: '6.1.01', desc: 'Salários e Ordenados', sg: { id: 61, code: '6.1', desc: 'Pessoal' } };
+const CA_FRE = { id: 22, code: '4.5.01', desc: 'Fretes sobre Compras', sg: { id: 45, code: '4.5', desc: 'Fretes' } };
 
 // Conta NÃO-despesa (Passivo, type_group_id=4) — deve ser EXCLUÍDA de tudo.
 const naoDespesa = (amount: number): Row => ({
@@ -122,7 +130,7 @@ describe('getFinancialDashboardData', () => {
       ...MONTH_ROWS[0],
       chart_account: {
         ...MONTH_ROWS[0].chart_account!,
-        subgroup: { type_group: { type_group_id: 0, type_group_description: 'Não informado' } },
+        subgroup: { chart_account_subgroup_id: 0, subgroup_code: null, subgroup_description: null, type_group: { type_group_id: 0, type_group_description: 'Não informado' } },
       },
     }]);
     const d = await getFinancialDashboardData(0, 2026);
@@ -159,13 +167,16 @@ describe('getFinancialDashboardData', () => {
     expect(d.costCenterRanking[0].name).not.toContain('#');
   });
 
-  it('plano de contas no sentinela (id 0, código "0") também vira "não informado"', async () => {
+  it('subgrupo no sentinela (id 0) vira "não informado" no ranking de contas', async () => {
     serve([{
-      ...MONTH_ROWS[0], amount: 5, chart_account_id: 0,
-      chart_account: { ...MONTH_ROWS[0].chart_account!, account_code: '0', account_description: null },
+      ...MONTH_ROWS[0], amount: 5,
+      chart_account: {
+        ...MONTH_ROWS[0].chart_account!,
+        subgroup: { chart_account_subgroup_id: 0, subgroup_code: '0', subgroup_description: null, type_group: { type_group_id: TYPE_GROUP_ID_DESPESA_FIXA, type_group_description: 'Despesas Fixas' } },
+      },
     }]);
     const d = await getFinancialDashboardData(0, 2026);
-    expect(d.chartAccountRanking[0]).toMatchObject({ name: 'não informado', value: 5 });
+    expect(d.subgroupRanking[0]).toMatchObject({ name: 'não informado', value: 5 });
   });
 
   // O cadastro NÃO tem UNIQUE em descrição (só a PK) — agregar pelo texto fundiria dois
@@ -184,11 +195,12 @@ describe('getFinancialDashboardData', () => {
     expect(new Set(d.costCenterRanking.map((r) => r.name)).size).toBe(2);
   });
 
-  it('ranking de plano de contas ordenado por VALOR (código — descrição, sem o Passivo)', async () => {
+  it('ranking de contas (por SUBGRUPO) ordenado por VALOR, sem o Passivo', async () => {
     const d = await getFinancialDashboardData(0, 2026);
-    expect(d.chartAccountRanking[0]).toMatchObject({ name: '4.5.01 — Fretes sobre Compras', value: 350, count: 2 });
-    expect(d.chartAccountRanking[1]).toMatchObject({ name: '6.1.01 — Salários e Ordenados', value: 100, count: 1 });
-    expect(d.chartAccountRanking.map((r) => r.name)).not.toContain('2.1.01 — Tributos a Recolher');
+    // Agrega pelo subgrupo do plano: Fretes (300+50) > Pessoal (100). O Passivo é excluído.
+    expect(d.subgroupRanking).toHaveLength(2);
+    expect(d.subgroupRanking[0]).toMatchObject({ name: 'Fretes', value: 350, count: 2 });
+    expect(d.subgroupRanking[1]).toMatchObject({ name: 'Pessoal', value: 100, count: 1 });
   });
 
   it('faz uma ÚNICA leitura (o read do ano saiu com o gráfico mês a mês)', async () => {

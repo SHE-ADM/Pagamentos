@@ -30,7 +30,7 @@ const MOCK: FinancialDashboardData = {
     { label: 'Despesas Fixas', count: 35, value: 10000 },
   ],
   costCenterRanking: [{ name: 'Logística', value: 15000, count: 25 }],
-  chartAccountRanking: [{ name: '4.4.01 — GNRE a Recolher', value: 12000, count: 8 }],
+  subgroupRanking: [{ name: '4.4.01 — GNRE a Recolher', value: 12000, count: 8 }],
 };
 
 describe('DashboardFinanceiro — acessibilidade (WCAG AA)', () => {
