@@ -10,7 +10,11 @@
 //   • donut "Despesas Fixas" — despesas FIXAS (Tipo 5) por GRUPO
 //   • donut "Despesas Variáveis" — idem, só as VARIÁVEIS (Tipo 6)
 //   • rankings por VALOR (R$): CENTROS DE CUSTO + PLANO DE CONTAS (no lugar do de fornecedores
-//     e das "Contas críticas e prioritárias", que seguem só no de vencimentos)
+//     e das "Contas críticas e prioritárias", que seguem só no de vencimentos) — linhas `dense`
+//     (mais compactas, cabem mais registros) e célula da direita em % do total de contas do
+//     escopo (`SupplierRank.pct`, calculado em `rankBy`), não mais "N conta(s)" — só aqui: o
+//     ranking de fornecedores de /dashboard_vencimentos não passa `dense` nem preenche `pct`
+//     e continua com a contagem
 // Dados reais via getFinancialDashboardData (filtra group.type_group_id ∈ {Despesas, Custo}).
 // Estilo 100% Tailwind; primitivos de gráfico reusados de components/dashboard/.
 import { useEffect, useState, useCallback } from 'react';
@@ -213,6 +217,7 @@ export default function DashboardFinanceiro() {
             <RankingList
               rows={data?.costCenterRanking ?? []}
               onSelect={(row) => openDrill({ chart: 'costCenter', bucketKey: row.key }, `Centro de custo · ${row.name}`)}
+              dense
             />
           </ChartCard>
 
@@ -224,6 +229,7 @@ export default function DashboardFinanceiro() {
             <RankingList
               rows={data?.subgroupRanking ?? []}
               onSelect={(row) => openDrill({ chart: 'subgroup', bucketKey: row.key }, `Conta · ${row.name}`)}
+              dense
             />
           </ChartCard>
         </div>

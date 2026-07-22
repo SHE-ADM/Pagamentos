@@ -7,11 +7,32 @@ import { fmtMoney } from '../../lib/format';
 
 // `key` (opcional) = identidade do balde, repassada ao onSelect para o drill-down casar as
 // contas daquela linha; ver SupplierRank.key. Sem onSelect, o componente ignora a key.
-type RankRow = { name: string; value: number; count: number; key?: string };
+// `pct` (opcional) = % do total de registros do escopo que esta linha representa (não da
+// soma dos valores exibidos — ver `rankBy` em services/supabase.ts). Quando presente, a
+// célula à direita mostra o percentual em vez de "N conta(s)" — troca automática por linha,
+// sem prop dedicada no componente (rankings de fornecedores/vencimentos não o preenchem e
+// continuam mostrando a contagem, sem qualquer mudança nos call sites existentes).
+type RankRow = { name: string; value: number; count: number; pct?: number; key?: string };
 
-export function RankingList({ rows, emptyLabel = 'Sem contas no período.', onSelect }: { rows: RankRow[]; emptyLabel?: string; onSelect?: (row: RankRow) => void }) {
+export function RankingList({
+  rows,
+  emptyLabel = 'Sem contas no período.',
+  onSelect,
+  dense = false,
+}: {
+  rows: RankRow[];
+  emptyLabel?: string;
+  onSelect?: (row: RankRow) => void;
+  // Linhas mais compactas (menos padding/gap) para caber mais registros na mesma altura —
+  // opt-in: usado pelos rankings de /dashboard_despesas (centro de custo e contas), que têm
+  // até 12 linhas; o ranking de fornecedores de /dashboard_vencimentos não liga (inalterado).
+  dense?: boolean;
+}) {
   const max = Math.max(1, ...rows.map((r) => r.value));
   if (!rows.length) return <p className="text-xs text-slate-500 py-4">{emptyLabel}</p>;
+  const badgeCls = dense ? 'h-4 w-4' : 'h-5 w-5';
+  const rowCls = dense ? 'flex items-center gap-1.5 py-0' : 'flex items-center gap-2 py-0.5';
+  const contentMbCls = dense ? 'mb-0' : 'mb-0.5';
   return (
     <div>
       {/* A key inclui a posição porque `name` NÃO é garantidamente único: o ranking de
@@ -23,9 +44,9 @@ export function RankingList({ rows, emptyLabel = 'Sem contas no período.', onSe
         // Conteúdo idêntico em ambos os modos — só o invólucro muda (button vs div).
         const inner = (
           <>
-            <span className={`shrink-0 h-5 w-5 rounded-full text-xs font-bold flex items-center justify-center ${i < 3 ? 'bg-brand-dark text-white' : 'bg-slate-200 text-slate-600'}`}>{i + 1}</span>
+            <span className={`shrink-0 ${badgeCls} rounded-full text-xs font-bold flex items-center justify-center ${i < 3 ? 'bg-brand-dark text-white' : 'bg-slate-200 text-slate-600'}`}>{i + 1}</span>
             <div className="flex-1 min-w-0">
-              <div className="flex justify-between gap-2 mb-0.5">
+              <div className={`flex justify-between gap-2 ${contentMbCls}`}>
                 <span className="text-xs font-medium text-slate-700 truncate">{r.name}</span>
                 <span className="font-mono text-xs font-semibold text-slate-900 whitespace-nowrap">{fmtMoney(r.value)}</span>
               </div>
@@ -34,10 +55,11 @@ export function RankingList({ rows, emptyLabel = 'Sem contas no período.', onSe
                 <div className="h-full bg-brand rounded-full transition-all" style={{ width: `${Math.max(2, (r.value / max) * 100)}%` }} />
               </div>
             </div>
-            <span className="shrink-0 text-xs text-slate-500 w-14 text-right">{r.count} conta(s)</span>
+            <span className="shrink-0 text-xs text-slate-500 w-14 text-right">
+              {r.pct != null ? `${Math.round(r.pct)}%` : `${r.count} conta(s)`}
+            </span>
           </>
         );
-        const rowCls = 'flex items-center gap-2 py-0.5';
         // Com onSelect a linha vira <button> real (foco/teclado/nome acessível — evita S1082);
         // sem ele, mantém o <div> não-interativo (vencimentos).
         return onSelect ? (

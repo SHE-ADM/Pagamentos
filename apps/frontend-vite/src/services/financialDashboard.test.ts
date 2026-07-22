@@ -177,6 +177,15 @@ describe('getFinancialDashboardData', () => {
     expect(d.costCenterRanking.map((r) => r.name)).not.toContain('Fiscal');
   });
 
+  // `pct` = % do TOTAL de registros do ESCOPO (4 contas de Despesas/Custo — a de Passivo não
+  // entra no denominador), não da soma dos valores exibidos. 2/4=50%, 1/4=25%, 1/4=25%.
+  it('ranking de CENTROS DE CUSTO expõe `pct` = % do total de contas do escopo', async () => {
+    const d = await getFinancialDashboardData(0, 2026);
+    expect(d.costCenterRanking[0]).toMatchObject({ name: 'Logística', count: 2, pct: 50 });
+    expect(d.costCenterRanking[1]).toMatchObject({ name: 'Produção', count: 1, pct: 25 });
+    expect(d.costCenterRanking[2]).toMatchObject({ name: 'Administrativo', count: 1, pct: 25 });
+  });
+
   // O sentinela id 0 EXISTE nos dois cadastros (descrição NULL no banco real), então o
   // embed vem PREENCHIDO — testar só "embed != null" deixaria passar um rótulo técnico.
   it('conta no sentinela (id 0) cai em "não informado", com ou sem embed', async () => {
@@ -226,6 +235,10 @@ describe('getFinancialDashboardData', () => {
     expect(d.subgroupRanking[0]).toMatchObject({ name: 'Fretes', value: 350, count: 2 });
     expect(d.subgroupRanking[1]).toMatchObject({ name: 'Mercadorias', value: 200, count: 1 });
     expect(d.subgroupRanking[2]).toMatchObject({ name: 'Pessoal', value: 100, count: 1 });
+    // Mesmo `pct` (% do total de contas do escopo) do ranking de centros de custo.
+    expect(d.subgroupRanking[0]).toMatchObject({ pct: 50 });
+    expect(d.subgroupRanking[1]).toMatchObject({ pct: 25 });
+    expect(d.subgroupRanking[2]).toMatchObject({ pct: 25 });
   });
 
   it('faz uma ÚNICA leitura (o read do ano saiu com o gráfico mês a mês)', async () => {
