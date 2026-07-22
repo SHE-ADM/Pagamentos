@@ -1358,6 +1358,43 @@ def subject_is_reminder(subject: str) -> bool:
     return "lembrete" in _strip_accents_lower(subject)
 
 
+# Assunto ORIGINAL de um e-mail ENCAMINHADO — no corpo, aparece como uma linha
+# "Assunto: ..." (Outlook/pt) ou "Subject: ..." (en), possivelmente com marcador de
+# citacao (">"). Um usuario interno pode reencaminhar um lembrete/confirmacao trocando
+# o assunto VISIVEL (ex.: "pagamento Sua Fatura"), escondendo o "lembrete" original das
+# guardas do run_reader, que olham so o assunto RECEBIDO. Reavaliamos o assunto original.
+# Captura ate o fim da LINHA ([^\r\n]+) sem depender do ancora `$` — o CRLF (\r antes do
+# \n) do webmail deixaria o \r fora do `$` do modo MULTILINE. O .strip() no consumidor
+# remove qualquer espaco/CR residual.
+_FORWARDED_SUBJECT_RE = re.compile(
+    r"^[ \t>]*(?:assunto|subject)[ \t]*:[ \t]*([^\r\n]+)",
+    re.IGNORECASE | re.MULTILINE,
+)
+
+
+def forwarded_subjects_from_body(body_text: str | None) -> list[str]:
+    """Assuntos ORIGINAIS de blocos de e-mail ENCAMINHADO achados no corpo (linhas
+    'Assunto:'/'Subject:'). Lista vazia se nao houver corpo ou linha de assunto."""
+    if not body_text:
+        return []
+    return [m.group(1).strip() for m in _FORWARDED_SUBJECT_RE.finditer(body_text) if m.group(1).strip()]
+
+
+def body_forwards_ignorable_subject(body_text: str | None) -> str | None:
+    """Se o corpo ENCAMINHA um e-mail cujo assunto ORIGINAL e um LEMBRETE ou uma
+    CONFIRMACAO/COMPROVANTE de pagamento, devolve o MOTIVO (str) para ignorar; senao None.
+    Fecha o vetor do reencaminhamento interno que reescreve o assunto visivel e esconde o
+    'lembrete'/'confirmacao' das guardas de assunto. Conservador: so dispara nos dois gates
+    "ignorar SEMPRE" (nao nas notificacoes fracas), e so no caminho do CORPO (sem anexo
+    pagavel) — um boleto real anexado a um lembrete encaminhado segue sendo pago."""
+    for subj in forwarded_subjects_from_body(body_text):
+        if subject_is_reminder(subj):
+            return f'Lembrete encaminhado — assunto original "{subj[:80]}" (nao e conta a pagar)'
+        if subject_is_payment_confirmation(subj):
+            return f'Confirmacao de pagamento encaminhada — assunto original "{subj[:80]}" (nao e conta a pagar)'
+    return None
+
+
 # Remetentes de SISTEMA (NDR/bounce/aviso de servidor) — nunca sao conta a pagar.
 # Match pelo local-part (antes do @), case-insensitive, em QUALQUER dominio.
 IGNORED_SENDER_LOCALPARTS = {"postmaster"}
@@ -4134,6 +4171,18 @@ def try_extract_from_body(email_rec: dict, body_text: str, received_at: str,
     Anota o motivo em email_rec['notes']. O log em email_processing_errors e feito
     de forma centralizada no chamador (process_message), para TODA falha.
     """
+    # Reencaminhamento interno de LEMBRETE/CONFIRMACAO com assunto REESCRITO: as guardas do
+    # run_reader olham so o assunto RECEBIDO, entao um "pagamento Sua Fatura" que encapsula um
+    # "Assunto: Lembrete Sua Fatura" no corpo escapa e gera conta. Reavalia o assunto ORIGINAL
+    # encaminhado; sendo lembrete/confirmacao, nao gera conta (→ 'ignorado', nao 'falha').
+    # So no caminho do CORPO (este e' o fallback sem anexo pagavel): um boleto real anexado a
+    # um lembrete encaminhado nunca chega aqui e segue sendo pago.
+    fwd_reason = body_forwards_ignorable_subject(body_text)
+    if fwd_reason:
+        log.info(f"    Lembrete/confirmacao encaminhado no corpo — ignorado ({fwd_reason})")
+        email_rec["notes"] = fwd_reason
+        return BODY_IGNORED
+
     payload = extract_from_email_body(body_text, received_at, message_id, sender_email,
                                       subject=email_rec.get("subject"))
     if payload is None:

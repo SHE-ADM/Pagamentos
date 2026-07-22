@@ -3051,6 +3051,29 @@ basta (pode ser um boleto real, ex.: "Boleto vencimento 10/07"). Distinto de
 delete de 5 contas** com "lembrete" no assunto (4 "Lembrete de Pagamento: vencimento" de
 `boleto@smartwebservices` + 1 "ENC: Lembrete Sua Fatura") + os `email_control` correspondentes → `ignorado`.
 
+**Lembrete/confirmação ENCAMINHADO com assunto REESCRITO → `ignorado` no caminho do CORPO (não
+regredir):** as guardas acima (`subject_is_reminder`/`subject_is_payment_confirmation`) rodam no
+`run_reader` **só sobre o assunto RECEBIDO**. Quando um usuário interno **reencaminha** um lembrete/
+confirmação e **reescreve o assunto visível** (ex.: "pagamento Sua Fatura"), o "lembrete" original
+some do assunto e sobrevive apenas no CORPO, na linha `Assunto: <original>` do bloco encaminhado —
+o e-mail passa no filtro de keyword (tem "fatura") e, **sem anexo**, a extração do corpo gera uma
+conta indevida. Falha real: conta **627** (R$ 22.655,00, `email_body`, remetente
+`eunice@otimotex.com.br`), cujo corpo encaminhava `Assunto: Lembrete Sua Fatura` de
+`lembrete@contabilesquema.com.br` ("aviso de disponibilidade de fatura"). Correção
+(`read_emails.py`): `forwarded_subjects_from_body(body)` extrai as linhas `Assunto:`/`Subject:`
+(com marcador de citação `>` opcional; captura até o fim da linha **sem** o âncora `$`, pois o `\r`
+do CRLF ficaria fora dele no modo MULTILINE) e `body_forwards_ignorable_subject(body)` reavalia
+cada assunto original nos **dois** gates "ignorar SEMPRE" (`subject_is_reminder` +
+`subject_is_payment_confirmation`). O guard fica no **topo de `try_extract_from_body`** → retorna
+`BODY_IGNORED` (não gera conta), **antes** de tocar o `ctrl`. **Escopo mínimo/robusto:** (a) só no
+caminho do CORPO (fallback sem anexo pagável) — um **boleto real anexado** a um lembrete encaminhado
+segue pelo caminho de PDF e é pago; (b) só os dois gates fortes, **não** as `NOTIFICATION_PHRASE_TERMS`
+(fracas) nem "fatura"/"nota fiscal" encaminhadas normais, que **não** são bloqueadas. Testes:
+`tests/test_forwarded_reminder.py`. Limpeza retroativa (2026-07-22): **hard delete da conta 627** +
+`email_control` 992 → `ignorado` (varredura confirmou ser a única afetada). **Deploy:** copiar só
+`read_emails.py` (o `extract_pdf.py` NÃO muda; sem `.env`, sem passo de banco). Validação (esperado
+`True`): `py -3 -c "import sys; sys.path.insert(0,'skills/email-reader/scripts'); import read_emails as R; print(R.body_forwards_ignorable_subject('Assunto: Lembrete Sua Fatura\\r\\n') is not None)"`
+
 Lista padrão em `KEYWORDS_DEFAULT`, **sobrescrita por `EMAIL_KEYWORDS` no `.env`** (fonte de
 verdade usada hoje). **NF-e "pura"** (`subject_is_pure_nfe`): assunto com `nota fiscal/nfe/
 nf-e/nfse/nfs-e` **por palavra inteira** (não casa "co**nfe**cções") e **sem** indício de
