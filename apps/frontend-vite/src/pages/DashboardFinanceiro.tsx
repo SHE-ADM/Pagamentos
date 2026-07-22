@@ -126,7 +126,7 @@ export default function DashboardFinanceiro() {
             subtitle="Maiores valores por plano de contas no período"
             icon={ListTree}
           >
-            <RankingList rows={data?.chartAccountRanking ?? []} />
+            <RankingList rows={data?.subgroupRanking ?? []} />
           </ChartCard>
         </div>
       </section>

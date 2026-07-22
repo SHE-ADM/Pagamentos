@@ -38,7 +38,7 @@ const MOCK: FinancialDashboardData = {
     { name: 'Logística', value: 15000, count: 25 },
     { name: 'Administrativo', value: 9000, count: 15 },
   ],
-  chartAccountRanking: [
+  subgroupRanking: [
     { name: '4.4.01 — GNRE a Recolher', value: 12000, count: 8 },
     { name: '6.4.01 — IPTU', value: 3000, count: 2 },
   ],
