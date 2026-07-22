@@ -123,7 +123,7 @@ export default function DashboardFinanceiro() {
 
           <ChartCard
             title="Ranking de contas"
-            subtitle="Maiores valores por plano de contas no período"
+            subtitle="Maiores valores por sub grupo de contas no período"
             icon={ListTree}
           >
             <RankingList rows={data?.subgroupRanking ?? []} />
