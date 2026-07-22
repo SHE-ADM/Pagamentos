@@ -173,6 +173,25 @@ describe('DashboardFinanceiro', () => {
     expect(screen.getByText('Custos')).toBeInTheDocument();
   });
 
+  it('o anel escala PROPORCIONALMENTE ao valor total (R$) de cada donut entre si', async () => {
+    render(<DashboardFinanceiro />);
+    await screen.findByRole('heading', { name: 'Classificação Financeira' });
+    const ringOf = (title: string): HTMLElement | null =>
+      (screen.getByRole('heading', { name: title }).closest('.card') as HTMLElement | null)
+        ?.querySelector('.relative.shrink-0') as HTMLElement | null;
+    // tipoBreakdown soma 38000 (22000+10000+6000) — é o MAIOR total dos 4 (superset dos
+    // demais) → ratio 1 → diâmetro no MÁXIMO da escala.
+    const tipo = ringOf('Classificação Financeira');
+    // custoMercadoriasBreakdown soma 6000 — o MENOR total dos 4 → diâmetro bem menor.
+    const custoMerc = ringOf('Custos de Mercadorias');
+    expect(tipo?.style.width).toBe('124px');
+    expect(parseFloat(custoMerc?.style.width ?? '0')).toBeLessThan(parseFloat(tipo?.style.width ?? '0'));
+    // Furo (inset) acompanha o diâmetro — nunca um valor fixo entre donuts de tamanhos diferentes.
+    const tipoHole = tipo?.closest('.relative')?.querySelector('.rounded-full.bg-white') as HTMLElement | null;
+    const custoHole = custoMerc?.closest('.relative')?.querySelector('.rounded-full.bg-white') as HTMLElement | null;
+    expect(tipoHole?.style.inset).not.toBe(custoHole?.style.inset);
+  });
+
   it('o subtítulo do donut "Classificação Financeira" mostra mês + KPI (sem "Por tipo…")', async () => {
     render(<DashboardFinanceiro />);
     // Abre filtrado por "A vencer" → subtítulo = "<mês> - A vencer", SEM o prefixo antigo.
