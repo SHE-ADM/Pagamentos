@@ -239,8 +239,8 @@ describe('DashboardFinanceiro', () => {
     expect(within(costCenterCard).queryByText(/conta\(s\)/)).not.toBeInTheDocument();
     expect(within(subgroupCard).queryByText(/conta\(s\)/)).not.toBeInTheDocument();
 
-    // `dense`: as linhas dos dois rankings usam py-0 (sem padding vertical) — não `py-0.5`.
-    expect(screen.getByRole('button', { name: /Logística/ }).className).toContain('py-0');
+    // `dense`: as linhas dos dois rankings usam py-px (1px) — não `py-0.5` (2px, o normal).
+    expect(screen.getByRole('button', { name: /Logística/ }).className).toContain('py-px');
     expect(screen.getByRole('button', { name: /Logística/ }).className).not.toContain('py-0.5');
   });
 
