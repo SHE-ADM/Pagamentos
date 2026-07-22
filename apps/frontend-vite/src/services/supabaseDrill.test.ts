@@ -117,24 +117,25 @@ describe('filterExpenseDetailRows — ranking de contas / subgrupo (bucketKey)',
   });
 });
 
-describe('topBucketLabels + fatia "outros"', () => {
-  // 8 grupos com 2 contas (tipo FIXA) + 1 grupo com 1 conta → o de MENOR contagem cai em "outros".
+describe('topBucketLabels + fatia "outros" (DONUT_TOP_N=6 — no máx. 7 linhas visíveis)', () => {
+  // 6 grupos com 2 contas (tipo FIXA) + 3 grupos com 1 conta cada → os de MENOR contagem
+  // (G7/G8/G9) caem em "outros". Top-6 + 1 fatia "outros" = 7 linhas, nunca mais que isso.
   const rows: ExpenseDetailRow[] = [];
-  for (let g = 1; g <= 8; g++) { rows.push(mkRow(10, { tipoId: F, groupDesc: `G${g}`, sgId: g }), mkRow(10, { tipoId: F, groupDesc: `G${g}`, sgId: g })); }
-  rows.push(mkRow(10, { tipoId: F, groupDesc: 'G9', sgId: 9 }));
+  for (let g = 1; g <= 6; g++) { rows.push(mkRow(10, { tipoId: F, groupDesc: `G${g}`, sgId: g }), mkRow(10, { tipoId: F, groupDesc: `G${g}`, sgId: g })); }
+  for (let g = 7; g <= 9; g++) { rows.push(mkRow(10, { tipoId: F, groupDesc: `G${g}`, sgId: g })); }
 
-  it('topBucketLabels devolve os 8 rótulos de maior contagem (G9 fica de fora)', () => {
+  it('topBucketLabels devolve os 6 rótulos de maior contagem (G7/G8/G9 ficam de fora)', () => {
     const top = topBucketLabels(rows, (r) => r.chart_account?.group?.group_description ?? null);
-    expect(top.size).toBe(8);
+    expect(top.size).toBe(6);
     expect(top.has('G1')).toBe(true);
-    expect(top.has('G9')).toBe(false);
+    expect(top.has('G7')).toBe(false);
   });
   it('clicar numa fatia própria retorna só aquele grupo', () => {
     expect(filterExpenseDetailRows(rows, { chart: 'grupoTipo', typeGroupId: F, label: 'G1' })).toHaveLength(2);
   });
-  it('clicar em "outros" retorna o COMPLEMENTO (o grupo fora do top-8)', () => {
+  it('clicar em "outros" retorna o COMPLEMENTO (os grupos fora do top-6)', () => {
     const outros = filterExpenseDetailRows(rows, { chart: 'grupoTipo', typeGroupId: F, label: 'outros' });
-    expect(outros).toHaveLength(1);
-    expect(outros[0].chart_account?.group?.group_description).toBe('G9');
+    expect(outros).toHaveLength(3);
+    expect(outros.map((r) => r.chart_account?.group?.group_description).sort()).toEqual(['G7', 'G8', 'G9']);
   });
 });
