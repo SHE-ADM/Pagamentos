@@ -16,9 +16,11 @@ E um **terceiro pipeline (infra): backup diário do Supabase** (skill `backup-su
 `pg_dump` do banco + download do bucket `attachments`, agendado às 02:00. Ver "Pipeline de
 backup do Supabase (skill `backup-supabase`)".
 
-E um **quarto pipeline (reconciliação): baixa automática de contas pagas** (skill
-`baixa-automatica`) — marca como `pago` as contas com NF + Boleto confirmados e vencimento
-vencido, agendado às 06:00. Ver "Pipeline de baixa automática (skill `baixa-automatica`)".
+E um **quarto pipeline (reconciliação): baixa automática de contas pagas + marcação de
+vencidos** (skill `baixa-automatica`) — marca como `pago` as contas com NF + Boleto
+confirmados e vencimento vencido, **e** marca como `vencido` as contas pendente/a vencer
+com vencimento anterior a hoje; duas regras independentes, agendadas às 08:00. Ver
+"Pipeline de baixa automática (skill `baixa-automatica`)".
 
 > **Arquitetura: monorepo Sheild com backend híbrido.** Desde a reestruturação de
 > 2026-06-09, o projeto adota o monorepo `apps/* + packages/shared` (npm workspaces),
@@ -4022,15 +4024,19 @@ Backup do Supabase em produção".
 
 ## Pipeline de baixa automática (skill `baixa-automatica`)
 
-Quarto pipeline (reconciliação) — marca como **`pago`** as contas a pagar já quitadas,
-independente do Flask/Next (mesmo padrão de `email-reader`/`cobranca-vencidos`/`backup-supabase`).
+Quarto pipeline (reconciliação) — **duas regras independentes** sobre
+`financial_account_control`, no mesmo script/tarefa, cada uma isolada da outra (falha
+numa não impede a outra de rodar), independente do Flask/Next (mesmo padrão de
+`email-reader`/`cobranca-vencidos`/`backup-supabase`).
+
+### Regra 1 — Baixa (marca como `pago`)
 
 **Regra de negócio (fonte única):** uma conta em `financial_account_control` vira `pago`
 (`status_id = 8`) quando **todas** valem: `has_invoice = true` **e** `has_bank_slip = true`
 **e** `due_date <= hoje` (data local) **e** `status_id ∈ {1,2,3}` (pendente/vencido/a vencer —
 **em aberto**). Situações **fechadas** (cancelado/baixado/protestado/cartório/prorrogado/já
 pago) são **preservadas** — nunca reabre nem sobrescreve. A regra **não** reverte (desmarcar
-NF/BOL depois não desfaz o `pago`).
+NF/BOL depois não desfaz o `pago`). Funções: `build_filter`/`count_eligible`/`apply_baixa`.
 
 **Duas instâncias da MESMA regra:**
 1. **No ato da edição (`/consulta`, frontend):** `qualifiesForAutoPago` +
@@ -4038,33 +4044,59 @@ NF/BOL depois não desfaz o `pago`).
    e em aberto, grava `status_id = 8` na hora (best-effort; ver "Baixa automática no ATO da
    edição" na seção de RLS/grants).
 2. **Batch diário (esta skill):** cobre as contas cujo `due_date` "passa" com o tempo sem
-   nenhuma edição disparar a baixa. Roda **1x/dia às 06:00** na máquina de produção
-   (`scheduler/run_baixa.ps1`).
+   nenhuma edição disparar a baixa.
 
-**Mecânica (`skills/baixa-automatica/scripts/run.py`):** um único
-`PATCH /rest/v1/financial_account_control` filtrado (as 4 condições, `build_filter`) com
-`{status_id: 8}`, escrita via **`SUPABASE_SERVICE_KEY`** (service_role ignora RLS). Setar 8
-explicitamente é seguro — a trigger `fn_set_status_from_due_date` só recalcula quando
-`status_id ∈ {1,2,3}`, então não sobrescreve o 8 (é o mesmo caminho da baixa manual pelo
-`StatusSelectCell`). `--dry-run` faz um `GET` com `Prefer: count=exact` e só reporta o total,
-sem gravar. **Sem dependência Python nova** — `urllib` (stdlib) + `python-dotenv`. Exit code
-`0` = sucesso; `≠ 0` = falha → o wrapper marca a tarefa vermelha + Event Log. `.env`: reusa
-`SUPABASE_URL`/`SUPABASE_SERVICE_KEY` (já presentes para o reader). Teste:
-`tests/test_baixa_automatica.py` (construtor do filtro + ids em aberto). **Isolamento do teste
-(não regredir):** o teste carrega o `run.py` via `importlib` com nome de módulo ÚNICO
-(`baixa_automatica_run`), **não** `import run` via `sys.path` — várias skills têm `run.py`
-(`cobranca-vencidos`, `backup-supabase`), e importar o nome `run` colidiria em `sys.modules`,
-poluindo a suíte (quebrava os testes da cobrança). **Nenhum passo de
+### Regra 2 — Marcação de vencidos (marca como `vencido`)
+
+**Regra de negócio:** uma conta em `financial_account_control` **EM ABERTO**
+(`status_id ∈ {1,3}` — pendente/a vencer; **não** inclui 2=vencido, já é o alvo) cujo
+vencimento é **ANTERIOR** a hoje (`due_date < hoje`, **estritamente** menor — quem vence
+HOJE ainda está "a vencer") vira `vencido` (`status_id = 2`). Situações **fechadas** são
+preservadas; a regra **não** reverte. Mesma semântica da trigger `fn_set_status_from_due_date`
+(`due_date < ref_date → vencido`). Funções:
+`build_filter_vencido`/`count_eligible_vencido`/`apply_vencido`. Adicionada em 2026-07-23
+a pedido do usuário, **dentro** desta skill (não como skill nova nem dentro de
+`cobranca-vencidos` — que é outro domínio, contas a RECEBER via Firebird).
+
+### Por que as duas regras existem (motivo estrutural comum)
+
+A trigger `fn_set_status_from_due_date` só recalcula `status_id` por vencimento em
+**INSERT/UPDATE** da linha — sem nenhuma edição, uma conta que era "a vencer"/"pendente"
+ontem **não** transiciona sozinha hoje (nem para pago, nem para vencido). Este batch cobre
+essa lacuna para as duas transições. Roda **1x/dia às 08:00** na máquina de produção
+(`scheduler/run_baixa.ps1`).
+
+**Mecânica (`skills/baixa-automatica/scripts/run.py`):** cada regra faz um único
+`PATCH /rest/v1/financial_account_control` filtrado com seu próprio status alvo (`{status_id:
+8}` ou `{status_id: 2}`), escrita via **`SUPABASE_SERVICE_KEY`** (service_role ignora RLS).
+Setar o status explicitamente é seguro — a trigger só recalcula quando `status_id ∈ {1,2,3}`,
+então não sobrescreve o valor já gravado (é o mesmo caminho da baixa/troca manual pelo
+`StatusSelectCell`). `main()` roda as duas em sequência, cada uma no seu próprio try/except
+(`_run_baixa_step`/`_run_vencido_step`) — **isoladas**: falha numa não impede a outra; exit
+code `1` se **qualquer uma** falhar, mas a que teve sucesso já gravou (sem rollback cruzado,
+não é uma transação). `--dry-run` faz um `GET` com `Prefer: count=exact` **por regra** e
+reporta os dois totais, sem gravar. **Sem dependência Python nova** — `urllib` (stdlib) +
+`python-dotenv`. Exit code `0` = as duas com sucesso; `≠ 0` = falha em ao menos uma → o
+wrapper marca a tarefa vermelha + Event Log. `.env`: reusa `SUPABASE_URL`/`SUPABASE_SERVICE_KEY`
+(já presentes para o reader). Teste: `tests/test_baixa_automatica.py` (os dois construtores de
+filtro, ids/status alvo de cada regra, independência entre elas, isolamento de falha entre as
+etapas). **Isolamento do teste (não regredir):** o teste carrega o `run.py` via `importlib`
+com nome de módulo ÚNICO (`baixa_automatica_run`), **não** `import run` via `sys.path` —
+várias skills têm `run.py` (`cobranca-vencidos`, `backup-supabase`), e importar o nome `run`
+colidiria em `sys.modules`, poluindo a suíte (quebrava os testes da cobrança). **Nenhum passo de
 banco** (colunas e grants já existem — migrations 033/068).
 
-**Backfill inicial aplicado (2026-07-10):** a 1ª execução real do batch marcou **15 contas**
-que já se enquadravam na regra (NF + Boleto + vencidas + em aberto) como `pago`; o `--dry-run`
-seguinte reportou `0` (idempotente). Como dev e produção compartilham a **mesma Supabase**, as
-15 baixas já valem para os dois ambientes — não repetir a aplicação após o deploy dos scripts.
+**Backfill inicial aplicado (2026-07-10, só Regra 1):** a 1ª execução real do batch marcou
+**15 contas** que já se enquadravam na regra de baixa (NF + Boleto + vencidas + em aberto)
+como `pago`; o `--dry-run` seguinte reportou `0` (idempotente). Como dev e produção
+compartilham a **mesma Supabase**, as 15 baixas já valem para os dois ambientes — não repetir
+a aplicação após o deploy dos scripts. A Regra 2 (vencidos), adicionada depois, ainda não
+teve seu primeiro run real em produção — na 1ª execução ela vai marcar de uma vez todas as
+contas que hoje já se enquadram (verificado em dry-run de dev: 126 títulos).
 
 ```powershell
-py -3 skills\baixa-automatica\scripts\run.py --dry-run   # quantas contas SERIAM baixadas (não grava)
-py -3 skills\baixa-automatica\scripts\run.py             # aplica a baixa
+py -3 skills\baixa-automatica\scripts\run.py --dry-run   # quantas contas/títulos SERIAM afetados pelas 2 regras (não grava)
+py -3 skills\baixa-automatica\scripts\run.py             # aplica as duas regras
 ```
 
 ## Windows Task Scheduler
@@ -4072,7 +4104,10 @@ py -3 skills\baixa-automatica\scripts\run.py             # aplica a baixa
 Quatro tarefas agendadas na pasta `\Sheild\` do Agendador (produção
 `C:\Sheild\API\Pagamentos`): **Email Reader** (leitura, 5 min), **Cobrança Vencidos**
 (envios, 08:00), **Backup Supabase** (02:00 diário — ver seção acima) e **Baixa Automática**
-(reconciliação de pagos, 06:00 diário — ver "Pipeline de baixa automática").
+(reconciliação de pagos + marcação de vencidos, 08:00 diário — ver "Pipeline de baixa
+automática"). **Cobrança Vencidos e Baixa Automática coincidem no horário (08:00)** — são
+tarefas independentes (scripts, tabelas e sistemas distintos: Firebird+SMTP vs. Supabase
+REST), sem recurso compartilhado, então rodam em paralelo sem conflito.
 
 `scheduler/run_reader.ps1` — intervalo de 5 min (`$INTERVAL_MIN` em
 `scheduler/setup-task.ps1`). Detecta Python com `pdfplumber` (ordem: `py -3.12`,
@@ -4106,6 +4141,17 @@ instalados na máquina. Guia: `scheduler/INSTALL.md`.
 > deixar o fix canônico em `main` (via commit/PR/merge) e **entregar o passo de cópia +
 > comando de validação**; a execução em produção é do operador. Os avisos "PENDENTE de
 > cópia p/ prod" abaixo listam o que ainda falta aplicar lá.
+>
+> **Regra geral (não só limitação técnica — é DECISÃO DO USUÁRIO):** toda instalação na
+> máquina de produção — cópia de arquivos/skills, registro/atualização de tarefas no
+> Windows Task Scheduler (`setup-*-task.ps1`), instalação de dependências (Python,
+> drivers, `pip install`), reinício de serviços, qualquer execução de comando na máquina
+> — é feita **pelo próprio usuário, manualmente**. O Claude **nunca** tenta executar,
+> nem se oferece para executar, esses passos remotamente ou por qualquer outro meio —
+> mesmo que uma via técnica existisse. O trabalho do Claude termina em: (1) código
+> pronto em `main`; (2) instruções claras e copiáveis (comandos, caminhos, o que
+> validar). A instalação em si é sempre entregue ao usuário para rodar quando e como
+> quiser.
 
 ### Deploy manual do Email Reader em produção (caso específico — não regredir)
 
@@ -4419,9 +4465,27 @@ Registrar a tarefa (uma vez, **PowerShell como Administrador**):
 
 Quarto pipeline agendado (**skill `baixa-automatica`**). Mesma máquina/pasta dos outros
 (`C:\Sheild\API\Pagamentos`); o scheduler executa `skills\baixa-automatica\scripts\run.py`
-(`run_baixa.ps1` `$SCRIPT`), 1x/dia às **06:00**. Marca como `pago` as contas com NF + Boleto
-confirmados, vencimento <= hoje e em aberto (um `PATCH` via `service_role`). Mesma **preferência
-do usuário**: atualização de produção é **cópia manual + validação** (nunca `deploy-prod.ps1`).
+(`run_baixa.ps1` `$SCRIPT`), 1x/dia às **08:00**, aplicando **DUAS regras independentes**:
+(1) marca como `pago` as contas com NF + Boleto confirmados, vencimento <= hoje e em aberto;
+(2) marca como `vencido` as contas pendente/a vencer com vencimento < hoje (um `PATCH` por
+regra, via `service_role`). Mesma **preferência do usuário**: atualização de produção é
+**cópia manual + validação** (nunca `deploy-prod.ps1`).
+
+> **DEPLOY 2026-07-23 — Regra 2 (marcação de vencidos) adicionada + horário movido de
+> 06:00 para 08:00 (PENDENTE de cópia/reagendamento p/ prod):** o `run.py` ganhou
+> `VENCIDO_ELIGIBLE_STATUS_IDS`/`STATUS_ID_VENCIDO`/`build_filter_vencido`/
+> `count_eligible_vencido`/`apply_vencido` + `main()` reescrito para rodar as duas regras
+> isoladas (`_run_baixa_step`/`_run_vencido_step`). A Regra 1 (baixa para `pago`) está
+> **byte-a-byte intocada** (mesmas funções, mesmo comportamento) — só a orquestração em
+> `main()` mudou para acomodar a etapa nova. Deploy = copiar a pasta da skill inteira
+> (tabela abaixo, já cobre isso). **Degrada com segurança:** se só a Regra 1 for copiada
+> (esquecimento), o pipeline segue funcionando como antes (só não marca vencidos); não há
+> passo de banco novo. **O horário PRECISA de um passo extra** — copiar os arquivos NÃO
+> move uma tarefa já registrada no Agendador: é necessário **re-executar
+> `setup-baixa-task.ps1`** (`-Force` já embutido no script, sobrescreve o registro
+> existente) para a tarefa passar de 06:00 para 08:00. Sem esse passo, a tarefa em
+> produção continua disparando às 06:00 mesmo com o `run.py`/`.ps1` atualizados — os
+> arquivos `.ps1` só definem o horário no MOMENTO do registro, não retroativamente.
 
 **O QUE COPIAR para produção:**
 
@@ -4437,19 +4501,22 @@ do usuário**: atualização de produção é **cópia manual + validação** (n
   depende delas). Nenhuma variável nova, nenhum passo de banco (as colunas
   `has_invoice`/`has_bank_slip`/`status_id` e os grants já existem — migrations 033/068; a
   Supabase é a mesma de dev/prod).
-- **Regra espelhada no frontend** (`qualifiesForAutoPago` em `Consulta.tsx`, deploy pelo
-  Vercel) e no batch — as duas instâncias usam as **mesmas 4 condições**. Ao mudar a regra,
-  ajustar os **dois** lados.
+- **Regra 1 espelhada no frontend** (`qualifiesForAutoPago` em `Consulta.tsx`, deploy pelo
+  Vercel) e no batch — as duas instâncias usam as **mesmas 4 condições**. Ao mudar essa
+  regra, ajustar os **dois** lados. A Regra 2 (vencidos) **não** tem instância no frontend —
+  vive só neste batch.
 
-Validar (esperado: `imports OK`; o `--dry-run` reporta a contagem sem gravar):
+Validar (esperado: `imports OK`; o `--dry-run` reporta a contagem das DUAS regras sem gravar):
 
 ```powershell
 cd C:\Sheild\API\Pagamentos
-py -3 -c "import sys; sys.path.insert(0,'skills/baixa-automatica/scripts'); import run; print('imports OK')"
+py -3 -c "import sys; sys.path.insert(0,'skills/baixa-automatica/scripts'); import run; print('imports OK', hasattr(run, 'apply_vencido'))"
 py -3 skills\baixa-automatica\scripts\run.py --dry-run
 ```
 
-Registrar a tarefa (uma vez, **PowerShell como Administrador**):
-`.\scheduler\setup-baixa-task.ps1` → cria **"Pagamentos - Baixa Automática"** na pasta `\Sheild\`.
-**Não precisa reiniciar nada** (a tarefa inicia processo novo a cada disparo).
+Registrar/atualizar a tarefa (**PowerShell como Administrador** — desta vez é
+**obrigatório re-rodar**, mesmo já registrada antes, para mover o horário):
+`.\scheduler\setup-baixa-task.ps1` → recria **"Pagamentos - Baixa Automática"** na pasta
+`\Sheild\`, agora às 08:00. **Não precisa reiniciar nada** (a tarefa inicia processo novo
+a cada disparo).
 
