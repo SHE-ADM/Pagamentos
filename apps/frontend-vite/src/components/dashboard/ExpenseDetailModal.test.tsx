@@ -34,6 +34,13 @@ describe('ExpenseDetailModal', () => {
     expect(screen.getAllByText('a vencer').length).toBeGreaterThan(0); // badge de situação (status_id 3)
   });
 
+  it('a célula de Situação não quebra o badge em várias linhas', () => {
+    render(<ExpenseDetailModal open title="X" rows={ROWS} onClose={vi.fn()} />);
+    const badge = screen.getAllByText('a vencer')[0];
+    const cell = badge.closest('td');
+    expect(cell).toHaveClass('whitespace-nowrap');
+  });
+
   it('cabeçalho traz o título e o rodapé de contagem + total', () => {
     render(<ExpenseDetailModal open title="Centro de custo · Compras" rows={ROWS} onClose={vi.fn()} />);
     expect(screen.getByRole('heading', { name: 'Centro de custo · Compras' })).toBeInTheDocument();
@@ -68,6 +75,19 @@ describe('ExpenseDetailModal', () => {
     render(<ExpenseDetailModal open title="X" rows={rowsWithoutDue} onClose={vi.fn()} />);
     const rows = screen.getAllByRole('row').slice(1);
     expect(rows[2]).toHaveTextContent('Sem Data Ltda');
+  });
+
+  it('mantém a ordem original entre linhas de MESMO vencimento (sort estável)', () => {
+    const tied: ExpenseDetailRow[] = [
+      mk(1, 300, 'ACME Ltda', null, '6.1.01', 'Salários', '2026-07-10'),
+      mk(2, 100, 'Beta Comércio LTDA', null, '4.5.01', 'Fretes', '2026-07-10'),
+      mk(3, 50, 'Cedro Distribuidora', null, '9.9.99', 'Diversos', '2026-07-10'),
+    ];
+    render(<ExpenseDetailModal open title="X" rows={tied} onClose={vi.fn()} />);
+    const rows = screen.getAllByRole('row').slice(1);
+    expect(rows[0]).toHaveTextContent('ACME Ltda');
+    expect(rows[1]).toHaveTextContent('Beta Comércio LTDA');
+    expect(rows[2]).toHaveTextContent('Cedro Distribuidora');
   });
 
   it('clique no backdrop (o próprio <dialog>) chama onClose', () => {

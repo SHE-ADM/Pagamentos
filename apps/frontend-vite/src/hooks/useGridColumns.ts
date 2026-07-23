@@ -487,10 +487,24 @@ export function getExpenseDetailColumns(): ColumnDef<ExpenseDetailRow>[] {
       render: (r) => fmtMoney(r.amount),
     },
     {
+      // Este DataGrid roda sem `enableColumnManagement` (modo não-gerenciável) — `size`
+      // é ignorado (cellStyle só aplica width no modo gerenciável) e a tabela é `w-full`
+      // sem `table-fixed`, então o navegador quebra o texto da célula por padrão quando
+      // falta espaço. `whitespace-nowrap` força o badge a ficar numa linha só; o
+      // navegador então dá a esta coluna a largura que ela precisa, encolhendo as
+      // colunas com `wrap: true` (Fornecedor/Plano de conta) em vez de quebrar o badge.
       key: 'status_id',
       header: 'Situação',
       size: 130,
-      render: (r) => createElement(StatusBadge, { value: STATUS_NAME_BY_ID[r.status_id] ?? '—' }),
+      className: 'whitespace-nowrap',
+      // Sem fallback local: status_id é NOT NULL com domínio fechado (FK para a dimensão
+      // `status`, ids 1-10 — STATUS_NAME_BY_ID é exaustivo), então o lookup nunca deveria
+      // vir undefined na prática. Passar o valor cru ao StatusBadge (mesmo padrão de
+      // `r.keyword_matched` acima) deixa o PRÓPRIO componente tratar o caso impossível —
+      // evita duplicar a lógica de fallback (visto em Consulta.tsx:applyStatusId, que usa
+      // String(id) por um motivo distinto: ali o texto vira o status_dim.status_name
+      // persistido no update otimista, não só um valor de exibição).
+      render: (r) => createElement(StatusBadge, { value: STATUS_NAME_BY_ID[r.status_id] }),
     },
   ];
 }
