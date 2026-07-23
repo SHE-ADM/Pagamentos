@@ -1514,7 +1514,7 @@ apps/frontend-vite/src/components/
 │   ├── MonthlyFlow.tsx        #   barras "mês a mês" (A pagar vs. Pago), prop {flow} — usado SÓ por /dashboard_vencimentos (o financeiro não tem esse gráfico)
 │   ├── RankingList.tsx (+ .test.tsx)  #   ranking horizontal top-N por valor, prop {rows:{name,value,count,key?}[]} (fornecedores | centros de custo | subgrupo de plano de contas). A `key` da linha inclui a POSIÇÃO — `name` não é garantidamente único (fornecedores homônimos; cadastros sem UNIQUE em descrição) e a key duplicada fazia o React descartar a 2ª linha, sumindo com o valor sem erro visível. Prop OPCIONAL `onSelect(row)` (drill-down): com ela a linha vira `<button>` real e devolve `row.key` (balde); sem ela, `<div>` não-interativo (vencimentos)
 │   ├── PriorityList.tsx       #   lista de contas críticas/prioritárias, prop {rows: PriorityAccount[]} — usado SÓ por /dashboard_vencimentos
-│   └── ExpenseDetailModal.tsx (+ .test.tsx, .a11y.test.tsx)  #   card de DETALHE (drill-down) de /dashboard_despesas: modal <dialog> centralizado + DataGrid enxuto (getExpenseDetailColumns: Fornecedor/Plano de conta/Vencimento/Valor/Situação — Situação por último, badge read-only via StatusBadge+STATUS_NAME_BY_ID) das contas da fatia/linha clicada. Rows já filtradas pela página (filterExpenseDetailRows); ordena por VENCIMENTO asc (mais próximos primeiro; sem data vai ao fim) + rodapé total. Ver "Card de DETALHE (drill-down)" na rota /dashboard_despesas
+│   └── ExpenseDetailModal.tsx (+ .test.tsx, .a11y.test.tsx)  #   card de DETALHE (drill-down) de /dashboard_despesas: modal <dialog> centralizado + DataGrid enxuto (getExpenseDetailColumns: Fornecedor/Plano de conta/Vencimento/Valor/Situação — Situação por último, badge read-only via StatusBadge+STATUS_NAME_BY_ID **SEM fallback local** — `status_id` é NOT NULL de domínio fechado (FK, ids 1-10), então o lookup nunca deveria vir `undefined`; o valor cru é passado direto ao `StatusBadge`, que já trata `undefined`/nulo sozinho (mesmo padrão de `r.keyword_matched` em `getConsultaColumns`) — **não** "alinhar" com o `String(id)` de `Consulta.tsx:applyStatusId`, que resolve um problema distinto (popular `status_dim.status_name` para persistência/CSV, não só exibição), célula com `className: 'whitespace-nowrap'` — grid SEM enableColumnManagement, onde `size` é ignorado; ver a nota "ColumnDef.size/minSize são IGNORADOS sem enableColumnManagement" na seção do DataGrid) das contas da fatia/linha clicada. Rows já filtradas pela página (filterExpenseDetailRows); ordena por VENCIMENTO asc (mais próximos primeiro; sem data vai ao fim; **sort estável** — empate de vencimento preserva a ordem original, travado por teste) + rodapé total. Ver "Card de DETALHE (drill-down)" na rota /dashboard_despesas
 ├── AuthLayout.tsx             # (gradient) wrapper full-page para Forgot/Reset
 ├── AttachmentViewer.tsx       # visualizador de PDF (signed URL do Storage) em <dialog> nativo (showModal: role/foco/trap/Esc nativos) + iframe SEM sandbox — o viewer PDF do Chrome (PDFium) não renderiza em iframe sandboxed, nem com allow-scripts (S5-1 introduziu e quebrou o boleto; revertido). NÃO reintroduzir sandbox; ver comentário no componente. `sourceFile` = chave CRUA do objeto (pipeline: nome flat; manual: `manual/{id}/…`); prop opcional `title` = nome amigável no cabeçalho (sem ela cairia a chave crua). Os botões (Fechar/Baixar/Nova aba) contêm o próprio clique — é montado dentro do <tr> de /consulta (ver "Contenção do clique")
 ├── Layout.tsx (+ Layout.test.tsx)   # sidebar; navLink = cva local (estado active); menu em 5 grupos (ver abaixo)
@@ -3288,6 +3288,20 @@ faturas SIEG em `ignorado`; o handler A1 (baixar o boleto real) segue como melho
     semeados em `useGridPreferences` e no `reset()`; prefs salvas do usuário prevalecem):** `/consulta`
     abre **compacto** (`defaultDensity="compact"` — padding `px-2 py-1` + `text-xs`) e com **Nº Documento,
     Emissão e Fornecedor fixados à esquerda** (`defaultPinning`). `columnResizeMode: 'onChange'`.
+  - **`ColumnDef.size`/`minSize` são IGNORADOS sem `enableColumnManagement` (não regredir):**
+    `cellStyle()` (`DataGrid.tsx`) só aplica `width: column.getSize()` quando `managed` é `true`
+    (`enableColumnManagement` ligado) — sem essa prop, a `<table>` fica `w-full` (não `table-fixed`)
+    e o navegador distribui a largura pelo layout automático, **quebrando o texto por padrão**
+    quando falta espaço, mesmo com `size` definido no `ColumnDef`. Achado real no `DataGrid` do
+    `ExpenseDetailModal` (drill-down de `/dashboard_despesas`, que não liga `enableColumnManagement`):
+    a coluna "Situação" (badge curto, sem `wrap`) quebrava em duas linhas apesar de `size: 130` —
+    aumentar o `size` não tinha efeito nenhum. Fix correto num grid **não-gerenciável**: `className:
+    'whitespace-nowrap'` no `ColumnDef` (o campo já existe e é mesclado no `<td>` via `m.className`,
+    `DataGrid.tsx` ~L361/676) — o navegador então dá à coluna a largura que ela precisa, encolhendo
+    as colunas com `wrap: true` em vez de quebrar o conteúdo sem wrap. **Cuidado com conflito de
+    classe:** se a mesma coluna também tiver `wrap: true` (→ `whitespace-normal`), o `tailwind-merge`
+    resolve pela última classe do `cn(...)` — `className` do `ColumnDef` vem depois e vence, mas não
+    combine as duas coisas na mesma coluna de propósito (são exclusivas: ou quebra, ou não quebra).
   - **Seleção múltipla (opt-in `enableSelection`)**: coluna de checkbox (`SelectCheckbox`, sempre 1ª e
     fixada à esquerda) + barra de ações com **"Exportar selecionadas"** (`onExportSelected` — em
     `/consulta` reusa o `exportCsv`) e **alteração de situação em lote** (`bulkStatusOptions` +
