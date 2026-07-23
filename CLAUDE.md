@@ -2287,6 +2287,39 @@ removidas — o backfill da 075 converteu os `pix` existentes em `outro`.
 contêineres (keyword de assunto + classificação no corpo e PDF; migration 026).
 `SKIP_ACCOUNT_TYPES = ['nfe', 'nfse']` — não geram conta a pagar.
 
+**EXCEÇÃO — NFS-e/NF-e COMBINADA com boleto no MESMO arquivo → o boleto vence (não regredir —
+caso real Amil id 1045/1046, 2026-07-23):** o skip por `document_type` do **Passo 2** de
+`extract_and_store_accounts` (`if dtype in SKIP_ACCOUNT_TYPES: continue`, o **primeiro** check do
+loop) descartava a linha **incondicionalmente**, sem olhar se ela também carregava um boleto
+pagável. Alguns prestadores (planos de saúde, telecom) emitem **NFS-e + boleto no MESMO PDF** —
+ex.: a Amil "e-Faturamento": cabeçalho "NOTA FISCAL DE SERVIÇOS ELETRÔNICA - NFS-e" no topo +
+ficha de compensação com linha digitável abaixo. O extrator vê o cabeçalho fiscal e rotula
+`document_type='nfse'`, então a **conta a pagar real** (Amil R$ 7.217,91, Itaú, venc. 07/08/2026)
+era jogada fora → `nonpayable_only=True` → o e-mail virava **`ignorado`** (silenciosamente, sem
+erro em `/erros`). Correção: o skip só dispara quando a linha **NÃO** tem boleto real
+(`_is_boleto_barcode(row['barcode'])`); tendo linha digitável válida, a linha é **re-rotulada
+`document_type='boleto'`** (o pagável vence) e segue o fluxo normal. **Escopo mínimo/robusto:**
+(a) NF-e/NFS-e **PURA** (sem barcode — chave de acesso não é boleto) segue pulada, sem regressão;
+(b) o re-rótulo é coerente com as guardas seguintes — `_email_has_real_boleto`/`real_boleto_amounts`
+já operam por **barcode**, não por `document_type`, então a regra fatura+boleto continua descartando
+uma fatura separada de mesmo valor; (c) não afeta o caso multi-anexo com uma NFS-e separada sem
+boleto próprio. **Por que não apareceu antes:** o boleto Amil é **PDF cifrado** (senha = prefixo do
+CNPJ do pagador); antes do fix de descriptografia (~2026-06-29) a extração **falhava** (o e-mail de
+junho id 354 ficou `pendente`), então a lacuna do skip só ficou exposta quando a extração passou a
+suceder (julho). Testes: `tests/test_fatura_boleto.py` (classe `NfseComBoletoTest`: nfse+boleto e
+nfe+boleto viram conta re-rotulada `boleto`; NFS-e pura sem barcode segue ignorada; combinado +
+fatura de mesmo valor grava só o boleto). **Recuperação retroativa** (2026-07-23): e-mails 1045/1046
+reprocessados (`reprocess_message.py`) → conta **674** criada (Amil, R$ 7.217,91, venc. 07/08/2026,
+"a vencer"); o 1046 deduplicou contra o 1045 (uma conta só). **Consolidação de fornecedor**
+(2026-07-23): o reprocessamento criou um cadastro Amil novo (sk 1311, **com** CNPJ 29309127000179),
+duplicando o pré-existente **sk 141** (Amil sem CNPJ, da conta 417 já paga) — a dedup de fornecedor
+não os fundiu por diferença de nome ("SA"/acento) + ausência de CNPJ no 141. A pedido do usuário,
+consolidado em **um único cadastro sk 141**: gravado o CNPJ no 141, contas 417/674 re-apontadas para
+141 e **sk 1311 removido** (hard delete de duplicata recém-criada — exceção pontual à regra de soft
+delete de `supplier`, mesmo precedente dos fornecedores-lixo). **Deploy:** copiar só `read_emails.py`
+(o `extract_pdf.py` NÃO muda; sem `.env`, sem passo de banco). Validação (esperado `boleto`):
+`py -3 -c "import sys; sys.path.insert(0,'skills/email-reader/scripts'); import read_emails as R; r={'document_type':'nfse','barcode':'34192153100007217911092614333532938395767000'}; print('boleto' if R._is_boleto_barcode(r['barcode']) else r['document_type'])"`
+
 **Cartório (`cartório`) — pagamento de/em cartório (não regredir):** custas de
 tabelionato/registro/protesto. Classificado por **contexto no ASSUNTO ou no NOME DO
 FORNECEDOR** — a palavra `cartorio`/`cartório` (ou `tabelionato`/`tabeliao`), por palavra
@@ -2487,6 +2520,15 @@ antes do SIEG e antes do nº sintético `{tipo}_{ddmmyy}`. Conservador de propó
 frouxos (`documento nº`) capturavam lixo ("Banco"). Backfill da migration 043 corrigiu os ids 5,
 18 e 171.
 
+**Fallback "Fatura No: NNNN"** (`_BODY_INVOICE_NO_RE`, não regredir): variante de "fatura Nº"
+escrita por extenso ("No", sem o sinal º/°) que `_BODY_INVOICE_RE` não cobre — a letra "o" de "No"
+não está na classe opcional `[º°.]?` do regex principal, então o número nunca casava e a conta
+caía no nº sintético `{tipo}_{ddmmyy}`. Fallback de precedência mais baixa (só quando
+`_BODY_INVOICE_RE` e `_BODY_DOCNUM_RE` já falharam); exige dígitos logo após o rótulo (só
+espaço/`:`/`-` no meio) para não casar "fatura no valor de.../fatura no total de...". Caso real:
+lembrete periódico da Contabil Esquema (contas 668/669, texto "Fatura No: 20880"). Teste:
+`tests/test_forwarded_supplier_name.py`.
+
 **Regra honorários** (migration 024): e-mail de honorários (keyword de assunto `honorário`;
 termo `honorário(s)` no corpo ou recibo) é gravado com `document_type='honorários'` e
 `payment_method='pix'` — honorários mantêm o tipo `honorários` mesmo com PIX detectado (o PIX só
@@ -2532,6 +2574,40 @@ Testes: `tests/test_supplier_from_subject.py`. **Efeito colateral conhecido:** o
 criar um fornecedor com nome "curto" (ex.: `HYOSUNG`) divergente de um cadastro canônico
 existente (`HYOSUNG SC`, CNPJ 11703922000181) — o operador funde os dois em `/fornecedores`
 quando forem o mesmo (não há merge automático, pois o boleto não trouxe CNPJ para provar).
+
+**REMETENTE ORIGINAL encaminhado no CORPO — fallback ABAIXO do assunto ancorado em sigla
+(não regredir — caso real conta 669, 2026-07-23):** quando o e-mail é um encaminhamento interno
+(funcionário reencaminha um lembrete/notificação externa) e o CORPO preserva, numa linha
+`De:`/`From:` mais profunda da cadeia, o remetente ORIGINAL com sigla de razão social
+(`Contabil Esquema LTDA <lembrete@contabilesquema.com.br>`), esse nome é usado quando o
+**assunto não traz uma âncora própria**. Falha real: a conta 669 (mesmo remetente recorrente da
+668, corrigida horas antes) foi gravada sob um fornecedor fragmentado ("esquema") porque (a) o
+corpo não tinha rótulo explícito `Fornecedor:`/`Favorecido:`, (b) o `Documento:` citado no corpo
+é o **CNPJ da própria empresa pagadora** (bloco do destinatário, descartado por
+`_finalize_supplier` — ver "O CNPJ DA PRÓPRIA EMPRESA PAGADORA" acima) e (c) sem nome nem CNPJ
+válido, o fallback caía direto no assunto truncado ("boleto esquema", sem sigla). Correção:
+`_supplier_from_forwarded_sender(body_text)` — via `_FORWARDED_FROM_LINE_RE` (mesmo padrão de
+`forwarded_subjects_from_body` para `Assunto:`/`Subject:`), varre as linhas `De:`/`From:`, ignora
+as de domínio interno (`otimotex.com.br`/`lebianco.com.br`) e usa a **última** que ancorar numa
+sigla de razão social (`_supplier_name_by_legal_suffix` — conservador, evita capturar nome de
+PESSOA como o funcionário que encaminhou).
+
+**Ordem importa — achado em code review (2026-07-23), corrigido antes do merge:** a 1ª versão
+inseria este fallback ACIMA do assunto (e também, redundantemente, dentro de
+`extract_from_email_body`) — uma linha `De:` de um TERCEIRO da cadeia (ex.: um
+intermediário/repassador que também tem sigla LTDA no nome) venceria um assunto **já correto**
+como "FATURAMENTO -- MOVVI LOGISTICA LTDA" (caso real id 401), silenciosamente atribuindo a
+conta ao fornecedor errado — pior que o bug original, que ao menos falhava de forma óbvia
+("esquema"). Corrigido: em `_finalize_supplier`, o assunto ancorado em sigla
+(`_supplier_name_by_legal_suffix(payload['subject'])`, sinal do PRÓPRIO e-mail) roda **fallback
+2, ANTES** de `_supplier_from_forwarded_sender` (**fallback 3**, lendo
+`payload['email_body_excerpt']`), que só entra em jogo quando o assunto não tiver âncora; a
+chamada duplicada dentro de `extract_from_email_body` foi **removida** — é fonte única em
+`_finalize_supplier` (comentário no código explica o porquê, para não reintroduzir). Testes:
+`tests/test_forwarded_supplier_name.py` (inclui o caso MOVVI/intermediária, que falha sem o
+fix). Correção pontual da conta 669 aplicada em 2026-07-23 (fornecedor → sk_supplier 1052
+"CONTABIL ESQUEMA", mesmo da
+conta 668; nº documento → "20880"; classificação contábil → 9/61, herdada do fornecedor).
 
 **SIGLA DE RAZÃO SOCIAL (LTDA) como âncora do nome no assunto (não regredir):** a razão social
 quase sempre TERMINA numa sigla societária (`LTDA`/`EIRELI`/`EPP`/`MEI`/`S.A.`), então ela é a
@@ -4429,6 +4505,33 @@ lê os arquivos do disco.
 > anteriores (empresa por precedência de 2026-07-17 etc.). A limpeza retroativa (hard delete do id
 > 605) já valeu para dev+prod (mesma Supabase). Validação (esperado `True`):
 > `py -3 -c "import sys; sys.path.insert(0,'skills/email-reader/scripts'); import read_emails as R; print(R._is_statement_document({'source_file':'Extrato_sintetico_07.pdf','barcode':None}))"`
+
+> **DEPLOY 2026-07-23 — remetente encaminhado no corpo + "Fatura No:" (PENDENTE de cópia p/
+> prod):** o fornecedor passa a ser resolvido pelo remetente ORIGINAL de um bloco encaminhado no
+> corpo (`_supplier_from_forwarded_sender`, fallback 2 de `_finalize_supplier` — ver "REMETENTE
+> ORIGINAL encaminhado no CORPO vence o assunto") e o nº de fatura passa a reconhecer o rótulo
+> "Fatura No: NNNN" sem sinal º/° (`_BODY_INVOICE_NO_RE`, ver "Captura do nº de documento no
+> corpo"). Deploy = copiar **só** `read_emails.py` (`extract_pdf.py` NÃO muda). **Sem `.env`, sem
+> dependência nova, sem passo de banco.** **Degrada com segurança:** o `read_emails.py` ANTIGO
+> segue funcionando (só não resolve o remetente encaminhado/nº "Fatura No:" — cai nos fallbacks
+> antigos, exigindo correção manual pontual como já feito nas contas 668/669). Como os deltas de
+> `read_emails.py` são cumulativos, esta cópia carrega junto as pendências anteriores. Correção
+> retroativa da conta 669 (fornecedor + nº documento + classificação) já aplicada via SQL — vale
+> para dev+prod (mesma Supabase). Validação (esperado `True True`):
+> `py -3 -c "import sys; sys.path.insert(0,'skills/email-reader/scripts'); import read_emails as R; print(hasattr(R,'_supplier_from_forwarded_sender'), hasattr(R,'_BODY_INVOICE_NO_RE'))"`
+
+> **DEPLOY 2026-07-23 — NFS-e/NF-e combinada com boleto vira conta (PENDENTE de cópia p/ prod):**
+> um documento COMBINADO NFS-e + boleto no mesmo PDF (ex.: Amil "e-Faturamento") passa a gerar a
+> conta a pagar em vez de ser descartado como documento fiscal — o skip de `SKIP_ACCOUNT_TYPES` no
+> Passo 2 só dispara quando a linha NÃO tem boleto real; tendo linha digitável válida, é re-rotulada
+> `boleto`. Ver "EXCEÇÃO — NFS-e/NF-e COMBINADA com boleto". Deploy = copiar **só** `read_emails.py`
+> (`extract_pdf.py` NÃO muda). **Sem `.env`, sem dependência nova, sem passo de banco.** **Degrada
+> com segurança:** o `read_emails.py` ANTIGO segue funcionando (só continua ignorando o boleto
+> combinado — exige reprocessamento manual como o já feito nos e-mails 1045/1046). Como os deltas de
+> `read_emails.py` são cumulativos, esta cópia carrega junto as pendências anteriores (remetente
+> encaminhado + "Fatura No:" etc.). Recuperação retroativa (conta 674) já aplicada via
+> `reprocess_message.py` na Supabase compartilhada. Validação (esperado `boleto`):
+> `py -3 -c "import sys; sys.path.insert(0,'skills/email-reader/scripts'); import read_emails as R; bc='34192153100007217911092614333532938395767000'; print('boleto' if R._is_boleto_barcode(bc) else 'skip')"`
 
 ### Deploy manual da Cobrança de vencidos (envios) em produção (caso específico — não regredir)
 

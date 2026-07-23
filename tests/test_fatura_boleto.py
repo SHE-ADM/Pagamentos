@@ -116,8 +116,9 @@ class EmailHasRealBoletoTest(unittest.TestCase):
         self.assertFalse(read_emails._is_boleto_barcode(RELATORIO))
 
 
-class ExtractAndStoreFaturaBoletoTest(unittest.TestCase):
-    """Fluxo completo com run_extraction/read_extracted_rows mockados."""
+class _StoreRunnerMixin:
+    """Helper de execucao de extract_and_store_accounts (run_extraction/read_extracted_rows
+    mockados). Mixin — NAO herdar entre TestCases (o unittest re-rodaria os testes do pai)."""
 
     def _run(self, saved_names, rows_by_name):
         ctrl = FakeControl()
@@ -134,6 +135,10 @@ class ExtractAndStoreFaturaBoletoTest(unittest.TestCase):
             _, saved_count, nonpayable_only, _att_account = read_emails.extract_and_store_accounts(
                 saved, "<MID>", ctrl, email_rec=dict(REC))
         return ctrl, saved_count, nonpayable_only
+
+
+class ExtractAndStoreFaturaBoletoTest(_StoreRunnerMixin, unittest.TestCase):
+    """Fluxo completo com run_extraction/read_extracted_rows mockados."""
 
     def test_fatura_mais_boleto_grava_so_boleto(self):
         rows = {
@@ -290,6 +295,58 @@ class ExtractAndStoreFaturaBoletoTest(unittest.TestCase):
         ctrl, saved, _ = self._run(["lixo.pdf"], rows)
         self.assertEqual(saved, 0)
         self.assertEqual(ctrl.attachment_calls, [])
+
+
+class NfseComBoletoTest(_StoreRunnerMixin, unittest.TestCase):
+    """Documento COMBINADO NFS-e + boleto no MESMO arquivo (caso real Amil id 1045/1046).
+
+    O extrator ve o cabecalho fiscal e rotula 'nfse'/'nfe', mas a linha traz um BOLETO
+    PAGAVEL (linha digitavel valida). O pagavel vence: re-rotula 'boleto' e NAO pula —
+    antes a conta a pagar (R$ 7.217,91, Amil) era descartada e o e-mail virava 'ignorado'.
+    Reusa o helper _run via _StoreRunnerMixin (sem re-rodar os testes do outro TestCase).
+    """
+
+    def test_nfse_com_boleto_pagavel_vira_conta(self):
+        rows = {"amil.pdf": _row("amil.pdf", BOLETO_REAL, doc_type="nfse", amount="7217.91")}
+        ctrl, saved, nonpayable = self._run(["amil.pdf"], rows)
+        self.assertEqual(saved, 1)
+        self.assertFalse(nonpayable)                       # NAO e nonpayable_only
+        self.assertEqual(ctrl.error_calls, [])
+        # A conta gravada foi re-rotulada 'boleto' (o pagavel), nao 'nfse'.
+        self.assertEqual(ctrl.financial_calls[0]["document_type"], "boleto")
+        self.assertEqual(ctrl.financial_calls[0]["barcode"], BOLETO_REAL)
+        self.assertEqual(float(ctrl.financial_calls[0]["amount"]), 7217.91)
+        self.assertEqual(ctrl.attachment_calls, [(1, "amil.pdf")])
+
+    def test_nfe_com_boleto_pagavel_vira_conta(self):
+        # Mesma regra para 'nfe' (o outro membro de SKIP_ACCOUNT_TYPES).
+        rows = {"nf.pdf": _row("nf.pdf", BOLETO_REAL, doc_type="nfe", amount="1000.00")}
+        ctrl, saved, nonpayable = self._run(["nf.pdf"], rows)
+        self.assertEqual(saved, 1)
+        self.assertFalse(nonpayable)
+        self.assertEqual(ctrl.financial_calls[0]["document_type"], "boleto")
+
+    def test_nfse_pura_sem_barcode_segue_ignorada(self):
+        # NF-e/NFS-e PURA (sem linha digitavel) NAO gera conta — nao regredir o skip
+        # original (SKIP_ACCOUNT_TYPES). CHAVE_44 e chave de acesso, nao boleto.
+        rows = {"nfse.pdf": _row("nfse.pdf", CHAVE_44, doc_type="nfse", amount="500.00")}
+        ctrl, saved, nonpayable = self._run(["nfse.pdf"], rows)
+        self.assertEqual(saved, 0)
+        self.assertEqual(len(ctrl.financial_calls), 0)
+        self.assertTrue(nonpayable)                        # so nao-pagavel → 'ignorado'
+        self.assertEqual(ctrl.error_calls, [])             # skip, nao erro
+
+    def test_nfse_com_boleto_mais_fatura_mesmo_valor_grava_so_o_boleto(self):
+        # O documento combinado (NFS-e+boleto) convive com a regra fatura+boleto: uma
+        # fatura SEPARADA de mesmo valor e descartada; so a conta do boleto sobrevive.
+        rows = {
+            "amil_nfse.pdf": _row("amil_nfse.pdf", BOLETO_REAL, doc_type="nfse", amount="800.00"),
+            "fatura.pdf":    _row("fatura.pdf", None, doc_type="fatura", amount="800.00"),
+        }
+        ctrl, saved, _ = self._run(["amil_nfse.pdf", "fatura.pdf"], rows)
+        self.assertEqual(saved, 1)
+        self.assertEqual(ctrl.financial_calls[0]["barcode"], BOLETO_REAL)
+        self.assertEqual(ctrl.financial_calls[0]["document_type"], "boleto")
 
 
 if __name__ == "__main__":

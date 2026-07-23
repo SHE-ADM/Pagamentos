@@ -1380,6 +1380,54 @@ def forwarded_subjects_from_body(body_text: str | None) -> list[str]:
     return [m.group(1).strip() for m in _FORWARDED_SUBJECT_RE.finditer(body_text) if m.group(1).strip()]
 
 
+# Remetente ORIGINAL de um bloco de e-mail ENCAMINHADO — no corpo, aparece como uma
+# linha "De: <Nome> <email>" (Outlook/pt) ou "From: ..." (en), mesmo padrao de
+# _FORWARDED_SUBJECT_RE para "Assunto:"/"Subject:".
+_FORWARDED_FROM_LINE_RE = re.compile(
+    r"^[ \t>]*(?:de|from)[ \t]*:[ \t]*([^\r\n]+)",
+    re.IGNORECASE | re.MULTILINE,
+)
+
+# Dominios internos cujo "De:" NUNCA identifica o fornecedor (o funcionario que
+# encaminhou, nao quem originou a cobranca). Mesmos dominios bloqueados na RPC
+# (migration 046), mas aqui e uma checagem em Python sobre o texto do corpo.
+_INTERNAL_EMAIL_DOMAINS = ("otimotex.com.br", "lebianco.com.br")
+
+
+def _supplier_from_forwarded_sender(body_text: str | None) -> "str | None":
+    """Nome de fornecedor a partir do REMETENTE ORIGINAL de um bloco de e-mail
+    ENCAMINHADO no corpo ('De:'/'From:' — mesmo padrao de forwarded_subjects_from_body
+    para 'Assunto:'). Cobre o caso em que o remetente IMEDIATO do e-mail e interno
+    (@otimotex.com.br/@lebianco.com.br, bloqueado como fornecedor) mas o corpo ainda
+    traz, mais abaixo na cadeia, o remetente ORIGINAL da notificacao — ex.: lembrete
+    periodico de fatura ("Contabil Esquema LTDA <lembrete@contabilesquema.com.br>")
+    encaminhado internamente com o assunto reescrito (caso real: contas 668/669, ver
+    "Assunto como ULTIMO recurso" — aqui o corpo, nao o assunto, e a fonte).
+
+    Conservador de proposito — SO aceita o nome quando ele ancora numa SIGLA de razao
+    social (_supplier_name_by_legal_suffix): evita capturar o nome de uma PESSOA (o
+    funcionario que encaminhou, ex.: "De: Eunice <eunice@otimotex.com.br>"). Usa a
+    ULTIMA linha que qualificar (a mais profunda da cadeia == a mais proxima do
+    remetente original) e descarta linhas que citem um dominio interno.
+
+    Chamada em _finalize_supplier SOMENTE apos o assunto ancorado em sigla (fallback
+    2) esgotar — o assunto e sinal do PROPRIO e-mail, mais confiavel que uma linha
+    'De:' que pode pertencer a um TERCEIRO da cadeia (intermediario/repassador).
+    Nao chamar a partir de extract_from_email_body: essa e a UNICA fonte de
+    verdade, para nao regredir a precedencia do assunto (ver comentario em
+    extract_from_email_body)."""
+    if not body_text:
+        return None
+    for line in reversed(_FORWARDED_FROM_LINE_RE.findall(body_text)):
+        if any(dom in line.lower() for dom in _INTERNAL_EMAIL_DOMAINS):
+            continue
+        display = line.split("<", 1)[0].strip()
+        name = _supplier_name_by_legal_suffix(display)
+        if name and not _is_non_supplier_term(name):
+            return name
+    return None
+
+
 def body_forwards_payment_confirmation(body_text: str | None) -> str | None:
     """Se o corpo ENCAMINHA um e-mail cujo assunto ORIGINAL e uma CONFIRMACAO/
     COMPROVANTE de pagamento, devolve o MOTIVO (str) para ignorar; senao None.
@@ -1609,10 +1657,22 @@ def _finalize_supplier(ctrl: "SupabaseControl", payload: dict) -> bool:
     Ordem de fallback (cada um so quando o anterior esgota):
       1. nome/CNPJ/CPF EXTRAIDOS (descartando o nome que for um TIPO de
          documento/pagamento — robustez: 'GNRE'/'BOLETO' nao e fornecedor);
-      2. nome derivado do ASSUNTO (idem filtro de tipo) — e-mail interno de
-         pagamento ("PAGAMENTO BOLETO HYOSUNG 181063-3") nomeia o favorecido;
-      3. e-mail do remetente (nao interno) — dentro da RPC resolve_supplier;
-      4. ULTIMO RECURSO: o PAGADOR (payer_name/payer_cnpj, ex.: OTIMOTEX) — so
+      2. nome do ASSUNTO ancorado numa SIGLA de razao social (LTDA/EIRELI/S.A./…)
+         — sinal do PROPRIO e-mail (quem o classificou/encaminhou o rotulou), mais
+         confiavel que uma linha "De:" solta no corpo, que pode pertencer a um
+         TERCEIRO da cadeia (intermediario/repassador), nao ao fornecedor. Roda
+         ANTES do fallback pelo corpo para nao regredir casos ja corretos (ex.: id
+         401, "FATURAMENTO -- MOVVI LOGISTICA LTDA");
+      3. remetente ORIGINAL de um bloco ENCAMINHADO no corpo ('De:'/'From:'
+         ancorado em sigla de razao social — _supplier_from_forwarded_sender) —
+         usado so quando o ASSUNTO nao tem ancora propria (fallback 2 esgotou);
+         cobre o assunto reescrito pelo funcionario que encaminhou (ex.: "boleto
+         esquema" em vez do nome completo do fornecedor; caso real: conta 669);
+      4. nome derivado do ASSUNTO SEM ancora (heuristica generica, idem filtro de
+         tipo) — e-mail interno de pagamento ("PAGAMENTO BOLETO HYOSUNG 181063-3")
+         nomeia o favorecido;
+      5. e-mail do remetente (nao interno) — dentro da RPC resolve_supplier;
+      6. ULTIMO RECURSO: o PAGADOR (payer_name/payer_cnpj, ex.: OTIMOTEX) — so
          quando TODAS as formas acima falham e o pagador esta claro; garante que a
          conta a pagar nunca se perca e fique rastreavel pelo pagador."""
     # robustez: um TIPO de documento/pagamento extraido como "fornecedor" e descartado.
@@ -1660,14 +1720,37 @@ def _finalize_supplier(ctrl: "SupabaseControl", payload: dict) -> bool:
         if chart_account_id:
             payload["chart_account_id"] = chart_account_id
         return True
-    # fallback 2: nome do assunto (tambem filtra tipo de documento/pagamento).
+    # fallback 2: nome do ASSUNTO ancorado em sigla de razao social — sinal do PROPRIO
+    # e-mail, mais confiavel que uma linha "De:" solta no corpo (que pode ser de um
+    # TERCEIRO da cadeia). Roda ANTES do fallback pelo corpo para nao regredir casos
+    # ja corretos (ex.: id 401, "MOVVI LOGISTICA LTDA" no assunto).
+    if not has_real_supplier:
+        guessed = _supplier_name_by_legal_suffix(payload.get("subject"))
+        if guessed and not _is_non_supplier_term(guessed):
+            payload["supplier_name"] = guessed
+            has_real_supplier = True
+            log.info(f"    [FORNECEDOR-ASSUNTO-SIGLA] nome ancorado em sigla no "
+                     f"assunto: {guessed!r}")
+    # fallback 3: remetente ORIGINAL de um bloco ENCAMINHADO no corpo ('De:'/'From:'
+    # ancorado em sigla de razao social) — so quando o assunto NAO tem ancora propria
+    # (fallback 2 esgotou). So dispara quando o e-mail tem corpo (email_body_excerpt,
+    # gravado por extract_from_email_body).
+    if not has_real_supplier:
+        guessed = _supplier_from_forwarded_sender(payload.get("email_body_excerpt"))
+        if guessed:
+            payload["supplier_name"] = guessed
+            has_real_supplier = True
+            log.info(f"    [FORNECEDOR-ENCAMINHADO] nome do remetente original "
+                     f"(corpo encaminhado): {guessed!r}")
+    # fallback 4: nome do assunto SEM ancora (heuristica generica, tambem filtra tipo
+    # de documento/pagamento) — fallback 2 ja tentou a ancora e esgotou.
     if not has_real_supplier:
         guessed = _supplier_name_from_subject(payload.get("subject"))
         if guessed:
             payload["supplier_name"] = guessed
             log.info(f"    [FORNECEDOR-ASSUNTO] nome derivado do assunto: {guessed!r}")
-    sk_supplier = ctrl.resolve_supplier(payload)
-    # fallback 4: PAGADOR (ultimo recurso) — esgotaram nome/CNPJ/CPF/e-mail/assunto.
+    sk_supplier = ctrl.resolve_supplier(payload)  # fallback 5: e-mail do remetente (na RPC)
+    # fallback 6: PAGADOR (ultimo recurso) — esgotaram nome/CNPJ/CPF/e-mail/assunto/corpo.
     if not sk_supplier:
         sk_supplier = _resolve_supplier_by_payer(ctrl, payload)
     for col in ("supplier_name", "supplier_cnpj", "supplier_cpf"):
@@ -1777,6 +1860,15 @@ _BODY_INVOICE_RE = re.compile(r"(?i)\b(?:nf(?:[- ]?e)?|nota\s+fiscal|fatura\s+n[
 # 0 falso positivo; rótulos frouxos como "documento nº" capturavam "Banco").
 _BODY_DOCNUM_RE  = re.compile(
     r"(?i)n[uú]mero\s+do\s+documento\s*[:\-]?\s*([A-Za-z0-9][A-Za-z0-9./-]{3,})")
+# "Fatura No: 20880" — variante de "fatura Nº" escrita por extenso ("No"), sem o
+# sinal º/°. _BODY_INVOICE_RE exige "n" seguido OPCIONALMENTE por º/°/. e depois
+# digitos; o "o" literal de "No" nao esta nessa classe e quebra o match (o "o"
+# fica sem consumir, e os digitos nao vem logo em seguida). Fallback de
+# precedencia MAIS BAIXA (so quando _BODY_INVOICE_RE e _BODY_DOCNUM_RE nao acham
+# nada) — caso real: lembrete periodico da Contabil Esquema ("Fatura No: 20880",
+# contas 668/669). Exige digitos logo apos (so espaco/':'/'-' no meio) para nao
+# casar "fatura no valor de..."/"fatura no total de...".
+_BODY_INVOICE_NO_RE = re.compile(r"(?i)\bfatura\s+no?\.?\s*[:\-]?\s*(\d{3,})")
 # ID estável da fatura no link da SIEG (app.sieg.com/faturas?bill=NNN). Sem nº de
 # documento no texto, é o identificador que faz os DOIS lembretes da mesma fatura
 # ("Vencimento Próximo" + "Hoje") deduplicarem — antes geravam 2 contas/mês porque
@@ -2803,11 +2895,15 @@ def extract_from_email_body(body_text: str, received_at: str, message_id: str,
     Regras de extracao:
       - amount      : valor rotulado 'Total'/'Valor Total' (precedencia); sem
                        rotulo, soma as parcelas; valor unico → ele mesmo (_extract_body_amount)
-      - invoice_number: 'NF XXXX', 'NFe XXXX', 'nota fiscal XXXX', 'fatura N° XXXX'
+      - invoice_number: 'NF XXXX', 'NFe XXXX', 'nota fiscal XXXX', 'fatura N° XXXX';
+                       fallback 'Fatura No: XXXX' (sem sinal º/°)
       - issue_date  : 'emissao DD/MM/AA(AA)'; fallback = data de envio do e-mail
       - due_date    : 'vencimento/vencto DD/MM/AA(AA)'; fallback = issue_date
-      - supplier_name: 'Fornecedor:'/'Favorecido:'/'Nome:'/... no corpo;
-                       fallback = sender_email (so quando nao ha rotulo nem CNPJ/CPF)
+      - supplier_name: 'Fornecedor:'/'Favorecido:'/'Nome:'/... no corpo; sem rotulo,
+                       tenta sinais/assinatura, so entao sender_email — o remetente
+                       ORIGINAL de um bloco encaminhado no corpo ('De:'/'From:') e
+                       tentado DEPOIS, em _finalize_supplier (fallback 3, so quando o
+                       assunto nao tem ancora propria), nao aqui
       - supplier_cnpj/cpf: extraidos do corpo (CNPJ por padrao; CPF so rotulado)
       - barcode     : linha digitavel / codigo de barras (boleto 47 / arrecadacao 48)
       - payment_method: 'pix' no corpo → 'pix'; boleto (barcode) → 'boleto'; senao a
@@ -2861,6 +2957,11 @@ def extract_from_email_body(body_text: str, received_at: str, message_id: str,
         doc_match = _BODY_DOCNUM_RE.search(body_text)
         if doc_match:
             invoice_number = doc_match.group(1).strip()
+    # Fallback: "Fatura No: NNNN" (sem sinal º/°) — ver _BODY_INVOICE_NO_RE.
+    if not invoice_number:
+        no_match = _BODY_INVOICE_NO_RE.search(body_text)
+        if no_match:
+            invoice_number = no_match.group(1).strip()
     # Sem nº no texto, mas com link de fatura SIEG: usa o bill como nº estável, para
     # os dois lembretes ("Vencimento Próximo" + "Hoje") da MESMA fatura deduplicarem
     # (a dedup por nome+nº+valor casa; antes o nº saía de data relativa e divergia).
@@ -2885,6 +2986,15 @@ def extract_from_email_body(body_text: str, received_at: str, message_id: str,
     # o e-mail nunca vira nome ANTES da busca, evitando criar fornecedor DUPLICADO quando o
     # e-mail ja pertence a um cadastrado (ex.: financeiro@... no email2 de um fornecedor).
     # E-mail de dominio interno nunca identifica nem cria fornecedor (migration 046).
+    #
+    # NAO tentar aqui o remetente ORIGINAL de um bloco encaminhado no corpo
+    # (_supplier_from_forwarded_sender) — essa e uma fonte UNICA, centralizada em
+    # _finalize_supplier (fallback 3, chamado logo em seguida por try_extract_from_body
+    # para TODO payload desta funcao), que a testa SO DEPOIS de esgotar o assunto
+    # ancorado em sigla (fallback 2). Duplicar a chamada aqui a executaria ANTES do
+    # assunto ter a chance de vencer — regrediria casos ja corretos (ex.: id 401,
+    # "MOVVI LOGISTICA LTDA" no assunto) sempre que o corpo tivesse uma linha "De:"
+    # de OUTRO correspondente da cadeia (achado em code review, 2026-07-23).
     if not supplier_name and not supplier_cnpj and not supplier_cpf:
         supplier_name = _supplier_from_signals(body_text) or _supplier_from_sender(sender_email)
 
@@ -3929,9 +4039,25 @@ def extract_and_store_accounts(saved_pdfs: list, message_id: str,
     for row in pending:
         dtype = (row.get("document_type") or "").strip().lower()
         if dtype in SKIP_ACCOUNT_TYPES:
-            log.info(f"    {dtype.upper()} ignorado — nao gera conta a pagar")
-            skipped_nonpayable += 1
-            continue
+            # NF-e/NFS-e sao documentos FISCAIS que, sozinhos, nao geram conta a pagar
+            # (SKIP_ACCOUNT_TYPES). EXCECAO — documento COMBINADO na MESMA linha: alguns
+            # prestadores (planos de saude, telecom) emitem NFS-e + BOLETO no MESMO PDF
+            # (ex.: Amil "e-Faturamento" — cabecalho NFS-e no topo + ficha de compensacao
+            # com linha digitavel abaixo). O extrator ve o cabecalho fiscal e rotula 'nfse',
+            # mas a linha traz um BOLETO PAGAVEL (linha digitavel valida) — o pagavel
+            # vence. Re-rotula 'boleto' e NAO pula, senao a conta a pagar era descartada
+            # silenciosamente e o e-mail virava 'ignorado' (caso real: contas 1045/1046,
+            # Amil R$ 7.217,91). NAO afeta a NF-e/NFS-e PURA (sem barcode), que segue
+            # pulada; nem o caso multi-anexo com uma NFS-e separada sem boleto proprio.
+            if _is_boleto_barcode(row.get("barcode")):
+                log.info("    NF-e/NFS-e COM boleto pagavel — re-rotulado 'boleto' "
+                         "(documento fiscal + ficha de compensacao no mesmo arquivo)")
+                row["document_type"] = "boleto"
+                dtype = "boleto"
+            else:
+                log.info(f"    {dtype.upper()} ignorado — nao gera conta a pagar")
+                skipped_nonpayable += 1
+                continue
 
         gmid    = message_id if acc_index == 0 else f"{message_id}#{acc_index}"
         payload = build_financial_payload(row, gmid, received_at=err_ctx.get("received_at"),
