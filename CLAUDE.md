@@ -2553,7 +2553,15 @@ descarta o `supplier_cnpj` extraído quando ele é igual ao CNPJ da empresa paga
 acima). É a **guarda que habilita** a âncora de assunto nesse caso (sem ela, o CNPJ do pagador
 venceria a resolução por CNPJ antes do fallback de assunto). **Não** afeta a regra de imposto nem o
 fallback de pagador, que gravam OTIMOTEX explicitamente quando NÃO há favorecido. Best-effort (se o
-ctrl não expõe `company_cnpj`, a guarda é pulada). Testes em `tests/test_supplier_from_subject.py`.
+ctrl não expõe `company_cnpj`, a guarda é pulada). **Comparação pela RAIZ do CNPJ (8 primeiros
+dígitos), não pelo número completo de 14 dígitos (correção 2026-07-23 — caso id 668/e-mail 1004):**
+OTIMOTEX/LEBIANCO/FARDOS (e outras filiais do mesmo grupo) compartilham a mesma raiz `47273917`,
+divergindo só no sufixo de filial/DV (`0001-23`/`0002-23`/`0003-23`/...). O bloco do destinatário
+pode trazer OUTRA filial não cadastrada em nenhum `sk_company` (ex.: `47273917/0003-95`) — o match
+exato deixava passar e a conta era resolvida sob o `sk_supplier` de uma filial da própria OTIMOTEX
+já mal-cadastrada como "fornecedor" (id real: conta 668 foi gravada sob sk_supplier=404, trade_name
+"CDI", legal_name = a própria OTIMOTEX). Testes em `tests/test_supplier_from_subject.py`
+(`test_cnpj_de_outra_filial_do_mesmo_grupo_e_descartado`).
 
 **Um TIPO DE DOCUMENTO ou TIPO DE PAGAMENTO NUNCA vira fornecedor (não regredir):** o assunto
 "ENC: GUIA GNRE" reduzia a "GNRE" (um `document_type`) e virava fornecedor — errado.
@@ -3054,28 +3062,49 @@ basta (pode ser um boleto real, ex.: "Boleto vencimento 10/07"). Distinto de
 delete de 5 contas** com "lembrete" no assunto (4 "Lembrete de Pagamento: vencimento" de
 `boleto@smartwebservices` + 1 "ENC: Lembrete Sua Fatura") + os `email_control` correspondentes → `ignorado`.
 
-**Lembrete/confirmação ENCAMINHADO com assunto REESCRITO → `ignorado` no caminho do CORPO (não
-regredir):** as guardas acima (`subject_is_reminder`/`subject_is_payment_confirmation`) rodam no
-`run_reader` **só sobre o assunto RECEBIDO**. Quando um usuário interno **reencaminha** um lembrete/
-confirmação e **reescreve o assunto visível** (ex.: "pagamento Sua Fatura"), o "lembrete" original
-some do assunto e sobrevive apenas no CORPO, na linha `Assunto: <original>` do bloco encaminhado —
-o e-mail passa no filtro de keyword (tem "fatura") e, **sem anexo**, a extração do corpo gera uma
-conta indevida. Falha real: conta **627** (R$ 22.655,00, `email_body`, remetente
-`eunice@otimotex.com.br`), cujo corpo encaminhava `Assunto: Lembrete Sua Fatura` de
-`lembrete@contabilesquema.com.br` ("aviso de disponibilidade de fatura"). Correção
-(`read_emails.py`): `forwarded_subjects_from_body(body)` extrai as linhas `Assunto:`/`Subject:`
-(com marcador de citação `>` opcional; captura até o fim da linha **sem** o âncora `$`, pois o `\r`
-do CRLF ficaria fora dele no modo MULTILINE) e `body_forwards_ignorable_subject(body)` reavalia
-cada assunto original nos **dois** gates "ignorar SEMPRE" (`subject_is_reminder` +
-`subject_is_payment_confirmation`). O guard fica no **topo de `try_extract_from_body`** → retorna
+**Confirmação de pagamento ENCAMINHADA com assunto REESCRITO → `ignorado` no caminho do CORPO (não
+regredir; revisado em 2026-07-23 — ver correção abaixo):** a guarda `subject_is_payment_confirmation`
+roda no `run_reader` **só sobre o assunto RECEBIDO**. Quando um usuário interno **reencaminha** uma
+confirmação de pagamento e **reescreve o assunto visível** (ex.: "pagamento Sua Fatura"), a
+confirmação original some do assunto e sobrevive apenas no CORPO, na linha `Assunto: <original>` do
+bloco encaminhado — o e-mail passa no filtro de keyword (tem "fatura") e, **sem anexo**, a extração
+do corpo gera uma conta indevida (um comprovante de algo já pago nunca é um pagável, com ou sem
+duplicata). Correção (`read_emails.py`): `forwarded_subjects_from_body(body)` extrai as linhas
+`Assunto:`/`Subject:` (com marcador de citação `>` opcional; captura até o fim da linha **sem** o
+âncora `$`, pois o `\r` do CRLF ficaria fora dele no modo MULTILINE) e
+`body_forwards_payment_confirmation(body)` reavalia cada assunto original contra
+`subject_is_payment_confirmation`. O guard fica no **topo de `try_extract_from_body`** → retorna
 `BODY_IGNORED` (não gera conta), **antes** de tocar o `ctrl`. **Escopo mínimo/robusto:** (a) só no
-caminho do CORPO (fallback sem anexo pagável) — um **boleto real anexado** a um lembrete encaminhado
-segue pelo caminho de PDF e é pago; (b) só os dois gates fortes, **não** as `NOTIFICATION_PHRASE_TERMS`
-(fracas) nem "fatura"/"nota fiscal" encaminhadas normais, que **não** são bloqueadas. Testes:
-`tests/test_forwarded_reminder.py`. Limpeza retroativa (2026-07-22): **hard delete da conta 627** +
-`email_control` 992 → `ignorado` (varredura confirmou ser a única afetada). **Deploy:** copiar só
-`read_emails.py` (o `extract_pdf.py` NÃO muda; sem `.env`, sem passo de banco). Validação (esperado
-`True`): `py -3 -c "import sys; sys.path.insert(0,'skills/email-reader/scripts'); import read_emails as R; print(R.body_forwards_ignorable_subject('Assunto: Lembrete Sua Fatura\\r\\n') is not None)"`
+caminho do CORPO (fallback sem anexo pagável) — um **boleto real anexado** a uma confirmação
+encaminhada segue pelo caminho de PDF e é pago; (b) só o gate forte de confirmação, **não** as
+`NOTIFICATION_PHRASE_TERMS` (fracas) nem "fatura"/"nota fiscal" encaminhadas normais, que **não** são
+bloqueadas. Testes: `tests/test_forwarded_reminder.py`.
+
+> **CORREÇÃO 2026-07-23 (caso id 668/e-mail 1004) — 'lembrete' encaminhado deixou de ser bloqueado
+> incondicionalmente:** o guard original (2026-07-22) bloqueava **também** `subject_is_reminder`
+> (a mesma função de `Assunto com "lembrete" → ignorado` acima, reavaliada sobre o assunto
+> ORIGINAL encaminhado) — inclusive quando o lembrete era a **ÚNICA** fonte de uma fatura ainda não
+> registrada em nenhum outro canal. Falha real: e-mail 1004 (conta **668**, R$ 2.950,00, vencimento
+> em 2 dias, `email_body`, fatura Contabil Esquema Nº 20879) foi descartado silenciosamente pelo
+> guard mesmo **sem** existir nenhuma conta correspondente — a fatura teria sido perdida se não
+> notada manualmente. `subject_is_reminder` foi **removido** de `body_forwards_payment_confirmation`
+> (renomeada de `body_forwards_ignorable_subject`): lembrete encaminhado agora segue a **extração
+> normal do corpo**; reenvios PERIÓDICOS do MESMO lembrete (mesmo fornecedor+documento/valor+
+> vencimento) são suprimidos pela **dedup de conteúdo já existente** (`find_financial_duplicate`,
+> chamada logo depois em `try_extract_from_body`) → `BODY_DUPLICATE`/`ignorado`, não por este guard.
+> A conta 627 (motivo original do guard de 2026-07-22) permanece corretamente hard-deletada — não é
+> reintroduzida por esta mudança, pois um reprocessamento dela hoje cairia na dedup se já existisse
+> conta equivalente, ou criaria uma conta nova (comportamento agora considerado correto: o mesmo
+> valor a pagar, se nunca capturado por outro canal, deve existir no sistema). Testes:
+> `tests/test_forwarded_reminder.py` (`test_lembrete_encaminhado_gera_conta_quando_nao_e_duplicata`,
+> `test_lembrete_encaminhado_repetido_vira_duplicata`).
+
+Limpeza retroativa (2026-07-22): **hard delete da conta 627** + `email_control` 992 → `ignorado`
+(varredura confirmou ser a única afetada, antes da revisão de 2026-07-23). Correção manual pontual
+(2026-07-23): conta **668** reprocessada e corrigida (fornecedor + nº de documento — ver também
+"O CNPJ DA PRÓPRIA EMPRESA PAGADORA" acima, mesmo caso). **Deploy:** copiar só `read_emails.py` (o
+`extract_pdf.py` NÃO muda; sem `.env`, sem passo de banco). Validação (esperado `True False`):
+`py -3 -c "import sys; sys.path.insert(0,'skills/email-reader/scripts'); import read_emails as R; print(R.body_forwards_payment_confirmation('Assunto: Comprovante de pagamento\\r\\n') is not None, R.body_forwards_payment_confirmation('Assunto: Lembrete Sua Fatura\\r\\n') is not None)"`
 
 Lista padrão em `KEYWORDS_DEFAULT`, **sobrescrita por `EMAIL_KEYWORDS` no `.env`** (fonte de
 verdade usada hoje). **NF-e "pura"** (`subject_is_pure_nfe`): assunto com `nota fiscal/nfe/
