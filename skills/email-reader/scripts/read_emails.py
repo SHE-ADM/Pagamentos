@@ -1380,16 +1380,25 @@ def forwarded_subjects_from_body(body_text: str | None) -> list[str]:
     return [m.group(1).strip() for m in _FORWARDED_SUBJECT_RE.finditer(body_text) if m.group(1).strip()]
 
 
-def body_forwards_ignorable_subject(body_text: str | None) -> str | None:
-    """Se o corpo ENCAMINHA um e-mail cujo assunto ORIGINAL e um LEMBRETE ou uma
-    CONFIRMACAO/COMPROVANTE de pagamento, devolve o MOTIVO (str) para ignorar; senao None.
-    Fecha o vetor do reencaminhamento interno que reescreve o assunto visivel e esconde o
-    'lembrete'/'confirmacao' das guardas de assunto. Conservador: so dispara nos dois gates
-    "ignorar SEMPRE" (nao nas notificacoes fracas), e so no caminho do CORPO (sem anexo
-    pagavel) — um boleto real anexado a um lembrete encaminhado segue sendo pago."""
+def body_forwards_payment_confirmation(body_text: str | None) -> str | None:
+    """Se o corpo ENCAMINHA um e-mail cujo assunto ORIGINAL e uma CONFIRMACAO/
+    COMPROVANTE de pagamento, devolve o MOTIVO (str) para ignorar; senao None.
+    Fecha o vetor do reencaminhamento interno que reescreve o assunto visivel e esconde a
+    'confirmacao' das guardas de assunto. Uma confirmacao de pagamento NUNCA e um pagavel
+    — independente de ja existir ou nao uma conta correspondente — entao continua
+    bloqueada aqui, incondicionalmente. Conservador: so no caminho do CORPO (sem anexo
+    pagavel) — um boleto real anexado a uma confirmacao encaminhada segue sendo pago.
+
+    NAO dispara para 'lembrete' (subject_is_reminder) encaminhado: um lembrete/aviso de
+    disponibilidade de fatura PODE ser a UNICA fonte de uma fatura ainda nao registrada
+    em nenhum outro canal (caso real: conta 668/e-mail 1004, fatura Contabil Esquema
+    Nº 20879, R$ 2.950,00, vencendo em 2 dias — nao havia nenhuma conta correspondente e
+    o guard antigo a descartou silenciosamente). Deixar o lembrete seguir a extracao
+    normal do corpo e correto: a dedup de conteudo (find_financial_duplicate, chamada
+    logo apos em try_extract_from_body) ja suprime reenvios PERIODICOS do MESMO lembrete
+    (mesmo fornecedor+documento/valor+vencimento) devolvendo BODY_DUPLICATE — nao e
+    preciso um segundo mecanismo de supressao aqui."""
     for subj in forwarded_subjects_from_body(body_text):
-        if subject_is_reminder(subj):
-            return f'Lembrete encaminhado — assunto original "{subj[:80]}" (nao e conta a pagar)'
         if subject_is_payment_confirmation(subj):
             return f'Confirmacao de pagamento encaminhada — assunto original "{subj[:80]}" (nao e conta a pagar)'
     return None
@@ -1617,13 +1626,20 @@ def _finalize_supplier(ctrl: "SupabaseControl", payload: dict) -> bool:
     # que a resolucao siga pelo nome/assunto (a sigla LTDA no assunto costuma nomear o
     # fornecedor real). Nao afeta a regra de imposto nem o fallback de pagador, que
     # gravam OTIMOTEX explicitamente quando NAO ha favorecido.
+    # Comparacao pela RAIZ do CNPJ (8 primeiros digitos), NAO pelo numero completo de
+    # 14 digitos: OTIMOTEX/LEBIANCO/FARDOS (e outras filiais do mesmo grupo)
+    # compartilham a MESMA raiz "47273917", divergindo so no sufixo de filial/DV
+    # (0001-23/0002-23/0003-23/...). Um bloco de destinatario com OUTRA filial (ex.:
+    # "47273917/0003-95", nao cadastrada em nenhum sk_company) escapava do match exato
+    # e era resolvido como fornecedor de verdade — caso real: conta indevida sob o
+    # sk_supplier de uma filial da propria OTIMOTEX mal-cadastrada como "fornecedor".
     own_cnpj = ctrl.company_cnpj() if hasattr(ctrl, "company_cnpj") else None
-    if own_cnpj:
+    if own_cnpj and len(own_cnpj) >= 8:
         extracted_cnpj = re.sub(r"\D", "", str(payload.get("supplier_cnpj") or ""))
-        if extracted_cnpj and extracted_cnpj == own_cnpj:
+        if extracted_cnpj and extracted_cnpj[:8] == own_cnpj[:8]:
             payload.pop("supplier_cnpj", None)
-            log.info("    [FORNECEDOR] CNPJ do pagador (OTIMOTEX) ignorado como "
-                     "fornecedor — segue pelo nome/assunto")
+            log.info("    [FORNECEDOR] CNPJ do pagador (OTIMOTEX, mesma raiz/filial) "
+                     "ignorado como fornecedor — segue pelo nome/assunto")
     has_real_supplier = any(str(payload.get(k) or "").strip()
                             for k in ("supplier_name", "supplier_cnpj", "supplier_cpf"))
     # Regra de IMPOSTO: guia de tributo (darf/das/gnre/gare/dare/iss/...) SEM favorecido
@@ -4171,15 +4187,18 @@ def try_extract_from_body(email_rec: dict, body_text: str, received_at: str,
     Anota o motivo em email_rec['notes']. O log em email_processing_errors e feito
     de forma centralizada no chamador (process_message), para TODA falha.
     """
-    # Reencaminhamento interno de LEMBRETE/CONFIRMACAO com assunto REESCRITO: as guardas do
-    # run_reader olham so o assunto RECEBIDO, entao um "pagamento Sua Fatura" que encapsula um
-    # "Assunto: Lembrete Sua Fatura" no corpo escapa e gera conta. Reavalia o assunto ORIGINAL
-    # encaminhado; sendo lembrete/confirmacao, nao gera conta (→ 'ignorado', nao 'falha').
-    # So no caminho do CORPO (este e' o fallback sem anexo pagavel): um boleto real anexado a
-    # um lembrete encaminhado nunca chega aqui e segue sendo pago.
-    fwd_reason = body_forwards_ignorable_subject(body_text)
+    # Reencaminhamento interno de CONFIRMACAO DE PAGAMENTO com assunto REESCRITO: as
+    # guardas do run_reader olham so o assunto RECEBIDO, entao um "pagamento Sua Fatura"
+    # que encapsula um "Assunto: Confirmacao de pagamento ..." no corpo escapa e gera
+    # conta. Reavalia o assunto ORIGINAL encaminhado; sendo confirmacao, nao gera conta
+    # (→ 'ignorado', nao 'falha') — um comprovante de algo ja pago nunca e um pagavel.
+    # So no caminho do CORPO (este e' o fallback sem anexo pagavel): um boleto real
+    # anexado a uma confirmacao encaminhada nunca chega aqui e segue sendo pago.
+    # NAO bloqueia 'lembrete' encaminhado (ver docstring de body_forwards_payment_
+    # confirmation) — segue para a extracao normal + dedup de conteudo abaixo.
+    fwd_reason = body_forwards_payment_confirmation(body_text)
     if fwd_reason:
-        log.info(f"    Lembrete/confirmacao encaminhado no corpo — ignorado ({fwd_reason})")
+        log.info(f"    Confirmacao de pagamento encaminhada no corpo — ignorado ({fwd_reason})")
         email_rec["notes"] = fwd_reason
         return BODY_IGNORED
 

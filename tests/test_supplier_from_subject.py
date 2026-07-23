@@ -224,6 +224,23 @@ class FinalizePayerCnpjGuardTest(unittest.TestCase):
         self.assertTrue(ok)
         self.assertEqual(ctrl.last_payload.get("supplier_cnpj"), "11703922000181")
 
+    def test_cnpj_de_outra_filial_do_mesmo_grupo_e_descartado(self):
+        """Regressao id 668 (fatura Contabil Esquema encaminhada, e-mail 1004): o
+        bloco do destinatario trazia o CNPJ de uma filial (47273917/0003-95) —
+        mesma raiz da OTIMOTEX (sk_company=1, CNPJ 47273917/0001-23), sufixo
+        diferente. Match exato deixava passar e a conta era gravada sob o
+        sk_supplier de uma filial da propria OTIMOTEX ja mal-cadastrada como
+        "fornecedor" (sk_supplier 404, trade_name "CDI")."""
+        ctrl = _FakeCtrl(own_cnpj=self.OTIMOTEX_CNPJ)
+        payload = {
+            "amount": "2950.00",
+            "supplier_cnpj": "47273917000395",  # filial 0003-95 — mesma raiz, sufixo distinto
+            "subject": "pagamento Sua Fatura",
+        }
+        ok = R._finalize_supplier(ctrl, payload)
+        self.assertTrue(ok)
+        self.assertIsNone(ctrl.last_payload.get("supplier_cnpj"))
+
 
 if __name__ == "__main__":
     unittest.main()
