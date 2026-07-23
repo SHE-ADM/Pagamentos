@@ -51,6 +51,21 @@ describe('ExpenseDetailModal', () => {
     expect(onClose).toHaveBeenCalledTimes(1);
   });
 
+  it('ordena as linhas por vencimento ASCENDENTE (mais próximo primeiro)', () => {
+    render(<ExpenseDetailModal open title="Centro de custo · Compras" rows={ROWS} onClose={vi.fn()} />);
+    const rows = screen.getAllByRole('row').slice(1); // pula o header
+    expect(rows[0]).toHaveTextContent('05/07/2026'); // id 2 vence antes
+    expect(rows[1]).toHaveTextContent('10/07/2026'); // id 1 vence depois
+  });
+
+  it('linha sem vencimento vai para o fim da lista', () => {
+    const rowsWithoutDue = [...ROWS, mk(3, 50, 'Sem Data Ltda', null, '9.9.99', 'Diversos', '')];
+    rowsWithoutDue[2].due_date = null;
+    render(<ExpenseDetailModal open title="X" rows={rowsWithoutDue} onClose={vi.fn()} />);
+    const rows = screen.getAllByRole('row').slice(1);
+    expect(rows[2]).toHaveTextContent('Sem Data Ltda');
+  });
+
   it('clique no backdrop (o próprio <dialog>) chama onClose', () => {
     const onClose = vi.fn();
     const { container } = render(<ExpenseDetailModal open title="X" rows={ROWS} onClose={onClose} />);

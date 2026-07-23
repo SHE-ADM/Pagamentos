@@ -3,7 +3,7 @@
 // (<dialog> nativo — foco preso, Esc, restauração de foco de graça; mesmo padrão do modal
 // de edição do /consulta) com um DataGrid enxuto das contas que compõem a fatia/linha
 // clicada. As linhas já vêm filtradas pela página (filterExpenseDetailRows) — o modal só
-// ordena por valor e apresenta.
+// ordena por vencimento e apresenta.
 import { useEffect, useId, useRef } from 'react';
 import { X } from 'lucide-react';
 import type { ExpenseDetailRow } from '../../services/supabase';
@@ -50,11 +50,14 @@ export function ExpenseDetailModal({ open, title, rows, onClose }: Readonly<Expe
 
   // `amount` é lido como veio do PostgREST (o front NÃO roda Zod aqui — cast cru), e numeric
   // pode chegar como STRING. Coerção Number(x)||0 espelha o `num()` do serviço → o total do
-  // modal é PROVAVELMENTE igual ao valor da fatia (sem risco de concatenar strings) e a
-  // ordenação não depende da coerção implícita da subtração.
+  // modal é PROVAVELMENTE igual ao valor da fatia (sem risco de concatenar strings).
   const amt = (r: ExpenseDetailRow): number => Number(r.amount) || 0;
-  // Ordena por VALOR desc (maiores primeiro) sem mutar a prop.
-  const ordered = [...rows].sort((a, b) => amt(b) - amt(a));
+  // Ordena por VENCIMENTO asc (mais próximos primeiro) sem mutar a prop; sem data vai ao fim.
+  const ordered = [...rows].sort((a, b) => {
+    if (!a.due_date) return b.due_date ? 1 : 0;
+    if (!b.due_date) return -1;
+    return a.due_date.localeCompare(b.due_date);
+  });
   const total = ordered.reduce((s, r) => s + amt(r), 0);
 
   return (
