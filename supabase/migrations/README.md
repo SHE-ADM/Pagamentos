@@ -3,6 +3,19 @@
 As migrations `001 → 061` são aplicadas **manualmente no SQL Editor do Supabase**, em
 **ordem numérica** e **uma única vez cada**. Não há runner automático.
 
+> **`095_fix_status_trigger_reference_date.sql` (BUG DE FUNDAÇÃO, idempotente — aplicada
+> DIRETO via Supabase MCP em 2026-07-23)** — a trigger `fn_set_status_from_due_date`
+> (desde a `034`, 2026-06-18) calculava a data de referência como
+> `COALESCE(NEW.extracted_at, NOW())` — a data em que a conta foi **extraída**, congelada —
+> em vez da data ATUAL. Qualquer `UPDATE` numa conta "em aberto" feito depois do vencimento
+> ter passado (curadoria de NF/Boleto, ou o `PATCH status_id=2` da skill
+> `baixa-automatica`/Regra 2) recalculava contra essa data congelada e **revertia** de volta
+> para "a vencer" — silenciosamente, na mesma transação. Medido antes do fix: só 3 de 126
+> contas que deveriam estar `vencido` realmente persistiam assim. Fix: `ref_date := (NOW()
+> AT TIME ZONE 'America/Sao_Paulo')::date`. Correção retroativa das 123 contas
+> mal-classificadas aplicada no mesmo momento (SQL direto). Detalhes completos em
+> "Trigger de situação por vencimento usava a data de EXTRAÇÃO" no `CLAUDE.md`.
+
 > **`059`/`060`/`061`/`063` foram aplicadas DIRETO via Supabase MCP** (não pelo SQL Editor) — o
 > arquivo numerado é só histórico. Todas idempotentes; **não reaplicar** no SQL Editor.
 > `059` = backfill único da classificação das contas a partir do supplier (fora do fluxo

@@ -3421,7 +3421,13 @@ local/agendada (ver flag `EMAIL_READER_ENABLED` acima e memória [[vercel-deploy
 ## Banco de dados (Supabase)
 
 Migrations em `supabase/migrations/`, aplicadas **manualmente no SQL Editor** em ordem
-numérica (`001` → `094`). **Próxima migration = `095`** (verificar sempre antes de criar nova).
+numérica (`001` → `095`). **Próxima migration = `096`** (verificar sempre antes de criar nova).
+
+**A `095` corrige um BUG DE FUNDAÇÃO da trigger `fn_set_status_from_due_date`** (idempotente,
+`CREATE OR REPLACE FUNCTION`; aplicada via Supabase MCP em 2026-07-23) — ver "Trigger de situação
+por vencimento usa a data de HOJE, não `extracted_at`" na seção "Pipeline de baixa automática"
+abaixo para o relato completo do bug e da correção.
+
 A **094** adiciona `financial_type_group.applies_to` (`'group'`/`'subgroup'`/`'both'` + CHECK) — o
 discriminador de ESCOPO que separa as duas taxonomias do catálogo (Natureza do grupo × Tipo Fixa/
 Variável do subgrupo) e escopa os lookups + a validação; ver "Escopo do `financial_type_group`".
@@ -3688,11 +3694,14 @@ dimensão `status` (ids 1..10): `1 pendente · 2 vencido · 3 a vencer · 4 pror
 `status_dim:status(status_name,status_short_name)` (não há mais coluna de texto na linha). A trigger
 **`fn_set_status_from_due_date`** (`trg_fe_status_vencimento`, BEFORE INSERT/UPDATE — id-primária
 desde a 068, simplificada só-id na 069) grava `status_id` **3 (a vencer) / 2 (vencido)** a partir de
-`due_date` × `extracted_at` **apenas quando EM ABERTO** (`status_id IN (1,2,3)`) — preserva os
-estados fechados (`falha`/`pago`/`baixado`/`cancelado`/`protestado`/`cartório`/`prorrogado`).
-Histórico: a **034** fundiu o antigo `due_status` na coluna `status` (texto); a **035** alinhou o
-domínio à dimensão `status`; as **067/068/069** migraram a fonte de verdade para `status_id` e
-dropraram o texto. `payment_method` aceita `boleto, pix, ted, cartão, depósito, duplicata,
+`due_date` × **a data de HOJE** (`NOW()`, fuso `America/Sao_Paulo` — corrigido pela **095**, ver
+"Trigger de situação por vencimento usava a data de EXTRAÇÃO" na seção "Pipeline de baixa
+automática"; **antes** da 095 usava `extracted_at` congelado, um bug que fazia contas vencidas
+ficarem presas em "a vencer" indefinidamente) **apenas quando EM ABERTO** (`status_id IN
+(1,2,3)`) — preserva os estados fechados (`falha`/`pago`/`baixado`/`cancelado`/`protestado`/
+`cartório`/`prorrogado`). Histórico: a **034** fundiu o antigo `due_status` na coluna `status`
+(texto); a **035** alinhou o domínio à dimensão `status`; as **067/068/069** migraram a fonte de
+verdade para `status_id` e dropraram o texto; a **095** corrigiu a data de referência. `payment_method` aceita `boleto, pix, ted, cartão, depósito, duplicata,
 bancário, carteira, vale, crédito, débito, débito automático, dinheiro, transferência, cheque,
 outro` (`débito automático` = débito direto em conta, distinto do `débito` cartão — migration 071;
 CHECK por valor EXATO, sem `lower()`); `extraction_source` ∈ (`email_body, pdf_text, pdf_vision,
@@ -4098,9 +4107,12 @@ essa lacuna para as duas transições. Roda **1x/dia às 08:00** na máquina de 
 **Mecânica (`skills/baixa-automatica/scripts/run.py`):** cada regra faz um único
 `PATCH /rest/v1/financial_account_control` filtrado com seu próprio status alvo (`{status_id:
 8}` ou `{status_id: 2}`), escrita via **`SUPABASE_SERVICE_KEY`** (service_role ignora RLS).
-Setar o status explicitamente é seguro — a trigger só recalcula quando `status_id ∈ {1,2,3}`,
-então não sobrescreve o valor já gravado (é o mesmo caminho da baixa/troca manual pelo
-`StatusSelectCell`). `main()` roda as duas em sequência, cada uma no seu próprio try/except
+Setar `status_id=8` (Regra 1) é seguro incondicionalmente — `8` **não** está em `{1,2,3}`, a
+trigger nem entra no ramo de recálculo. **Setar `status_id=2` (Regra 2) SÓ é seguro DEPOIS da
+correção da migration `095`** (ver bloco abaixo) — `2` **está** em `{1,2,3}`, então a trigger
+recalcula por vencimento a cada UPDATE; antes da `095` ela usava uma data de referência
+congelada e revertia o UPDATE de volta para `3` na prática. `main()` roda as duas em sequência,
+cada uma no seu próprio try/except
 (`_run_baixa_step`/`_run_vencido_step`) — **isoladas**: falha numa não impede a outra; exit
 code `1` se **qualquer uma** falhar, mas a que teve sucesso já gravou (sem rollback cruzado,
 não é uma transação). `--dry-run` faz um `GET` com `Prefer: count=exact` **por regra** e
@@ -4119,9 +4131,47 @@ banco** (colunas e grants já existem — migrations 033/068).
 **15 contas** que já se enquadravam na regra de baixa (NF + Boleto + vencidas + em aberto)
 como `pago`; o `--dry-run` seguinte reportou `0` (idempotente). Como dev e produção
 compartilham a **mesma Supabase**, as 15 baixas já valem para os dois ambientes — não repetir
-a aplicação após o deploy dos scripts. A Regra 2 (vencidos), adicionada depois, ainda não
-teve seu primeiro run real em produção — na 1ª execução ela vai marcar de uma vez todas as
-contas que hoje já se enquadram (verificado em dry-run de dev: 126 títulos).
+a aplicação após o deploy dos scripts.
+
+**Trigger de situação por vencimento usava a data de EXTRAÇÃO, não a data de HOJE — bug de
+fundação corrigido pela migration `095` (2026-07-23, não regredir):** a Regra 2 (vencidos) foi
+implantada em produção e rodou nas execuções agendadas de 2026-07-23 (06:00 e 08:00 —
+`Marcacao de vencidos concluida: 126 titulo(s) marcados como 'vencido'`), mas o grid de
+`/consulta` seguia mostrando a maioria delas como **"a vencer"**. Causa raiz: a trigger
+`fn_set_status_from_due_date` (criada na migration `034`, 2026-06-18, e mantida assim pelas
+`067`/`068`/`069`) calculava `ref_date := COALESCE(NEW.extracted_at, NOW())` — a data em que a
+conta foi **extraída** (congelada), não a data atual. Como a Regra 2 grava `status_id=2` via
+`PATCH`, e `2` está no conjunto `{1,2,3}` que a trigger BEFORE UPDATE recalcula, ela reavaliava
+`due_date >= ref_date` usando o `extracted_at` congelado — quase sempre **anterior** ao
+vencimento (a conta é extraída ANTES de vencer) — e revertia o `UPDATE` de volta para `status_id
+= 3` ("a vencer"), **na mesma transação**, silenciosamente. O `PATCH` "funcionava" (o filtro
+`WHERE` batia 126 linhas e a resposta HTTP era 200), mas o valor final persistido era decidido
+pela trigger, não pelo corpo do request. **Medido antes do fix:** das 123 contas que deveriam
+estar `vencido` (`status_id ∈ {1,3}` E `due_date < hoje`), só **3** realmente persistiam assim —
+exatamente as que tinham `due_date < extracted_at` (vencimento corrigido manualmente para uma
+data anterior à extração; único caso em que o cálculo antigo, por coincidência, batia com "hoje").
+
+Este **não é um bug exclusivo da skill `baixa-automatica`** — é um bug de fundação da trigger,
+presente desde a `034`: **qualquer** `UPDATE` numa conta "em aberto" feito depois do vencimento
+já ter passado (ex.: a curadoria de NF/Boleto em `/consulta`, que não toca `status_id` mas ainda
+assim dispara a trigger) recalculava contra a data de extração congelada e nunca corrigia para
+`vencido`. Só passou despercebido porque, até a Regra 2 existir, nada tentava setar
+`status_id=2` explicitamente em massa — o efeito prático (contas vencidas presas em "a vencer")
+sempre existiu, só não tinha sido notado/medido.
+
+**Fix (`095_fix_status_trigger_reference_date.sql`, idempotente — `CREATE OR REPLACE FUNCTION`):**
+`ref_date` passa a ser `(NOW() AT TIME ZONE 'America/Sao_Paulo')::date` — a data ATUAL a cada
+disparo da trigger, nunca mais `extracted_at`. Sem efeito colateral no `INSERT` (`extracted_at` ≈
+`NOW()` no momento da extração — resultado idêntico); no `UPDATE`, agora reavalia corretamente
+contra "hoje", inclusive quando disparado por uma curadoria que não toca `status_id`. Regra 1
+(`status_id=8`) e as demais transições fechadas continuam intocadas — `8`/`9`/etc. não estão em
+`{1,2,3}`, a trigger nem entra no ramo de recálculo. **Correção retroativa aplicada no mesmo
+momento** (SQL direto, mesma Supabase dev+prod): as 123 contas mal-classificadas foram
+corrigidas (`UPDATE ... SET status_id = 2 WHERE status_id IN (1,3) AND due_date < CURRENT_DATE`)
+— **verificado**: `126` contas em `vencido` após a correção (as 3 antigas + as 123 corrigidas),
+`0` restantes fora de conformidade. **A partir de agora, a Regra 2 do batch diário funciona
+como documentado** (o `PATCH status_id=2` não é mais revertido pela trigger) — a correção
+retroativa foi só para não esperar a próxima execução agendada (08:00 do dia seguinte).
 
 ```powershell
 py -3 skills\baixa-automatica\scripts\run.py --dry-run   # quantas contas/títulos SERIAM afetados pelas 2 regras (não grava)
