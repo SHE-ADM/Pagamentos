@@ -11,7 +11,7 @@ import type {
   ChartAccountGroup,
   ChartAccountSubgroup,
 } from '@sheild/shared';
-import { STATUS_IDS } from '@sheild/shared';
+import { STATUS_IDS, STATUS_NAME_BY_ID } from '@sheild/shared';
 import StatusBadge from '../components/StatusBadge';
 import CheckToggle from '../components/atoms/CheckToggle';
 import StatusSelectCell, { type StatusOption } from '../components/atoms/StatusSelectCell';
@@ -450,8 +450,10 @@ export function getCostCenterColumns(
  * Colunas do card de DETALHE (drill-down) dos gráficos de /dashboard_despesas — enxutas e
  * read-only. NÃO reusa getConsultaColumns/fmtChartAccountFull (tipados ao
  * FinancialAccountControl completo, com curadoria); ExpenseDetailRow só carrega
- * supplier + chart_account + vencimento/valor. "Plano de conta" mostra só o plano
- * (`código — descrição`), não a hierarquia enriquecida — decisão do usuário.
+ * supplier + chart_account + status_id + vencimento/valor. "Plano de conta" mostra só o
+ * plano (`código — descrição`), não a hierarquia enriquecida — decisão do usuário.
+ * "Situação" é a ÚLTIMA coluna (badge read-only via StatusBadge — sem o dropdown
+ * interativo do StatusSelectCell, que exige callback de edição inexistente aqui).
  */
 export function getExpenseDetailColumns(): ColumnDef<ExpenseDetailRow>[] {
   return [
@@ -483,6 +485,12 @@ export function getExpenseDetailColumns(): ColumnDef<ExpenseDetailRow>[] {
       align: 'right',
       size: 120,
       render: (r) => fmtMoney(r.amount),
+    },
+    {
+      key: 'status_id',
+      header: 'Situação',
+      size: 130,
+      render: (r) => createElement(StatusBadge, { value: STATUS_NAME_BY_ID[r.status_id] ?? '—' }),
     },
   ];
 }

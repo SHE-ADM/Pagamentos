@@ -18,16 +18,20 @@ const ROWS: ExpenseDetailRow[] = [
 ];
 
 describe('ExpenseDetailModal', () => {
-  it('renderiza as 4 colunas e as linhas (fornecedor com fallback legal_name)', () => {
+  it('renderiza as 5 colunas (Situação por último) e as linhas (fornecedor com fallback legal_name)', () => {
     render(<ExpenseDetailModal open title="Centro de custo · Compras" rows={ROWS} onClose={vi.fn()} />);
-    for (const h of ['Fornecedor', 'Plano de conta', 'Vencimento', 'Valor']) {
+    const headers = ['Fornecedor', 'Plano de conta', 'Vencimento', 'Valor', 'Situação'];
+    for (const h of headers) {
       expect(screen.getByRole('columnheader', { name: h })).toBeInTheDocument();
     }
+    const headerCells = screen.getAllByRole('columnheader').map((el) => el.textContent);
+    expect(headerCells[headerCells.length - 1]).toBe('Situação'); // última coluna
     expect(screen.getByText('ACME Ltda')).toBeInTheDocument();
     expect(screen.getByText('Beta Comércio LTDA')).toBeInTheDocument(); // fallback legal_name
     expect(screen.getByText('6.1.01 — Salários')).toBeInTheDocument();
     expect(screen.getByText('10/07/2026')).toBeInTheDocument();
     expect(screen.getByText('R$ 300,00')).toBeInTheDocument();
+    expect(screen.getAllByText('a vencer').length).toBeGreaterThan(0); // badge de situação (status_id 3)
   });
 
   it('cabeçalho traz o título e o rodapé de contagem + total', () => {
