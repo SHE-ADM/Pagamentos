@@ -1,12 +1,14 @@
 <#
 .SYNOPSIS
-    Registra a tarefa de baixa automática de contas pagas no Windows Task Scheduler.
+    Registra a tarefa de baixa automática de contas pagas + marcação de títulos vencidos
+    no Windows Task Scheduler.
 
 .DESCRIPTION
     Execute este script UMA VEZ como Administrador para criar a tarefa.
-    Após o registro, a tarefa roda automaticamente 1x por dia às 06:00, chamando run.py
-    (skill baixa-automatica) que marca como "pago" as contas com NF + Boleto confirmados,
-    vencimento <= hoje e ainda em aberto.
+    Após o registro, a tarefa roda automaticamente 1x por dia às 08:00, chamando run.py
+    (skill baixa-automatica), que aplica DUAS regras independentes: (1) marca como "pago"
+    as contas com NF + Boleto confirmados, vencimento <= hoje e ainda em aberto; (2) marca
+    como "vencido" as contas pendente/a vencer com vencimento < hoje.
 
     Portável: detecta o executor PowerShell (pwsh.exe ou powershell.exe) e usa caminhos
     relativos ao próprio script. Para trocar credenciais: edite apenas o .env na raiz.
@@ -15,7 +17,7 @@
     # Registrar (requer janela PowerShell elevada):
     .\setup-baixa-task.ps1
 
-    # Executar agora para testar (sem aguardar as 06:00):
+    # Executar agora para testar (sem aguardar as 08:00):
     Start-ScheduledTask -TaskPath "\Sheild\" -TaskName "Pagamentos - Baixa Automática"
 
     # Ver último resultado:
@@ -35,7 +37,7 @@
 # ---------------------------------------------------------------------------
 $TASK_NAME   = "Pagamentos - Baixa Automática"
 $TASK_PATH   = "\Sheild\"      # pasta no Agendador (mesma das demais tarefas do Pagamentos)
-$TRIGGER_H   = 6               # hora do disparo diário (6 = 06:00)
+$TRIGGER_H   = 8               # hora do disparo diário (8 = 08:00)
 $TRIGGER_M   = 0
 $TIMEOUT_MIN = 10              # tempo máximo de execução por disparo
 
@@ -77,7 +79,7 @@ $action = New-ScheduledTaskAction `
     -WorkingDirectory $PROJECT_ROOT
 
 # ---------------------------------------------------------------------------
-# Gatilho: diário às 06:00 (TRIGGER_H/TRIGGER_M)
+# Gatilho: diário às 08:00 (TRIGGER_H/TRIGGER_M)
 # ---------------------------------------------------------------------------
 $startAt = (Get-Date -Hour $TRIGGER_H -Minute $TRIGGER_M -Second 0 -Millisecond 0)
 # Se o horário de hoje já passou, agenda para amanhã
@@ -107,7 +109,7 @@ Register-ScheduledTask `
     -Action      $action `
     -Trigger     $trigger `
     -Settings    $settings `
-    -Description "Marca como pago as contas com NF + Boleto e vencimento <= hoje (em aberto), 1x por dia às 06:00. Credenciais: .env na raiz do projeto." `
+    -Description "Marca como pago as contas com NF + Boleto e vencimento <= hoje (em aberto); e marca como vencido as contas pendente/a vencer com vencimento < hoje. 1x por dia às 08:00. Credenciais: .env na raiz do projeto." `
     -RunLevel    Highest `
     -Force | Out-Null
 
@@ -124,10 +126,10 @@ if ($task) {
     Write-Host "  Executor  : $psExe"
     Write-Host "  Runner    : $RUNNER"
     Write-Host "  Proximo   : $startAt"
-    Write-Host "  Frequencia: 1x por dia as 06:00"
+    Write-Host "  Frequencia: 1x por dia as 08:00"
     Write-Host "  Timeout   : $TIMEOUT_MIN minutos por execucao"
     Write-Host ""
-    Write-Host "Para testar agora (sem aguardar as 06:00):" -ForegroundColor Cyan
+    Write-Host "Para testar agora (sem aguardar as 08:00):" -ForegroundColor Cyan
     Write-Host "  Start-ScheduledTask -TaskPath '$TASK_PATH' -TaskName '$TASK_NAME'"
     Write-Host ""
     Write-Host "Para simular sem gravar (dry-run manual):" -ForegroundColor Cyan

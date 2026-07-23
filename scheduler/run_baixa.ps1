@@ -1,16 +1,18 @@
 <#
 .SYNOPSIS
-    Wrapper do agendador — executa run.py (baixa automática de contas pagas) e grava log diário.
-    Chamado pelo Windows Task Scheduler 1x por dia às 06:00 (setup-baixa-task.ps1).
+    Wrapper do agendador — executa run.py (baixa automática de contas pagas + marcação de
+    títulos vencidos) e grava log diário. Chamado pelo Windows Task Scheduler 1x por dia
+    às 08:00 (setup-baixa-task.ps1).
 
 .DESCRIPTION
-    Marca como "pago" as contas com NF + Boleto confirmados, vencimento <= hoje e ainda
-    em aberto (skill baixa-automatica). Tudo é lido do .env na raiz do projeto a cada
-    execução — não altere este arquivo para trocar credenciais.
+    Duas regras independentes (skill baixa-automatica): (1) marca como "pago" as contas
+    com NF + Boleto confirmados, vencimento <= hoje e ainda em aberto; (2) marca como
+    "vencido" as contas pendente/a vencer com vencimento < hoje. Tudo é lido do .env na
+    raiz do projeto a cada execução — não altere este arquivo para trocar credenciais.
 
 .PARAMETER DryRun
     Se informado, passa --dry-run para o script Python (não grava; apenas reporta quantas
-    contas seriam baixadas). Exemplo: .\run_baixa.ps1 -DryRun
+    contas/títulos seriam afetados pelas duas regras). Exemplo: .\run_baixa.ps1 -DryRun
 #>
 
 param(
