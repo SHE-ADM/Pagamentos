@@ -39,11 +39,13 @@ class NormalizeBodyBarcodeTest(unittest.TestCase):
         self.assertIsNone(read_emails._normalize_body_barcode("1" * 46))
 
     def test_remove_mascara_pontos_espacos(self):
-        mascarado = "34191.79001 01043.510047 91020.150008 1 99999999999999"
-        got = read_emails._normalize_body_barcode(mascarado)
-        # 47 dígitos sob a máscara -> normaliza para 44.
-        self.assertIsNotNone(got)
-        self.assertEqual(len(got), 44)
+        # Linha digitável REAL (MOVVI, conta 693) — fixture realista de propósito: o
+        # normalizador padrão também VALIDA (rejeita o que o DV refuta), então um código
+        # inventado faria este teste de máscara falhar por um motivo alheio ao que ele
+        # verifica. Com um código real, prova a máscara E passa pela validação.
+        mascarado = "23793.39100 90000.004375 07000.842000 3 15250000018190"
+        self.assertEqual(read_emails._normalize_body_barcode(mascarado),
+                         "23793152500000181903391090000004370700084200")
 
     def test_none_e_vazio(self):
         self.assertIsNone(read_emails._normalize_body_barcode(None))
