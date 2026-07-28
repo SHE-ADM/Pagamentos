@@ -96,6 +96,28 @@ def _normalize_body_barcode(raw: str | None) -> str | None:
         return digits if 44 <= len(digits) <= 48 else None
 
 
+def _extract_body_linha_digitavel(text: str | None) -> str | None:
+    """Linha digitavel (47 digitos) achada no TEXTO do corpo SEM depender de rotulo.
+
+    Fallback de _BODY_BARCODE_RE, que exige o rotulo ('linha digitavel'/'codigo de
+    barras') a <=10 caracteres do numero. Em e-mail cujo corpo e uma TABELA HTML
+    achatada, os rotulos vem TODOS no cabecalho e os valores depois, entao o rotulo
+    fica longe do numero e nada era capturado (conta 693, MOVVI). Reusa o extrator
+    DETERMINISTICO canonico do extract_pdf — fonte unica, mesma validacao dos 5
+    campos FEBRABAN (5-5 / 5-6 / 5-6 / 1 / 14), o que torna o falso positivo
+    improvavel mesmo sem rotulo. Import lazy + fallback defensivo, como
+    _normalize_body_barcode."""
+    if not text:
+        return None
+    try:
+        if str(EXTRACT_SCRIPT.parent) not in sys.path:
+            sys.path.insert(0, str(EXTRACT_SCRIPT.parent))
+        from extract_pdf import extract_linha_digitavel
+        return extract_linha_digitavel(text)
+    except Exception:
+        return None
+
+
 def _apply_barcode_due_date(payload: dict) -> None:
     """Rede de seguranca UNIVERSAL contra inversao dia/mes do vencimento: a data de vencimento
     de um boleto e o FATOR DE VENCIMENTO do codigo de barras (deterministico), NAO a data lida —
@@ -1067,6 +1089,13 @@ _SUBJECT_SEGMENT_SPLIT_RE = re.compile(r"\s*(?:-{2,}|[–—|:])\s*")
 _SUBJECT_NOISE_PREFIX_RE = re.compile(
     r"^(?:\s*(?:faturamento|faturas|financeiro|cobran[cç]a)\b[ \t.:\-/]*)+",
     re.IGNORECASE)
+# Conectivos que NUNCA iniciam uma razao social: o que resta do assunto comecando por
+# eles e a continuacao da frase, nao um nome ("Boleto REFERENTE a assinatura ..." —
+# conta 694). Guarda de _supplier_name_from_subject contra criar fornecedor-lixo.
+# "de/da/do" ficam DE FORA de proposito: iniciam nomes reais ("DE NADAI ALIMENTACAO").
+_SUBJECT_NON_NAME_START_RE = re.compile(
+    r"^(?:referente|refer\.?|ref\.?|relativ[oa]|sobre|conforme|acerca)\b",
+    re.IGNORECASE)
 
 
 def _norm_term(s: str | None) -> str:
@@ -1202,6 +1231,14 @@ def _supplier_name_from_subject(subject: str | None) -> str:
     s = _SUBJECT_DOCNUM_TAIL_RE.sub("", s).strip(" -–—:.\t")
     # precisa restar pelo menos uma LETRA e tamanho minimo (evita "12345", "-")
     if len(s) < 3 or not re.search(r"[A-Za-zÀ-ÿ]", s):
+        return ""
+    # O que sobra COMECANDO por conectivo nao e nome de empresa — e a continuacao da
+    # frase do assunto. Sem esta guarda, "Boleto referente a assinatura 1040983896 de
+    # Manutencao - ot..." (conta 694) virava o FORNECEDOR "referente a assinatura
+    # 1040983896 de Manutencao - ot", criando um cadastro-lixo em supplier.
+    # Deliberadamente NAO inclui "de/da/do": esses PODEM iniciar razao social
+    # ("DE NADAI ALIMENTACAO") — a guarda so cobre conectivos que nunca iniciam nome.
+    if _SUBJECT_NON_NAME_START_RE.match(s):
         return ""
     # robustez: um tipo de documento/pagamento nao e fornecedor (ex.: "GNRE").
     if _is_non_supplier_term(s):
@@ -1810,6 +1847,20 @@ _BODY_NAME_RE    = re.compile(
     r"\b[ \t]*[:\-]?[ \t]*([A-ZÀ-Þ0-9][^\r\n]*?)[ \t\r]*$",
     re.MULTILINE,
 )
+# BLOCO rotulado "Dados do emissor/beneficiario/cedente/sacador" — o nome vem na LINHA
+# SEGUINTE, nao na mesma (o webmail achata a tabela HTML). _BODY_NAME_RE exige o valor na
+# MESMA linha, entao nao alcanca este layout: na conta 694 o fornecedor real
+# ("AGENCIA K1 DIGITAL WEBSITES E MARKETING") estava logo abaixo de "Dados do emissor" e
+# foi ignorado, e o nome acabou derivado do assunto — virando lixo.
+# Aceita as duas formas (mesma linha ou proxima) e exige, como _BODY_NAME_RE, que o valor
+# comece por MAIUSCULA/digito (char class case-SENSITIVE) para nao capturar prosa.
+#
+# So rotulos de BLOCO ("dados do ..."): "emitido por" ficaria de fora de proposito —
+# no rodape aparece "Este boleto foi emitido por www.sejaefi.com.br", que e a PLATAFORMA,
+# nao o fornecedor.
+_BODY_ISSUER_RE = re.compile(
+    r"(?im)^[ \t]*dados\s+do\s+(?:emissor|benefici[aá]rio|cedente|sacador)"
+    r"[ \t]*:?[ \t]*\r?\n?[ \t]*([A-ZÀ-Þ0-9][^\r\n]*?)[ \t\r]*$")
 # Valor monetario. Tolera separadores entre "R$" e o numero ("R$:", "R$ -")
 # porque varios e-mails internos escrevem "R$:  297,08".
 _BODY_AMOUNT_RE  = re.compile(r"R\$\s*[:\-]?\s*([\d.,]+)")
@@ -1850,6 +1901,30 @@ _BODY_LABELED_AMT_RE = re.compile(
 _BODY_INSTALLMENTS_RE = re.compile(
     r"(\d{4,})\s+(\d{1,3})\s+(\d{2}/\d{2}/\d{2,4})\s+(\d{2}/\d{2}/\d{2,4})\s+"
     r"R\$\s*([\d.]*\d,\d{1,2})\s+\d{1,4}")
+# Tabela de FATURAS no corpo (variante sem parcela/dias): cada titulo e a sequencia
+# documento, emissao (data), vencimento (data) e valor (R$) — os demais campos da
+# linha (desconto, link "VISUALIZAR", linha digitavel) vem depois e nao entram aqui.
+# Caso real (MOVVI, conta 693): o webmail achata a tabela HTML em uma linha por
+# CAMPO, entao os rotulos ficam TODOS no cabecalho e os regex ancorados em rotulo
+# (_BODY_ISSUE_RE / _BODY_DUE_RE / _BODY_INVOICE_RE) nao alcancam os valores — o
+# vencimento caia no fallback (data do e-mail) e o n do documento virava sintetico.
+# A propria FORMA da linha (doc + 2 datas + R$ valor, so espacos entre os campos) e
+# o que a identifica, sem depender de rotulo.
+# Guardas contra falso positivo:
+#   (?<![\w/-])       — o documento comeca em inicio de campo (nao no meio de um token)
+#   (?=[\w./-]*\d)    — o documento contem ao menos um digito (descarta palavra solta)
+#   {3,}              — >= 4 caracteres, para NAO casar a coluna 'Parcela' ('001') da
+#                        tabela da OBER, cujo layout tem 6 campos (_BODY_INSTALLMENTS_RE)
+# Valor com virgula (BR, '1.234,56') ou ponto ('181.90', como a MOVVI escreve) —
+# _brl_to_decimal normaliza os dois.
+_BODY_INVOICE_ROW_RE = re.compile(
+    r"(?<![\w/-])((?=[A-Za-z0-9._/-]*\d)[A-Za-z0-9][A-Za-z0-9._/-]{3,})\s+"
+    r"(\d{2}/\d{2}/\d{2,4})\s+"
+    r"(\d{2}/\d{2}/\d{2,4})\s+"
+    r"R\$\s*(\d[\d.,]*)")
+# Data pura NAO e numero de documento (a classe do documento aceita '/' e digitos,
+# entao 'dd/mm/aaaa' casaria a captura) — descartada em _extract_body_invoice_rows.
+_BODY_DATE_ONLY_RE = re.compile(r"\d{2}/\d{2}/\d{2,4}")
 _BODY_PIX_RE     = re.compile(r"\bpix\b", re.IGNORECASE)
 _BODY_DUE_RE     = re.compile(r"(?i)venc(?:imento|to)?\D{0,15}?(\d{2}/\d{2}/\d{2,4})")
 # "DATA (PARA/DE/DO) PAGAMENTO: DD/MM/AA" — rotulo de vencimento usado nas notas
@@ -1875,6 +1950,15 @@ _BODY_DOCNUM_RE  = re.compile(
 # contas 668/669). Exige digitos logo apos (so espaco/':'/'-' no meio) para nao
 # casar "fatura no valor de..."/"fatura no total de...".
 _BODY_INVOICE_NO_RE = re.compile(r"(?i)\bfatura\s+no?\.?\s*[:\-]?\s*(\d{3,})")
+# "Cobranca N 1040983896" — identificador da COBRANCA nas plataformas de assinatura
+# (Efi/Gerencianet e afins). O \s* aceita quebra de linha entre o rotulo e o "N", porque
+# o webmail achata a tabela HTML ("Cobranca\n N 1040983896" — conta 694).
+#
+# NAO capturar "Assinatura N" (nao regredir): o numero da ASSINATURA e o mesmo em TODAS
+# as cobrancas do contrato, entao usa-lo como invoice_number faria a cobranca do mes
+# seguinte DEDUPLICAR contra a anterior (impressao 2: fornecedor+numero+valor) e o titulo
+# seria PERDIDO em silencio. O numero da COBRANCA e unico por parcela — e o correto.
+_BODY_CHARGE_NUM_RE = re.compile(r"(?i)\bcobran[çc]a\s*n[º°]?\.?\s*[:\-]?\s*(\d{4,})")
 # ID estável da fatura no link da SIEG (app.sieg.com/faturas?bill=NNN). Sem nº de
 # documento no texto, é o identificador que faz os DOIS lembretes da mesma fatura
 # ("Vencimento Próximo" + "Hoje") deduplicarem — antes geravam 2 contas/mês porque
@@ -2160,6 +2244,42 @@ _BODY_PAYMENT_METHOD_KEYWORDS: list[tuple[str, list[str]]] = [
 ]
 
 
+# Marcadores do RODAPE INSTITUCIONAL das plataformas de cobranca (Efi/Gerencianet,
+# Asaas, PagSeguro e afins). Depois deles vem propaganda da plataforma — tipicamente uma
+# ENUMERACAO dos produtos dela ("e possivel emitir boletos, carnes, cobrancas via cartao
+# de credito e links de pagamento") — que NAO declara nada sobre ESTE titulo. Termos
+# normalizados (_ns_body: sem acento, minusculas) e casados por SUBSTRING na linha.
+_PLATFORM_FOOTER_MARKERS = (
+    "esta cobranca foi gerada",
+    "este boleto foi emitido por",
+    "pela plataforma e possivel",
+    "abra sua conta digital",
+)
+
+
+def _strip_platform_boilerplate(text: str | None) -> str:
+    """Corta o texto na 1a linha de RODAPE INSTITUCIONAL da plataforma de cobranca.
+
+    Caso de origem (conta 694, boleto de assinatura via Efi): o rodape dizia
+    "...e possivel emitir e enviar boletos, carnes, cobrancas via CARTAO DE CREDITO e
+    links de pagamento", e o classificador gravou payment_method='crédito' num titulo
+    que o proprio e-mail chama de BOLETO da primeira linha ao assunto. A mencao estava
+    numa lista de PRODUTOS DA PLATAFORMA — nao e uma declaracao sobre o documento.
+
+    Corte por LINHA (nao por indice de caractere): _ns_body decompoe acentos e nao
+    preserva o comprimento, entao mapear offset do texto normalizado para o original
+    daria posicao errada."""
+    if not text:
+        return ""
+    out = []
+    for line in str(text).splitlines():
+        norm = _ns_body(line)
+        if any(marker in norm for marker in _PLATFORM_FOOTER_MARKERS):
+            break
+        out.append(line)
+    return "\n".join(out)
+
+
 def _classify_body_payment_method(*texts: str | None) -> str | None:
     """Detecta a FORMA DE PAGAMENTO declarada no corpo/assunto (ex.: 'PAGAMENTO EM
     DINHEIRO' -> 'dinheiro', 'pago deposito' -> 'depósito'), casando por PALAVRA inteira
@@ -2170,11 +2290,17 @@ def _classify_body_payment_method(*texts: str | None) -> str | None:
     primeiro que casar vence — chamando com (body, subject), o CORPO tem precedência sobre
     o ASSUNTO (caso id 325: corpo 'TED AGÊNCIA...' vs assunto 'PAGAMENTO PIX' → 'ted').
     Dentro de um mesmo texto, a ordem de _BODY_PAYMENT_METHOD_KEYWORDS desempata
-    (crédito/débito antes de cartão)."""
+    (crédito/débito antes de cartão).
+
+    O RODAPÉ da plataforma de cobrança é descartado antes de classificar
+    (_strip_platform_boilerplate): a enumeração de produtos dela não declara a forma
+    de pagamento deste título. Sem isso, a ordem da lista — que codifica
+    ESPECIFICIDADE (débito automático antes de débito), não confiança — fazia um
+    'crédito' de propaganda vencer o 'boleto' declarado no assunto e no corpo."""
     for t in texts:
         if not t:
             continue
-        norm = _ns_body(t)
+        norm = _ns_body(_strip_platform_boilerplate(t))
         for method, terms in _BODY_PAYMENT_METHOD_KEYWORDS:
             if any(_has_word(norm, term) for term in terms):
                 return method
@@ -2861,6 +2987,74 @@ def _extract_body_installments(body_text: str) -> "list[dict]":
     return rows
 
 
+def _extract_body_invoice_rows(body_text: str) -> "list[dict]":
+    """Linhas de uma TABELA DE FATURAS no corpo (documento, emissão, vencimento,
+    valor e a linha digitável DAQUELA linha) — ver _BODY_INVOICE_ROW_RE.
+
+    Complementa `_extract_body_installments` (layout com parcela/dias, OBER) para o
+    layout sem parcela (MOVVI): o que identifica a linha é a FORMA (nº do documento
+    + duas datas + valor), não um rótulo — que na tabela HTML achatada fica no
+    cabeçalho, longe do valor.
+
+    A linha digitável é buscada no SEGMENTO da própria linha (do início dela até o
+    início da próxima), nunca no corpo inteiro: numa tabela de N faturas cada linha
+    tem o SEU boleto, e herdar o barcode da primeira faria as demais colidirem na
+    dedup por código de barras — perdendo títulos em silêncio.
+
+    Sem gate: devolve todas as linhas encontradas ([] quando nenhuma). Os
+    consumidores decidem (conta única × uma conta por fatura).
+    """
+    text = body_text or ""
+    matches = list(_BODY_INVOICE_ROW_RE.finditer(text))
+    rows: list[dict] = []
+    for i, m in enumerate(matches):
+        doc = (m.group(1) or "").strip(" .,;")
+        amount = _brl_to_decimal(m.group(4))
+        # Documento inválido (data pura) ou valor ilegível → a linha não é utilizável.
+        if not doc or _BODY_DATE_ONLY_RE.fullmatch(doc) or amount is None:
+            continue
+        end = matches[i + 1].start() if i + 1 < len(matches) else len(text)
+        rows.append({
+            "doc":        doc,
+            "issue_date": _br_date_to_iso(m.group(2)),
+            "due_date":   _br_date_to_iso(m.group(3)),
+            "amount":     amount,
+            "barcode":    _normalize_body_barcode(
+                _extract_body_linha_digitavel(text[m.start():end])),
+        })
+    return rows
+
+
+def _row_field(row: "dict | None", field: str):
+    """Campo da linha da tabela de faturas, tolerante à linha ausente — permite usar
+    a tabela como fallback em cadeia (`rotulado or tabela or padrão`) sem um `if`
+    extra por campo no `extract_from_email_body`."""
+    return row.get(field) if row else None
+
+
+def _extract_body_invoice_row(body_text: str) -> "dict | None":
+    """Primeira linha da tabela de faturas do corpo (ou None). Usada para preencher
+    as LACUNAS do payload de conta única — nº do documento, emissão e vencimento que
+    os regex ancorados em rótulo não alcançam na tabela achatada."""
+    rows = _extract_body_invoice_rows(body_text)
+    return rows[0] if rows else None
+
+
+def _extract_body_invoice_table(body_text: str) -> "list[dict]":
+    """Tabela de faturas com MÚLTIPLOS títulos distintos → uma conta por fatura.
+
+    Mesmo gate (e mesma regra de negócio — NUNCA somar) de
+    `_extract_body_installments`: [] com menos de 2 linhas ou quando todas têm o
+    MESMO vencimento E o MESMO documento — aí o caminho de conta única vale.
+    """
+    rows = _extract_body_invoice_rows(body_text)
+    if len(rows) < 2:
+        return []
+    if len({r["due_date"] for r in rows}) < 2 and len({r["doc"] for r in rows}) < 2:
+        return []
+    return rows
+
+
 def _br_date_to_iso(raw: str | None) -> str | None:
     """Converte data 'dd/mm/aaaa' ou 'dd/mm/aa' do corpo do e-mail para 'aaaa-mm-dd'."""
     if not raw:
@@ -2977,9 +3171,12 @@ def extract_from_email_body(body_text: str, received_at: str, message_id: str,
             and not _BODY_PAYMENT_REQUEST_RE.search(body_text)):
         return None
 
-    # Campos extraidos do corpo
-    name_match    = _BODY_NAME_RE.search(body_text)
-    supplier_name = name_match.group(1).strip() if name_match else None
+    # Campos extraidos do corpo. Rotulo na MESMA linha (_BODY_NAME_RE) tem precedencia;
+    # o bloco "Dados do emissor" (nome na linha SEGUINTE) e o fallback que alcanca o
+    # layout achatado das plataformas de cobranca.
+    label_match   = (_BODY_NAME_RE.search(body_text)
+                     or _BODY_ISSUER_RE.search(body_text))
+    supplier_name = label_match.group(1).strip() if label_match else None
 
     # CNPJ (somente digitos, exatamente 14) / CPF rotulado (exatamente 11).
     cnpj_match    = _BODY_CNPJ_RE.search(body_text)
@@ -2996,8 +3193,19 @@ def extract_from_email_body(body_text: str, received_at: str, message_id: str,
     # do caminho de PDF): 44/48 digitos mantidos, 47 -> 44, outros -> None.
     barcode_match = _BODY_BARCODE_RE.search(body_text)
     barcode       = _normalize_body_barcode(barcode_match.group(1)) if barcode_match else None
+    # Sem rotulo adjacente (tabela HTML achatada — o rotulo fica no cabecalho, longe
+    # do numero): fallback DETERMINISTICO pela forma dos 5 campos FEBRABAN. Recupera
+    # o boleto do corpo e, com ele, a dedup por codigo de barras E o vencimento
+    # autoritativo pelo fator (_apply_barcode_due_date no register_financial).
+    if not barcode:
+        barcode = _normalize_body_barcode(_extract_body_linha_digitavel(body_text))
 
     amount         = _extract_body_amount(body_text)
+
+    # Linha da TABELA DE FATURAS (documento + emissao + vencimento + valor juntos).
+    # Fonte de PREENCHIMENTO DE LACUNA: so entra onde os regex ancorados em rotulo
+    # nao acharam nada — nunca sobrescreve um valor explicitamente rotulado.
+    table_row      = _extract_body_invoice_row(body_text)
 
     inv_match      = _BODY_INVOICE_RE.search(body_text)
     invoice_number = inv_match.group(1).strip() if inv_match else None
@@ -3012,6 +3220,12 @@ def extract_from_email_body(body_text: str, received_at: str, message_id: str,
         no_match = _BODY_INVOICE_NO_RE.search(body_text)
         if no_match:
             invoice_number = no_match.group(1).strip()
+    # Fallback: "Cobrança Nº NNNN" (plataformas de assinatura) — nunca o nº da
+    # ASSINATURA, que se repete a cada cobrança e faria a próxima deduplicar.
+    if not invoice_number:
+        charge_match = _BODY_CHARGE_NUM_RE.search(body_text)
+        if charge_match:
+            invoice_number = charge_match.group(1).strip()
     # Sem nº no texto, mas com link de fatura SIEG: usa o bill como nº estável, para
     # os dois lembretes ("Vencimento Próximo" + "Hoje") da MESMA fatura deduplicarem
     # (a dedup por nome+nº+valor casa; antes o nº saía de data relativa e divergia).
@@ -3019,6 +3233,14 @@ def extract_from_email_body(body_text: str, received_at: str, message_id: str,
         bill = _BODY_SIEG_BILL_RE.search(body_text)
         if bill:
             invoice_number = f"sieg_{bill.group(1)}"
+    # Fallback: n do documento da linha da tabela de faturas (rotulo so no cabecalho).
+    # Vem ANTES do sintetico ('{tipo}_{ddmmaa}'), que nao identifica o titulo e ainda
+    # e ignorado pela impressao 2 da dedup (_is_synthetic_invoice_number).
+    invoice_number = invoice_number or _row_field(table_row, "doc")
+
+    # Valor: a linha da tabela tambem cobre o corpo cujo valor nao casa nenhum dos
+    # padroes rotulados (o R$ da linha ja foi validado por _brl_to_decimal).
+    amount = amount or _row_field(table_row, "amount")
 
     # Sem sinal financeiro (valor ou numero de documento) — ignorar silenciosamente
     if not amount and not invoice_number:
@@ -3050,19 +3272,23 @@ def extract_from_email_body(body_text: str, received_at: str, message_id: str,
 
     has_pix = bool(_BODY_PIX_RE.search(body_text))
 
+    # Emissao: rotulo 'Emissao DD/MM/AA' → linha da tabela → data de envio do e-mail.
     issue_match = _BODY_ISSUE_RE.search(body_text)
-    issue_date  = _br_date_to_iso(issue_match.group(1)) if issue_match else None
-    if not issue_date:
-        issue_date = (received_at or "")[:10] or None
+    issue_date  = (_br_date_to_iso(issue_match.group(1)) if issue_match else None) \
+        or _row_field(table_row, "issue_date") \
+        or ((received_at or "")[:10] or None)
 
+    # Vencimento: rotulo 'Vencimento' → 'DATA PARA PAGAMENTO' (nota interna) → linha
+    # da tabela → emissao. A linha da tabela vem ANTES do fallback pela emissao, que
+    # gravava vencimento ERRADO quando o rotulo esta so no cabecalho da tabela
+    # (conta 693: 25/07, a data do e-mail, no lugar de 01/08) — e ainda fazia a
+    # marcacao de vencido/baixa automatica agir sobre a data errada.
     due_match = _BODY_DUE_RE.search(body_text)
-    due_date  = _br_date_to_iso(due_match.group(1)) if due_match else None
-    if not due_date:
-        # "DATA PARA PAGAMENTO: DD/MM/AA" (nota interna) → vencimento.
-        pay_match = _BODY_PAYDATE_RE.search(body_text)
-        due_date  = _br_date_to_iso(pay_match.group(1)) if pay_match else None
-    if not due_date:
-        due_date = issue_date  # sem vencimento explicito, usa data de emissao
+    pay_match = _BODY_PAYDATE_RE.search(body_text)
+    due_date  = (_br_date_to_iso(due_match.group(1)) if due_match else None) \
+        or (_br_date_to_iso(pay_match.group(1)) if pay_match else None) \
+        or _row_field(table_row, "due_date") \
+        or issue_date
     if not due_date:
         # Regra de negocio: sem nenhuma data, usa a data da extracao (hoje).
         due_date = datetime.now().strftime("%Y-%m-%d")
@@ -4507,7 +4733,10 @@ def try_extract_from_body(email_rec: dict, body_text: str, received_at: str,
     # nº do documento (doc/parcela), valor, vencimento e emissão por linha. Cada linha
     # passa pela mesma dedup de conteúdo. Sem barcode (o corpo não traz a linha
     # digitável — só o PDF; por isso o caminho de PDF descriptografado é preferível).
-    installments = _extract_body_installments(body_text)
+    # Dois layouts de tabela alimentam o MESMO caminho: com parcela/dias (OBER) e sem
+    # parcela (MOVVI, tabela de faturas). O de parcelas tem precedencia — o layout de
+    # 6 campos e mais especifico e ja e o coberto historicamente.
+    installments = _extract_body_installments(body_text) or _extract_body_invoice_table(body_text)
     if len(installments) >= 2:
         created = dups = 0
         for inst in installments:
@@ -4518,6 +4747,12 @@ def try_extract_from_body(email_rec: dict, body_text: str, received_at: str,
             row["due_date"] = inst["due_date"] or row.get("due_date")
             if inst.get("issue_date"):
                 row["issue_date"] = inst["issue_date"]
+            # Barcode POR LINHA (so a tabela de faturas o traz — a chave nem existe
+            # nas parcelas, que ficam com o do payload base). Sem isto todas as
+            # linhas herdariam o boleto da PRIMEIRA e colidiriam na dedup por codigo
+            # de barras (impressao 1), perdendo titulos em silencio.
+            if "barcode" in inst:
+                row["barcode"] = inst["barcode"]
             if ctrl.find_financial_duplicate(row):
                 dups += 1
                 continue

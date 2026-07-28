@@ -108,8 +108,9 @@ Estas regras se aplicam a **todo** código novo ou alterado neste projeto, sem e
   alias `@` (espelhando `@/*`→`./*` do tsconfig) e coleta testes em `lib/**` **e** `app/**`
   (`*.test.ts`) — rotas têm teste co-locado (ex.: `app/api/emails/read/route.test.ts`
   cobre 422/200/502 mockando `triggerReader`).
-- **Suíte Python (pytest):** `py -3 -m pytest tests/` (ex.: `test_link_extraction.py`,
-  `test_email_body_extraction.py`, `test_body_amount.py`, `test_extract_pdf.py`). Cobre o
+- **Suíte Python (pytest):** `py -3 -m pytest tests/` — **722 testes** (ex.:
+  `test_link_extraction.py`, `test_email_body_extraction.py`, `test_body_amount.py`,
+  `test_body_invoice_table.py`, `test_body_platform_invoice.py`, `test_extract_pdf.py`). Cobre o
   pipeline de extração; rodar após mexer em `read_emails.py`/`extract_pdf.py` ou nos
   scripts de reprocessamento. Não é incluída no `npm test`.
 - Referência de granularidade: `frontend-vite/src/components/StatusBadge.test.tsx`,
@@ -2590,6 +2591,15 @@ espaço/`:`/`-` no meio) para não casar "fatura no valor de.../fatura no total 
 lembrete periódico da Contabil Esquema (contas 668/669, texto "Fatura No: 20880"). Teste:
 `tests/test_forwarded_supplier_name.py`.
 
+**Fallback "Cobrança Nº NNNN"** (`_BODY_CHARGE_NUM_RE`, não regredir): identificador da
+**cobrança** nas plataformas de assinatura (Efí/Gerencianet e afins); o `\s*` aceita a quebra
+de linha entre o rótulo e o "Nº" (HTML achatado). Precedência mais baixa que os três acima.
+**Nunca capturar "Assinatura Nº"**: esse número é o MESMO em todas as cobranças do contrato,
+então usá-lo como `invoice_number` faria a cobrança do mês seguinte **deduplicar** contra a
+anterior (impressão 2: fornecedor+número+valor) e o título seria **perdido em silêncio**.
+Caso real: conta 694 — ver "NOTIFICAÇÃO DE COBRANÇA DE PLATAFORMA". Teste:
+`tests/test_body_platform_invoice.py`.
+
 **Regra honorários** (migration 024): e-mail de honorários (keyword de assunto `honorário`;
 termo `honorário(s)` no corpo ou recibo) é gravado com `document_type='honorários'` e
 `payment_method='pix'` — honorários mantêm o tipo `honorários` mesmo com PIX detectado (o PIX só
@@ -2610,13 +2620,68 @@ direto em conta — "Tipo de pagamento: Débito Automático" das contas Sabesp; 
 POR TEXTO** (chamado com
 `(body_text, subject)` → o **corpo vence o assunto**: id 325 corpo "TED AGÊNCIA…" vs assunto
 "PAGAMENTO PIX" → `ted`); dentro de um texto, a ordem da lista desempata (`crédito`/`débito`
-antes de `cartão`, p/ "cartão de crédito" → `crédito`). Aplicado em `extract_from_email_body`
+antes de `cartão`, p/ "cartão de crédito" → `crédito`) — mas essa ordem codifica
+**especificidade, não confiança**, e por isso o **rodapé institucional da plataforma de
+cobrança é descartado ANTES** de classificar (`_strip_platform_boilerplate`; ver
+"NOTIFICAÇÃO DE COBRANÇA DE PLATAFORMA" abaixo). Aplicado em `extract_from_email_body`
 **só como preenchimento de lacuna**: roda quando `payment_method == 'outro'`, **abaixo** do
 `has_pix` (PIX) e do override de boleto por código de barras — que têm precedência e não são
 sobrescritos. Só no caminho do **corpo** (o do PDF usa o `payment_method` do extrator). Falso
 positivo de `crédito`/`débito` em texto não-financeiro (ex.: "cadastros de crédito" de alerta de
 protesto) é contido a montante pela regra `subject_is_ignorable_notification` (protesto/cartório
 viram `ignorado`, nunca chegam a virar conta). Teste: `tests/test_body_payment_method.py`.
+
+**NOTIFICAÇÃO DE COBRANÇA DE PLATAFORMA (Efí/Gerencianet e afins) — conta 694, três
+defeitos no mesmo e-mail (não regredir):** e-mail de boleto de assinatura emitido por
+plataforma. Cada defeito tem causa e correção próprias:
+
+- **`payment_method='crédito'` num título que o e-mail chama de BOLETO** do assunto à
+  primeira linha. A única menção a crédito estava no **rodapé institucional da
+  plataforma** — *"é possível emitir e enviar boletos, carnês, cobranças via **cartão de
+  crédito** e links de pagamento"* —, uma lista dos **produtos dela**, não uma declaração
+  sobre este título. Dentro de um mesmo texto o desempate é a ordem de
+  `_BODY_PAYMENT_METHOD_KEYWORDS`, que codifica **especificidade** (`débito automático`
+  antes de `débito`), **não confiança** — e `crédito` (5º) vencia `boleto` (12º).
+  Correção: **`_strip_platform_boilerplate`** descarta o texto a partir do 1º marcador de
+  rodapé (`_PLATFORM_FOOTER_MARKERS`) **antes** de classificar. O corte é **por LINHA**,
+  nunca por índice de caractere — `_ns_body` decompõe acentos e não preserva o
+  comprimento, então mapear offset do normalizado para o original daria posição errada.
+  Escopo deliberado: só o classificador de forma de pagamento (o de tipo de documento
+  não foi tocado, para não mover dado sem medição).
+- **`invoice_number` sintético** — o número real vinha rotulado "Cobrança Nº 1040983896"
+  (`_BODY_CHARGE_NUM_RE`; o `\s*` cobre a quebra de linha entre o rótulo e o "Nº", do
+  HTML achatado). **Nunca capturar "Assinatura Nº"**: o nº da assinatura é o **mesmo em
+  todas as cobranças** do contrato, então usá-lo faria a cobrança do mês seguinte
+  **deduplicar** contra a anterior (impressão 2) e o título sumiria em silêncio.
+- **Fornecedor LIXO** — o nome saiu do assunto ("Boleto **referente à assinatura
+  1040983896 de Manutenção - ot**") e virou um cadastro em `supplier`, enquanto o real
+  ("AGENCIA K1 DIGITAL WEBSITES E MARKETING") estava sob **"Dados do emissor"**, na
+  **linha seguinte** ao rótulo — que `_BODY_NAME_RE` não alcança (exige valor na MESMA
+  linha). Correção em duas camadas: **`_BODY_ISSUER_RE`** (bloco `Dados do
+  emissor/beneficiário/cedente/sacador`, valor na mesma linha ou na seguinte; fallback de
+  `_BODY_NAME_RE`, que mantém precedência) e uma **guarda em
+  `_supplier_name_from_subject`** (`_SUBJECT_NON_NAME_START_RE`) que rejeita o que sobra
+  começando por conectivo (`referente`, `ref.`, `relativo`, `sobre`, `conforme`,
+  `acerca`). **"de/da/do" ficam DE FORA** da guarda de propósito — iniciam razão social
+  real ("DE NADAI ALIMENTAÇÃO"). O rótulo **"emitido por" também ficou de fora** do
+  `_BODY_ISSUER_RE`: no rodapé ele nomeia a **plataforma** ("emitido por
+  www.sejaefi.com.br"), não o fornecedor.
+
+**Verificação (A/B contra dados reais):** os **139** corpos gravados e os **764** assuntos
+distintos foram reprocessados com o código de HEAD e com o novo. Corpos: muda só a **694**
+(`invoice_number`, `payment_method`) e o fornecedor muda **só** nela; assuntos: **4 de 764**
+mudam, **todos** de nome-lixo para vazio (`referente ao pedido`, `REF. PEÇAS PARA HR`…) —
+ou seja, a guarda só deixa de criar cadastro-lixo. Testes:
+`tests/test_body_platform_invoice.py`.
+
+> **Oportunidade NÃO implementada — o boleto está atrás de LINK** (`visualizacao.gerencianet.com.br`).
+> Verificado em 2026-07-28: o link **responde** e devolve o boleto em **HTML** (não PDF) com
+> linha digitável, beneficiário e CNPJ. Hoje `extract_pdf_links` **não o reconhece** (a âncora é
+> "Acessar", a URL não tem `.pdf`) e `download_pdf_from_url` só aceita PDF — o PDF real é montado
+> por **JS** (`download.sejaefi.com.br/<id>.pdf`), mesma classe do handler adiado da SIEG. Um
+> handler Efí resolveria os três defeitos na origem, pelo caminho canônico de PDF. O `barcode` da
+> conta 694 foi preenchido **manualmente** a partir dessa página (registrado em
+> `processing_notes`) — não é capacidade do pipeline.
 
 ### Auto-resolução de fornecedor
 
@@ -2630,8 +2695,13 @@ do favorecido do **assunto** via `_supplier_name_from_subject` (remove prefixos 
 encaminhamento `ENC:/RES:/RE:/FWD:`, as palavras de ação `pagamento/boleto/pix/guia/…` e a
 cauda de número de documento). Vale para TODOS os caminhos (PDF/imagem/corpo — todos passam
 por `_finalize_supplier` com `payload['subject']` preenchido). Conservador: só roda como
-último recurso e devolve `''` para assunto sem nome utilizável.
-Testes: `tests/test_supplier_from_subject.py`. **Efeito colateral conhecido:** o assunto pode
+último recurso e devolve `''` para assunto sem nome utilizável — inclusive quando o que
+resta **começa por conectivo** (`_SUBJECT_NON_NAME_START_RE`: `referente`, `ref.`,
+`relativo`, `sobre`, `conforme`, `acerca`), que é continuação de frase, não nome; sem essa
+guarda "Boleto **referente à** assinatura 1040983896 de Manutenção - ot" virava um
+fornecedor-lixo (conta 694 — ver "NOTIFICAÇÃO DE COBRANÇA DE PLATAFORMA"). **`de`/`da`/`do`
+ficam FORA da guarda** de propósito: iniciam razão social real ("DE NADAI ALIMENTAÇÃO").
+Testes: `tests/test_supplier_from_subject.py`, `tests/test_body_platform_invoice.py`. **Efeito colateral conhecido:** o assunto pode
 criar um fornecedor com nome "curto" (ex.: `HYOSUNG`) divergente de um cadastro canônico
 existente (`HYOSUNG SC`, CNPJ 11703922000181) — o operador funde os dois em `/fornecedores`
 quando forem o mesmo (não há merge automático, pois o boleto não trouxe CNPJ para provar).
@@ -3051,9 +3121,56 @@ resolvido e sobrescreve nº=`{doc}/{parcela}`, valor, vencimento e emissão por 
 por linha). A linha **"Total"** nunca vira conta (não casa o padrão doc+parcela+2datas+valor).
 Dispara só com **≥2 linhas** e vencimentos OU (doc,parcela) distintos; caso contrário cai no
 caminho de conta única, em que `_extract_body_amount` mantém a soma para pagamento único com
-componentes (ex.: "Valor R$ 297,08 + R$ 6,96 / Total R$ 304,04"). Contas do corpo **não têm
-código de barras** (a linha digitável só existe no PDF) — por isso o caminho de PDF (quando
-legível) é preferível. Teste: `tests/test_body_installments.py`.
+componentes (ex.: "Valor R$ 297,08 + R$ 6,96 / Total R$ 304,04"). **Neste layout** as contas
+saem **sem código de barras** (a tabela da OBER não traz a linha digitável — ela só está no
+PDF), por isso o caminho de PDF (quando legível) é preferível; **não** vale como regra geral
+do corpo: quando o próprio corpo escreve a linha digitável, ela é capturada — ver "TABELA DE
+FATURAS achatada" logo abaixo. Teste: `tests/test_body_installments.py`.
+
+**TABELA DE FATURAS achatada: rótulo no CABEÇALHO, valor lá embaixo (conta 693 — não
+regredir):** quando o corpo é uma tabela HTML **achatada pelo webmail em uma linha por
+CAMPO**, todos os rótulos ficam no cabeçalho e os valores vêm depois — então **nenhum**
+regex ancorado em rótulo alcança o dado, porque todos limitam a distância rótulo→valor
+(`_BODY_ISSUE_RE` `\D{0,10}`, `_BODY_DUE_RE` `\D{0,15}`, `_BODY_BARCODE_RE` `\D{0,10}`) e
+entre eles ainda há **dígitos** (as outras colunas), que `\D` não cruza. Efeito na conta
+**693** (MOVVI): nº do documento virou o **sintético** `fatura_250726`, e emissão **e
+vencimento** caíram no fallback pela **data do e-mail** (25/07) em vez de 22/07 e **01/08**
+— vencimento errado alimenta a marcação de vencido/baixa automática. Correção em três
+frentes independentes:
+
+- **A FORMA da linha identifica o pagável, sem rótulo** — `_BODY_INVOICE_ROW_RE` +
+  `_extract_body_invoice_rows` casam `documento + emissão + vencimento + R$ valor`
+  contíguos (só espaço entre os campos). Consumido como **preenchimento de LACUNA**
+  (`_row_field` em cadeia `rotulado or tabela or padrão`): rótulo explícito **continua
+  vencendo** a tabela. Guardas contra falso positivo: documento em início de campo
+  (`(?<![\w/-])`), com ao menos um **dígito** e **≥4 caracteres** — este último é o que
+  impede casar a coluna **`Parcela` ("001")** do layout de 6 campos da OBER, que pertence
+  ao `_extract_body_installments` (e mantém a precedência dele).
+- **Linha digitável sem rótulo adjacente** — `_extract_body_linha_digitavel` reusa o
+  extrator determinístico canônico `extract_pdf.extract_linha_digitavel` (fonte única, 5
+  campos FEBRABAN) como fallback do `_BODY_BARCODE_RE`. Com o barcode, o corpo passa a ter
+  **dedup por código de barras** (impressão 1) e **vencimento autoritativo pelo fator**
+  (`_apply_barcode_due_date`). Foi exatamente o que faltou nas contas **397/401**: mesma
+  linha digitável, mas sem barcode a dedup não casou e a 401 nasceu **duplicada** (cancelada
+  à mão depois).
+  `extract_pdf.extract_linha_digitavel` ganhou o **padrão 5** — separador **entre** os
+  campos também por PONTO (`23793.39100.90000.004375.…`), forma usada em e-mail HTML; os
+  padrões 1-4 exigem `\s+` entre campos. É o **último** da ordem: não altera nenhuma entrada
+  que já casava.
+- **N faturas na tabela → uma conta por fatura** (`_extract_body_invoice_table`, mesmo gate
+  ≥2/distintas e o mesmo laço do de parcelas — NUNCA somar). Cada linha leva o barcode do
+  **seu próprio segmento** (do início dela até o início da próxima): herdar o da primeira
+  faria as demais colidirem na dedup por código de barras e sumirem em silêncio.
+
+**Verificação (A/B contra dados reais, não só fixtures):** os 139 corpos já gravados foram
+reprocessados com o código de HEAD e com o novo, mesmos insumos — **8 mudam, todos na direção
+da correção** (nº sintético→real, data do e-mail→data impressa, barcode recuperado) e **131
+ficam idênticos**; **0** corpo histórico passa a disparar o caminho multi-fatura. Além da 693
+(MOVVI), a mudança corrige a mesma classe no remetente **ITW/PPF** ("Aviso de vencimento",
+tabela `Título / Emissão / Vencimento / Valor`: ids 3/181/261/451/524), cujo vencimento
+gravado era sistematicamente o do **envio do e-mail** (~1 dia antes do real). Essas 7 contas
+estão **fechadas** (pago/cancelado) e **não** foram reescritas — só a 693 foi corrigida.
+Testes: `tests/test_body_invoice_table.py`.
 
 > **Boletos protegidos por senha + carnê (OBER `info.ober.com.br`) — RESOLVIDO no PDF:** o boleto
 > é um PDF **criptografado** (senha = N primeiros dígitos do CNPJ do pagador) e um **carnê de N
@@ -3093,7 +3210,12 @@ ex.: "Nome MATEUS JAE WON AHN"); para não capturar continuação de frase ("Res
 compra"), o valor **deve começar por maiúscula/dígito** (char class `[A-ZÀ-Þ0-9]` case-sensitive;
 só o rótulo é case-insensitive via `(?i:...)`), e `\b` evita casar prefixo ("Nomeação"). **Cuidado
 CRLF:** o fim da linha é `[ \t\r]*$` — o `\r` do `\r\n` bloqueia o `$` se esquecido (bug já
-corrigido; teste usa `\r\n`). **Sem rótulo nem documento**, tenta sinais (`_supplier_from_signals`):
+corrigido; teste usa `\r\n`). **Fallback do rótulo — bloco "Dados do emissor"**
+(`_BODY_ISSUER_RE`: `dados do emissor|beneficiário|cedente|sacador`): o `_BODY_NAME_RE` exige o
+valor na **MESMA linha**, e nas notificações de plataforma o nome vem na **linha SEGUINTE** ao
+rótulo (HTML achatado) — sem ele o fornecedor caía no assunto e virava lixo (conta 694). Mesma
+exigência de maiúscula/dígito; `emitido por` **não** é rótulo aceito (no rodapé nomeia a
+plataforma). **Sem rótulo nem documento**, tenta sinais (`_supplier_from_signals`):
 assinatura titulada (`Prof./Dr. <Nome>`) e destinatário do pagamento (`pix/pagar p/|para <Nome>`,
 com stopwords cortando a captura). Depois o **mapa por remetente** (`_supplier_from_sender`/
 `_SENDER_SUPPLIER_MAP`: `correios.com.br` → `Correios`) e só então cai para `sender_email`.
@@ -4624,6 +4746,33 @@ lê os arquivos do disco.
 > e-mail 1082 → `extraído`) já foi aplicada na Supabase compartilhada; o e-mail **441** não é
 > reprocessável (fora da INBOX) e segue em `falha`. Validação (esperado `True True True`):
 > `py -3 -c "import sys; sys.path.insert(0,'skills/email-reader/scripts'); sys.path.insert(0,'skills/pdf-contas-pagar/scripts'); import read_emails as R, extract_pdf as E; print(R._is_insurance_context('SEGUROS SURA VID_G_002'), R._is_safe_download_url('http://mdi.li:7000/api/item/x'), hasattr(E,'is_mirrored_text'))"`
+
+> **DEPLOY 2026-07-28 — tabela de faturas achatada no corpo (PENDENTE de cópia p/ prod):** o
+> corpo cujo rótulo fica no CABEÇALHO da tabela passa a render nº do documento, emissão,
+> vencimento e **linha digitável** corretos — ver "TABELA DE FATURAS achatada". Deploy = copiar
+> os **DOIS** arquivos (interdependentes: o corpo chama o extrator canônico do PDF):
+> `skills/email-reader/scripts/read_emails.py` **e**
+> `skills/pdf-contas-pagar/scripts/extract_pdf.py` (padrão 5 da `extract_linha_digitavel`).
+> **Sem `.env`, sem dependência nova, sem passo de banco.** **Degrada com segurança:** o código
+> ANTIGO segue funcionando (só continua gravando nº sintético + vencimento pela data do e-mail
+> nesse layout). Como os deltas de `read_emails.py` são cumulativos, esta cópia carrega junto as
+> pendências anteriores. A correção da conta 693 já foi aplicada na Supabase compartilhada.
+> Validação (esperado `454663_01 2026-08-01 True`):
+> `py -3 -c "import sys; sys.path.insert(0,'skills/email-reader/scripts'); import read_emails as R; b=' 454663_01 \r\n 22/07/2026 \r\n 01/08/2026 \r\n R$ 181.90 \r\n 23793.39100.90000.004375.07000.842000.3.15250000018190 '; r=R._extract_body_invoice_row(b); print(r['doc'], r['due_date'], bool(r['barcode']))"`
+
+> **DEPLOY 2026-07-28 — notificação de cobrança de plataforma (PENDENTE de cópia p/ prod):** o
+> corpo de boleto de assinatura (Efí/Gerencianet) passa a render fornecedor ("Dados do emissor"),
+> nº do documento ("Cobrança Nº") e forma de pagamento **boleto** (o rodapé institucional deixa de
+> declarar "crédito") — ver "NOTIFICAÇÃO DE COBRANÇA DE PLATAFORMA". Deploy = copiar **só**
+> `skills/email-reader/scripts/read_emails.py` (o `extract_pdf.py` **não muda nesta**, mas carrega
+> a pendência da tabela de faturas — na dúvida, copie os dois). **Sem `.env`, sem dependência
+> nova, sem passo de banco.** **Degrada com segurança:** o código ANTIGO segue funcionando (só
+> continua gravando nº sintético, `crédito` e fornecedor derivado do assunto). Como os deltas de
+> `read_emails.py` são cumulativos, esta cópia carrega junto as pendências anteriores. As
+> correções de dado da conta 694 (fornecedor consolidado no cadastro 1092, nº, forma de pagamento,
+> barcode) e a remoção do fornecedor-lixo 1315 já foram aplicadas na Supabase compartilhada.
+> Validação (esperado `boleto 1040983896 True`):
+> `py -3 -c "import sys; sys.path.insert(0,'skills/email-reader/scripts'); import read_emails as R; b='Voce recebe o boleto\nCobranca\n N 1040983896\nDados do emissor\nAGENCIA K1 DIGITAL\nEsta cobranca foi gerada pela Efi. Pela plataforma e possivel emitir cartao de credito\n'; print(R._classify_body_payment_method(b), R._BODY_CHARGE_NUM_RE.search(b).group(1), bool(R._BODY_ISSUER_RE.search(b)))"`
 
 ### Deploy manual da Cobrança de vencidos (envios) em produção (caso específico — não regredir)
 
