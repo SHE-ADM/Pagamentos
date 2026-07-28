@@ -155,5 +155,85 @@ class EnsureDueDateTest(unittest.TestCase):
         self.assertEqual(notes, [])
 
 
+# Barcode REAL (MOVVI, conta 693): Bradesco 237, DV geral confere.
+BARCODE_OK = "23793152500000181903391090000004370700084200"
+# O mesmo com o DV (posicao 4) adulterado — leitura corrompida.
+BARCODE_DV_RUIM = BARCODE_OK[:4] + ("0" if BARCODE_OK[4] != "0" else "1") + BARCODE_OK[5:]
+
+
+class BarcodeDvTest(unittest.TestCase):
+    """DV geral FEBRABAN (modulo 11) do codigo de barras bancario de 44 digitos.
+
+    `barcode_dv_refuted` afirma o que consegue PROVAR: False significa NAO REFUTADO
+    (o DV confere OU nao ha DV a conferir), nunca "validado".
+
+    Medido contra os dados reais: `pdf_text` 228/228 e `email_body` 6/6 conferem — digito
+    vindo do TEXTO sempre fecha, o que valida a implementacao. `pdf_vision` fecha em
+    36/56: o DV discrimina com precisao a leitura corrompida por OCR.
+    """
+
+    def test_barcode_real_nao_e_refutado(self):
+        self.assertFalse(e.barcode_dv_refuted(BARCODE_OK))
+
+    def test_dv_adulterado_e_refutado(self):
+        self.assertTrue(e.barcode_dv_refuted(BARCODE_DV_RUIM))
+
+    def test_nao_se_aplica_nao_refuta(self):
+        # Chave de acesso NF-e/CT-e (44 sem moeda '9'), arrecadacao (48), lixo e None:
+        # a regra nao os julga — devolver True deixa a funcao servir de porta em
+        # qualquer chamador sem rejeitar o que ela nao sabe avaliar.
+        for valor in ("3" * 44, "8" + "1" * 47, "123", None, ""):
+            with self.subTest(valor=valor):
+                self.assertFalse(e.barcode_dv_refuted(valor))
+
+
+class NormalizeBarcodeGuardsTest(unittest.TestCase):
+    """Guardas contra codigo INVENTADO por captura frouxa — fonte UNICA, herdada pelos
+    caminhos de PDF e de corpo."""
+
+    def test_48_digitos_sem_o_8_inicial_e_rejeitado(self):
+        # Invariante FEBRABAN (produto '8'): 35/35 dos barcodes de 48 digitos reais.
+        self.assertIsNone(e.normalize_barcode("1" * 48))
+
+    def test_arrecadacao_real_e_preservada(self):
+        real = "8" + "1" * 47
+        self.assertEqual(e.normalize_barcode(real), real)
+
+    def test_o_padrao_valida_e_a_concessao_esta_no_nome(self):
+        # Assimetria deliberada, com o padrao no lado SEGURO: captura de procedencia
+        # incerta descarta (codigo colado nao e codigo de nada); quem leu o DOCUMENTO
+        # preserva (e OCR errando um codigo REAL, unica chave de dedup do titulo).
+        self.assertIsNone(e.normalize_barcode(BARCODE_DV_RUIM))
+        self.assertEqual(e.normalize_barcode_allow_misread(BARCODE_DV_RUIM), BARCODE_DV_RUIM)
+        self.assertEqual(e.normalize_barcode(BARCODE_OK), BARCODE_OK)
+
+    def test_extract_barcode_nao_inventa_codigo_de_tabela_numerica(self):
+        # Fallback FROUXO do caminho de PDF: janela de digitos SEM ancora de rotulo.
+        # Numa tabela numerica ela cola numeros nao relacionados.
+        tabela = "1234 5678 9012 3456 7890 1234 5678 9012 3456 7890 1234 5678"
+        self.assertIsNone(e.extract_barcode(tabela))
+
+    def test_fator_sem_data_de_referencia_usa_hoje(self):
+        # Caminho `ref_date=None` -> datetime.now(timezone.utc): ficou SEM cobertura por
+        # muito tempo e, na extração do módulo `febraban`, o cabeçalho escrito à mão
+        # esqueceu de importar `timezone` — NameError que só apareceria em runtime.
+        got = e.due_date_from_barcode(BARCODE_OK)          # sem ref_date
+        self.assertEqual(got, e.due_date_from_barcode(BARCODE_OK, "2026-07-26"))
+        self.assertRegex(got, r"^\d{4}-\d{2}-\d{2}$")
+
+    def test_is_boleto_barcode_aplica_o_mesmo_invariante_do_48(self):
+        # A regra vive nos DOIS pontos porque is_boleto_barcode também julga texto CRU,
+        # que não passou por normalize_barcode (ex.: detecção de página pagável).
+        self.assertTrue(e.is_boleto_barcode("8" + "1" * 47))
+        self.assertFalse(e.is_boleto_barcode("1" * 48))
+        self.assertTrue(e.is_boleto_barcode(BARCODE_OK))
+        self.assertFalse(e.is_boleto_barcode("3" * 44))   # chave de acesso NF-e/CT-e
+
+    def test_extract_barcode_ainda_le_a_linha_digitavel_real(self):
+        self.assertEqual(
+            e.extract_barcode("23793.39100 90000.004375 07000.842000 3 15250000018190"),
+            BARCODE_OK)
+
+
 if __name__ == "__main__":
     unittest.main()

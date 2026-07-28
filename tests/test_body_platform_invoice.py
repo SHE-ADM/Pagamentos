@@ -79,6 +79,17 @@ class TestStripPlatformBoilerplate(unittest.TestCase):
         txt = "Segue o boleto.\n Valor R$ 10,00"
         self.assertEqual(read_emails._strip_platform_boilerplate(txt), txt)
 
+    def test_marcador_no_MEIO_da_linha_preserva_o_que_vem_antes(self):
+        # O corte é por POSIÇÃO, não pela linha inteira: descartar a linha toda jogaria
+        # fora a declaração que se quer classificar (aqui, "dinheiro").
+        txt = "Pago em dinheiro. Esta cobrança foi gerada pela Efí. cartão de crédito"
+        self.assertEqual(read_emails._strip_platform_boilerplate(txt), "Pago em dinheiro. ")
+        self.assertEqual(read_emails._classify_body_payment_method(txt), "dinheiro")
+
+    def test_corta_no_marcador_MAIS_A_ESQUERDA(self):
+        txt = "ok\nAbra sua conta digital\nmeio\nEsta cobrança foi gerada\nfim"
+        self.assertEqual(read_emails._strip_platform_boilerplate(txt), "ok\n")
+
     def test_vazio_e_none(self):
         self.assertEqual(read_emails._strip_platform_boilerplate(None), "")
         self.assertEqual(read_emails._strip_platform_boilerplate(""), "")
@@ -127,6 +138,11 @@ class TestIssuerBlock(unittest.TestCase):
 
     def test_nome_na_mesma_linha_tambem_vale(self):
         m = read_emails._BODY_ISSUER_RE.search("Dados do beneficiário: ACME COMERCIO LTDA\n")
+        self.assertEqual(m.group(1).strip(), "ACME COMERCIO LTDA")
+
+    def test_nome_apos_linha_em_branco(self):
+        m = read_emails._BODY_ISSUER_RE.search("Dados do emissor\n\n ACME COMERCIO LTDA\n")
+        self.assertIsNotNone(m)
         self.assertEqual(m.group(1).strip(), "ACME COMERCIO LTDA")
 
     def test_plataforma_do_rodape_nao_vira_fornecedor(self):

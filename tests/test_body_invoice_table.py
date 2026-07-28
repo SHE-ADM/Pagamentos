@@ -106,6 +106,23 @@ class TestExtractBodyInvoiceRow(unittest.TestCase):
         row = read_emails._extract_body_invoice_row(body)
         self.assertTrue(row is None or row["doc"] != "01/07/2026")
 
+    def test_barcode_distante_do_rodape_nao_e_adotado(self):
+        # A ÚLTIMA linha não tem "próxima" que a delimite: sem o teto
+        # _INVOICE_ROW_BARCODE_WINDOW ela varreria até o fim do corpo e adotaria uma
+        # linha digitável do rodapé, que não é dela.
+        distante = (" 111_01 \r\n 22/07/2026 \r\n 01/08/2026 \r\n R$ 10,00 \r\n"
+                    + " ruido" * 120 + "\r\n"
+                    + " 23793.39100.90000.004375.07000.842000.3.15250000018190 \r\n")
+        rows = read_emails._extract_body_invoice_rows(distante)
+        self.assertEqual(len(rows), 1)
+        self.assertIsNone(rows[0]["barcode"])
+
+    def test_barcode_dentro_da_janela_e_adotado(self):
+        perto = (" 111_01 \r\n 22/07/2026 \r\n 01/08/2026 \r\n R$ 10,00 \r\n"
+                 " 23793.39100.90000.004375.07000.842000.3.15250000018190 \r\n")
+        self.assertEqual(read_emails._extract_body_invoice_rows(perto)[0]["barcode"],
+                         MOVVI_BARCODE)
+
     def test_corpo_sem_tabela_nao_produz_linha(self):
         self.assertIsNone(read_emails._extract_body_invoice_row(
             "Segue o pagamento. Valor: R$ 500,00. Obrigado."))
@@ -204,6 +221,78 @@ class TestMultiplasFaturasNaTabela(unittest.TestCase):
     def test_fatura_unica_nao_entra_no_caminho_multiplo(self):
         # Uma linha so -> conta unica (o gate espelha o de _extract_body_installments).
         self.assertEqual(read_emails._extract_body_invoice_table(MOVVI_BODY), [])
+
+
+class FakeCtrl:
+    """ctrl minimo para try_extract_from_body — sem rede (mesmo molde de
+    tests/test_body_duplicate.py)."""
+
+    def __init__(self):
+        self.registered_payloads = []
+
+    def find_financial_duplicate(self, payload):
+        return None
+
+    def resolve_supplier(self, payload):
+        return 1
+
+    def supplier_defaults(self, sk_supplier):
+        return (0, 0)
+
+    def unique_invoice_number(self, n):
+        return n
+
+    def register_financial(self, payload):
+        self.registered_payloads.append(dict(payload))
+        return len(self.registered_payloads)
+
+
+class TestTryExtractFromBodyMultiFatura(unittest.TestCase):
+    """O LAÇO de clones de `try_extract_from_body` — uma conta por fatura, cada uma
+    com o SEU barcode.
+
+    Cobre a linha `if "barcode" in inst` do laço, cujo modo de falha é SILENCIOSO:
+    sem ela, todas as faturas herdariam o barcode da PRIMEIRA (que o payload base
+    recebe da busca no corpo inteiro), colidiriam na dedup por código de barras
+    (impressão 1) e os títulos seguintes sumiriam sem erro.
+    """
+
+    def _run(self, body):
+        ctrl = FakeCtrl()
+        rec = {"subject": "FATURAMENTO -- FORNECEDOR LTDA"}
+        outcome = read_emails.try_extract_from_body(
+            rec, body, "2026-07-25T10:00:00+00:00", "<msg-multi>", ctrl,
+            sender_email="financeiro@fornecedor.com.br")
+        return outcome, ctrl.registered_payloads
+
+    def test_uma_conta_por_fatura_com_barcode_proprio(self):
+        outcome, pagas = self._run(TestMultiplasFaturasNaTabela.BODY)
+        self.assertEqual(outcome, read_emails.BODY_CREATED)
+        self.assertEqual(len(pagas), 2, "cada fatura vira UMA conta — nunca uma soma")
+        self.assertEqual([p["invoice_number"] for p in pagas], ["454663_01", "454663_02"])
+        self.assertEqual([p["amount"] for p in pagas], [181.90, 250.00])
+        self.assertEqual([p["due_date"] for p in pagas], ["2026-08-01", "2026-09-01"])
+        barcodes = [p["barcode"] for p in pagas]
+        self.assertTrue(all(barcodes))
+        self.assertEqual(len(set(barcodes)), 2, "barcode por linha — não herdar o da 1ª")
+        self.assertEqual(barcodes[0], MOVVI_BARCODE)
+
+    def test_linha_sem_linha_digitavel_nao_herda_o_barcode_da_primeira(self):
+        body = (
+            " 111_01 \r\n 22/07/2026 \r\n 01/08/2026 \r\n R$ 10,00 \r\n"
+            " 23793.39100.90000.004375.07000.842000.3.15250000018190 \r\n"
+            " 222_01 \r\n 22/07/2026 \r\n 01/09/2026 \r\n R$ 20,00 \r\n")
+        _, pagas = self._run(body)
+        self.assertEqual(len(pagas), 2)
+        self.assertEqual(pagas[0]["barcode"], MOVVI_BARCODE)
+        self.assertIsNone(pagas[1]["barcode"], "sem boleto próprio, o campo fica vazio")
+
+    def test_parcelas_ober_nao_perdem_o_barcode_do_payload_base(self):
+        # O layout de PARCELAS não traz a chave 'barcode' nas linhas — os clones devem
+        # manter o do payload base (a guarda `in inst` existe justamente para isso).
+        rows = read_emails._extract_body_installments(OBER_BODY)
+        self.assertEqual(len(rows), 3)
+        self.assertTrue(all("barcode" not in r for r in rows))
 
 
 if __name__ == "__main__":

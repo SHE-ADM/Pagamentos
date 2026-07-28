@@ -150,6 +150,31 @@ class PaymentConfirmationTest(unittest.TestCase):
         ]:
             self.assertFalse(read_emails.subject_is_payment_confirmation(assunto), assunto)
 
+    def test_recebemos_o_pagamento_e_ignorado(self):
+        # O credor AVISA que recebeu — e recibo, nao cobranca. Caso real: conta 716
+        # ("Leadster | Recebemos o seu pagamento"), que virou conta falsa de R$ 362,62.
+        for assunto in [
+            "Leadster | Recebemos o seu pagamento",
+            "Recebemos o seu pagamento",
+            "Recebemos pagamento",
+            "Recebemos seu pagamento",
+            "Recebemos o pagamento da fatura 123",
+        ]:
+            self.assertTrue(read_emails.subject_is_payment_confirmation(assunto), assunto)
+
+    def test_forma_negada_e_cobranca_nao_pode_ser_ignorada(self):
+        # "(ainda) NAO recebemos o seu pagamento" INVERTE o sentido: o titulo esta em
+        # aberto. Ignorar aqui perderia um pagavel em silencio.
+        for assunto in [
+            "Ainda não recebemos o seu pagamento",
+            "Não recebemos o pagamento da fatura 998",
+            "Não identificamos o pagamento do boleto",
+        ]:
+            self.assertFalse(read_emails.subject_is_payment_confirmation(assunto), assunto)
+
+    def test_recebemos_outra_coisa_nao_casa(self):
+        self.assertFalse(read_emails.subject_is_payment_confirmation("Recebemos sua nota fiscal"))
+
 
 class ReminderSubjectTest(unittest.TestCase):
     """Assunto com a palavra 'lembrete' e ignorado SEMPRE (antes de baixar/extrair), mesmo com

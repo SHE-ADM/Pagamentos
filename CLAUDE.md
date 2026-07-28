@@ -108,9 +108,10 @@ Estas regras se aplicam a **todo** código novo ou alterado neste projeto, sem e
   alias `@` (espelhando `@/*`→`./*` do tsconfig) e coleta testes em `lib/**` **e** `app/**`
   (`*.test.ts`) — rotas têm teste co-locado (ex.: `app/api/emails/read/route.test.ts`
   cobre 422/200/502 mockando `triggerReader`).
-- **Suíte Python (pytest):** `py -3 -m pytest tests/` — **722 testes** (ex.:
+- **Suíte Python (pytest):** `py -3 -m pytest tests/` — **776 testes** (ex.:
   `test_link_extraction.py`, `test_email_body_extraction.py`, `test_body_amount.py`,
-  `test_body_invoice_table.py`, `test_body_platform_invoice.py`, `test_extract_pdf.py`). Cobre o
+  `test_body_invoice_table.py`, `test_body_platform_invoice.py`,
+  `test_body_resolvers.py`, `test_extract_pdf.py`). Cobre o
   pipeline de extração; rodar após mexer em `read_emails.py`/`extract_pdf.py` ou nos
   scripts de reprocessamento. Não é incluída no `npm test`.
 - Referência de granularidade: `frontend-vite/src/components/StatusBadge.test.tsx`,
@@ -886,6 +887,27 @@ instrução padrão do harness de assinar como co-autor.
 título descritivo do escopo (não genérico, não a numeração `#N`) e abre o PR direto — **não
 perguntar**. PRs seguem de `Features` → `main` (ver "GIT STRATEGY" do workspace).
 
+**FIM DE LINHA — o repositório é LF, normalizado por `.gitattributes` (não regredir):** o
+arquivo na raiz declara `* text=auto eol=lf` (+ binários explícitos: `png`/`ico`/`pdf`/
+`woff2`/`xlsx`). Antes dele o repo era LF **sem** normalização, com `core.autocrlf=false` —
+e o desenvolvimento é em **Windows**, então qualquer ferramenta que reescreva um arquivo em
+**modo texto** o convertia para CRLF. O caso real: `pathlib.write_text` (que traduz `\n`
+para `os.linesep`) usado num script auxiliar reescreveu 7 arquivos, e o diff saltou de
+**716** para **12.578** linhas.
+
+**O estrago não é cosmético:** com o arquivo inteiro marcado como alterado, o **SonarCloud
+trata CADA LINHA como código NOVO** — todo o passivo pré-existente (a começar pela
+complexidade **55** de `extract_and_store_accounts`) entra no gate de *new code* e reprova o
+PR, com o motivo real escondido atrás de milhares de linhas de ruído. Além de destruir o
+`git blame` e gerar conflito para quem tocar nos mesmos arquivos.
+
+Regras práticas: ao gerar/reescrever arquivo por script, **grave em BYTES**
+(`write_bytes`) ou passe `newline="\n"` — nunca `write_text` puro no Windows. Antes de
+commitar, se o `--stat` estiver desproporcional ao que você mexeu, compare com
+`git diff --stat --ignore-cr-at-eol`: se a diferença sumir, é EOL. E **normalização vai em
+commit PRÓPRIO**, separada de mudança de comportamento — `git add --renormalize .` mistura
+tudo no index (foi o que aconteceu; desfeito com `git reset`).
+
 ### 5 — Lint limpo e análise estática
 
 > **O `npm run lint` verde NÃO garante o PR verde:** o ESLint local e o **SonarCloud** do CI têm
@@ -1033,6 +1055,15 @@ perguntar**. PRs seguem de `Features` → `main` (ver "GIT STRATEGY" do workspac
     `S7632`/… no **núcleo do pipeline** (`read_emails.py`): mudar fluxo de controle do coração da
     extração para satisfazer métrica é anti-robustez — fazer, se um dia, função a função com a suíte
     como rede, não em sweep.
+  - **Precedente do "função a função" (2026-07-28):** `extract_from_email_body` foi a primeira
+    a ser tratada, quando a complexidade (**61, grau F** por `radon`) já impedia revisar uma
+    alteração com segurança. O padrão que funcionou — **repetir nas próximas, não improvisar**:
+    (1) extrair as **cadeias de precedência** como funções PURAS (`_resolve_body_*`), sem tocar
+    na ordem, que É a regra de negócio; (2) trocar `if` encadeado por **tabela de fontes**
+    (`_BODY_INVOICE_SOURCES`); (3) provar equivalência por **A/B sobre dados reais** (139 corpos
+    + 764 assuntos reprocessados com o código de HEAD e com o novo → **0 diferenças**), não só
+    pela suíte. Resultado: **61 (F) → 17 (C)**. Sem o A/B, um refactor desse porte no núcleo não
+    deve ser mesclado.
 
 ### 6 — Acessibilidade (WCAG 2.1 AA)
 
@@ -2643,9 +2674,14 @@ plataforma. Cada defeito tem causa e correção próprias:
   `_BODY_PAYMENT_METHOD_KEYWORDS`, que codifica **especificidade** (`débito automático`
   antes de `débito`), **não confiança** — e `crédito` (5º) vencia `boleto` (12º).
   Correção: **`_strip_platform_boilerplate`** descarta o texto a partir do 1º marcador de
-  rodapé (`_PLATFORM_FOOTER_MARKERS`) **antes** de classificar. O corte é **por LINHA**,
-  nunca por índice de caractere — `_ns_body` decompõe acentos e não preserva o
-  comprimento, então mapear offset do normalizado para o original daria posição errada.
+  rodapé (`_PLATFORM_FOOTER_MARKERS`) **antes** de classificar. O corte é na **POSIÇÃO
+  exata** do marcador, não na linha inteira: quando o marcador divide a linha com
+  conteúdo útil ("Pago em dinheiro. Esta cobrança foi gerada pela Efí."), descartar a
+  linha toda jogaria fora a própria declaração que se quer classificar. Isso só é
+  possível porque **`_ns_keep_len`** normaliza preservando o comprimento (`str.translate`
+  1:1, acento→ASCII e maiúscula→minúscula num passo só) — o `_ns_body` usa NFD, que
+  **decompõe** o acento em 2 code points e descarta 1, mudando os índices e invalidando
+  qualquer mapeamento de offset de volta ao texto original.
   Escopo deliberado: só o classificador de forma de pagamento (o de tipo de documento
   não foi tocado, para não mover dado sem medição).
 - **`invoice_number` sintético** — o número real vinha rotulado "Cobrança Nº 1040983896"
@@ -2666,6 +2702,108 @@ plataforma. Cada defeito tem causa e correção próprias:
   real ("DE NADAI ALIMENTAÇÃO"). O rótulo **"emitido por" também ficou de fora** do
   `_BODY_ISSUER_RE`: no rodapé ele nomeia a **plataforma** ("emitido por
   www.sejaefi.com.br"), não o fornecedor.
+
+**Resolvedores de campo do corpo — `extract_from_email_body` orquestra, não resolve
+(refactor de 2026-07-28):** cada campo do corpo é uma **cadeia de precedência**
+(`rotulado → tabela → padrão`). Mantidas inline, cada regra nova virava mais um ramo na
+mesma função, que chegou a **complexidade ciclomática 61 (grau F)** — o ponto em que uma
+alteração deixa de ser revisável. As cadeias viraram funções **puras**, testáveis
+isoladamente: `_resolve_body_supplier_identity`, `_resolve_body_barcode`,
+`_resolve_body_invoice_number` (tabela `_BODY_INVOICE_SOURCES`, em ordem de precedência,
+no lugar de 5 `if`s encadeados), `_resolve_body_dates` e `_resolve_body_doc_and_payment`.
+Resultado medido com `radon`: **61 (F) → 17 (C)** na função principal; cada resolver fica
+em A/B/C. **Comportamento idêntico** — provado pelo A/B abaixo (0 diferenças). A ordem de
+cada cadeia É a regra de negócio (ex.: a linha da tabela vem ANTES do fallback pela data
+do e-mail); é isso que `tests/test_body_resolvers.py` trava.
+
+**Barcode do corpo: a FORMA vence o RÓTULO (não regredir).** `_BODY_BARCODE_RE` aceita
+quaisquer `[\d.\s]{47,60}` após o rótulo — e `\s` **inclui quebra de linha**, então um
+número curto rotulado pode **colar** com os dígitos das linhas seguintes e formar 48
+dígitos, comprimento que `normalize_barcode` aceita como arrecadação (que ela não valida
+além do tamanho): um código de barras **inventado**, que envenenaria a dedup. Por isso
+`_resolve_body_barcode` tenta **primeiro** `_extract_body_linha_digitavel` (valida a
+estrutura dos 5 campos FEBRABAN) e só então o rótulo — que permanece como fallback porque
+cobre o que a forma estruturada não cobre: a arrecadação de 48 dígitos. Defeito
+**pré-existente**, achado pelo teste do resolver, não por falha em produção.
+
+**As guardas do barcode vivem na função CANÔNICA, não no leitor de e-mail (não
+regredir).** A primeira versão pôs a trava em `read_emails._reject_glued_arrecadacao` — e
+o code review seguinte mostrou que **o caminho de PDF tinha o MESMO defeito, em forma pior**:
+o fallback de `extract_barcode` casa `[\d\s\.]{47,60}` **sem nenhuma âncora de rótulo**
+(no corpo, ao menos, exige-se o rótulo antes). A guarda duplicada foi removida e a regra
+passou para `extract_pdf`, cobrindo os dois caminhos:
+
+- **`normalize_barcode`** rejeita 48 dígitos que não comecem por **`8`** (identificador de
+  produto da arrecadação FEBRABAN). Verificado: **35/35** dos barcodes de 48 dígitos
+  gravados começam por `8`. O mesmo invariante está em **`is_boleto_barcode`**, porque ela
+  também julga texto **CRU**, que não passou pelo normalizador (detecção de página pagável).
+- **`barcode_dv_refuted`** — DV geral (módulo 11) do boleto bancário de 44 dígitos. O nome
+  afirma o que a função consegue **provar**: `False` significa **não refutado** (o DV
+  confere OU não há DV a conferir — chave NF-e/CT-e, arrecadação, tamanho inválido), nunca
+  "validado". Um nome como `is_valid` seria lido como garantia e mentiria nos casos em que
+  a regra nem se aplica.
+- **O PADRÃO é o lado SEGURO, e a concessão está no NOME** (não num parâmetro escolhido por
+  omissão): **`normalize_barcode`** valida e rejeita o que o DV refuta;
+  **`normalize_barcode_allow_misread`** é o opt-in explícito para dígitos de procedência
+  confiável (captura estruturada, ou Vision/LLM lendo o documento). Assim, quem escrever uma
+  captura frouxa nova e chamar por hábito recebe a validação — e não o buraco. As duas falhas
+  não se equivalem: código **inventado** causa dedup falsa e **perda silenciosa de pagável**;
+  barcode **ausente** só custa a chave de dedup, com a conta gravada do mesmo jeito. O
+  `read_emails` espelha o par (`_normalize_body_barcode` / `_normalize_body_barcode_allow_misread`)
+  — sem flag booleana.
+- **Os FALLBACKS DEFENSIVOS do `read_emails` espelham a canônica, invariante incluso.** Os
+  helpers do corpo importam o `extract_pdf` de forma lazy e caem num fallback local se o
+  import falhar; ao endurecer a canônica, o fallback de `_is_boleto_barcode` ficou para
+  trás e passou a aceitar 48 dígitos sem o `8` — uma cópia que **diverge da regra real é
+  pior que não existir**, porque mente em silêncio justamente quando a fonte única está
+  indisponível. Coberto por teste que força a falha de import (`TestFallbackDefensivoAlinhado`).
+  O fallback de `_normalize_body_barcode` degrada de propósito para **lenient** mesmo com
+  na variante segura: sem a canônica não há como validar DV, e rejeitar por não-saber
+  perderia barcode legítimo — mas o invariante do `8` (que não depende dela) continua valendo.
+  **A degradação AVISA no log (uma vez por processo)**, por `_febraban_fn` — ponto ÚNICO
+  que cobre os dois modos de indisponibilidade com o mesmo aviso: módulo ausente (**deploy
+  PARCIAL**) e módulo presente **sem a função** (canônica renomeada). O segundo é o
+  traiçoeiro: o despacho é por NOME (`getattr`), então sem o aviso a validação cairia calada
+  devolvendo resultado plausível. Um teste-guarda confere que os nomes existem de fato, e o
+  re-export do `extract_pdf` faz o rename estourar já no import.
+
+**`febraban.py` — o cluster de código de barras é módulo próprio, SEM dependências.** Ele
+vivia dentro do `extract_pdf`, então o caminho do CORPO importava pandas + pdfplumber + PIL
++ pypdf (**~580 ms**) só para rodar alguns regex sobre dígitos — e era esse peso que exigia
+o import lazy com fallback em 4 helpers do `read_emails`. Movidas para
+`skills/pdf-contas-pagar/scripts/febraban.py` (só stdlib, **~8 ms**): `normalize_barcode`,
+`normalize_barcode_allow_misread`, `barcode_dv_refuted`, `is_boleto_barcode`,
+`extract_barcode`, `extract_linha_digitavel`, `amount_from_barcode`, `due_date_from_barcode`,
+`authoritative_barcode_due_date` (+ helpers de data e as constantes de fator). O
+**`extract_pdf` reexporta tudo**, então todo call site e teste que usava `extract_pdf.<nome>`
+segue valendo — e o re-export ainda serve de guarda: renomear algo lá quebra o import,
+alto e cedo.
+
+**O `try` cobre só a OBTENÇÃO da função, não a CHAMADA (não regredir).** Antes, um erro
+DENTRO da canônica virava "barcode não validado" — um bug se disfarçando de degradação.
+Agora a chamada fica fora do `try` e sobe como erro. A ÚNICA exceção é
+`_apply_barcode_due_date`, best-effort deliberado por rodar no choke point de TODA gravação
+(uma correção opcional de vencimento não pode derrubar a conta) — mas ali o `except` faz
+`log.exception`, com traceback, em vez de engolir calado.
+
+**A assimetria é deliberada e medida — não "esqueceram de validar".** Por origem de
+extração, o DV fecha em **`pdf_text` 228/228** e **`email_body` 6/6**, e em **`pdf_vision`
+36/56**: dígito vindo do TEXTO sempre fecha (o que valida a implementação), e o DV
+discrimina com precisão a leitura corrompida por **OCR** — o id 463, já documentado como
+barcode corrompido, está entre as falhas. Por isso a extração **ESTRUTURADA** permanece
+lenient: ali um DV que não fecha é o OCR lendo errado um código **REAL**, e descartá-lo
+apagaria a única chave de dedup do título — a política do projeto para barcode suspeito é
+**não deixar que ele decida** (o gate de `authoritative_barcode_due_date`), não apagá-lo.
+Já um código **colado** por captura frouxa não é o código de nada: rejeitar é o único
+destino correto. **Impacto em produção: zero** — o caminho frouxo do PDF só é alcançado no
+fallback de `pdf_text` (quando a chamada ao Claude falha), e todos os barcodes `pdf_text`
+passam no DV.
+
+**Risco medido e deliberadamente NÃO "otimizado":** `_extract_body_invoice_rows` roda 2×
+por e-mail (uma em `extract_from_email_body`, outra em `try_extract_from_body`). Medido no
+pior corpo real (11 KB): **445 µs**, ou **2,2%** de `extract_from_email_body` e ~0,04% do
+custo de IMAP+Claude por e-mail. Um cache traria risco de aliasing/estado velho (as linhas
+são dicts mutáveis) por ganho nulo — mantido como está, de propósito.
 
 **Verificação (A/B contra dados reais):** os **139** corpos gravados e os **764** assuntos
 distintos foram reprocessados com o código de HEAD e com o novo. Corpos: muda só a **694**
@@ -3160,7 +3298,11 @@ frentes independentes:
 - **N faturas na tabela → uma conta por fatura** (`_extract_body_invoice_table`, mesmo gate
   ≥2/distintas e o mesmo laço do de parcelas — NUNCA somar). Cada linha leva o barcode do
   **seu próprio segmento** (do início dela até o início da próxima): herdar o da primeira
-  faria as demais colidirem na dedup por código de barras e sumirem em silêncio.
+  faria as demais colidirem na dedup por código de barras e sumirem em silêncio. A
+  **última** linha não tem "próxima" que a delimite, então o segmento dela é limitado por
+  **`_INVOICE_ROW_BARCODE_WINDOW`** (500 chars — a distância real documento→linha
+  digitável na tabela é ~120): sem o teto ela varreria até o fim do corpo e poderia
+  adotar um boleto do rodapé, que não é dela.
 
 **Verificação (A/B contra dados reais, não só fixtures):** os 139 corpos já gravados foram
 reprocessados com o código de HEAD e com o novo, mesmos insumos — **8 mudam, todos na direção
@@ -3233,10 +3375,16 @@ sem `R$`) **não** casa (conservador, evita falso positivo; o caminho com `R$` c
 = "vencimento"): fallback **`_BODY_PAYDATE_RE`** reconhece `DATA (PARA/DE) PAGAMENTO: DD/MM/AA` (rótulo
 das notas internas, id 186) antes de cair na data de emissão/extração. **Valida
 fornecedor+valor**: sem valor → não grava conta (vira `falha`). `email_body_excerpt` (migration 016)
-guarda o corpo completo. Testes: `tests/test_body_amount.py`. O **barcode do corpo**
-é normalizado por `_normalize_body_barcode`, que reusa `extract_pdf.normalize_barcode` (import
-lazy) — mesma regra canônica do caminho de PDF (44/48 dígitos mantidos, 47 → 44, outros →
-None), em vez de um `re.sub` solto que aceitava qualquer sequência de 44-48 (F2).
+guarda o corpo completo. Testes: `tests/test_body_amount.py`. O **barcode do corpo** é
+resolvido por `_resolve_body_barcode`, em que a **FORMA vence o RÓTULO**: primeiro
+`_extract_body_linha_digitavel` (estrutura dos 5 campos FEBRABAN validada) e só então
+`_BODY_BARCODE_RE`, que fica como fallback por cobrir a arrecadação de 48 dígitos — ver
+"Barcode do corpo: a FORMA vence o RÓTULO". A normalização é `_normalize_body_barcode`,
+que reusa `extract_pdf.normalize_barcode` (import lazy) — mesma regra canônica do caminho
+de PDF (44/48 dígitos mantidos, 47 → 44, outros → None), em vez de um `re.sub` solto que
+aceitava qualquer sequência de 44-48 (F2). As guardas contra código **inventado** (o
+invariante do `8` na arrecadação e o DV do boleto) vivem na função **canônica** do
+`extract_pdf`, não aqui — ver "As guardas do barcode vivem na função CANÔNICA".
 
 **Corpo SÓ-HTML** (ex.: Correios — `noreply_componentes@correios.com.br`, assunto "Pagamento
 Boleto Fatura"): quando o anexo não vem e o link é portal HTML sem PDF, `get_body_text()`
@@ -3320,6 +3468,22 @@ sempre. Teste: `tests/test_match_keyword.py` (`PaymentConfirmationTest`). Limpez
 (2026-07-06): **hard delete de 10 contas** de confirmação de pagamento em `financial_account_control`
 (8 "Confirmação de Pagamento da fatura" + 2 "pagamento foi aprovado") + os `email_control`
 correspondentes → `ignorado`.
+
+**Extensão "Recebemos o seu pagamento" (2026-07-28, pedido do usuário — não regredir):** o
+regex ganhou a alternativa `recebemos (o|a)? (seu|sua)? pagamento`, que cobre o aviso do
+**credor** de que recebeu ("Recebemos o seu pagamento" / "Recebemos pagamento" / "Recebemos o
+pagamento da fatura X"). "Pagamento recebido" já casava pela alternativa do particípio.
+**GUARDA OBRIGATÓRIA — a forma NEGADA inverte o sentido** (`_PAYMENT_NOT_RECEIVED_RE`:
+`não recebemos|não identificamos|não consta`): *"(ainda) **NÃO** recebemos o seu pagamento"* é
+uma **COBRANÇA** de título em aberto, e `subject_is_payment_confirmation` devolve **False**
+para ela, deixando o e-mail seguir a extração normal. Sem essa guarda o pagável seria perdido
+em silêncio — viés deliberado: **na dúvida NÃO ignorar** (uma conta a revisar é melhor que um
+pagável perdido). A extensão vale automaticamente para
+`body_forwards_payment_confirmation` (confirmação encaminhada com assunto reescrito), que
+reusa a mesma função. Limpeza retroativa (2026-07-28): **hard delete da conta 716**
+("Leadster | Recebemos o seu pagamento", R$ 362,62, criada pelo corpo) + `email_control` 1115
+→ `ignorado`. Auditoria: era o **único** caso na base — todos os demais e-mails que casam a
+regra já estavam `ignorado`.
 
 **Assunto com "lembrete" → `ignorado` (não é conta a pagar — não regredir):** e-mail cujo ASSUNTO
 contém a palavra **`lembrete`** (substring, sem acento — `subject_is_reminder`) vira `ignorado`
@@ -4759,6 +4923,34 @@ lê os arquivos do disco.
 > pendências anteriores. A correção da conta 693 já foi aplicada na Supabase compartilhada.
 > Validação (esperado `454663_01 2026-08-01 True`):
 > `py -3 -c "import sys; sys.path.insert(0,'skills/email-reader/scripts'); import read_emails as R; b=' 454663_01 \r\n 22/07/2026 \r\n 01/08/2026 \r\n R$ 181.90 \r\n 23793.39100.90000.004375.07000.842000.3.15250000018190 '; r=R._extract_body_invoice_row(b); print(r['doc'], r['due_date'], bool(r['barcode']))"`
+
+> **DEPLOY 2026-07-28 — endurecimento do caminho do corpo (PENDENTE de cópia p/ prod):**
+> resolução dos riscos residuais do code review — corte do rodapé por POSIÇÃO
+> (`_ns_keep_len`), barcode do corpo pela FORMA antes do RÓTULO, janela
+> `_INVOICE_ROW_BARCODE_WINDOW` na última linha da tabela, rótulo de emissor tolerando linha
+> em branco, o refactor de `extract_from_email_body` em resolvers puros (61→17 no `radon`) e
+> as **guardas de barcode na função canônica** (`normalize_barcode` valida por padrão +
+> `barcode_dv_refuted` + `normalize_barcode_allow_misread` + `is_boleto_barcode`). Deploy =
+> copiar **os TRÊS**
+> `read_emails.py`, `extract_pdf.py` **e o novo `febraban.py`** (mesma pasta de scripts da
+> skill de PDF). O `febraban.py` é onde as guardas passaram a viver: sem ele, o corpo degrada
+> para validação só por comprimento — e AVISA no log (`[BARCODE] … Deploy parcial?`), que é
+> como se detecta uma cópia incompleta. **Sem `.env`, sem dependência nova,
+> sem passo de banco.** **Comportamento inalterado em produção** — A/B sobre os 139 corpos e
+> 764 assuntos deu **0 diferenças**, e o caminho frouxo do PDF só é alcançado no fallback de
+> `pdf_text`, cujos barcodes passam 228/228 no DV. Deltas são cumulativos: esta cópia carrega
+> todas as pendências anteriores. Validação (esperado `dinheiro True None True`):
+> `py -3 -c "import sys; sys.path.insert(0,'skills/email-reader/scripts'); sys.path.insert(0,'skills/pdf-contas-pagar/scripts'); import read_emails as R, extract_pdf as E; print(R._classify_body_payment_method('Pago em dinheiro. Esta cobranca foi gerada pela Efi. cartao de credito'), len(R._ns_keep_len('AÇÃO Àé'))==len('AÇÃO Àé'), E.normalize_barcode('1'*48), E.normalize_barcode_allow_misread('34191125902026142931864598900021503000324000') is not None)"`
+
+> **DEPLOY 2026-07-28 — ignorar "Recebemos o seu pagamento" (PENDENTE de cópia p/ prod):**
+> `subject_is_payment_confirmation` passou a cobrir o aviso do credor de que recebeu, com a
+> guarda da forma NEGADA ("não recebemos" = cobrança) — ver "Extensão 'Recebemos o seu
+> pagamento'". Deploy = copiar **só** `read_emails.py`. **Sem `.env`, sem dependência nova, sem
+> passo de banco.** **Degrada com segurança:** o código ANTIGO segue funcionando (só continua
+> criando a conta falsa desses e-mails). Deltas de `read_emails.py` são cumulativos — carrega as
+> pendências anteriores. A remoção da conta 716 e o `email_control` 1115 já foram aplicados na
+> Supabase compartilhada. Validação (esperado `True False`):
+> `py -3 -c "import sys; sys.path.insert(0,'skills/email-reader/scripts'); import read_emails as R; print(R.subject_is_payment_confirmation('Leadster | Recebemos o seu pagamento'), R.subject_is_payment_confirmation('Ainda nao recebemos o seu pagamento'))"`
 
 > **DEPLOY 2026-07-28 — notificação de cobrança de plataforma (PENDENTE de cópia p/ prod):** o
 > corpo de boleto de assinatura (Efí/Gerencianet) passa a render fornecedor ("Dados do emissor"),
