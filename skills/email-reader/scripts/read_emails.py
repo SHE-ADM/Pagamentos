@@ -1597,6 +1597,12 @@ def build_financial_payload(row: dict, gmail_message_id: str,
     payload["document_type"] = _apply_cartorio_doc_type(
         payload.get("document_type"), subject, payload.get("supplier_name"))
 
+    # Seguradora (assunto com seguro/seguradora/apólice) → document_type='seguro'.
+    # Abaixo de cartório e das guias: um tributo cobrado por seguradora continua sendo o
+    # tributo. Antes do nº sintético para o prefixo usar 'seguro'. O caminho do CORPO
+    # aplica a mesma regra na sua própria cadeia (extract_from_email_body).
+    payload["document_type"] = _apply_seguro_doc_type(payload.get("document_type"), subject)
+
     # Nº documento em branco → sintético (pagamento PIX + tipo 'outro': 'pix_' + valor;
     # demais: tipo+vencimento) — mesma regra do corpo.
     if not payload.get("invoice_number"):
@@ -2326,6 +2332,50 @@ def _apply_cartorio_doc_type(document_type: str | None, subject: str | None,
         return document_type
     if _is_cartorio_context(subject, supplier_name):
         return "cartório"
+    return document_type
+
+
+# ---------------------------------------------------------------------------
+# SEGURADORA — so boleto valido vira conta a pagar
+# ---------------------------------------------------------------------------
+# Regra de negocio: e-mail de seguradora SO gera conta quando traz um BOLETO com linha
+# digitavel valida; sem boleto, o e-mail e 'ignorado' (nao 'falha'). O apolice/kit digital
+# costuma vir com DOIS documentos (boleto + "conjunto faturamento"): so o boleto se paga.
+#
+# O contexto e detectado SO PELO ASSUNTO — deliberado, nao e descuido. Incluir o
+# supplier_name ou o dominio do remetente QUEBRARIA contas que hoje funcionam, porque
+# "Porto Seguro" e nome de fornecedor legitimo de varios ramos:
+#   - conta 348 "BOLETO - PORTO SAUDE", fornecedor "PORTO SEGURO - SEGURO SAUDE S/A",
+#     gravada SEM barcode → o gate por supplier_name a teria descartado;
+#   - conta  58 "Rastreador - Demonstrativo fatura", remetente @portoseguro.com.br,
+#     extraida do CORPO (sem barcode) → o gate por dominio a teria descartado.
+# Nenhuma das duas tem "seguro" no ASSUNTO, entao o criterio por assunto as preserva e
+# ainda assim pega o alvo ("SEGUROS SURA VID_G_..."). NAO ampliar para fornecedor/remetente.
+_INSURANCE_TERMS = ("seguro", "seguros", "seguradora", "seguradoras", "apolice", "apolices")
+
+# Tipos "genericos" cujo rotulo pode virar 'seguro'. Nao inclui guias/utilities/cte/
+# cartorio/honorarios: um tributo cobrado por seguradora continua sendo o tributo.
+_SEGURO_RELABELABLE_TYPES = ("boleto", "outro", "")
+
+
+def _is_insurance_context(subject: str | None) -> bool:
+    """True se o ASSUNTO indica e-mail de seguradora (seguro/seguros/seguradora/apolice).
+    Palavra inteira e sem acento (_has_word/_ns_body): "seguranca" nao casa, e "apolice"
+    cobre o assunto escrito com ou sem acento. So o assunto — ver o bloco acima."""
+    if not subject:
+        return False
+    s = _ns_body(subject)
+    return any(_has_word(s, t) for t in _INSURANCE_TERMS)
+
+
+def _apply_seguro_doc_type(document_type: str | None, subject: str | None) -> str | None:
+    """Rotula como document_type='seguro' o pagavel de um e-mail de seguradora. So
+    relabela tipos genericos (_SEGURO_RELABELABLE_TYPES) — guias/utilities/cte/cartorio/
+    honorarios sao preservados. Idempotente ('seguro' nao esta no set de relabelaveis)."""
+    if (document_type or "").strip().lower() not in _SEGURO_RELABELABLE_TYPES:
+        return document_type
+    if _is_insurance_context(subject):
+        return "seguro"
     return document_type
 
 
@@ -3062,6 +3112,12 @@ def extract_from_email_body(body_text: str, received_at: str, message_id: str,
     # Mesma regra do caminho de PDF; só re-rotula tipos genéricos.
     document_type = _apply_cartorio_doc_type(document_type, subject, supplier_name)
 
+    # Seguradora (assunto com seguro/seguradora/apólice) → document_type='seguro'. Mesma
+    # regra e mesma posição do caminho de PDF. Alcançável: try_extract_from_body só
+    # descarta a conta de seguradora SEM linha digitável — quando a própria seguradora
+    # escreve a linha digitável no corpo, a conta é criada e precisa do rótulo correto.
+    document_type = _apply_seguro_doc_type(document_type, subject)
+
     # Numero de documento: valor encontrado no corpo ou sintetico (pagamento PIX +
     # tipo 'outro': 'pix_' + valor; demais: tipo+ddmmyy do vencimento/emissao).
     if not invoice_number:
@@ -3425,11 +3481,19 @@ def extract_pdf_links(text: str, html: str) -> list[str]:
 
 # ── Guarda anti-SSRF do download por link ───────────────────────────────────
 # Conteúdo de remetente DESCONHECIDO controla a URL; sem guarda, o servidor pode ser
-# forçado a requisitar alvos internos (metadata cloud 169.254.169.254, localhost, LAN,
-# portas internas). Bloqueamos scheme != http(s), porta fora de {80,443} e host que
-# resolve para IP interno — no URL inicial E a cada redirect (_SafeRedirectHandler).
+# forçado a requisitar alvos internos (metadata cloud 169.254.169.254, localhost, LAN).
+# Bloqueamos scheme != http(s) e host que resolve para IP interno — no URL inicial E a
+# cada redirect (_SafeRedirectHandler), com o IP validado FIXADO no socket (_Pinned*).
+#
+# PORTA: NAO ha allowlist de porta. Havia {80,443}, mas ela barrava um caminho legitimo:
+# o boleto de seguradora (SEGUROS SURA) chega por link que redireciona para
+# `http://mdi.li:7000/api/item/<id>` — host PUBLICO servindo o PDF numa porta alta. O
+# redirect era recusado ("destino nao permitido") e o e-mail caia em 'falha'. A protecao
+# REAL contra SSRF e o teste de IP interno (_host_is_safe): uma vez provado que o destino
+# e um IP EXTERNO, a porta nao muda o risco — nao ha servico interno a alcancar. Manter a
+# allowlist so quebrava portais legitimos em porta alta. Trocar isto por uma lista de
+# portas/dominios voltaria a quebrar o caso SURA quando a seguradora mudar de encurtador.
 _ALLOWED_SCHEMES = ("http", "https")
-_ALLOWED_PORTS = {80, 443}
 
 
 def _safe_host_ips(host: str) -> "list[str]":
@@ -3477,19 +3541,24 @@ def _pin_ip_for_host(host: str) -> "str | None":
 
 
 def _is_safe_download_url(url: str) -> bool:
-    """Valida a URL contra SSRF: scheme http(s), porta padrão e host que NÃO resolve para
-    IP interno. Aplicada ao URL inicial e revalidada a cada redirect."""
+    """Valida a URL contra SSRF: scheme http(s) e host que NÃO resolve para IP interno.
+    Aplicada ao URL inicial e revalidada a cada redirect.
+
+    QUALQUER porta é aceita em host externo (ver o comentário do bloco acima): a porta
+    alta é comum em portal de boleto (ex.: mdi.li:7000, das seguradoras) e, com o destino
+    já provado externo, não abre acesso a serviço interno. Segue bloqueada a porta
+    MALFORMADA (`parts.port` levanta ValueError) e a porta 0 (inválida)."""
     try:
         parts = urllib.parse.urlsplit(url)
         if parts.scheme not in _ALLOWED_SCHEMES:
             return False
         host = parts.hostname
-        port = parts.port  # pode levantar ValueError em porta malformada
+        port = parts.port  # porta malformada levanta ValueError → bloqueada no except
     except ValueError:
         return False
     if not host:
         return False
-    if port is not None and port not in _ALLOWED_PORTS:
+    if port == 0:
         return False
     return _host_is_safe(host)
 
@@ -4033,6 +4102,10 @@ def extract_and_store_accounts(saved_pdfs: list, message_id: str,
     has_real_boleto = _email_has_real_boleto(pending)
     real_boleto_amounts = _real_boleto_amounts(pending) if has_real_boleto else set()
 
+    # Seguradora (assunto com seguro/seguradora/apolice): so o boleto com linha digitavel
+    # valida vira conta. Calculado uma vez — o assunto e o mesmo para todas as linhas.
+    insurance_ctx = _is_insurance_context(email_rec.get("subject") if email_rec else None)
+
     # ------------------------------------------------------------------
     # Passo 2 — grava as contas
     # ------------------------------------------------------------------
@@ -4115,6 +4188,24 @@ def extract_and_store_accounts(saved_pdfs: list, message_id: str,
         if has_real_boleto and _is_statement_document(row):
             log.info(
                 f"    Extrato/relatorio ignorado — acompanha um boleto no e-mail "
+                f"({row.get('source_file')})"
+            )
+            skipped_nonpayable += 1
+            continue
+
+        # SEGURADORA: so pagavel com linha digitavel valida vira conta. Uma condicao
+        # cobre as DUAS metades da regra:
+        #   - e-mail COM boleto (kit digital SURA = boleto + "conjunto faturamento"):
+        #     o boleto grava e a FATURA que vem junto cai aqui — sem conta duplicada.
+        #     A guarda de valor acima nao a pegaria: fatura e boleto tem valores
+        #     diferentes (premio total x parcela).
+        #   - e-mail SEM boleto nenhum: todas as linhas caem aqui, payable_attempts
+        #     fica 0 → nonpayable_only=True → status 'ignorado' (nao 'falha').
+        # Fica ACIMA de payable_attempts += 1 justamente para nao contar como tentativa
+        # de pagavel (e o que diferencia 'ignorado' de 'falha' em status_for_result).
+        if insurance_ctx and not _is_boleto_barcode(payload.get("barcode")):
+            log.info(
+                f"    Documento de seguradora sem boleto valido ignorado "
                 f"({row.get('source_file')})"
             )
             skipped_nonpayable += 1
@@ -4328,9 +4419,22 @@ def try_extract_from_body(email_rec: dict, body_text: str, received_at: str,
         email_rec["notes"] = fwd_reason
         return BODY_IGNORED
 
+    # SEGURADORA: so boleto com linha digitavel valida vira conta (regra de negocio).
+    # Detectado so pelo ASSUNTO — ver o bloco de _INSURANCE_TERMS: casar pelo remetente
+    # descartaria a conta 58 (Porto Seguro "Rastreador"), que hoje nasce deste caminho.
+    insurance_ctx = _is_insurance_context(email_rec.get("subject"))
+
     payload = extract_from_email_body(body_text, received_at, message_id, sender_email,
                                       subject=email_rec.get("subject"))
     if payload is None:
+        # Seguradora sem sinal financeiro no corpo → 'ignorado', nao 'falha'. E o
+        # desfecho do e-mail da SURA quando o boleto por link nao pode ser baixado
+        # (rede/portal fora do ar): o corpo so anuncia "Clique aqui para baixar o
+        # documento", sem valor nem numero — nao ha o que revisar em /erros.
+        if insurance_ctx:
+            log.info("    E-mail de seguradora sem boleto valido — ignorado (nao e conta a pagar)")
+            email_rec["notes"] = "E-mail de seguradora sem boleto valido em anexo/link"
+            return BODY_IGNORED
         # Sem sinal financeiro (sem valor nem documento) no corpo.
         email_rec["notes"] = "Corpo sem sinal financeiro (sem valor nem documento)"
         return BODY_NONE
@@ -4356,6 +4460,16 @@ def try_extract_from_body(email_rec: dict, body_text: str, received_at: str,
             and not _is_boleto_barcode(payload.get("barcode"))):
         log.info("    CT-e/transporte sem boleto (corpo) ignorado — nao gera conta a pagar")
         email_rec["notes"] = "CT-e/transporte sem boleto (corpo) — nao gera conta a pagar"
+        return BODY_IGNORED
+
+    # SEGURADORA sem boleto valido (mesma forma da guarda de transporte acima): o corpo
+    # tem sinal financeiro, mas sem linha digitavel nao e um pagavel pela regra. Fica
+    # DEPOIS do payload, e nao no topo da funcao, para nao descartar o caso legitimo em
+    # que a propria seguradora escreve a linha digitavel no corpo — ai ha boleto valido
+    # e a conta e criada normalmente.
+    if insurance_ctx and not _is_boleto_barcode(payload.get("barcode")):
+        log.info("    Seguradora sem boleto valido (corpo) ignorado — nao gera conta a pagar")
+        email_rec["notes"] = "E-mail de seguradora sem boleto valido em anexo/link"
         return BODY_IGNORED
 
     # Mesma validacao de valor do caminho de PDF (extract_and_store_accounts):

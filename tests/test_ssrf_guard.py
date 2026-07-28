@@ -41,11 +41,33 @@ class SafeDownloadUrlTest(unittest.TestCase):
         ):
             self.assertFalse(read_emails._is_safe_download_url(url), url)
 
-    def test_bloqueia_scheme_e_porta(self):
+    def test_bloqueia_scheme_invalido(self):
         self.assertFalse(read_emails._is_safe_download_url("file:///etc/passwd"))
         self.assertFalse(read_emails._is_safe_download_url("ftp://host/x"))
-        self.assertFalse(read_emails._is_safe_download_url("http://example.com:22/x"))
         self.assertFalse(read_emails._is_safe_download_url("notaurl"))
+
+    def test_porta_nao_padrao_permitida_em_host_externo(self):
+        # Politica de PORTA: nao ha allowlist. A protecao real e o teste de IP interno —
+        # provado que o destino e externo, a porta nao da acesso a servico interno algum.
+        # Caso de origem: o boleto da SEGUROS SURA chega por link que redireciona para
+        # http://mdi.li:7000/api/item/<id> (host publico, porta alta); com a allowlist
+        # {80,443} o redirect era recusado e o e-mail caia em 'falha'.
+        self.assertTrue(read_emails._is_safe_download_url("http://example.com:7000/x"))
+        self.assertTrue(read_emails._is_safe_download_url("http://example.com:22/x"))
+
+    def test_bloqueia_porta_malformada_ou_zero(self):
+        self.assertFalse(read_emails._is_safe_download_url("http://example.com:99999999/x"))
+        self.assertFalse(read_emails._is_safe_download_url("http://example.com:0/x"))
+
+    def test_ip_interno_bloqueado_em_qualquer_porta(self):
+        # A liberacao de porta NAO pode virar um caminho para a rede interna.
+        for url in (
+            "http://127.0.0.1:7000/x",
+            "http://10.0.0.5:7000/x",
+            "http://192.168.1.1:8080/x",
+            "http://169.254.169.254:7000/latest/meta-data/",
+        ):
+            self.assertFalse(read_emails._is_safe_download_url(url), url)
 
     def test_permite_host_publico(self):
         # Host público com .pdf (caminho legítimo BRASPRESS/portais).

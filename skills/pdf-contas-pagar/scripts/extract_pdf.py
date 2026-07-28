@@ -859,6 +859,46 @@ def fix_reversed_lines(text: str) -> str:
     return "\n".join(out)
 
 
+# --- Página INTEIRA espelhada (≠ campo isolado em coluna RTL) ---
+# Rótulos de boleto usados como sonda. Só palavras isoladas: no PDF espelhado cada
+# LINHA vem invertida, então um termo de duas palavras cai em linhas separadas.
+_MIRRORED_PROBE_TOKENS = ("vencimento", "beneficiario", "documento", "pagamento",
+                          "valor", "banco", "cedente", "sacado", "parcela",
+                          "carteira", "agencia", "juros", "multa")
+_MIRRORED_MIN_LINES = 3
+
+
+def is_mirrored_text(text: str) -> bool:
+    """True quando o pdfplumber entrega a PÁGINA INTEIRA espelhada — cada linha com os
+    caracteres em ordem invertida ("otnemicneV"=Vencimento, "49,331 $R"=R$ 133,94,
+    "A/S ARUS SORUGES"=SEGUROS SURA S/A). Caso real: boleto das seguradoras (SURA).
+
+    Diferente de fix_reversed_lines, que anota CAMPOS isolados (CNPJ/data/valor/nosso
+    número) invertidos numa coluna RTL: aqui vêm ao contrário os rótulos, os nomes e a
+    LINHA DIGITÁVEL — e esta fica ainda fragmentada entre colunas, logo irrecuperável
+    por regex mesmo depois de inverter. Por isso o caller manda o PDF ao Vision, que lê a
+    página RENDERIZADA (visualmente correta) e recupera a linha digitável.
+
+    Heurística por LINHA, não por contagem global: conta as linhas em que um rótulo de
+    boleto aparece SÓ na versão invertida. Num PDF normal essas linhas não existem (lá o
+    rótulo está no texto direto), então o falso positivo é improvável; exige
+    _MIRRORED_MIN_LINES linhas para não disparar por coincidência. Contar por linha
+    também cobre o PDF MISTO — páginas normais + a do boleto espelhada (caso SURA) —,
+    em que somar acertos do documento inteiro poderia empatar."""
+    hits = 0
+    for line in (text or "").splitlines():
+        s = line.strip()
+        if len(s) < 4:
+            continue
+        direct  = _ns(s)
+        flipped = _ns(s[::-1])
+        if any(t in flipped and t not in direct for t in _MIRRORED_PROBE_TOKENS):
+            hits += 1
+            if hits >= _MIRRORED_MIN_LINES:
+                return True
+    return False
+
+
 # --- Extração via pdfplumber ---
 def extract_with_pdfplumber(pdf_path):
     full_text = ""
@@ -1413,6 +1453,12 @@ def _extract_single(pdf_path, force_vision=False):
             if len(raw) < 80:
                 log.warning(f"  → Texto curto ({len(raw)} chars) — fallback Vision")
                 # Vision envia o PDF em base64 ao Claude (sem poppler/pdftoppm).
+                raw, src = extract_with_vision(pdf_path)
+            elif is_mirrored_text(raw):
+                # Página espelhada (texto invertido): o volume de texto passa longe do
+                # limiar acima, mas o conteúdo é ilegível e a LINHA DIGITÁVEL não sai por
+                # regex. O Vision lê a página renderizada, que é visualmente correta.
+                log.info("  → Texto espelhado (página invertida) — fallback Vision")
                 raw, src = extract_with_vision(pdf_path)
         rec = build_record(pdf_path, raw, src)
         # Tier 2: texto extraiu o documento mas sem valor, e o codigo de barras
