@@ -19,6 +19,12 @@ const eslintConfig = defineConfig([
     "out/**",
     "build/**",
     "next-env.d.ts",
+    // Relatório de cobertura (gerado por `vitest --coverage`, que o workflow do SonarCloud
+    // roda a cada PR). Os arquivos do lcov-report do istanbul trazem um `/* eslint-disable */`
+    // no topo, e o `reportUnusedDisableDirectives` (default do ESLint 9) o acusa como
+    // diretiva inútil — warning em código GERADO, que a regra de lint limpo do projeto
+    // (0 erros/0 warnings) não deve carregar. Espelha o `ignores` do frontend-vite.
+    "coverage/**",
   ]),
 ]);
 

@@ -22,6 +22,7 @@ import CostCenterSelect from '../molecules/CostCenterSelect';
 import ChartAccountSelect from '../molecules/ChartAccountSelect';
 import AttachmentPicker from '../molecules/AttachmentPicker';
 import ContaAttachments from './ContaAttachments';
+import { todayISO } from '../../lib/format';
 import { getSupplier } from '../../services/suppliers';
 import { useCompanyOptions } from '../../hooks/useCompanyOptions';
 import { useDefaultSkCompany, SK_COMPANY_DEFAULT } from '../../hooks/useDefaultSkCompany';
@@ -85,15 +86,6 @@ export interface ContaFormHandle {
    */
   resetSupplier: () => void;
 }
-
-// Data corrente no formato YYYY-MM-DD (local) — default de emissão/vencimento ao
-// INCLUIR uma conta. Usa a data local (não UTC) para não "voltar um dia" à noite.
-const todayISO = (): string => {
-  const d = new Date();
-  const mm = String(d.getMonth() + 1).padStart(2, '0');
-  const dd = String(d.getDate()).padStart(2, '0');
-  return `${d.getFullYear()}-${mm}-${dd}`;
-};
 
 function toFormValues(c?: FinancialAccountControl): ContaFormValues {
   // Inclusão (sem `c`): emissão e vencimento já vêm com a data de hoje. Edição:

@@ -921,6 +921,14 @@ tudo no index (foi o que aconteceu; desfeito com `git reset`).
   (`@eslint/js` + `typescript-eslint` `recommendedTypeChecked`, `globals.node`, glob `**/*.ts`
   para o próprio `eslint.config.mjs` ficar fora do lint type-aware) — binários resolvidos por
   hoist. O shared **não** tem `prune` (ver nota do ts-prune abaixo).
+- **Relatório de cobertura fica FORA do lint nos 3 apps (não regredir):** `coverage/` é ignorado
+  no `frontend-vite` (`ignores: ['dist', 'coverage', 'e2e', …]`) e, desde 2026-07-28, também no
+  `api-backend` e no `portal-next` (`"coverage/**"` no `globalIgnores`). Motivo: os arquivos do
+  **lcov-report do istanbul** trazem `/* eslint-disable */` no topo e o
+  `reportUnusedDisableDirectives` (ligado por padrão no ESLint 9) os acusa como diretiva inútil —
+  1 warning por app Next, em código **gerado**, que derrubava a regra de "0 erros e 0 warnings".
+  Não some apagando a pasta: o workflow do SonarCloud roda `vitest --coverage` a cada PR e a
+  recria.
 - **Versões de ESLint divergem por workspace (intencional):** `frontend-vite` usa **ESLint 10**
   (+ `typescript-eslint@8.61`); os apps Next ficam em **ESLint 9** porque o
   `eslint-config-next` depende de um `eslint-plugin-react` que quebra no ESLint 10 (`getFilename`
@@ -1292,6 +1300,20 @@ Supabase (PostgreSQL)  ── financial_account_control (dados extraídos)
 > (`PYTHON_BRIDGE_TIMEOUT_MS`, a leitura síncrona real leva minutos) e **5s** no health; o timeout
 > vira `PythonBridgeError(504)` (indisponível segue `502`). Teste em `lib/python-bridge.test.ts`.
 
+## Chat de IA (PLANEJADO — nada aplicado)
+
+Chat conversacional embarcado no app para análise **read-only** dos dados de contas a pagar
+(perguntas em linguagem natural → texto + tabela/gráfico). Desenho completo em
+**[docs/arquitetura-chat-ia-pagamentos.md](docs/arquitetura-chat-ia-pagamentos.md)** — ler antes
+de implementar qualquer parte.
+
+**Status: FASE DE DESIGN.** Não há código, migration, view, role nem tabela criados; as DDL do
+documento são **propostas** a validar contra o schema real. Pilares: **nunca usar `service_role`**
+no caminho do chat (role dedicada read-only sobre um schema `analytics` de views curadas, RLS
+respeitada) · **tool calling** sobre funções de negócio como via primária, text-to-SQL só como
+fallback controlado · log de toda interação para auditoria. Ver as "Decisões em aberto (Fase 0)"
+do documento antes de propor implementação.
+
 ## Comandos
 
 > **Specs/templates de prompts (`docs/prompts/`)** — fonte dos prompts copy-paste para o
@@ -1655,7 +1677,13 @@ Tipos compartilhados vêm de `@sheild/shared` (ex.: `FinancialEmail`, `EmailCont
 Helpers em `src/lib/`: `getErrorMessage.ts` (erro em strict mode), `format.ts` (formatadores
 de exibição — `fmtDate`/`fmtDateTime`/`fmtMoney`/`fmtMoneyCompact` (BRL compacto "R$ 12,3 mil" —
 furo central dos donuts)/`fmtCnpj`/`fmtCpf`/`fmtCostCenter`/`fmtChartAccount`/
-`fmtBytes` (tamanho de arquivo B/KB/MB, base 1024 — usado pela lista de anexos);
+`fmtBytes` (tamanho de arquivo B/KB/MB, base 1024 — usado pela lista de anexos) —
+**mais `todayISO`** (data corrente `YYYY-MM-DD` pela data **LOCAL**, não UTC: à noite o UTC já
+está no dia seguinte e a data "voltaria um dia"). O `todayISO` **morava dentro do `ContaForm`** e
+foi promovido a `format.ts` quando o update otimista de `/consulta` passou a precisar dele —
+exportá-lo do arquivo do componente dispararia `react-refresh/only-export-components`, e
+duplicá-lo violaria a fonte única. Consumidores: `ContaForm` (default de emissão/vencimento na
+inclusão) e `Consulta.applyStatusId` (espelho de `payment_date`);
 **fonte única** consumida por `Consulta`/`Emails`/`Dashboard`/`useGridColumns` — não recriar cópias
 locais), `csv.ts` (`csvCell` — célula CSV segura: escapa aspas, remove CRLF e **neutraliza
 injeção de fórmula** `= + - @` no export de `/consulta`; segurança §5 M1), `cn.ts` (merge de
@@ -3856,8 +3884,37 @@ local/agendada (ver flag `EMAIL_READER_ENABLED` acima e memória [[vercel-deploy
 
 ## Banco de dados (Supabase)
 
-Migrations em `supabase/migrations/`, aplicadas **manualmente no SQL Editor** em ordem
-numérica (`001` → `095`). **Próxima migration = `096`** (verificar sempre antes de criar nova).
+Migrations em `supabase/migrations/`, aplicadas **manualmente no SQL Editor** (ou via Supabase
+MCP — ver a nota de cada uma) em ordem numérica (`001` → `096`). **Próxima migration = `097`**
+(verificar sempre antes de criar nova).
+
+**A `096` cria `financial_account_control.payment_date`** — a **data em que a conta foi paga**,
+que até então não existia no banco (coluna `DATE` nullable + índice parcial `ix_fac_payment_date`
++ backfill + trigger `trg_fac_payment_date`; aplicada via Supabase MCP em 2026-07-28).
+`status_changed_at` **não serve de proxy**: o valor mínimo dele em toda a tabela é `2026-07-10` —
+a data em que a própria 077 criou a coluna —, inclusive para contas vencidas em abril. A trigger
+(BEFORE INSERT OR UPDATE, `fn_set_payment_date`) **preenche** com a data corrente
+(`America/Sao_Paulo`, mesmo fuso da 095) quando `status_id` passa a **8** e `payment_date` está
+NULL — respeitando data retroativa informada no MESMO comando — e **limpa** quando a conta deixa
+de estar paga (`8 → outro`), para que uma baixa corrigida não deixe data órfã. O backfill
+(`payment_date := due_date` nas contas já pagas) roda **antes de a trigger existir** e é
+idempotente (`WHERE payment_date IS NULL`), então não há conflito entre ele e o carimbo
+automático. `payment_date` **não** entra no grant de coluna de `authenticated` (que segue com
+`has_invoice`/`has_bank_slip`/`status_id`) — quem a preenche é a trigger, não o cliente;
+verificado que isso **não** impede a curadoria inline de `/consulta` (privilégio de coluna é
+checado contra a lista `SET` do comando, não contra o que um trigger BEFORE altera).
+
+> ⚠️ **`payment_date` carrega TRÊS semânticas misturadas — NÃO tratar como caixa realizado (não
+> regredir):** (a) nas **442 contas já pagas** no momento da migration, o valor é o
+> **VENCIMENTO** — aproximação deliberada, porque a data real do histórico não existe em lugar
+> nenhum do banco; conta paga com atraso aparece como paga no vencimento; (b) nas **baixas
+> automáticas** (batch `baixa-automatica` das 08:00 e `qualifiesForAutoPago` no clique da 2ª flag
+> em `/consulta`), o valor é o **dia em que o sistema RECONHECEU** o pagamento, não aquele em que
+> ele ocorreu; (c) só na baixa com data informada explicitamente é a **data REAL**. Consequência:
+> "quanto foi pago em maio" continua não sendo respondível com precisão — mas agora *parece*
+> respondível, o que é pior que a ausência anterior. Antes de usar a coluna em dashboard ou na
+> camada analítica, separar as origens (ex.: uma coluna `payment_date_source`) ou devolver a
+> ressalva junto do número.
 
 **A `095` corrige um BUG DE FUNDAÇÃO da trigger `fn_set_status_from_due_date`** (idempotente,
 `CREATE OR REPLACE FUNCTION`; aplicada via Supabase MCP em 2026-07-23) — ver "Trigger de situação
@@ -4081,7 +4138,7 @@ internet` ao CHECK de `document_type` e faz backfill — ver "Normalização de 
 | Tabela | Propósito |
 |---|---|
 | `email_control` | Dedup/controle. `status` ∈ (`extraído`, `recebido`, `pendente`, `falha`, `ignorado`, `duplicidade`) — **migrations 022/031**. `extraído`=PDF extraído (CSV gerado); `recebido`=sem PDF, conta via corpo; `pendente`=PDF salvo sem CSV (substitui `baixado`); `falha`=casou keyword mas sem PDF e sem conta no corpo; `ignorado`=não-financeiro (sem keyword) **ou NF-e pura sem conta a pagar** (`subject_is_pure_nfe`); `duplicidade`=pagável do corpo duplica conta já registrada por outro e-mail (**migration 031**; card/filtro próprios em `/emails`). O status é calculado em `process_message` pelo resultado real (conta/CSV/corpo/duplicata), não por `pdf_extracted`. **Visibilidade por REMETENTE (migration 078):** a policy SELECT (`authenticated`) filtra por `lower(sender_email)=lower(auth.email())` quando o grupo do usuário tem `sees_only_own_accounts` (Comercial) — `/emails` mostra só os e-mails de que o usuário é remetente; demais grupos veem tudo; `service_role` com bypass |
-| `financial_account_control` | Tabela principal de contas a pagar — uma linha por documento; alimentada pelo pipeline de e-mail **e** por CRUD manual (baixas, consolidações, dashboards). Substitui a antiga `financial_emails` (dropada na migration 020). O fornecedor é referenciado **só pela FK `sk_supplier`** (surrogate key snowflake, NOT NULL — **migration 042**, antes era `supplier_id`) — nome/CNPJ vêm do JOIN com `supplier` (colunas denormalizadas dropadas na **migration 041**). Tem `sender_email` (migration 023; backfill em 025) usado na resolução p/ alinhar `supplier.email`, e `subject` (migration 025) — exibidos/buscados em `/consulta`. **Classificação contábil** (migrations 047/048): `cost_center_id`/`chart_account_id` SMALLINT, NOT NULL DEFAULT 0 (FKs para os cadastros; id 0 = "não informado") — preenchidos no CRUD manual (cascata centro→plano). **Autoria** (migrations 076/077): `created_by` (DONO — base da visibilidade por dono), `updated_by`, `status_changed_by`, `status_changed_at` — UUID → `auth.users`, NOT NULL DEFAULT sentinela `teste@otimotex.com.br`, carimbados pelo servidor/trigger `trg_fac_authorship` (ver "Visibilidade de contas por dono" / "Auditoria de autor") |
+| `financial_account_control` | Tabela principal de contas a pagar — uma linha por documento; alimentada pelo pipeline de e-mail **e** por CRUD manual (baixas, consolidações, dashboards). Substitui a antiga `financial_emails` (dropada na migration 020). O fornecedor é referenciado **só pela FK `sk_supplier`** (surrogate key snowflake, NOT NULL — **migration 042**, antes era `supplier_id`) — nome/CNPJ vêm do JOIN com `supplier` (colunas denormalizadas dropadas na **migration 041**). Tem `sender_email` (migration 023; backfill em 025) usado na resolução p/ alinhar `supplier.email`, e `subject` (migration 025) — exibidos/buscados em `/consulta`. **Classificação contábil** (migrations 047/048): `cost_center_id`/`chart_account_id` SMALLINT, NOT NULL DEFAULT 0 (FKs para os cadastros; id 0 = "não informado") — preenchidos no CRUD manual (cascata centro→plano). **Autoria** (migrations 076/077): `created_by` (DONO — base da visibilidade por dono), `updated_by`, `status_changed_by`, `status_changed_at` — UUID → `auth.users`, NOT NULL DEFAULT sentinela `teste@otimotex.com.br`, carimbados pelo servidor/trigger `trg_fac_authorship` (ver "Visibilidade de contas por dono" / "Auditoria de autor"). **`payment_date`** (DATE, migration 096): data de pagamento, carimbada pela trigger `trg_fac_payment_date` ao entrar em `status_id = 8` e limpa ao sair — **ler a ressalva das TRÊS semânticas** no bloco da 096 acima antes de usá-la como caixa realizado |
 | `financial_cost_center` / `financial_chart_of_account` | **Cadastros de classificação contábil** (pré-existentes, **preservados em limpezas**) usados como lookup no modal de contas. `financial_cost_center` é **gerenciado pelo CRUD de centros de custo** (`/tabelas/centros-de-custo` — PK `cost_center_id` SMALLINT IDENTITY ALWAYS; id 0 = sentinela "não informado", fora do CRUD; ver "CRUD de centros de custo"). `financial_chart_of_account` (também gerenciado pelo **CRUD de Plano de contas** — `/tabelas/plano-de-contas`) tem `cost_center_id` (relaciona o plano ao centro — base da CASCATA), `chart_account_subgroup_id` (FK → subgrupo) e `is_postable` (só os postáveis são lançáveis). Os cadastros `financial_bank`, `financial_account`, `financial_chart_of_account_group` e `financial_chart_of_account_subgroup` também ganharam CRUD próprio (grupo Tabelas — ver "CRUDs dos demais cadastros contábeis"). Lidos via `lib/lookups.ts` (service_role) **e** pelo frontend via embed REST (papel `authenticated`); RLS habilitado com policy de SELECT `TO authenticated` (migration 049 — sem ela o embed voltava null e a UI mostrava `#id`) |
 | `email_processing_errors` | Log de falhas com `raw_payload` JSON. **Visibilidade por REMETENTE (migration 078):** policy SELECT (`authenticated`) filtra por `lower(sender_email)=lower(auth.email())` para grupo com `sees_only_own_accounts` (Comercial) — `/erros` mostra só os erros de que o usuário é remetente; demais veem tudo; `service_role` com bypass |
 | `financial_account_attachment` | **Anexos (N) de uma conta** (migration 079) — PADRÃO ÚNICO das duas origens: `origin='pipeline'` (documento do e-mail; espelha `financial_account_control.source_file`, gravado pelo reader) e `origin='manual'` (upload do usuário no cadastro/edição). `storage_key` = chave CRUA do objeto no bucket `attachments` (pipeline: nome flat; manual: `manual/{conta}/…`). **Soft delete** (`deleted_at`/`deleted_by`) — o objeto FICA no bucket; anexo `pipeline` é irremovível (auditoria → 403). UNIQUE `(account_id, storage_key)`; **não** UNIQUE global (um PDF com N boletos gera N contas que COMPARTILHAM o objeto). RLS SELECT herda a visibilidade da conta pai (076) via `EXISTS`; escrita só `service_role`. Ver "Anexos de conta" |
@@ -4166,6 +4223,13 @@ faz cast); só os schemas de **auth** rodam em runtime via `zodResolver`.
 `created_by`/`updated_by`/`status_changed_by`/`status_changed_at` (`z.string().nullable()`) — todos
 **OMITIDOS** dos schemas de input/create/update/manualEdit (são carimbados pelo servidor/trigger,
 nunca pelo cliente). Consumidos só na exibição do autor no detalhe de `/consulta`.
+
+**`payment_date` no schema (migration 096):** mesma categoria da autoria — `z.string().nullable()`
+no schema de **LEITURA** e **OMITIDO explicitamente** no `financialAccountControlInputSchema`
+(logo, fora de create/update, que derivam do `.pick()` de manualEdit). O `.pick()` sozinho já a
+excluiria; a omissão na base é defesa em profundidade, para a coluna seguir não-gravável se algum
+write path futuro usar o InputSchema direto. Quem a grava é a trigger `trg_fac_payment_date`,
+derivando-a de `status_id`; `authenticated` **não** tem grant de coluna nela.
 
 **Fornecedor no schema (migrations 040/041/042):** `financialAccountControlSchema` **não** tem mais
 `supplier_name`/`supplier_cnpj`/`supplier_cpf` — só `sk_supplier` (`z.number().int()`, NOT NULL — a
@@ -4275,7 +4339,13 @@ STATUS_ID_PAGO)` — best-effort (falha aqui não reverte a flag já salva; o ba
 reconcilia o que escapar). A regra vive em `qualifiesForAutoPago` (helper de módulo em
 `Consulta.tsx`) e **espelha** o batch Python `baixa-automatica` (6h). Preserva situações
 fechadas (cancelado/baixado/protestado/cartório/prorrogado/já pago) e **não** reverte ao
-desmarcar. Ver "Pipeline de baixa automática (skill `baixa-automatica`)". **Terceira
+desmarcar. Ver "Pipeline de baixa automática (skill `baixa-automatica`)".
+**O update otimista também espelha a trigger de `payment_date` (migration 096):** o helper
+`nextPaymentDate` (`Consulta.tsx`, usado por `applyStatusId` — logo, vale para o toggle de flag,
+o dropdown inline e a ação em lote) **preenche** com `todayISO()` ao ENTRAR em pago (preservando
+data já existente, como a trigger faz) e **limpa** ao SAIR de pago; nas demais transições não
+toca no campo. Sem isso a linha ficaria "paga sem data" até o próximo refresh — hoje invisível
+(a coluna não é exibida no grid nem no CSV), visível assim que for. **Terceira
 coluna gravável pelo `authenticated` (migration 068):** `status_id` (`GRANT UPDATE (status_id)`) —
 a troca de **situação** em `/consulta` (`StatusSelectCell` inline + ação em lote) grava por
 `status_id`; a trigger `fn_set_status_from_due_date` (SECURITY DEFINER) faz o resto. O grant antigo

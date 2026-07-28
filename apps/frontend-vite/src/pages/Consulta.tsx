@@ -53,6 +53,7 @@ import { uploadContaAttachments, type UploadOutcome } from '../services/contaAtt
 import { getConsultaColumns, STATUS_OPTIONS, type ToggleFlag, type StatusChangeCallback } from '../hooks/useGridColumns';
 import { useCompanyOptions } from '../hooks/useCompanyOptions';
 import { fmtDate, fmtDateTime, fmtMoney, fmtCnpj, fmtCostCenter, fmtChartAccount } from '../lib/format';
+import { nextPaymentDate } from '../lib/paymentDate';
 import { csvCell } from '../lib/csv';
 
 // Fornecedor no card de detalhe: id (sk_supplier) concatenado ao nome com " - ".
@@ -181,11 +182,17 @@ function allPeriodFilters(): ConsultaFilters {
   return { ...BASE_FILTERS, month: null, year: null };
 }
 
-// Update otimista da situação de uma linha: grava status_id (fonte única) e sincroniza o
-// embed status_dim (nome exibido no badge/CSV/detalhe, resolvido da dimensão pelo id).
+// Update otimista da situação de uma linha: grava status_id (fonte única), sincroniza o
+// embed status_dim (nome exibido no badge/CSV/detalhe, resolvido da dimensão pelo id) e
+// espelha a trigger `trg_fac_payment_date` via `nextPaymentDate` (lib/paymentDate.ts).
 function applyStatusId(r: FinancialAccountControl, id: number): FinancialAccountControl {
   const name = STATUS_NAME_BY_ID[id] ?? String(id);
-  return { ...r, status_id: id, status_dim: { status_name: name, status_short_name: name } };
+  return {
+    ...r,
+    status_id: id,
+    status_dim: { status_name: name, status_short_name: name },
+    payment_date: nextPaymentDate(r, id),
+  };
 }
 
 // Situações EM ABERTO — únicas que a baixa automática pode converter para "pago"

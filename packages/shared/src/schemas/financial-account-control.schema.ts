@@ -236,6 +236,15 @@ export const financialAccountControlSchema = z.object({
   competence_date: z.string().nullable(), // YYYY-MM
   issue_date: z.string().nullable(), // DATE (ISO)
   due_date: z.string().nullable(), // DATE (ISO)
+  // Data em que a conta foi paga (DATE ISO, migration 096). Carimbada pela trigger
+  // `trg_fac_payment_date`: preenche com a data corrente ao entrar em status_id 8 (a
+  // menos que já venha informada no mesmo comando) e limpa ao sair de 8. Só LEITURA —
+  // deliberadamente FORA do .pick() de manualEdit (logo, fora de create/update): quem a
+  // grava é a trigger, não o cliente, e `authenticated` não tem grant nesta coluna.
+  // ATENÇÃO: nas contas pagas ANTES da 096 o valor é o VENCIMENTO (backfill aproximado)
+  // e nas baixas automáticas é o dia do RECONHECIMENTO — ver a ressalva das três
+  // semânticas no CLAUDE.md antes de usá-la como caixa realizado.
+  payment_date: z.string().nullable(),
 
   // Financeiro
   amount: money.nullable(),
@@ -347,6 +356,11 @@ export const financialAccountControlInputSchema = financialAccountControlSchema.
   updated_by: true,
   status_changed_by: true,
   status_changed_at: true,
+  // Mesma categoria: quem grava payment_date é a trigger trg_fac_payment_date (096),
+  // derivando-a de status_id. O .pick() de manualEdit já a deixaria de fora, mas omitir
+  // aqui garante que ela siga não-gravável em qualquer write path futuro que use este
+  // schema direto. `authenticated` também não tem grant de coluna nela.
+  payment_date: true,
   supplier: true,
   company: true,
   cost_center: true,
