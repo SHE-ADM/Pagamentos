@@ -52,7 +52,7 @@ import ContaAttachments from '../components/organisms/ContaAttachments';
 import { uploadContaAttachments, type UploadOutcome } from '../services/contaAttachments';
 import { getConsultaColumns, STATUS_OPTIONS, type ToggleFlag, type StatusChangeCallback } from '../hooks/useGridColumns';
 import { useCompanyOptions } from '../hooks/useCompanyOptions';
-import { fmtDate, fmtDateTime, fmtMoney, fmtCnpj, fmtCostCenter, fmtChartAccount } from '../lib/format';
+import { fmtDate, fmtDateTime, fmtMoney, fmtCnpj, fmtCostCenter, fmtChartAccount, todayISO } from '../lib/format';
 import { csvCell } from '../lib/csv';
 
 // Fornecedor no card de detalhe: id (sk_supplier) concatenado ao nome com " - ".
@@ -181,11 +181,26 @@ function allPeriodFilters(): ConsultaFilters {
   return { ...BASE_FILTERS, month: null, year: null };
 }
 
+// Espelha a trigger `trg_fac_payment_date` (migration 096) no update otimista: PREENCHE ao
+// ENTRAR em pago (preservando data já existente, como a trigger faz) e LIMPA ao SAIR de pago;
+// nas demais transições não toca no campo. Sem isso a linha ficaria "paga sem data" até o
+// próximo refresh — invisível hoje (a coluna não é exibida), visível assim que for.
+function nextPaymentDate(r: FinancialAccountControl, id: number): string | null {
+  if (id === STATUS_ID_PAGO) return r.payment_date ?? todayISO();
+  if (r.status_id === STATUS_ID_PAGO) return null;
+  return r.payment_date;
+}
+
 // Update otimista da situação de uma linha: grava status_id (fonte única) e sincroniza o
 // embed status_dim (nome exibido no badge/CSV/detalhe, resolvido da dimensão pelo id).
 function applyStatusId(r: FinancialAccountControl, id: number): FinancialAccountControl {
   const name = STATUS_NAME_BY_ID[id] ?? String(id);
-  return { ...r, status_id: id, status_dim: { status_name: name, status_short_name: name } };
+  return {
+    ...r,
+    status_id: id,
+    status_dim: { status_name: name, status_short_name: name },
+    payment_date: nextPaymentDate(r, id),
+  };
 }
 
 // Situações EM ABERTO — únicas que a baixa automática pode converter para "pago"

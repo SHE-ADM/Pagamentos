@@ -8,6 +8,19 @@ import type { FinancialAccountControl } from '@sheild/shared';
 export const fmtDate = (d: string | null): string =>
   d ? new Date(d + 'T00:00:00').toLocaleDateString('pt-BR') : '—';
 
+/**
+ * Data corrente no formato YYYY-MM-DD, pela data LOCAL (não UTC) — à noite, o UTC já
+ * está no dia seguinte e a data "voltaria um dia". Consumida pelo ContaForm (default de
+ * emissão/vencimento na inclusão) e pelo update otimista de situação em /consulta, que
+ * espelha o carimbo de `payment_date` feito pela trigger no banco.
+ */
+export const todayISO = (): string => {
+  const d = new Date();
+  const mm = String(d.getMonth() + 1).padStart(2, '0');
+  const dd = String(d.getDate()).padStart(2, '0');
+  return `${d.getFullYear()}-${mm}-${dd}`;
+};
+
 /** Data/hora ISO → dd/mm/aaaa hh:mm. '—' quando vazio. */
 export const fmtDateTime = (iso: string | null): string =>
   iso
