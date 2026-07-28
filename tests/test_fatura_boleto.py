@@ -120,9 +120,12 @@ class _StoreRunnerMixin:
     """Helper de execucao de extract_and_store_accounts (run_extraction/read_extracted_rows
     mockados). Mixin — NAO herdar entre TestCases (o unittest re-rodaria os testes do pai)."""
 
-    def _run(self, saved_names, rows_by_name):
+    def _run(self, saved_names, rows_by_name, subject=None):
         ctrl = FakeControl()
         saved = [Path(n) for n in saved_names]
+        rec = dict(REC)
+        if subject is not None:
+            rec["subject"] = subject   # regras que dependem do assunto (ex.: seguradora)
 
         def fake_run_extraction(pdf_path, pdf_passwords=None):
             return (pdf_path.name, None)  # csv_path = nome do arquivo
@@ -133,7 +136,7 @@ class _StoreRunnerMixin:
         with patch.object(read_emails, "run_extraction", fake_run_extraction), \
              patch.object(read_emails, "read_extracted_rows", fake_read_rows):
             _, saved_count, nonpayable_only, _att_account = read_emails.extract_and_store_accounts(
-                saved, "<MID>", ctrl, email_rec=dict(REC))
+                saved, "<MID>", ctrl, email_rec=rec)
         return ctrl, saved_count, nonpayable_only
 
 
@@ -347,6 +350,55 @@ class NfseComBoletoTest(_StoreRunnerMixin, unittest.TestCase):
         self.assertEqual(saved, 1)
         self.assertEqual(ctrl.financial_calls[0]["barcode"], BOLETO_REAL)
         self.assertEqual(ctrl.financial_calls[0]["document_type"], "boleto")
+
+
+class SeguradoraBoletoGateTest(_StoreRunnerMixin, unittest.TestCase):
+    """E-mail de SEGURADORA: so o boleto com linha digitavel valida vira conta.
+
+    Caso real (email_control 1082, "SEGUROS SURA VID_G_002_930_2011924_15"): o kit
+    digital traz DOIS documentos por link — boleto e "conjunto faturamento". Sem a regra,
+    a fatura viraria uma SEGUNDA conta: ela tem valor DIFERENTE do boleto (premio total x
+    parcela), entao escapa da guarda de valor da regra fatura+boleto, e o nome do arquivo
+    gerado pelo download por link (`..._link.pdf`) nao casa _is_statement_document.
+    """
+
+    SUBJECT = "SEGUROS SURA VID_G_002_930_2011924_15"
+
+    def test_boleto_grava_e_fatura_de_outro_valor_e_descartada(self):
+        rows = {
+            "boleto_link.pdf": _row("boleto_link.pdf", BOLETO_REAL, amount="133.94"),
+            "fatura_link.pdf": _row("fatura_link.pdf", None, doc_type="fatura",
+                                    amount="1607.28"),   # premio total ≠ parcela
+        }
+        ctrl, saved, nonpayable = self._run(
+            ["boleto_link.pdf", "fatura_link.pdf"], rows, subject=self.SUBJECT)
+        self.assertEqual(saved, 1)
+        self.assertEqual(ctrl.financial_calls[0]["barcode"], BOLETO_REAL)
+        self.assertEqual(float(ctrl.financial_calls[0]["amount"]), 133.94)
+        self.assertEqual(ctrl.financial_calls[0]["document_type"], "seguro")
+        self.assertFalse(nonpayable)            # houve pagavel → 'extraído'
+        self.assertEqual(ctrl.error_calls, [])  # descarte e skip, nao erro em /erros
+
+    def test_seguradora_sem_boleto_valido_nao_gera_conta(self):
+        # Nenhum documento com linha digitavel → e-mail inteiro 'ignorado' (nao 'falha').
+        rows = {"apolice.pdf": _row("apolice.pdf", None, doc_type="outro", amount="900.00")}
+        ctrl, saved, nonpayable = self._run(["apolice.pdf"], rows, subject=self.SUBJECT)
+        self.assertEqual(saved, 0)
+        self.assertEqual(len(ctrl.financial_calls), 0)
+        self.assertTrue(nonpayable)             # → status_for_result devolve 'ignorado'
+        self.assertEqual(ctrl.error_calls, [])  # nao aparece em /erros
+
+    def test_assunto_sem_seguro_mantem_comportamento_atual(self):
+        # Anti-regressao: o MESMO par de PDFs com assunto nao-seguradora segue a regra
+        # geral (valores distintos = dividas distintas → duas contas, caso LMED).
+        rows = {
+            "b1.pdf": _row("b1.pdf", BOLETO_REAL, amount="133.94"),
+            "b2.pdf": _row("b2.pdf", None, amount="1607.28"),
+        }
+        ctrl, saved, nonpayable = self._run(
+            ["b1.pdf", "b2.pdf"], rows, subject="Rastreador - Demonstrativo fatura - 07/2026")
+        self.assertEqual(saved, 2)
+        self.assertFalse(nonpayable)
 
 
 if __name__ == "__main__":

@@ -2050,6 +2050,67 @@ Duas guardas adicionais em `extract_and_store_accounts` **Passo 2**, no mesmo po
 
 Testes: `tests/test_nonpayable_rules.py`.
 
+### SEGURADORA: só boleto com linha digitável válida vira conta (não regredir)
+
+Regra de negócio (pedido do usuário, 2026-07-28): e-mail de **seguradora** só gera conta a
+pagar quando traz um **boleto com linha digitável válida**; sem boleto válido o e-mail vira
+**`ignorado`** (não `falha`). O pagável resultante é rotulado **`document_type='seguro'`**.
+
+**Contexto detectado SÓ PELO ASSUNTO** (`_is_insurance_context(subject)` — `seguro`,
+`seguros`, `seguradora(s)`, `apólice(s)`, palavra inteira sem acento). **Não ampliar para
+`supplier_name` nem para o domínio do remetente** — "Porto Seguro" é fornecedor legítimo de
+vários ramos, e o critério mais amplo DESTRUIRIA contas que existem hoje (verificado no banco):
+
+| conta | assunto | por que sobrevive |
+|---|---|---|
+| **348** `BOLETO - PORTO SAÚDE` | fornecedor `PORTO SEGURO - SEGURO SAUDE S/A`, **sem barcode** | o assunto não tem o termo → o gate não a apaga |
+| **58** `Rastreador - Demonstrativo fatura` | remetente `@portoseguro.com.br`, veio do **corpo**, sem barcode | idem |
+| **617** `Rastreador - Demonstrativo fatura` | rastreador veicular, não é seguro | não é re-rotulado `seguro` |
+
+**Uma única condição no Passo 2** (`extract_and_store_accounts`, acima de
+`payable_attempts += 1` — é o que produz `ignorado` em vez de `falha`) cobre as duas metades:
+e-mail COM boleto → o boleto grava e o **"conjunto faturamento"** que vem junto é descartado;
+e-mail SEM boleto → todas as linhas caem em `skipped_nonpayable` → `nonpayable_only` →
+`ignorado`. No **corpo** (`try_extract_from_body`) a mesma regra: sem sinal financeiro →
+`BODY_IGNORED`; com valor mas sem linha digitável → `BODY_IGNORED`; **com** linha digitável no
+corpo → a conta É criada (a guarda não é um bloqueio cego do e-mail de seguradora).
+`_apply_seguro_doc_type` roda **abaixo** de utility/tributo/transporte/cartório e só re-rotula
+tipos genéricos (`boleto`/`outro`/`""`) — guia de tributo cobrada por seguradora continua guia.
+
+**Risco residual aceito:** boleto de seguradora cuja linha digitável o Vision não leia passa a
+ser ignorado em vez de virar conta (classe da conta 348). Contido pela detecção por assunto.
+Sem migration (`seguro` já está no enum e no CHECK 087) e sem `.env` (`seguro` já está em
+`KEYWORDS_DEFAULT` e no `EMAIL_KEYWORDS` de produção — o `email_control` 1082 registrou
+`keyword_matched='seguro'`). Testes: `tests/test_doc_type_seguro.py`,
+`tests/test_body_seguro_ignored.py` e `SeguradoraBoletoGateTest` em `tests/test_fatura_boleto.py`.
+
+**Caso de origem — o que estava quebrado (email_control 1082, "SEGUROS SURA VID_G_002…"):** o
+e-mail **não tem anexo**; o boleto vem por **link** (tracker AWS SES → `mdi.li` → PDF no S3) e
+falhava por **dois** motivos independentes: (1) o redirect ia para a **porta 7000**, barrada
+pela allowlist de portas do guard anti-SSRF (ver "Boleto por link"); (2) o PDF entrega o texto
+**espelhado**, então a linha digitável não saía (ver abaixo). Reprocessado em 2026-07-28 →
+conta **715** (SEGUROS SURA S/A, R$ 133,94, venc. 10/08/2026, `pdf_vision`, barcode Itaú com
+fator 1534 conferindo com o vencimento). O e-mail **441** (mesma origem, junho) **não é
+reprocessável** — não está mais na INBOX; segue em `falha`.
+
+### PDF com texto ESPELHADO → Claude Vision (`extract_pdf.py` — não regredir)
+
+Alguns boletos (caso SEGUROS SURA) são PDF **digital** cujo pdfplumber entrega **cada linha com
+os caracteres invertidos**: `otnemicneV`=Vencimento, `49,331 $R`=R$ 133,94, `6202/80/01`=
+10/08/2026, `A/S ARUS SORUGES`=SEGUROS SURA S/A. O volume de texto (~5 000 chars) passa longe do
+limiar `len(raw) < 80`, então **não havia fallback** e o Claude recebia texto ilegível. Reverter
+as linhas recupera prosa/valor/data/CNPJ, mas **não a linha digitável** — ela fica fragmentada e
+intercalada entre colunas, e sem ela não há `barcode` (logo, pela regra acima, nenhuma conta de
+seguradora fecharia). `is_mirrored_text(raw)` detecta e `_extract_single` manda ao **Vision**,
+que lê a página **renderizada** (visualmente correta) e recupera a linha digitável.
+
+Distinto de **`fix_reversed_lines`**, que anota com `[RTL: …]` **campos isolados** (CNPJ/data/
+valor/nosso número) de uma coluna RTL — aquilo é por campo, isto é a página inteira. A heurística
+é **por LINHA** (conta as linhas em que um rótulo de boleto só aparece na versão invertida,
+mínimo 3), não por contagem global: o PDF da SURA é **misto** (páginas normais + a do boleto
+espelhada) e um placar agregado poderia empatar. PDF normal não produz essas linhas → sem
+regressão nem chamada Vision extra. Testes: `tests/test_mirrored_pdf_text.py`.
+
 ### Vencimento AUTORITATIVO pelo fator do código de barras (não regredir)
 
 A data de vencimento de um boleto é **codificada pelo emissor no FATOR DE VENCIMENTO** do
@@ -2915,13 +2976,26 @@ passa por `upload_attachment` dentro de `extract_and_store_accounts`, anexo ou l
   descarta todos os links se esse texto de aviso aparecer citado no corpo.
 - **Guarda anti-SSRF do download (segurança §4 C-1/C-2 — não regredir):** todo `GET` de
   link passa por `_is_safe_download_url` (`_fetch_url`) — bloqueia scheme ≠ http(s), porta
-  fora de `{80,443}` e host que resolve para IP **interno** (privado/loopback/link-local/
+  malformada/zero e host que resolve para IP **interno** (privado/loopback/link-local/
   reservado/multicast — cobre metadata cloud `169.254.169.254`, `localhost`, LAN). O
   `_SafeRedirectHandler` **revalida cada redirect** (impede bypass via 302 para alvo interno);
   os PDFs salvos são contidos em `PDF_INBOX` (`_is_within_inbox`). Conteúdo de remetente
   desconhecido controla a URL — **nunca** remover essas guardas. Os caminhos legítimos
   (BRASPRESS, página HTML intermediária) batem em hosts públicos e passam. O cookiejar do
   `http.cookiejar` só envia cookie a domínio correspondente (sem vazamento cross-domain).
+- **PORTA: não há allowlist (mudança de política, 2026-07-28 — não reintroduzir):** havia
+  `_ALLOWED_PORTS = {80,443}`, removida por barrar um caminho **legítimo**: o boleto das
+  **seguradoras** (SEGUROS SURA) chega por link que redireciona para
+  `http://mdi.li:7000/api/item/<id>` — host **público** servindo o PDF numa porta alta. O
+  `_SafeRedirectHandler` recusava o 302 ("destino não permitido") e o e-mail caía em
+  `falha` (diagnóstico do `email_control` 1082). A proteção REAL contra SSRF é o teste de
+  **IP interno** (`_host_is_safe` + pin de IP + revalidação de cada redirect): provado que o
+  destino é externo, a porta não dá acesso a serviço interno nenhum. Trade-off assumido: o
+  reader passa a poder falar HTTP com qualquer porta de host **público** (o alvo ainda
+  precisa devolver `%PDF` para virar conta). Uma allowlist de portas/domínios voltaria a
+  quebrar o caso SURA quando a seguradora trocar de encurtador. Travado em
+  `tests/test_ssrf_guard.py` (porta alta em host externo passa; IP interno segue bloqueado
+  em **qualquer** porta).
 - **`_PinnedHTTPSHandler` compatível com Python 3.12+/3.14 (não regredir):** o handler que
   fixa o IP validado (anti-DNS-rebinding, S4-1) NÃO pode referenciar `self._check_hostname` —
   atributo **removido do `HTTPSHandler` no Python 3.12+** (a verificação de hostname passou a
@@ -4532,6 +4606,24 @@ lê os arquivos do disco.
 > encaminhado + "Fatura No:" etc.). Recuperação retroativa (conta 674) já aplicada via
 > `reprocess_message.py` na Supabase compartilhada. Validação (esperado `boleto`):
 > `py -3 -c "import sys; sys.path.insert(0,'skills/email-reader/scripts'); import read_emails as R; bc='34192153100007217911092614333532938395767000'; print('boleto' if R._is_boleto_barcode(bc) else 'skip')"`
+
+> **DEPLOY 2026-07-28 — regra de SEGURADORA + porta livre no guard SSRF + PDF espelhado
+> (PENDENTE de cópia p/ prod):** e-mail de seguradora passa a gerar conta só com boleto de
+> linha digitável válida (`document_type='seguro'`) e, sem boleto, vira `ignorado` em vez de
+> `falha` — ver "SEGURADORA: só boleto com linha digitável válida vira conta". Junto vão as
+> duas correções que destravaram o caso: a **remoção da allowlist de portas** do guard
+> anti-SSRF (o boleto da SURA redireciona para `mdi.li:7000`) e o **fallback Vision para PDF
+> com texto espelhado**. Deploy = copiar os **DOIS** arquivos (interdependentes):
+> `skills/email-reader/scripts/read_emails.py` (regra + SSRF) **e**
+> `skills/pdf-contas-pagar/scripts/extract_pdf.py` (`is_mirrored_text` + roteamento p/ Vision).
+> **Sem `.env`** (`seguro` já está no `EMAIL_KEYWORDS` de produção — o e-mail 1082 registrou
+> `keyword_matched='seguro'`), **sem dependência nova**, **sem passo de banco** (`seguro` já
+> está no CHECK 087). **Degrada com segurança:** o código ANTIGO segue funcionando (só mantém
+> os e-mails de seguradora em `falha`). Como os deltas de `read_emails.py` são cumulativos,
+> esta cópia carrega junto as pendências anteriores. A recuperação retroativa (conta **715**,
+> e-mail 1082 → `extraído`) já foi aplicada na Supabase compartilhada; o e-mail **441** não é
+> reprocessável (fora da INBOX) e segue em `falha`. Validação (esperado `True True True`):
+> `py -3 -c "import sys; sys.path.insert(0,'skills/email-reader/scripts'); sys.path.insert(0,'skills/pdf-contas-pagar/scripts'); import read_emails as R, extract_pdf as E; print(R._is_insurance_context('SEGUROS SURA VID_G_002'), R._is_safe_download_url('http://mdi.li:7000/api/item/x'), hasattr(E,'is_mirrored_text'))"`
 
 ### Deploy manual da Cobrança de vencidos (envios) em produção (caso específico — não regredir)
 
