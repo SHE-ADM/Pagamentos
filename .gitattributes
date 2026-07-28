@@ -1,0 +1,25 @@
+# Normalizacao de fim de linha — o repositorio e LF.
+#
+# POR QUE: o desenvolvimento e em Windows e o repositorio nasceu em LF, com
+# `core.autocrlf=false` e sem normalizacao. Qualquer ferramenta que reescreva um arquivo
+# em modo texto no Windows (inclusive `pathlib.write_text` do Python, que traduz "\n" para
+# os.linesep) o converte para CRLF — e o git commita a mudanca inteira.
+#
+# O ESTRAGO NAO E COSMETICO: com o arquivo todo marcado como alterado, o SonarCloud passa
+# a tratar CADA LINHA como codigo NOVO. Todo o passivo pre-existente (ex.: a complexidade
+# 55 de extract_and_store_accounts) entra no gate de "new code" e reprova o PR — com o
+# motivo real escondido atras de milhares de linhas de ruido. Alem de destruir o
+# `git blame` e gerar conflito para quem trabalhar nos mesmos arquivos.
+#
+# `text=auto` deixa o git detectar binario e nao mexer nele; `eol=lf` garante LF tanto no
+# repositorio quanto no working tree. Nao ha .bat/.cmd aqui (os unicos formatos que
+# realmente dependem de CRLF); os .ps1 funcionam com LF.
+* text=auto eol=lf
+
+# Binarios declarados explicitamente — a deteccao automatica e boa, mas um arquivo com
+# bytes ambiguos pode ser lido como texto e corrompido pela normalizacao.
+*.png  binary
+*.ico  binary
+*.pdf  binary
+*.woff2 binary
+*.xlsx binary
