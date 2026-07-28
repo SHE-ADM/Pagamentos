@@ -1300,19 +1300,66 @@ Supabase (PostgreSQL)  ── financial_account_control (dados extraídos)
 > (`PYTHON_BRIDGE_TIMEOUT_MS`, a leitura síncrona real leva minutos) e **5s** no health; o timeout
 > vira `PythonBridgeError(504)` (indisponível segue `502`). Teste em `lib/python-bridge.test.ts`.
 
-## Chat de IA (PLANEJADO — nada aplicado)
+## Chat de IA (PLANEJADO — nada aplicado no banco)
 
 Chat conversacional embarcado no app para análise **read-only** dos dados de contas a pagar
 (perguntas em linguagem natural → texto + tabela/gráfico). Desenho completo em
 **[docs/arquitetura-chat-ia-pagamentos.md](docs/arquitetura-chat-ia-pagamentos.md)** — ler antes
 de implementar qualquer parte.
 
-**Status: FASE DE DESIGN.** Não há código, migration, view, role nem tabela criados; as DDL do
-documento são **propostas** a validar contra o schema real. Pilares: **nunca usar `service_role`**
-no caminho do chat (role dedicada read-only sobre um schema `analytics` de views curadas, RLS
-respeitada) · **tool calling** sobre funções de negócio como via primária, text-to-SQL só como
-fallback controlado · log de toda interação para auditoria. Ver as "Decisões em aberto (Fase 0)"
-do documento antes de propor implementação.
+**Status: Fase 0 (validação de schema) CONCLUÍDA em 2026-07-28 — nada aplicado no banco.** Não há
+código, migration, view, role nem tabela criados. Pilares que permanecem: **nunca usar
+`service_role`** no caminho de leitura do chat · **tool calling** sobre funções de negócio como via
+primária · log de toda interação para auditoria.
+
+**O documento JÁ FOI REVISADO** com o resultado da Fase 0 (views validadas contra o banco, 6 tools,
+roadmap re-baselinado, §13 substituída pelos achados). O resumo abaixo é o essencial; o documento é
+a fonte completa.
+
+**As 4 decisões fechadas na Fase 0:**
+
+1. **Acesso a dados = PostgREST + JWT do usuário, NÃO uma role `ai_readonly`.** A role dedicada do
+   desenho original veria **0 linhas**: as policies de `financial_account_control` são `TO
+   authenticated` e dependem de `auth.uid()` (via `auth_group_sees_only_own()`), que só existe
+   porque o PostgREST popula `request.jwt.claims` a cada request — uma role nova não casa policy
+   alguma e cai no default-deny. O caminho correto é o que `canSeeConta` (`lib/auth.ts`) já usa:
+   `getAnonClient()` + `.setHeader('Authorization', 'Bearer <token do usuário>')`.
+2. **Tools são FUNÇÕES SQL (RPC) `SECURITY INVOKER`, não views consultadas por filtro.** O PostgREST
+   só agrega (`sum()`/`count()`) com `db-aggregates-enabled`, **desligado por padrão no Supabase**.
+   Como função, a agregação roda no banco, os parâmetros viajam como **bind** (o gateway nunca
+   interpola string do modelo em SQL) e a RLS das tabelas base continua valendo dentro dela.
+3. **`generate_sql` (text-to-SQL) ADIADO** para depois da v1 — não roda por PostgREST e é o maior
+   vetor de risco. Foi essa análise que expôs o resíduo de grants corrigido pela **migration 097**:
+   **`TRUNCATE` ignora RLS** e estava concedido a `anon` e `authenticated` em quase todo o `public`
+   — inalcançável enquanto não existe caminho de SQL arbitrário, mas um text-to-SQL com conexão
+   direta criaria esse caminho. **Já revogado**; se o fallback voltar, o pré-requisito está pronto.
+4. **Camada semântica no schema `analytics`**, exposto no PostgREST (Settings → API → Exposed
+   schemas) com `GRANT USAGE/SELECT/EXECUTE` a `authenticated` e `REVOKE` do resto.
+
+**ADR-001 (§15 do documento) — sem vetores/RAG no núcleo analítico:** o cálculo é determinístico
+sobre linhas, então nada de pgvector/embeddings no caminho do número; casamento aproximado de nome
+de fornecedor/empresa usa `unaccent` + `pg_trgm` (os índices trigram já existem). A decisão 3 acima
+**não conflita** com ela: adiar o text-to-SQL é sobre *quando* implementar o fallback, não sobre
+trocá-lo por recuperação semântica.
+
+**`payment_date` responde caixa realizado direto** (`date_field: 'pagamento'`), por decisão do dono
+do produto — ver o bloco da migration 096 na seção de banco.
+
+**Armadilhas de schema que a Fase 0 corrigiu (já aplicadas ao §7 do documento — não reintroduzir):**
+não existem `dim_company`/`dim_supplier`/`dim_status` (são `company`/`supplier`/`status`); a FK é
+**`sk_supplier`**, não `supplier_id`; o nome do fornecedor é `trade_name` (fallback `legal_name`), o
+da empresa é `company.trade_name`; **o aging não pode filtrar `status_name = 'vencido'`** (só 1 conta
+de 574 está nesse status — vencido de fato é `due_date < CURRENT_DATE AND status_id IN (1,2,3)`, pois
+a trigger só reclassifica em INSERT/UPDATE e o batch roda 1x/dia); as flags
+`has_opened`/`has_closed`/`has_invoiced` da dimensão `status` estão **todas `false`**, então "em
+aberto" só se obtém pelo set explícito `{1,2,3}`; o fact precisa da classificação contábil (centro,
+plano, grupo, subgrupo) com o sentinela id 0 → "não informado"; e **não usar materialized view**
+(574 linhas, 19 índices).
+
+**Fase 1 (primeiro passo da implementação):** criar o schema `analytics` com as views/funções do
+documento, a `ai_chat_log` com RLS, os `GRANT`/`REVOKE`, e **expor `analytics` no PostgREST**
+(Settings → API → Exposed schemas — passo de dashboard, não de migration). O
+`@anthropic-ai/sdk` **não existe** em nenhum app/pacote do monorepo: o gateway é greenfield.
 
 ## Comandos
 
@@ -3014,7 +3061,15 @@ bloqueia esses e-mails tanto no `_add_supplier_email` quanto no Passo 4 e no aut
 `resolve_supplier_id` (todos SQL). O lado Python não tem esse helper; o bloqueio de remetente
 interno é imposto no banco pela RPC. A precedência **anexo → corpo**
 do nome é garantida antes, no pipeline Python (o corpo só alimenta o resolver quando o anexo não
-gera conta). Função `normalize_search()` é SECURITY DEFINER. `financial_account_control`
+gera conta). **`normalize_search(txt)` = `lower(unaccent(txt))` é `IMMUTABLE PARALLEL SAFE STRICT`
+e `SECURITY INVOKER`** (conferido no catálogo em 2026-07-28: `prosecdef = false` — este texto
+dizia "SECURITY DEFINER", o que estava **errado**; sem impacto prático, já que a função não lê
+tabela alguma, mas induzia a erro em análise de RLS). Ser `IMMUTABLE` é o que permite os
+**índices funcionais** que existem sobre ela em `supplier`: `idx_supplier_trade_name_trgm` e
+`idx_supplier_legal_name_trgm` (GIN `gin_trgm_ops`) mais as versões btree normalizadas. **Toda
+busca por nome de fornecedor deve chamar `normalize_search(coluna)`** — escrever
+`unaccent(lower(coluna))` inline devolve o mesmo resultado e **não usa o índice**, porque o
+planner só casa expressão idêntica. `financial_account_control`
 referencia o fornecedor **apenas pela FK `sk_supplier`** (surrogate key snowflake, NOT NULL —
 `migration 042`): a RPC e as funções de resolução retornam/keyam `sk_supplier`; `supplier_id`
 virou **chave de negócio** e ficou só na tabela `supplier` (NOT NULL UNIQUE, igualada ao `sk`
@@ -3885,8 +3940,38 @@ local/agendada (ver flag `EMAIL_READER_ENABLED` acima e memória [[vercel-deploy
 ## Banco de dados (Supabase)
 
 Migrations em `supabase/migrations/`, aplicadas **manualmente no SQL Editor** (ou via Supabase
-MCP — ver a nota de cada uma) em ordem numérica (`001` → `096`). **Próxima migration = `097`**
+MCP — ver a nota de cada uma) em ordem numérica (`001` → `097`). **Próxima migration = `098`**
 (verificar sempre antes de criar nova).
+
+**A `097` faz a HIGIENE dos grants default de escrita** de `anon`/`authenticated` no schema
+`public` **e corrige a causa raiz** (aplicada via Supabase MCP em 2026-07-28). Três passos:
+(1) `REVOKE INSERT, UPDATE, DELETE, TRUNCATE, REFERENCES, TRIGGER, MAINTAIN` de **`anon`** em
+todas as tabelas — ele mantém só `SELECT`; (2) `REVOKE TRUNCATE, REFERENCES, TRIGGER, MAINTAIN`
+de **`authenticated`** — **sem `UPDATE` na lista**; (3) `ALTER DEFAULT PRIVILEGES FOR ROLE
+postgres IN SCHEMA public` revogando a escrita dos dois papéis, para tabela nova **nascer sem
+escrita**.
+
+> ⚠️ **A assimetria entre o passo 2 e o passo 3 é LOAD-BEARING — não "unificar" (não regredir):**
+> nos objetos **existentes**, `authenticated` não tem `UPDATE` de tabela e sim **GRANTs POR
+> COLUNA** (030/033/068: `has_invoice`/`has_bank_slip`/`status_id` + `reviewed_at`). Como um
+> `REVOKE UPDATE ON <tabela>` derruba **também** os privilégios por coluna do mesmo tipo, incluir
+> `UPDATE` no passo 2 quebraria a curadoria inline de `/consulta` e o "revisado" de `/emails` —
+> foi por isso que a 081 revogou só `INSERT, DELETE` ali. Já no passo 3 revogar `UPDATE` é seguro
+> **porque default privileges valem apenas para objetos criados DEPOIS**, sem tocar em grant por
+> coluna existente.
+>
+> **O que a 097 deliberadamente NÃO faz:** não revoga `SELECT` de `anon` (hoje inócuo — nenhuma
+> policy o contempla, então ele lê 0 linhas; revogar trocaria "conjunto vazio" por "permission
+> denied", diferença observável sem ganho real); não mexe em SEQUENCES/FUNCTIONS; e **não altera
+> os default privileges do papel `supabase_admin`** (exigiria superuser). Como as tabelas deste
+> projeto são criadas por `postgres`, o passo 3 cobre o caso real — mas objeto criado por
+> `supabase_admin` ainda precisaria de `REVOKE` explícito.
+>
+> **Estado verificado após aplicar:** 0 privilégios de escrita de tabela sobrando para
+> `anon`/`authenticated`; os **4** grants por coluna da curadoria **intactos**
+> (`has_column_privilege` = `true` nos três de `/consulta` e no `reviewed_at`); `SELECT`
+> preservado nas 21 relações; `service_role` inalterado; e o default ACL do `public` reduzido a
+> `anon=r, authenticated=r`. Requer **PostgreSQL 17+** (privilégio `MAINTAIN`).
 
 **A `096` cria `financial_account_control.payment_date`** — a **data em que a conta foi paga**,
 que até então não existia no banco (coluna `DATE` nullable + índice parcial `ix_fac_payment_date`
@@ -3904,17 +3989,33 @@ automático. `payment_date` **não** entra no grant de coluna de `authenticated`
 verificado que isso **não** impede a curadoria inline de `/consulta` (privilégio de coluna é
 checado contra a lista `SET` do comando, não contra o que um trigger BEFORE altera).
 
-> ⚠️ **`payment_date` carrega TRÊS semânticas misturadas — NÃO tratar como caixa realizado (não
-> regredir):** (a) nas **442 contas já pagas** no momento da migration, o valor é o
-> **VENCIMENTO** — aproximação deliberada, porque a data real do histórico não existe em lugar
-> nenhum do banco; conta paga com atraso aparece como paga no vencimento; (b) nas **baixas
-> automáticas** (batch `baixa-automatica` das 08:00 e `qualifiesForAutoPago` no clique da 2ª flag
-> em `/consulta`), o valor é o **dia em que o sistema RECONHECEU** o pagamento, não aquele em que
-> ele ocorreu; (c) só na baixa com data informada explicitamente é a **data REAL**. Consequência:
-> "quanto foi pago em maio" continua não sendo respondível com precisão — mas agora *parece*
-> respondível, o que é pior que a ausência anterior. Antes de usar a coluna em dashboard ou na
-> camada analítica, separar as origens (ex.: uma coluna `payment_date_source`) ou devolver a
-> ressalva junto do número.
+> **`payment_date` é a DATA DE PAGAMENTO da conta — decisão do dono do produto (2026-07-28): usar
+> como tal, sem ressalva, em dashboard e na camada analítica.** Auditoria estrutural da coluna
+> (feita na Fase 0 do chat de IA), para quem precisar conferir número ou mexer no caminho de escrita:
+>
+> - **Quem escreve: só a trigger `trg_fac_payment_date`.** `payment_date` **não** está no grant de
+>   coluna de `authenticated` (que segue exatamente com `has_invoice`/`has_bank_slip`/`status_id` —
+>   conferido em `information_schema.column_privileges`) **e** está omitida do
+>   `financialAccountControlInputSchema` de `@sheild/shared`, então o Zod a descarta (strip) no
+>   POST/PATCH da Next API. Nenhum caminho do app a envia; o pipeline Python tampouco. Gravar data
+>   explícita hoje exige SQL direto com `service_role` — o ramo "data informada no mesmo comando" da
+>   096 existe, mas é **inalcançável pela aplicação**.
+> - **A ordem das triggers BEFORE foi verificada no catálogo** (o Postgres dispara em ordem
+>   alfabética): `trg_fac_authorship` → **`trg_fac_payment_date`** → `trg_fe_sk_company` →
+>   `trg_fe_status_vencimento` → `trg_fe_updated_at`. A única que reescreve `status_id` é
+>   `fn_set_status_from_due_date`, e **só** quando a conta está em aberto (`{1,2,3}`) — ela nunca
+>   produz nem destrói o `8`. Por isso o resultado é **independente da ordem**: o preenchimento testa
+>   `NEW.status_id = 8` e a limpeza testa a transição a partir de `OLD.status_id = 8`, e nenhuma das
+>   duas condições é alterada pelas triggers vizinhas.
+> - **Invariante conferida no dado:** `payment_date IS NULL` ⇔ `status_id <> 8`, com **0 linhas
+>   fora**. Nenhuma data de pagamento no futuro; nenhuma conta paga com vencimento futuro.
+> - **O único limite real, e ele é do HISTÓRICO, não da coluna:** as **443** contas pagas existentes
+>   em 2026-07-28 têm `payment_date = due_date` **sem exceção** — vieram do backfill da 096, que
+>   adotou o vencimento. Daí para frente, um carimbo da trigger só se distingue do backfill quando
+>   `payment_date <> due_date`; pagamento feito **no** vencimento gera valores idênticos, então **não
+>   há discriminador perfeito** entre backfill e carimbo — a coluna de origem foi deliberadamente
+>   **não** criada. Na prática: série por `payment_date` até 2026-07-28 segue a curva de
+>   **vencimento**; a partir daí é a data em que a baixa foi registrada.
 
 **A `095` corrige um BUG DE FUNDAÇÃO da trigger `fn_set_status_from_due_date`** (idempotente,
 `CREATE OR REPLACE FUNCTION`; aplicada via Supabase MCP em 2026-07-23) — ver "Trigger de situação
@@ -4085,7 +4186,26 @@ INSERT/UPDATE/DELETE ao papel `authenticated` em toda tabela/VIEW nova do schema
 (056/057 nos cadastros, **079** no anexo, **081** nas 6 tabelas restantes + a view `app_user`,
 onde deixar o default passar era uma escalada de privilégio real). Conferir com
 `information_schema.role_table_grants` (grantee='authenticated', privilege_type in INSERT/UPDATE/
-DELETE) — o esperado é a lista vazia, fora dos grants POR COLUNA intencionais das 030/033/068. A `056` é de **segurança**
+DELETE) — o esperado é a lista vazia, fora dos grants POR COLUNA intencionais das 030/033/068.
+
+> **A receita acima está DESATUALIZADA em um ponto: conferir só `authenticated` não basta.**
+> Levantado na Fase 0 do chat de IA (2026-07-28) e **corrigido pela migration 097**: a campanha
+> 056/057/079/081 tratou o papel `authenticated`, mas **`anon` seguia com `INSERT`/`UPDATE`/
+> `DELETE` de tabela inteira em 16 tabelas** do `public` (incluindo `financial_account_control`
+> por completo) e **`TRUNCATE` estava concedido aos DOIS papéis** em quase tudo — sendo que
+> **`TRUNCATE` não é filtrado por RLS**. Nenhum dos dois era explorável (RLS sem policy para
+> `anon` ⇒ default-deny; e `TRUNCATE` não é exposto pelo PostgREST, com ambos os papéis sem
+> `rolcanlogin`), mas o primeiro deixava a RLS como barreira **única** e o segundo é o que
+> morderia se um dia existir caminho de SQL arbitrário sob esses papéis.
+>
+> **Receita corrigida** — usar `grantee IN ('anon','authenticated')` e `privilege_type IN
+> ('INSERT','UPDATE','DELETE','TRUNCATE')`; o esperado hoje é **lista vazia** (a 097 zerou), com
+> os grants POR COLUNA das 030/033/068 preservados à parte em `column_privileges`. E, desde a
+> **097**, o `ALTER DEFAULT PRIVILEGES` do `public` já nasce sem escrita para os dois papéis —
+> então **tabela nova não reintroduz o resíduo** (a ressalva fica por conta de objeto criado por
+> `supabase_admin`, cujo default não é alterável sem superuser).
+
+A `056` é de **segurança**
 (idempotente): habilita RLS + leitura `authenticated` + **REVOKE de escrita** do papel
 `authenticated` nos cadastros pré-existentes (`company`/`financial_account`/`financial_bank`/
 grupos/subgrupos) e em `audit_log` se existir — fecha o ponto cego de RLS apontado na
@@ -4138,7 +4258,7 @@ internet` ao CHECK de `document_type` e faz backfill — ver "Normalização de 
 | Tabela | Propósito |
 |---|---|
 | `email_control` | Dedup/controle. `status` ∈ (`extraído`, `recebido`, `pendente`, `falha`, `ignorado`, `duplicidade`) — **migrations 022/031**. `extraído`=PDF extraído (CSV gerado); `recebido`=sem PDF, conta via corpo; `pendente`=PDF salvo sem CSV (substitui `baixado`); `falha`=casou keyword mas sem PDF e sem conta no corpo; `ignorado`=não-financeiro (sem keyword) **ou NF-e pura sem conta a pagar** (`subject_is_pure_nfe`); `duplicidade`=pagável do corpo duplica conta já registrada por outro e-mail (**migration 031**; card/filtro próprios em `/emails`). O status é calculado em `process_message` pelo resultado real (conta/CSV/corpo/duplicata), não por `pdf_extracted`. **Visibilidade por REMETENTE (migration 078):** a policy SELECT (`authenticated`) filtra por `lower(sender_email)=lower(auth.email())` quando o grupo do usuário tem `sees_only_own_accounts` (Comercial) — `/emails` mostra só os e-mails de que o usuário é remetente; demais grupos veem tudo; `service_role` com bypass |
-| `financial_account_control` | Tabela principal de contas a pagar — uma linha por documento; alimentada pelo pipeline de e-mail **e** por CRUD manual (baixas, consolidações, dashboards). Substitui a antiga `financial_emails` (dropada na migration 020). O fornecedor é referenciado **só pela FK `sk_supplier`** (surrogate key snowflake, NOT NULL — **migration 042**, antes era `supplier_id`) — nome/CNPJ vêm do JOIN com `supplier` (colunas denormalizadas dropadas na **migration 041**). Tem `sender_email` (migration 023; backfill em 025) usado na resolução p/ alinhar `supplier.email`, e `subject` (migration 025) — exibidos/buscados em `/consulta`. **Classificação contábil** (migrations 047/048): `cost_center_id`/`chart_account_id` SMALLINT, NOT NULL DEFAULT 0 (FKs para os cadastros; id 0 = "não informado") — preenchidos no CRUD manual (cascata centro→plano). **Autoria** (migrations 076/077): `created_by` (DONO — base da visibilidade por dono), `updated_by`, `status_changed_by`, `status_changed_at` — UUID → `auth.users`, NOT NULL DEFAULT sentinela `teste@otimotex.com.br`, carimbados pelo servidor/trigger `trg_fac_authorship` (ver "Visibilidade de contas por dono" / "Auditoria de autor"). **`payment_date`** (DATE, migration 096): data de pagamento, carimbada pela trigger `trg_fac_payment_date` ao entrar em `status_id = 8` e limpa ao sair — **ler a ressalva das TRÊS semânticas** no bloco da 096 acima antes de usá-la como caixa realizado |
+| `financial_account_control` | Tabela principal de contas a pagar — uma linha por documento; alimentada pelo pipeline de e-mail **e** por CRUD manual (baixas, consolidações, dashboards). Substitui a antiga `financial_emails` (dropada na migration 020). O fornecedor é referenciado **só pela FK `sk_supplier`** (surrogate key snowflake, NOT NULL — **migration 042**, antes era `supplier_id`) — nome/CNPJ vêm do JOIN com `supplier` (colunas denormalizadas dropadas na **migration 041**). Tem `sender_email` (migration 023; backfill em 025) usado na resolução p/ alinhar `supplier.email`, e `subject` (migration 025) — exibidos/buscados em `/consulta`. **Classificação contábil** (migrations 047/048): `cost_center_id`/`chart_account_id` SMALLINT, NOT NULL DEFAULT 0 (FKs para os cadastros; id 0 = "não informado") — preenchidos no CRUD manual (cascata centro→plano). **Autoria** (migrations 076/077): `created_by` (DONO — base da visibilidade por dono), `updated_by`, `status_changed_by`, `status_changed_at` — UUID → `auth.users`, NOT NULL DEFAULT sentinela `teste@otimotex.com.br`, carimbados pelo servidor/trigger `trg_fac_authorship` (ver "Visibilidade de contas por dono" / "Auditoria de autor"). **`payment_date`** (DATE, migration 096): **a data de pagamento da conta** — carimbada pela trigger `trg_fac_payment_date` ao entrar em `status_id = 8` e limpa ao sair; escrita SÓ pela trigger (fora do grant de coluna de `authenticated` e do schema Zod de escrita). Usar como data de pagamento sem ressalva; a auditoria estrutural e o limite do histórico (backfill da 096 = vencimento) estão no bloco da 096 acima |
 | `financial_cost_center` / `financial_chart_of_account` | **Cadastros de classificação contábil** (pré-existentes, **preservados em limpezas**) usados como lookup no modal de contas. `financial_cost_center` é **gerenciado pelo CRUD de centros de custo** (`/tabelas/centros-de-custo` — PK `cost_center_id` SMALLINT IDENTITY ALWAYS; id 0 = sentinela "não informado", fora do CRUD; ver "CRUD de centros de custo"). `financial_chart_of_account` (também gerenciado pelo **CRUD de Plano de contas** — `/tabelas/plano-de-contas`) tem `cost_center_id` (relaciona o plano ao centro — base da CASCATA), `chart_account_subgroup_id` (FK → subgrupo) e `is_postable` (só os postáveis são lançáveis). Os cadastros `financial_bank`, `financial_account`, `financial_chart_of_account_group` e `financial_chart_of_account_subgroup` também ganharam CRUD próprio (grupo Tabelas — ver "CRUDs dos demais cadastros contábeis"). Lidos via `lib/lookups.ts` (service_role) **e** pelo frontend via embed REST (papel `authenticated`); RLS habilitado com policy de SELECT `TO authenticated` (migration 049 — sem ela o embed voltava null e a UI mostrava `#id`) |
 | `email_processing_errors` | Log de falhas com `raw_payload` JSON. **Visibilidade por REMETENTE (migration 078):** policy SELECT (`authenticated`) filtra por `lower(sender_email)=lower(auth.email())` para grupo com `sees_only_own_accounts` (Comercial) — `/erros` mostra só os erros de que o usuário é remetente; demais veem tudo; `service_role` com bypass |
 | `financial_account_attachment` | **Anexos (N) de uma conta** (migration 079) — PADRÃO ÚNICO das duas origens: `origin='pipeline'` (documento do e-mail; espelha `financial_account_control.source_file`, gravado pelo reader) e `origin='manual'` (upload do usuário no cadastro/edição). `storage_key` = chave CRUA do objeto no bucket `attachments` (pipeline: nome flat; manual: `manual/{conta}/…`). **Soft delete** (`deleted_at`/`deleted_by`) — o objeto FICA no bucket; anexo `pipeline` é irremovível (auditoria → 403). UNIQUE `(account_id, storage_key)`; **não** UNIQUE global (um PDF com N boletos gera N contas que COMPARTILHAM o objeto). RLS SELECT herda a visibilidade da conta pai (076) via `EXISTS`; escrita só `service_role`. Ver "Anexos de conta" |
