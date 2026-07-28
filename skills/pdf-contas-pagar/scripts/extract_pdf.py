@@ -458,6 +458,20 @@ def extract_linha_digitavel(text):
     if m:
         return re.sub(r"\D", "", m.group(1) + m.group(2))
 
+    # Padrao 5: separador ENTRE os campos tambem por PONTO (sem espaco nenhum) —
+    # forma usada por e-mails HTML de fatura, em que a linha digitavel e um unico
+    # token pontuado. Ex. (MOVVI, conta 693):
+    #   "23793.39100.90000.004375.07000.842000.3.15250000018190"
+    # Os padroes 1-4 exigem \s+ entre os campos e nao casam essa forma — o boleto
+    # ficava sem barcode (perdendo a dedup por codigo de barras E o vencimento
+    # autoritativo pelo fator FEBRABAN). Ultimo da ordem: so entra quando nenhum
+    # dos anteriores casou, entao nao altera o resultado de nenhuma entrada atual.
+    m = re.search(
+        r"\d{5}[. ]\d{5}[.\s]+\d{5}[. ]\d{6}[.\s]+\d{5}[. ]\d{6}[.\s]+\d[.\s]+\d{14}",
+        text)
+    if m:
+        return re.sub(r"\D", "", m.group())
+
     return None
 
 
