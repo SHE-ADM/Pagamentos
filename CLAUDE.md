@@ -1320,25 +1320,87 @@ Supabase (PostgreSQL)  ── financial_account_control (dados extraídos)
 > (`PYTHON_BRIDGE_TIMEOUT_MS`, a leitura síncrona real leva minutos) e **5s** no health; o timeout
 > vira `PythonBridgeError(504)` (indisponível segue `502`). Teste em `lib/python-bridge.test.ts`.
 
-## Chat de IA (Fase 1 APLICADA — schema `analytics` no banco; gateway ainda não existe)
+## Chat de IA (Fases 1 e 2 APLICADAS — `POST /api/ai-chat` existe; falta a UI e a validação real)
 
 Chat conversacional embarcado no app para análise **read-only** dos dados de contas a pagar
 (perguntas em linguagem natural → texto + tabela/gráfico). Desenho completo em
 **[docs/arquitetura-chat-ia-pagamentos.md](docs/arquitetura-chat-ia-pagamentos.md)** — ler antes
-de implementar qualquer parte.
+de implementar qualquer parte (§18 = resultado da Fase 2).
 
-**Status: Fases 0 e 1 CONCLUÍDAS (2026-07-28 / 2026-07-29).** A **migration 098** criou o schema
-**`analytics`** no banco: 2 views (`vw_payables`, `vw_aging_vencidos`), as **6 funções** de tool
-calling, `ai_chat_log` com RLS e os GRANT/REVOKE. **Ainda NÃO existe** gateway, rota, componente de
-chat nem `@anthropic-ai/sdk` (Fases 2–3). Pilares que permanecem: **nunca usar `service_role`** no
-caminho de leitura · **tool calling** sobre funções de negócio como via primária · log de toda
-interação para auditoria.
+**Status: Fases 0, 1 e 2 CONCLUÍDAS (2026-07-28 / 07-29).** A **migration 098** criou o schema
+**`analytics`**: 2 views (`vw_payables`, `vw_aging_vencidos`), as **6 funções** de tool calling,
+`ai_chat_log` com RLS e os GRANT/REVOKE. A **Fase 2** entregou o gateway —
+`apps/api-backend/lib/ai-chat/` (`tools.ts` · `errors.ts` · `gateway.ts` · `log.ts`) +
+`app/api/ai-chat/route.ts`, com `@anthropic-ai/sdk` e **73 testes**. **Falta a Fase 3:** UI no
+`frontend-vite`, `ANTHROPIC_API_KEY` no Vercel e a **primeira chamada real** à Claude API (nenhuma
+foi feita ainda — a validação de ponta a ponta consome tokens). Pilares que permanecem: **nunca
+usar `service_role`** no caminho de leitura · **tool calling** sobre funções de negócio como via
+primária · log de toda interação para auditoria.
 
 **`analytics` está EXPOSTO no PostgREST** (Data API → Settings → Exposed schemas: `public`,
 `graphql_public`, `analytics`) — passo de dashboard, feito em 2026-07-29. Conferido por HTTP com a
-anon key real: `POST /rest/v1/rpc/resumo_situacao` + `Accept-Profile: analytics` devolve
-`42501 permission denied for schema analytics` para `anon` (correto — roteia para o schema **e**
-barra o papel anônimo). Se algum dia voltar `PGRST106 Invalid schema`, a exposição foi desfeita.
+anon key real: `POST /rest/v1/rpc/resumo_situacao` devolve `42501 permission denied for schema
+analytics` para `anon` (correto — roteia para o schema **e** barra o papel anônimo). Se algum dia
+voltar `PGRST106 Invalid schema`, a exposição foi desfeita.
+
+> **`Content-Profile`, NÃO `Accept-Profile`, seleciona o schema em RPC (não regredir):** para
+> **POST** (que é como o PostgREST expõe função), o header é **`Content-Profile: analytics`**. Com
+> `Accept-Profile` a função é procurada em `public` e a resposta é **`PGRST202` — "function does
+> not exist"**, que aponta para o lugar errado (parece migration não aplicada). O
+> `.schema('analytics')` do supabase-js já envia o header certo; isto importa para depuração e
+> para chamada manual via cURL.
+
+**Invariantes do gateway (`lib/ai-chat/` — não regredir):**
+
+- **`getAnonClient()` + JWT do usuário, NUNCA `getSupabaseAdmin`** no caminho de dados. Só o
+  **log** usa `service_role`, e é exceção deliberada: deixar o usuário auditado escrever a própria
+  trilha permitiria omitir a própria pergunta (a policy da 098 o deixa **ler** só as dele).
+- **Log gravado ANTES de responder e aguardado.** Em serverless a function é **congelada** no
+  `return`, então `void gravarLog()` depois dele simplesmente não roda — e nada acusaria a perda.
+  A pergunta que **falhou** também é auditada: é dela que sai "quais tools faltam" (§11).
+- **`export const maxDuration = 300` na rota.** O default da Vercel (10–15 s) mata um loop de 2–3
+  iterações que funciona perfeitamente em dev.
+- **Teto de 6 iterações**, e ao atingi-lo uma chamada final que **não pode usar tools**
+  (`tool_choice: none`, com as tools ainda presentes — ver o bullet do fechamento abaixo) — o
+  usuário recebe o que já foi apurado com `truncated: true`, em vez de um erro seco.
+- **Tool calls paralelos voltam em UMA mensagem `user`**; falha de tool vira `tool_result` com
+  `is_error` (nunca bloco omitido, que quebraria o pareamento), com o detalhe no log, não no
+  modelo.
+- **A data de hoje vai na MENSAGEM, não no system prompt.** No bloco cacheado, o prefixo mudaria a
+  cada requisição e o prompt caching nunca acertaria — silenciosamente, sem erro.
+- **`stop_reason: 'max_tokens'` marca `truncated`** (o turno terminou, mas o texto foi cortado ao
+  meio) e o resultado de tool tem **teto de 60 KB**, cortado **por registro** — JSON partido ao meio
+  é ilegível para o modelo.
+- **Streaming (`.stream().finalMessage()`)**, não `.create()`: a resposta ao cliente é a mesma, o
+  ganho é o socket não ficar ocioso num turno longo (timeout de proxy) — e é de onde a Fase 3
+  puxará o texto parcial.
+- **401/400 do SDK NÃO são traduzidos** (viram 500 + log): são erro de configuração/payload
+  **nosso**; dizer "sessão expirada" mandaria o usuário deslogar sem efeito. Só se traduz o que o
+  usuário pode **agir** — 429 (`RateLimitError`), **qualquer 5xx do provedor** (→ 503
+  "indisponível") e timeout.
+- **A chamada de FECHAMENTO manda as MESMAS `tools` + `tool_choice: {type:'none'}`** — não basta
+  omitir o array. Remover `tools` é mudança de DEFINIÇÃO de tool, que invalida os três níveis de
+  cache (tools + system + messages) justamente na chamada de histórico mais longo; trocar só o
+  `tool_choice` preserva o cache. Achado do review — ver §19.2.
+- **O log registra os QUATRO campos de token.** `usage.input_tokens` é só o **resto não-cacheado**;
+  sem `cache_read_input_tokens` não há como estimar custo nem **notar um invalidador silencioso do
+  cache**, que não gera erro — só zera o número e aumenta a fatura (migration 101).
+- **A falha leva o estado parcial até a auditoria.** O gateway anexa ao erro o que já gastou e
+  apurou; sem isso, a falha de uma pergunta que custou 5 iterações era logada como "0 tokens, 0
+  tools" — e some o registro que revela quais tools faltam (§11). O `attachPartialRun` **engole a
+  própria falha** (`try/catch` + log): `defineProperty` lança em erro não-extensível, e como ele é
+  chamado DENTRO do `throw`, essa exceção substituiria o erro traduzido (429 → `TypeError`
+  genérico). Perde-se a auditoria parcial, nunca o erro.
+- **Teto do resultado de tool corta por REGISTRO — e, quando UM registro estoura sozinho
+  (`additional_info` é TEXT sem limite), corta a string e DECLARA o corte** (`JSON CORTADO`).
+  Devolver o registro inteiro furaria o teto que protege o contexto; cortar sem avisar faria o
+  modelo ler o fragmento final como dado.
+- **TROCAR `ANTHROPIC_MODEL` pode desligar o prompt caching EM SILÊNCIO.** O mínimo de prefixo
+  cacheável varia por modelo e **não é monotônico entre gerações**: 512 no Opus 5, mas **4.096** no
+  Opus 4.6 e no Haiku 4.5. Medido aqui: system + tools ≈ **2.175 tokens** — folgado para o Opus 5,
+  abaixo do mínimo daqueles dois. Abaixo do mínimo o `cache_control` é ignorado sem erro: só
+  `cache_read_input_tokens` zerado e a conta subindo. **Depois de qualquer troca de modelo, conferir
+  essa coluna em `analytics.ai_chat_log`.**
 
 **Invariantes da camada `analytics` (não regredir):**
 
@@ -1359,6 +1421,15 @@ barra o papel anônimo). Se algum dia voltar `PGRST106 Invalid schema`, a exposi
   defasado pela trigger + batch diário (6 rotuladas `vencido` contra 100+ em atraso real).
 - **Âncora de teste NÃO pode ser número absoluto** — o dado deriva em 24 h (574→578 contas entre
   28 e 29/07). Usar oráculo diferencial (tool × query de controle) ou janela histórica fechada.
+- **O `service_role` PRECISA de GRANT explícito para gravar `ai_chat_log` (migration 101 — não
+  regredir):** a 098 concedeu tudo a `authenticated` e **nada** ao `service_role`, que é quem
+  escreve a trilha. Ele burla RLS (`rolbypassrls`) mas **não é superuser** — sem `USAGE` no schema
+  e `INSERT` na tabela o write falha com `42501`, e como `logInteraction` **nunca lança**, o pilar
+  de auditoria ficaria **morto em produção sem nenhum sintoma**. A 101 concede `USAGE` + `SELECT,
+  INSERT` **só no log** — e **nada** nas 6 funções nem nas views: o caminho de dados tem de passar
+  pelo JWT do usuário, senão é escalada de privilégio silenciosa. Verificado com o papel real:
+  INSERT ok · `EXECUTE` nas tools = false · `SELECT` nas views = false · `UPDATE` no log = false
+  (grava a trilha, não a adultera). **Toda tabela nova em `analytics` repete esse cuidado.**
 
 **O documento JÁ FOI REVISADO** com o resultado da Fase 0 (views validadas contra o banco, 6 tools,
 roadmap re-baselinado, §13 substituída pelos achados). O resumo abaixo é o essencial; o documento é
@@ -1404,23 +1475,39 @@ aberto" só se obtém pelo set explícito `{1,2,3}`; o fact precisa da classific
 plano, grupo, subgrupo) com o sentinela id 0 → "não informado"; e **não usar materialized view**
 (574 linhas, 19 índices).
 
-**Fase 2 (o próximo passo) — gateway na Next API.** A camada de dados já existe (migration 098); o
-que falta é o orquestrador: `npm i @anthropic-ai/sdk -w apps/api-backend` (**não existe** em
-nenhum app/pacote — é greenfield), `ANTHROPIC_API_KEY` server-side, `lib/ai-chat/` (tools +
-gateway + log, um arquivo cada — o gateway **não** é Repository→Service→Route, é orquestrador),
-`app/api/ai-chat/route.ts` e o INSERT em `ai_chat_log`. A chamada às funções segue o padrão de
-`canSeeConta` (`getAnonClient()` + `.setHeader('Authorization', 'Bearer <token>')`) — **nunca
-`getSupabaseAdmin`**, que ignoraria a RLS. Erros por `failFromError` (5xx não vaza detalhe).
+**Fase 2 — APLICADA (2026-07-29).** Os arquivos e a contagem de testes estão no bloco de status no
+topo desta seção (fonte única — não repetir aqui, foi o que já divergiu uma vez). Os três itens que
+o §17 apontou como quebrados em produção estão endereçados (`maxDuration`, teto de iterações, log
+síncrono) — ver os invariantes acima e o §18 do doc.
 
-> ⚠️ **LER O §17 do doc de arquitetura ANTES de escrever o gateway** (code review de 2026-07-29).
-> Três itens do desenho **não funcionam em produção** como descritos: (1) **sem `maxDuration` na
-> rota o gateway dá timeout** — o default da Vercel é 10–15 s e o loop de tool use passa disso
-> (precisa de `maxDuration` **e** streaming; um não substitui o outro); (2) o **loop não tem teto de
-> iterações**, então não há limite de custo por pergunta; (3) o **log "assíncrono" não executa** —
-> em serverless a function congela no `return`, então fire-and-forget perde a `ai_chat_log` (use
-> `waitUntil` ou log síncrono). Mais as armadilhas do Opus 5 (`temperature`/`top_p` → **400**;
-> `thinking` on por default consome o `max_tokens`) e o risco de o prompt caching **nunca acertar**
-> se a data corrente entrar no bloco cacheado do dicionário. Checklist de aceite no §17.8.
+**Defeitos que a autorrevisão pegou depois de tudo verde (§18.4 — não reintroduzir):** comentário
+prometendo teto de tamanho que **não existia** no resultado de tool; `max_tokens` tratado como
+resposta completa; chamada de fechamento **fora do `try`** (um 429 ali virava 500 genérico); e
+histórico sem alternância user/assistant, que vira 400 do provedor mascarado em 500. Todos
+corrigidos e travados por teste.
+
+**Code review posterior (§19 do doc) — 7 achados, NENHUM produzia erro visível:** (1) **CRÍTICO** —
+`service_role` sem GRANT no `analytics`: a auditoria inteira falharia em silêncio (migration 101);
+(2) o fechamento omitia `tools` e **destruía o prompt cache** na chamada mais cara; (3) o teste de
+concorrência do JWT cobria só `from()`, não o `.schema().rpc()` do chat (estendido e validado com
+mutante de 4 camadas); (4) tokens de cache não registrados, tornando o caching inverificável;
+(5) falha auditada como "0 tokens, 0 tools"; (6) só o 529 traduzido entre os 5xx do provedor;
+(7) `sk_company`/`nature_ids` aceitos no Zod fora do domínio do JSON Schema.
+
+**Segunda passada — 2 defeitos nas PRÓPRIAS correções (§19.9):** `attachPartialRun` lançava em erro
+não-extensível, o que **substituiria o erro traduzido dentro do `throw`** (429 → `TypeError`
+genérico, causa real perdida — a auditoria apagando a informação que existe para preservar); e o
+teto de resultado não segurava **um** registro grande (`additional_info` é TEXT sem limite: 200 KB
+saíam inteiros **e** rotulados "truncado"). Os dois estão em código **defensivo** — a categoria que
+menos aparece em teste, porque só roda quando algo já deu errado. **Todo `catch`/teto/fallback novo
+merece uma sonda que force o caminho ruim** — os dez achados das duas passadas foram encontrados
+conferindo o código contra o SISTEMA REAL (catálogo do Postgres, tabela de invalidação de cache da
+API, mutantes no SDK instalado), não relendo o código.
+
+**Fase 3 (o próximo passo):** (1) **primeira chamada real** à Claude API, conferindo
+`cache_read_input_tokens > 0` e o recorte da RLS com dois usuários de grupos diferentes;
+(2) UI do chat no `frontend-vite` consumindo `/data-api/ai-chat`; (3) **`ANTHROPIC_API_KEY` nas env
+vars do Vercel** — sem ela a rota devolve 500 em produção (o `.env` local já a tem).
 
 **Alicerce verificado (não regredir):** `canSeeConta` — e o gateway, que reusa o padrão — chama
 `.setHeader()` sobre o **singleton** `getAnonClient()`. O postgrest-js isola as requisições por
@@ -4020,8 +4107,18 @@ local/agendada (ver flag `EMAIL_READER_ENABLED` acima e memória [[vercel-deploy
 ## Banco de dados (Supabase)
 
 Migrations em `supabase/migrations/`, aplicadas **manualmente no SQL Editor** (ou via Supabase
-MCP — ver a nota de cada uma) em ordem numérica (`001` → `100`). **Próxima migration = `101`**
+MCP — ver a nota de cada uma) em ordem numérica (`001` → `101`). **Próxima migration = `102`**
 (verificar sempre antes de criar nova).
+
+**A `101` conserta o GRANT que faltava ao `service_role` em `analytics.ai_chat_log` e acrescenta
+as colunas de token de cache** (aplicada via Supabase MCP em 2026-07-29, idempotente). O GRANT é
+correção de **bug**: a 098 concedeu tudo a `authenticated` e nada ao `service_role`, que é quem
+grava a trilha do chat — e como `logInteraction` **nunca lança**, a auditoria ficaria morta em
+produção sem sintoma. Concede `USAGE` no schema + `SELECT, INSERT` **só no log**; **nada** nas 6
+funções nem nas views (o caminho de dados precisa do JWT do usuário para a RLS decidir). As colunas
+`cache_read_input_tokens`/`cache_creation_input_tokens` existem porque `usage.input_tokens` é
+**apenas o resto não-cacheado** — sem elas não há como estimar custo nem notar um invalidador
+silencioso do cache. Ver "Chat de IA" e §19 do doc de arquitetura.
 
 **A `100` restaura o DML do `service_role` no DEFAULT de tabelas novas** (aplicada via Supabase MCP
 em 2026-07-29, idempotente), sem devolver nada a `anon`/`authenticated`. É a correção do efeito

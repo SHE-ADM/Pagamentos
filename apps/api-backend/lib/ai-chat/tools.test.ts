@@ -1,0 +1,134 @@
+import { describe, it, expect, vi } from 'vitest';
+import { TOOL_DEFINITIONS, isToolName, parseToolInput, runTool, ANALYTICS_SCHEMA } from './tools';
+
+describe('TOOL_DEFINITIONS', () => {
+  it('expõe exatamente as 6 tools do §6', () => {
+    expect(TOOL_DEFINITIONS.map((t) => t.name)).toEqual([
+      'resumo_situacao',
+      'gasto_por_periodo',
+      'gasto_por_fornecedor',
+      'gasto_por_classificacao',
+      'aging_vencidos',
+      'listar_contas',
+    ]);
+  });
+
+  it('toda tool tem input_schema de objeto — exigência da Claude API', () => {
+    for (const t of TOOL_DEFINITIONS) {
+      expect(t.input_schema.type, t.name).toBe('object');
+      expect(t.description.length, t.name).toBeGreaterThan(30);
+    }
+  });
+
+  it('isToolName rejeita nome fora do conjunto', () => {
+    expect(isToolName('resumo_situacao')).toBe(true);
+    expect(isToolName('drop_table')).toBe(false);
+  });
+});
+
+describe('parseToolInput', () => {
+  it('prefixa os parâmetros com p_ para casar a assinatura SQL', () => {
+    const r = parseToolInput('gasto_por_periodo', {
+      date_from: '2026-07-01',
+      date_to: '2026-07-31',
+      granularity: 'mes',
+    });
+    expect(r).toEqual({
+      ok: true,
+      params: { p_date_from: '2026-07-01', p_date_to: '2026-07-31', p_granularity: 'mes' },
+    });
+  });
+
+  it('omite chaves ausentes em vez de enviar undefined (deixa o DEFAULT do SQL valer)', () => {
+    const r = parseToolInput('resumo_situacao', {});
+    expect(r).toEqual({ ok: true, params: {} });
+  });
+
+  it('descarta chave desconhecida inventada pelo modelo', () => {
+    const r = parseToolInput('resumo_situacao', { sk_company: 2, tabela: 'auth.users' });
+    expect(r.ok && r.params).toEqual({ p_sk_company: 2 });
+  });
+
+  it('rejeita data em formato errado com mensagem acionável', () => {
+    const r = parseToolInput('gasto_por_periodo', { date_from: '01/07/2026', date_to: '2026-07-31' });
+    expect(r.ok).toBe(false);
+    expect(!r.ok && r.message).toContain('date_from');
+    expect(!r.ok && r.message).toContain('YYYY-MM-DD');
+  });
+
+  it('rejeita obrigatório ausente', () => {
+    const r = parseToolInput('gasto_por_periodo', { date_from: '2026-07-01' });
+    expect(r.ok).toBe(false);
+    expect(!r.ok && r.message).toContain('date_to');
+  });
+
+  it('rejeita group_by fora do domínio (defesa antes do banco)', () => {
+    const r = parseToolInput('gasto_por_classificacao', {
+      date_from: '2026-07-01',
+      date_to: '2026-07-31',
+      group_by: 'DROP TABLE',
+    });
+    expect(r.ok).toBe(false);
+  });
+
+  it('rejeita status inventado, mas aceita os nomes reais da dimensão', () => {
+    const base = { date_from: '2026-07-01', date_to: '2026-07-31' };
+    expect(parseToolInput('gasto_por_periodo', { ...base, status: ['inexistente'] }).ok).toBe(false);
+    expect(parseToolInput('gasto_por_periodo', { ...base, status: ['pago', 'cancelado'] }).ok).toBe(true);
+  });
+
+  it('rejeita limit acima do teto (o banco também clampa — esta é a 1ª barreira)', () => {
+    const base = { date_from: '2026-07-01', date_to: '2026-07-31' };
+    expect(parseToolInput('gasto_por_fornecedor', { ...base, limit: 9999 }).ok).toBe(false);
+    expect(parseToolInput('gasto_por_fornecedor', { ...base, limit: 100 }).ok).toBe(true);
+  });
+
+  // O domínio do Zod tem de bater com o enum do JSON Schema. Aceitar aqui o que lá é proibido faz
+  // o modelo receber lista vazia e concluir "não há contas dessa empresa" — em vez de um erro que
+  // ele consegue corrigir, que é o propósito desta camada.
+  it('rejeita sk_company fora de {1,2,3}, o mesmo domínio do JSON Schema', () => {
+    expect(parseToolInput('resumo_situacao', { sk_company: 99 }).ok).toBe(false);
+    expect(parseToolInput('resumo_situacao', { sk_company: 3 }).ok).toBe(true);
+  });
+
+  it('rejeita nature_id fora da faixa de smallint (evita erro cru do Postgres)', () => {
+    const base = { date_from: '2026-07-01', date_to: '2026-07-31', group_by: 'grupo' };
+    expect(parseToolInput('gasto_por_classificacao', { ...base, nature_ids: [99_999] }).ok).toBe(false);
+    expect(parseToolInput('gasto_por_classificacao', { ...base, nature_ids: [2, 8] }).ok).toBe(true);
+  });
+
+  it('nunca lança — parâmetro do modelo é fluxo normal, não exceção', () => {
+    expect(() => parseToolInput('resumo_situacao', null)).not.toThrow();
+    expect(() => parseToolInput('resumo_situacao', 'texto')).not.toThrow();
+    expect(parseToolInput('resumo_situacao', null).ok).toBe(false);
+  });
+});
+
+describe('runTool', () => {
+  function clientMock(result: { data?: unknown; error?: { message: string } }) {
+    const setHeader = vi.fn().mockResolvedValue(result);
+    const rpc = vi.fn(() => ({ setHeader }));
+    const schema = vi.fn(() => ({ rpc }));
+    return { client: { schema } as never, schema, rpc, setHeader };
+  }
+
+  it('usa o schema analytics e repassa o JWT do usuário (a RLS depende disso)', async () => {
+    const m = clientMock({ data: [{ status_name: 'pago' }] });
+    const rows = await runTool(m.client, 'jwt-do-usuario', 'resumo_situacao', { p_sk_company: 1 });
+
+    expect(m.schema).toHaveBeenCalledWith(ANALYTICS_SCHEMA);
+    expect(m.rpc).toHaveBeenCalledWith('resumo_situacao', { p_sk_company: 1 });
+    expect(m.setHeader).toHaveBeenCalledWith('Authorization', 'Bearer jwt-do-usuario');
+    expect(rows).toEqual([{ status_name: 'pago' }]);
+  });
+
+  it('normaliza retorno não-array para lista vazia', async () => {
+    const m = clientMock({ data: null });
+    await expect(runTool(m.client, 't', 'resumo_situacao', {})).resolves.toEqual([]);
+  });
+
+  it('propaga erro do PostgREST para o caller decidir', async () => {
+    const m = clientMock({ error: { message: 'permission denied' } });
+    await expect(runTool(m.client, 't', 'resumo_situacao', {})).rejects.toThrow(/permission denied/);
+  });
+});

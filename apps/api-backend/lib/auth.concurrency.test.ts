@@ -39,7 +39,8 @@ vi.stubEnv('SUPABASE_URL', 'https://proj.supabase.co');
 vi.stubEnv('SUPABASE_ANON_KEY', 'anon-key');
 
 // NÃO mockar '@supabase/supabase-js' aqui — o objetivo é exercitar o SDK real.
-import { canSeeConta } from './auth';
+import { canSeeConta, getAnonClient } from './auth';
+import { runTool } from './ai-chat/tools';
 
 /** Requisição capturada pelo fetch interceptado. */
 type Captured = { url: string; authorization: string | null };
@@ -159,5 +160,66 @@ describe('canSeeConta — isolamento do cliente anon compartilhado', () => {
     const semToken = new Request('http://localhost/api/contas/7');
     await expect(canSeeConta(semToken, 7)).resolves.toBe(false);
     expect(captured).toHaveLength(0);
+  });
+});
+
+// O chat de IA usa um caminho DIFERENTE do mesmo singleton: `.schema('analytics').rpc(...)` em vez
+// de `.from(...)`. São implementações distintas no postgrest-js, e o teste acima — escrito para
+// `from()` — não exercita nenhuma delas: o invariante de isolamento estava documentado como
+// coberto e, para o caminho do chat, não estava.
+//
+// QUATRO camadas isolam este caminho (medidas com mutantes, não deduzidas da leitura):
+//   1. `schema()` → `new PostgrestClient(...)`, cujo construtor faz `new Headers(headers)`;
+//   2. `rpc()` → `const headers = new Headers(this.headers)`;
+//   3. construtor de `PostgrestBuilder` → `new Headers(builder.headers)`;
+//   4. `setHeader` → copy-on-write.
+// Sabotar 1+2+4 NÃO produz vazamento — a camada 3 sozinha ainda isola. Só com as QUATRO
+// desativadas os dois tokens colidem, e é aí que este teste falha (verificado). Ou seja: ele tem
+// poder de detecção real, e a segurança atual tem folga grande — não depende de um detalhe único.
+// Ainda assim, é garantia da implementação INSTALADA, não do contrato público: um `npm update`
+// pode mudá-la, e a falha seria silenciosa (um usuário lendo o recorte de RLS de outro).
+describe('runTool — isolamento no caminho de RPC (chat de IA)', () => {
+  it('não vaza o token entre chamadas concorrentes de usuários diferentes', async () => {
+    const barrier = makeBarrier(2);
+
+    vi.stubGlobal('fetch', async (input: RequestInfo | URL, init?: RequestInit) => {
+      const headers = new Headers(init?.headers);
+      captured.push({ url: String(input), authorization: headers.get('authorization') });
+      await barrier.wait();
+      return new Response('[]', {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    });
+
+    const tokenA = token('chat-A');
+    const tokenB = token('chat-B');
+    const client = getAnonClient();
+
+    await Promise.all([
+      runTool(client, tokenA, 'resumo_situacao', { p_sk_company: 1 }),
+      runTool(client, tokenB, 'resumo_situacao', { p_sk_company: 2 }),
+    ]);
+
+    expect(captured).toHaveLength(2);
+    // Com o singleton mutável, os dois sairiam com o MESMO Authorization — e um usuário do grupo
+    // restrito receberia o recorte de RLS do outro, sem erro nenhum.
+    expect(captured.map((c) => c.authorization).sort()).toEqual(
+      [`Bearer ${tokenA}`, `Bearer ${tokenB}`].sort(),
+    );
+  });
+
+  it('endereça a função no schema analytics, não em public', async () => {
+    vi.stubGlobal('fetch', async (input: RequestInfo | URL, init?: RequestInit) => {
+      const headers = new Headers(init?.headers);
+      captured.push({ url: String(input), authorization: headers.get('authorization') });
+      // `Content-Profile` é o header que seleciona o schema em POST/rpc. Com `Accept-Profile` a
+      // função seria procurada em `public` e o PostgREST devolveria PGRST202.
+      expect(headers.get('content-profile')).toBe('analytics');
+      return new Response('[]', { status: 200, headers: { 'Content-Type': 'application/json' } });
+    });
+
+    await runTool(getAnonClient(), token('t'), 'resumo_situacao', {});
+    expect(captured[0].url).toContain('/rest/v1/rpc/resumo_situacao');
   });
 });

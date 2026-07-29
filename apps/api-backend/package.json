@@ -13,6 +13,7 @@
     "test:watch": "vitest"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.115.0",
     "@sheild/shared": "*",
     "@supabase/supabase-js": "^2.45.0",
     "next": "16.2.10",
