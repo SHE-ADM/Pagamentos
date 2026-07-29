@@ -1,16 +1,24 @@
 # Arquitetura — Chat de IA para Análise de Pagamentos
 
 **Projeto:** Pagamentos · **Documento:** desenho de arquitetura
-**Criado:** 2026-07-27 · **Revisado:** 2026-07-28 (Fase 0) · **Status:** Fase 0 concluída — nada aplicado no banco
+**Criado:** 2026-07-27 · **Revisado:** 2026-07-29 (Fase 1) · **Status:** Fases 0 e 1 concluídas — schema `analytics` APLICADO
 
 > Este documento define a arquitetura de um chat de IA **embarcado no app** para análise
 > conversacional dos dados de contas a pagar armazenados no Supabase (PostgreSQL).
 >
-> **Revisão da Fase 0 (2026-07-28):** o schema real foi inspecionado via Supabase MCP (só
-> `SELECT`/introspecção) e as suposições do desenho original foram confrontadas com ele. As views
-> e os contratos de tools abaixo **já refletem o schema real** e as DDL do §7 foram validadas
-> rodando como consulta ad-hoc. **Continua valendo: nada foi aplicado no banco** — a criação do
-> schema `analytics` é a Fase 1. Os achados e o que mudou estão no §13.
+> **Fase 0 (2026-07-28):** o schema real foi inspecionado via Supabase MCP e as suposições do
+> desenho original foram confrontadas com ele. As views e os contratos de tools abaixo **refletem o
+> schema real**. Achados no §13.
+>
+> **Fase 1 (2026-07-29): CONCLUÍDA** — `supabase/migrations/098_create_analytics_schema.sql`, via
+> Supabase MCP. O schema `analytics` existe no banco com as 2 views, as 6 funções, a `ai_chat_log`
+> e os GRANT/REVOKE; e **`analytics` está exposto no PostgREST** (Data API → Settings → Exposed
+> schemas). Resultado da validação no §16. **A Fase 2 (gateway) está destravada.**
+>
+> ⚠️ **Durante a Fase 1, os advisors do Supabase revelaram duas RPCs pré-existentes que
+> CONTORNAVAM a RLS e eram executáveis sem login** (`fn_delete_all_emails`, `search_text`) — uma
+> delas apagava a base inteira. Fechadas pela **migration 099**; nada a ver com o chat, mas achadas
+> por causa dele. Ver o `CLAUDE.md`, seção "Banco de dados".
 
 ---
 
@@ -95,9 +103,14 @@ com privilégio próprio para ler dado de negócio.
   4. **Validar os parâmetros** de cada tool call (Zod) e chamar a função em `analytics` via
      `rpc`, repassando o JWT do usuário.
   5. Formatar a resposta (`{ answer, table, chart_spec, tool_calls }`).
-  6. Logar a interação de forma assíncrona.
+  6. Logar a interação — ver §17.3: **"assíncrono" no sentido de fire-and-forget NÃO funciona em
+     serverless** e perderia a trilha de auditoria.
 - **Dependência a criar:** o `@anthropic-ai/sdk` **não existe hoje** em nenhum app/pacote do
   monorepo (só há uso da Claude API em Python, no pipeline de extração). O gateway é greenfield.
+
+> ⚠️ **Antes de escrever a primeira linha do gateway, ler o §17** — três itens deste desenho não
+> funcionam em produção como descritos (duração da function, teto do loop, log assíncrono), e há
+> armadilhas do modelo que quebram na primeira execução.
 
 ### 4.3 Camada de IA (Claude API)
 - Modelo Claude via Anthropic API (a mesma conta já em uso no projeto).
@@ -452,10 +465,17 @@ revogou `TRUNCATE` dos dois papéis, tirou toda a escrita de `anon` e corrigiu o
   chat e no `/consulta`.
 - **Devolver a tool + parâmetros ao usuário** (transparência) permite validação humana rápida.
 - **Testes de regressão de perguntas:** conjunto fixo de perguntas com resultado esperado, rodado
-  a cada mudança de prompt/schema (alinhado ao "todo componente tem teste"). Âncoras medidas em
-  2026-07-28 para a primeira bateria: **574** contas · **442 pagas / R$ 7.228.623,43** · **104 a
-  vencer** · **27 canceladas** · **105 em aberto**, das quais **1** vencida · **67** sem
-  classificação.
+  a cada mudança de prompt/schema (alinhado ao "todo componente tem teste").
+
+  > **A asserção NÃO pode ser um número absoluto (achado da Fase 1 — não regredir).** O pipeline
+  > roda a cada 5 min e o batch de vencidos 1×/dia, então as âncoras **derivam em 24 h**. Medido:
+  > entre 28/07 e 29/07 as contas foram de **574 → 578**, as pagas de 442 → 443, as em aberto de
+  > 105 → 108 e as **vencidas de fato de 1 → 6**. Um teste com literal reprovaria no dia seguinte,
+  > sem nenhum defeito real — e o ruído treinaria a equipe a ignorar a bateria.
+  >
+  > As duas formas corretas: (a) **oráculo diferencial** — a tool e uma query SQL de controle
+  > equivalente têm de devolver o mesmo valor, seja ele qual for (foi assim que a Fase 1 validou as
+  > funções, §16); (b) **janela histórica fechada** (`due_date < '2026-07-01'`), imune a dado novo.
 
 ---
 
@@ -476,9 +496,10 @@ revogou `TRUNCATE` dos dois papéis, tirou toda a escrita de `anon` e corrigiu o
 
 0. **Fase 0 — Validação de schema. ✅ CONCLUÍDA (2026-07-28).** Banco inspecionado via Supabase
    MCP, divergências levantadas (§13), views e contratos de tools corrigidos. **Nada aplicado.**
-1. **Fase 1 — Camada semântica.** Criar o schema `analytics`, as views planas do §7, as **6
-   funções** do §6, a `ai_chat_log` com RLS e os `GRANT`/`REVOKE`. Expor `analytics` no PostgREST
-   (Settings → API → Exposed schemas). **Sem `ai_readonly`** — a role foi descartada (§4.5).
+1. **Fase 1 — Camada semântica. ✅ CONCLUÍDA (2026-07-29).** Migration `098` aplicada: schema
+   `analytics`, as 2 views do §7, as **6 funções** do §6, a `ai_chat_log` com RLS e os
+   `GRANT`/`REVOKE`. **Sem `ai_readonly`** — a role foi descartada (§4.5). Validação no §16.
+   `analytics` exposto no PostgREST e conferido por HTTP com a anon key real.
 2. **Fase 2 — Gateway + tool use.** Rota na Next API com o loop de tool use, prompt caching,
    validação de parâmetros (Zod), chamada por `rpc` com o JWT do usuário, logging.
 3. **Fase 3 — Frontend.** Componente de chat + render de tabela/gráfico no design system.
@@ -608,3 +629,274 @@ pelas funções/SQL validado, nunca por recuperação semântica de valores.
 **Diretriz de implementação (Claude Code):** não introduzir pgvector/embeddings na Fase 1–4.
 Qualquer uso de vetores é feature à parte, decidida explicitamente, e nunca no cálculo dos
 números.
+
+---
+
+## 16. Resultado da Fase 1 — o que foi aplicado e validado
+
+Migration `supabase/migrations/098_create_analytics_schema.sql`, aplicada via Supabase MCP em
+2026-07-29. Idempotente.
+
+### 16.1 Objetos criados
+
+| Tipo | Objeto | Confirmado |
+|---|---|---|
+| Schema | `analytics` | `anon` **sem** `USAGE` |
+| View | `vw_payables`, `vw_aging_vencidos` | `security_invoker = true` nas duas |
+| Função | `resumo_situacao`, `gasto_por_periodo`, `gasto_por_fornecedor`, `gasto_por_classificacao`, `aging_vencidos`, `listar_contas` | 6/6 `SECURITY INVOKER` + `STABLE` |
+| Tabela | `ai_chat_log` | RLS ligada, policy `ai_chat_log_select_own` |
+
+### 16.2 Segurança
+
+- **0 grants de escrita** para `anon`/`authenticated` em todo o schema (a receita corrigida da 097:
+  conferir os **dois** papéis e incluir `TRUNCATE`).
+- **6/6 funções bloqueadas para `anon`** — o `REVOKE ... FROM PUBLIC` é o que fecha isso, já que o
+  PostgreSQL concede `EXECUTE` a `PUBLIC` por default em toda função criada.
+- `authenticated`: **não** insere em `ai_chat_log` (a escrita é só do gateway via `service_role`) e
+  **não** faz `UPDATE` nas views — que, sendo simples, poderiam ser auto-atualizáveis; foi
+  exatamente essa a escalada de privilégio da view `app_user` fechada pela 081.
+- `ALTER DEFAULT PRIVILEGES` no schema: objeto novo já nasce sem escrita e sem acesso do `anon`.
+- **`SET search_path = ''` nas 6 funções**, fechando o `function_search_path_mutable` que os
+  advisors do Supabase apontaram. Só é possível porque toda referência já estava qualificada
+  (`analytics.vw_*`, `public.normalize_search`) — e é uma segunda razão para o `LIKE` ter vencido o
+  operador `%` do `pg_trgm`: com o search_path vazio, `%` ficaria irresolvível e a função quebraria
+  **em runtime**, não na criação. Reconferido depois do `SET`: os 6 resultados idênticos.
+
+> **Achados PRÉ-EXISTENTES que os advisors levantaram e que NÃO foram tocados** (fora do escopo da
+> Fase 1, cada um merece decisão própria): a view `public.app_user` aparece como legível por `anon`
+> (`auth_users_exposed`, ERROR) — a 081 revogou a escrita, não a leitura; a tabela
+> `public.supplier_tmp` tem RLS ligada e nenhuma policy (resíduo de migração?); e várias funções de
+> **trigger** do `public` estão expostas como RPC executável por `anon`/`authenticated`, entre elas
+> `fn_delete_all_emails()`. Nenhuma é regressão da 098.
+
+### 16.3 A RLS propaga pelo `security_invoker` — validado com o papel real
+
+Teste com `SET LOCAL role authenticated` + `request.jwt.claims`, que é o que o PostgREST monta:
+
+| Usuário | Grupo | `vw_payables` | `listar_contas` |
+|---|---|---|---|
+| ester@otimotex.com.br | Comercial (`sees_only_own_accounts`) | **48** | 48 |
+| barbara@otimotex.com.br | Financeiro (irrestrito) | **578** | 50 (limite) |
+
+É o resultado que autoriza seguir para a Fase 2. Se os dois vissem o mesmo total, o
+`security_invoker` não teria pegado e o chat furaria a visibilidade por dono da migration 076.
+
+**Conferido também pelo HTTP real** (anon key do `.env`, depois de expor o schema): um `POST
+/rest/v1/rpc/resumo_situacao` com `Accept-Profile: analytics` como **`anon`** devolve
+`401 / 42501 permission denied for schema analytics`. É a resposta correta e prova as duas
+metades de uma vez — o PostgREST **roteia** para o schema (não é mais `PGRST106 Invalid schema`)
+**e** o papel anônimo não passa. O caminho autenticado foi provado na camada SQL (tabela acima);
+ponta a ponta por HTTP, ele será exercitado naturalmente pelo gateway da Fase 2, que é o
+consumidor real.
+
+### 16.4 Os números batem com o app (oráculo diferencial)
+
+Cada tool foi comparada com a query de controle equivalente sobre `financial_account_control`:
+
+| Tool | Qtd | Valor | Bate |
+|---|---|---|---|
+| `resumo_situacao` (exclui cancelado) | 551 | R$ 8.338.039,49 | ✅ qtd + valor + `overdue_count` |
+| `aging_vencidos` | 6 | R$ 23.478,49 | ✅ |
+| `gasto_por_periodo` (jul/2026) | 346 | R$ 6.161.000,27 | ✅ |
+
+Comportamentos de borda conferidos: busca de fornecedor por nome sem acento/caixa
+(`normalize_search` + `LIKE`) casa "OTIMOTEX" e "CONFECCOES OTIMOTEX"; `date_field='pagamento'`
+devolve o caixa realizado (313 contas em julho); `p_status` explícito **inclui** cancelado (24 em
+julho) enquanto a ausência dele exclui; `p_group_by` inválido (testado com `'DROP TABLE'`) devolve
+**conjunto vazio** em vez de agregar tudo numa linha `NULL`; e `p_limit = 9999` é clampado a 100.
+
+### 16.6 O alicerce que a Fase 2 vai usar foi verificado
+
+`canSeeConta` chama `.setHeader('Authorization', ...)` sobre o **singleton** `getAnonClient()`, e o
+gateway vai reusar exatamente esse padrão. Se o `setHeader` mutasse o cliente compartilhado, duas
+requisições concorrentes de usuários diferentes disputariam o mesmo objeto e uma leria com o JWT da
+outra — vazamento cross-user, com a RLS aplicando o recorte do usuário errado.
+
+**Medido, não deduzido:** o postgrest-js tem **duas** camadas independentes — `from()` já constrói
+o builder com um `new Headers(...)` próprio, e `setHeader` faz copy-on-write. Sabotando só a
+segunda, **não há vazamento** (a primeira sozinha isola); sabotando as duas, as duas requisições
+saem com o mesmo `Authorization`. Ou seja: é seguro hoje e com folga.
+
+Como isso é garantia da **implementação instalada** e não do contrato público — um `npm update`
+poderia quebrá-la em silêncio, sem erro e sem teste vermelho —, o invariante virou teste:
+`apps/api-backend/lib/auth.concurrency.test.ts` (arquivo separado de `auth.test.ts`, que mocka o
+SDK inteiro e portanto não cobre isto). O teste foi validado contra o mutante das duas camadas: ele
+falha quando o defeito existe.
+
+### 16.5 Decisões de implementação tomadas na Fase 1
+
+1. **`LIKE` sobre `normalize_search`, não o operador `%` do `pg_trgm`.** Os dois usam os índices GIN
+   funcionais, mas o `%` depende de a extensão estar no `search_path` da sessão **e** do limiar
+   `pg_trgm.similarity_threshold` — duas variáveis de ambiente a mais para um ganho nulo neste
+   volume. O `LIKE` é operador do core e é o que `findSupplierIdsByTerm` já usa no app.
+2. **`resumo_situacao` devolve o rótulo E o vencido recalculado** (colunas `overdue_*`). O rótulo
+   `status_name` é o que a tela mostra, mas é defasado (6 rotuladas `vencido` contra 100+ em atraso
+   real, pelo D2). Devolver só um dos dois faria o chat mentir por omissão em qualquer direção.
+3. **Despacho de `date_field`/`granularity`/`group_by` por `CASE`, nunca SQL dinâmico** — mantém
+   tudo como bind, e valor fora do domínio cai num `IN (...)` que devolve vazio em vez de agregar
+   silenciosamente errado.
+4. **Retorno enxuto em `listar_contas`** — sem `barcode`, `sender_email`, `subject`,
+   `email_body_excerpt`, `processing_notes`. O chat é análise financeira, não auditoria de
+   extração, e cada coluna a mais consome contexto do modelo em toda resposta.
+
+---
+
+## 17. Requisitos de robustez da Fase 2 (achados do code review de 2026-07-29)
+
+O desenho do gateway (§4.2, §5, §8, §10) está correto no que **decidiu** — JWT do usuário, tools
+parametrizadas, sem `service_role` — e silencioso em três pontos que decidem se ele **funciona em
+produção**. Nenhum é difícil; todos são fáceis de esquecer, e dois deles o projeto já pagou para
+aprender em outro contexto.
+
+### 17.1 BLOQUEADOR — `maxDuration` ausente: o gateway vai dar timeout
+
+Verificado: **não há `vercel.json` no `apps/api-backend` nem `maxDuration` declarado em lugar
+nenhum**. O default de uma Node function na Vercel é de **10–15 s**. Um loop de tool use com 2–3
+iterações — cada uma um round-trip ao modelo mais um `rpc` ao Postgres — passa disso na primeira
+pergunta que combine agregado e drill-down.
+
+São **duas** mudanças, e uma não substitui a outra:
+
+- `export const maxDuration = 300` na rota (eleva o teto da function);
+- **streaming** na chamada à Claude API (evita o timeout de *request*; é a recomendação padrão do
+  guia da API para qualquer chamada longa). Streaming **não** estende o teto da function.
+
+> É a terceira vez que este projeto encontra a mesma classe de problema: `CLAUDE_API_TIMEOUT` no
+> `extract_pdf.py`, `AbortSignal.timeout` no `python-bridge.ts` (S3-1) e agora o gateway. O padrão
+> do `CLAUDE.md` — "timeout explícito em toda I/O externa" — vale aqui na escrita, não depois do
+> incidente.
+
+### 17.2 BLOQUEADOR — o loop de tool use precisa de teto de iterações
+
+O §5 descreve o ciclo (`tool_call` → executa → `tool_result` → repete) **sem limite**. Um modelo
+que se convença de precisar de mais uma consulta itera até a function morrer, com custo
+proporcional. Sem teto, o "limite de custo/tokens por sessão" prometido no §8 não existe de fato.
+
+O Tool Runner do SDK expõe `max_iterations`; um loop manual precisa do contador explícito. Atingir
+o teto é uma resposta honesta ("não consegui responder"), não uma exceção — e vira insumo do §11.
+
+### 17.3 BLOQUEADOR — o log "assíncrono" do §4.2 não executaria
+
+Em serverless a function é **congelada assim que a resposta é retornada**: um `void logInteraction()`
+disparado depois do `return` simplesmente não roda. Perde-se a `ai_chat_log` — que é o pilar 3 do
+desenho e a fonte para descobrir quais tools faltam (§11).
+
+Duas saídas, sem terceira: `waitUntil` (Vercel) ou log **síncrono** antes de responder.
+
+### 17.4 Custo — o prompt caching do §10 pode nunca acertar
+
+Três coisas que o §10 assume e convém medir em vez de supor:
+
+| Fato | Consequência |
+|---|---|
+| Mínimo cacheável no Opus 5 = **512 tokens** | Abaixo disso não cacheia, **sem erro** (`cache_creation_input_tokens: 0`) |
+| TTL default = **5 min**; break-even = 2 requisições | Num chat interno com perguntas espaçadas, expira entre uma e outra: paga-se o prêmio de escrita (~1,25×) e nunca se lê |
+| Qualquer byte alterado no prefixo invalida tudo depois | Ver o invalidador provável abaixo |
+
+**O invalidador mais provável está no próprio §9.** Perguntas como "quanto paguei este mês" exigem
+que o modelo saiba a data de hoje. Se a data for interpolada no bloco cacheado do dicionário, o
+prefixo muda a cada requisição e **nada** cacheia. A data tem de ficar **depois** do último
+breakpoint. Verificar com `usage.cache_read_input_tokens` desde a primeira versão: zero em
+requisições repetidas = há invalidador.
+
+### 17.5 Armadilhas do modelo que quebram na primeira execução
+
+O documento não fixa modelo. O default do projeto é **`claude-opus-5`**, e nele:
+
+| Armadilha | Efeito |
+|---|---|
+| `temperature` / `top_p` / `top_k` | **400** — foram removidos. Código copiado de exemplo antigo quebra de imediato |
+| `thinking` ligado por default | `max_tokens` cobre **thinking + resposta**; dimensionar apertado trunca a resposta no meio |
+
+### 17.6 Contrato do loop — dois detalhes que corrompem o diálogo
+
+- **Tool que falha devolve `tool_result` com `is_error: true`** — nunca omitir o bloco. Omitir
+  quebra o pareamento `tool_use`/`tool_result` e confunde o modelo na iteração seguinte.
+- **Tool calls paralelos voltam em UMA única mensagem `user`.** O modelo pode pedir várias tools
+  numa resposta só; dividir os resultados em mensagens separadas ensina o modelo a parar de
+  paralelizar.
+
+### 17.7 Estrutura — o gateway não é Repository → Service → Route
+
+Os 8 CRUDs seguem esse padrão porque são **recursos**; o gateway é um **orquestrador com máquina de
+estados**. Forçá-lo no molde de CRUD produz um "service" que é só um loop. Sugestão:
+
+```
+lib/ai-chat/
+  tools.ts     # definições das 6 tools + validação dos parâmetros
+  gateway.ts   # o loop de tool use (teto de iterações, streaming, erro de tool)
+  log.ts       # ai_chat_log (service_role) — chamado antes de responder, ou via waitUntil
+app/api/ai-chat/route.ts
+```
+
+Cada peça testável isoladamente — que é o que falta num loop monolítico.
+
+**Zod 4 × `betaZodTool`:** o projeto está em Zod `4.4.3` e o helper do SDK foi escrito contra Zod 3;
+pode não aceitar schemas v4. A saída natural é `betaTool()` com JSON Schema cru — que **casa melhor
+aqui de qualquer forma**, já que o §6 deste documento já define os schemas em JSON Schema. Converter
+para Zod só para o helper reconverter é trabalho circular. O Zod permanece onde importa: validando
+os parâmetros no gateway antes do `rpc`.
+
+### 17.9 Erros do SDK da Anthropic ✅ CORRIGIDO NA RAIZ (2026-07-29)
+
+> **Resolvido antes da Fase 2 começar.** O que segue descreve o problema e a correção — a Fase 2
+> herda o comportamento certo, mas o gateway **ainda deve traduzir** 429/401/400 para mensagens
+> úteis (ver o fim desta seção): hoje eles viram 500 genérico, o que é seguro mas pouco informativo.
+>
+> **Correção aplicada:** `failFromError` deixou de reconhecer erro por **duck-typing** (`.status`) e
+> passou a exigir a base explícita **`ApiServiceError`** (`apps/api-backend/lib/api-error.ts`). Erro
+> que não estende essa classe — de terceiro ou bug nosso — vira **500 genérico + log**, nunca ecoa.
+> As 12 classes de service migraram para a base; os 23 mocks de teste que **duplicavam** o contrato
+> (`class XServiceError extends Error` dentro do `vi.mock`) passaram a reusá-lo via
+> `vi.importActual('@/lib/api-error')`; e `failFromError` ganhou cobertura própria — antes tinha
+> **zero testes para 62 call sites**. Suíte: 374 verdes, lint/typecheck/prune limpos.
+>
+> O problema original, para registro:
+
+O §8 diz "reusar `failFromError`, que já faz exatamente isso". Faz — **para os erros que ele foi
+desenhado para tratar**. Lendo o código ([lib/response.ts:36](../apps/api-backend/lib/response.ts#L36)),
+a regra é: erro com `status` **< 500 ecoa a mensagem**; 5xx vira genérico + log.
+
+Isso funciona porque os erros 4xx do CRUD são **mensagens curadas em pt-BR** que os services
+lançam. Os erros do SDK da Anthropic **também carregam `status`** — e não são curados:
+
+| Erro do SDK | `status` | O que `failFromError` faria hoje |
+|---|---|---|
+| `RateLimitError` | 429 | Ecoa a mensagem crua do provider ao usuário final |
+| `AuthenticationError` | 401 | Ecoa — e o problema é a **nossa** chave, não a sessão dele |
+| `BadRequestError` | 400 | Ecoa detalhe de payload/modelo |
+
+O resultado é um usuário do financeiro vendo texto em inglês sobre limites de organização e nomes
+de modelo — ruído para ele e informação de infraestrutura para quem estiver olhando. E o 401 é
+ativamente enganoso: o usuário conclui que **sua sessão** expirou.
+
+**O que a correção já garante:** nenhum desses três ecoa mais — todos viram 500 genérico + log,
+porque não estendem `ApiServiceError`. O vazamento está fechado.
+
+**O que ainda cabe ao gateway (qualidade, não segurança):** 500 genérico é seguro mas pouco
+informativo para o usuário. Traduza os casos que ele pode agir a respeito, lançando um
+`ApiServiceError` com mensagem em pt-BR — mesma ideia do `mapWriteError` dos anexos:
+
+| Erro do SDK | Tradução sugerida |
+|---|---|
+| `RateLimitError` (429) | `ApiServiceError('O assistente está sobrecarregado. Tente novamente em instantes.', 429)` |
+| `AuthenticationError` (401) | **Deixar virar 500** — é falha de configuração **nossa**; dizer "sessão expirada" seria enganoso |
+| `BadRequestError` (400) | **Deixar virar 500** — é bug nosso de payload, não algo que o usuário resolva |
+| Timeout / `APIConnectionError` | `ApiServiceError('Não foi possível falar com o assistente agora.', 503)` |
+
+Regra: só traduza o que o usuário pode **agir**. O resto é 500 + log, que a base já faz sozinha.
+
+### 17.8 Checklist de aceite da Fase 2
+
+- [ ] `export const maxDuration` na rota **e** streaming na chamada ao modelo
+- [ ] Teto de iterações no loop, com resposta honesta ao atingi-lo
+- [ ] Log gravado antes de responder (ou via `waitUntil`) — nunca fire-and-forget
+- [ ] `cache_read_input_tokens` observado > 0 em perguntas repetidas
+- [ ] Data corrente **fora** do bloco cacheado
+- [ ] Nenhum `temperature`/`top_p`/`top_k` no request
+- [ ] `max_tokens` dimensionado contando o thinking
+- [ ] Falha de tool volta como `tool_result` + `is_error: true`
+- [ ] Tool calls paralelos respondidos em uma única mensagem
+- [ ] Erros do SDK da Anthropic **traduzidos antes** do `failFromError` (§17.9) — 429/401/400 não
+      podem ecoar a mensagem crua do provider
+- [ ] Erros 5xx por `failFromError` (não vazam detalhe interno)
