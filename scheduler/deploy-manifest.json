@@ -1,0 +1,31 @@
+{
+  "_comment": "SHA-256 dos arquivos copiados para a máquina de produção (C:\\Sheild\\API\\Pagamentos). Gerado por scheduler/check_deploy_parity.py --update; não editar à mão. Hash calculado com fim de linha normalizado para LF.",
+  "files": {
+    "scheduler/restart-sheild-tasks.ps1": "c01cd26867f224cdab0b4dfb4938d8723125bcd2b2000594135013871b90613d",
+    "scheduler/run_backup.ps1": "81faf41ac350dc03ad3fbbf4a3c42170c0ed8af8459d8ba28d28ba220664bcf0",
+    "scheduler/run_baixa.ps1": "a692d1d04508f4f2cf49509985989ab9fa8d441d71110fc19a606decf1d463ee",
+    "scheduler/run_cobranca.ps1": "28592e216a89eefbdbed73374c566518c3a3893e9d57b9981ac90f58ba0a1524",
+    "scheduler/run_reader.ps1": "0ed146b2969c918ce025f4dd4e80ff103e6c7c2ca9fc6ad051c19f7f26f43046",
+    "scheduler/setup-backup-task.ps1": "4848100fb955307ebfc8903b613eac79bdc7b02cc5699c8c7d0d3948fbcb4eb5",
+    "scheduler/setup-baixa-task.ps1": "8f7ee7db5988ebc2cf28f098ddb0f88eb9590061789ef26a80b18fd947413bba",
+    "scheduler/setup-cobranca-task.ps1": "c59dd8a24781883ec12b3739a32ab20198e78cb63f05b1db0b8d346a1b9b254c",
+    "scheduler/setup-task.ps1": "509b68698b7baa3935f578c07a5518341d7e16d565d6fd214d0d074090416356",
+    "skills/backup-supabase/scripts/backup_db.py": "4e44c331e4542180805d232677d819038bb16a62e866b4eec6a4576aac36f54e",
+    "skills/backup-supabase/scripts/backup_storage.py": "e33d47a04fc8b5ba21125837c461ed89576c419c129ab5b50893f01ff073fb30",
+    "skills/backup-supabase/scripts/config.py": "9b01a753c4f7e5072ce468a5e628a24fb68fbcab3e7bf4cd191a729b1ebe6a6a",
+    "skills/backup-supabase/scripts/retention.py": "65e5d03f9a52eb6a792c6fe6eb98ef283f1f670afdf5d2667a98e01afea93276",
+    "skills/backup-supabase/scripts/run.py": "a6699759443aa8c46a769f9264d84eacbcef8f54004c1ad45fe94adc53ca4d57",
+    "skills/baixa-automatica/scripts/run.py": "b72f7dcc84e4b9dc9399056967b8cc77b06abf2a27e2e3ccef8cde3aa6731160",
+    "skills/cobranca-vencidos/scripts/db_firebird.py": "6f11b6adb33514b06bd147fad40395ddc994cf98d3aae9039113ab0b4e50b0b2",
+    "skills/cobranca-vencidos/scripts/email_sender.py": "543ed2a4041d991072754dd8698ab87da5db20b86d36cb6694219c96138973bb",
+    "skills/cobranca-vencidos/scripts/failure_notify.py": "d87e8c89d3851a14fc09fd3d59f44eb504d276fbc7c8bcf09186d3e2be8a3e2e",
+    "skills/cobranca-vencidos/scripts/resend.py": "2caee52f4f0cdf0c2cc5d4ed04ea41a0de80ec49be284349508cd96f5b7a1e80",
+    "skills/cobranca-vencidos/scripts/run.py": "c7401974a95e72f5f5b4c2b68b3135629601641f016f593aba255ec51eab774a",
+    "skills/cobranca-vencidos/scripts/send_core.py": "ca12c207d77622677c2648ee5b5068fdf5c09ebc39ff22af29ef2189e0f553ef",
+    "skills/cobranca-vencidos/scripts/supabase_log.py": "19622099b704f88d139f493c6a6a2f7a2de285fcb9477acbed9d26d8284d6374",
+    "skills/cobranca-vencidos/scripts/template.py": "ed0a2b31faf914fa3bfd855d958452efb3d4cfee64445afef196e1d4d8dbce38",
+    "skills/email-reader/scripts/read_emails.py": "158bc608bcc8daf390f6c06d1874d554f93865c300ded75d23c9b51ae71048e3",
+    "skills/pdf-contas-pagar/scripts/extract_pdf.py": "442d839f59b5bd3c77aafc73305bd489fc3b895766f78d7dab12e0e91f8b120e",
+    "skills/pdf-contas-pagar/scripts/febraban.py": "2a9387b93b5d27ab046a1c2dd6db7a637c1f8eee72afc422f38cda2d73b0f455"
+  }
+}
