@@ -17,6 +17,7 @@ import type { ZodError } from 'zod';
 import { getSupabaseAdmin } from './supabase-admin';
 import { resolveSort, type SortOrder } from './sort';
 import { resolveMatchingIds } from './search';
+import { ApiServiceError } from './api-error';
 
 const TABLE = 'financial_chart_of_account';
 // Colunas ordenáveis. Além das colunas próprias (código/descrição), as 3 colunas de
@@ -43,12 +44,9 @@ const SELECT_WITH_EMBEDS =
   'subgroup:financial_chart_of_account_subgroup(subgroup_code,subgroup_description),' +
   'group:financial_chart_of_account_group(group_code,group_description)';
 
-export class ChartAccountServiceError extends Error {
-  status: number;
+export class ChartAccountServiceError extends ApiServiceError {
   constructor(message: string, status: number) {
-    super(message);
-    this.name = 'ChartAccountServiceError';
-    this.status = status;
+    super(message, status, 'ChartAccountServiceError');
   }
 }
 

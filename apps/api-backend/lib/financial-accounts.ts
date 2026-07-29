@@ -18,6 +18,7 @@ import type { ZodError } from 'zod';
 import { getSupabaseAdmin } from './supabase-admin';
 import { resolveSort, type SortOrder } from './sort';
 import { resolveMatchingIds, parseNumericTerm } from './search';
+import { ApiServiceError } from './api-error';
 
 const TABLE = 'financial_account';
 const DEFAULT_LIMIT = 20;
@@ -30,12 +31,9 @@ const SELECT_WITH_BANK =
   'financial_account_id,account_description,bank_id,payment_type_id,currency_code,balance_amount,status_id,' +
   'bank:financial_bank(bank_code,bank_name)';
 
-export class FinancialAccountServiceError extends Error {
-  status: number;
+export class FinancialAccountServiceError extends ApiServiceError {
   constructor(message: string, status: number) {
-    super(message);
-    this.name = 'FinancialAccountServiceError';
-    this.status = status;
+    super(message, status, 'FinancialAccountServiceError');
   }
 }
 

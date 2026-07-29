@@ -17,6 +17,7 @@ import { getSupabaseAdmin } from './supabase-admin';
 import { resolveSort, type SortOrder } from './sort';
 import { resolveMatchingIds } from './search';
 import { validateTypeGroupScope } from './lookups';
+import { ApiServiceError } from './api-error';
 
 const TABLE = 'financial_chart_of_account_subgroup';
 // Colunas ordenáveis (própria tabela) — o grupo é embed de JOIN, não ordenável aqui.
@@ -36,12 +37,9 @@ const SELECT_WITH_GROUP =
   'group:financial_chart_of_account_group(group_code,group_description),' +
   'type_group:financial_type_group(type_group_id,type_group_description)';
 
-export class ChartAccountSubgroupServiceError extends Error {
-  status: number;
+export class ChartAccountSubgroupServiceError extends ApiServiceError {
   constructor(message: string, status: number) {
-    super(message);
-    this.name = 'ChartAccountSubgroupServiceError';
-    this.status = status;
+    super(message, status, 'ChartAccountSubgroupServiceError');
   }
 }
 

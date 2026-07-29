@@ -19,6 +19,7 @@ import type { ZodError } from 'zod';
 import { getSupabaseAdmin } from './supabase-admin';
 import { resolveSort, type SortOrder } from './sort';
 import { checkClassificationPair } from './classification';
+import { ApiServiceError } from './api-error';
 
 const SUPPLIER_TABLE = 'supplier';
 // Colunas ordenáveis (própria tabela) usadas pelo sort do grid de /fornecedores.
@@ -47,12 +48,9 @@ const SELECT_WITH_CLASSIFICATION =
 const SEARCH_COLUMNS = ['legal_name', 'trade_name', 'cnpj', 'cpf', 'email', 'email2', 'email3', 'email4'];
 
 // Erro de negócio com status HTTP — capturado por instanceof nos route handlers.
-export class SupplierServiceError extends Error {
-  status: number;
+export class SupplierServiceError extends ApiServiceError {
   constructor(message: string, status: number) {
-    super(message);
-    this.name = 'SupplierServiceError';
-    this.status = status;
+    super(message, status, 'SupplierServiceError');
   }
 }
 

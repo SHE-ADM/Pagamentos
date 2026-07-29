@@ -15,6 +15,7 @@ import {
 import type { ZodError } from 'zod';
 import { getSupabaseAdmin } from './supabase-admin';
 import { resolveSort, type SortOrder } from './sort';
+import { ApiServiceError } from './api-error';
 
 const TABLE = 'financial_bank';
 const SORTABLE_COLUMNS = ['bank_code', 'bank_name'] as const;
@@ -29,12 +30,9 @@ const MAX_LIMIT = 1000;
 
 const SELECT_COLS = 'bank_id,bank_code,bank_name';
 
-export class BankServiceError extends Error {
-  status: number;
+export class BankServiceError extends ApiServiceError {
   constructor(message: string, status: number) {
-    super(message);
-    this.name = 'BankServiceError';
-    this.status = status;
+    super(message, status, 'BankServiceError');
   }
 }
 

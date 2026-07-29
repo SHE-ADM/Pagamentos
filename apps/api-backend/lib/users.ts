@@ -8,14 +8,12 @@ import type { ZodError } from 'zod';
 import { createUserSchema, loginSchema, PASSWORD_CHANGED_META_KEY } from '@sheild/shared/schemas';
 import { getSupabaseAdmin } from './supabase-admin';
 import { getAnonClient } from './auth';
+import { ApiServiceError } from './api-error';
 
 // Erro de negócio com status HTTP — capturado por instanceof nos route handlers.
-export class UserServiceError extends Error {
-  status: number;
+export class UserServiceError extends ApiServiceError {
   constructor(message: string, status: number) {
-    super(message);
-    this.name = 'UserServiceError';
-    this.status = status;
+    super(message, status, 'UserServiceError');
   }
 }
 

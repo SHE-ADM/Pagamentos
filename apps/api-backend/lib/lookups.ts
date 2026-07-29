@@ -6,6 +6,7 @@
 
 import { type CostCenter } from '@sheild/shared';
 import { getSupabaseAdmin } from './supabase-admin';
+import { ApiServiceError } from './api-error';
 
 const COST_CENTER_TABLE = 'financial_cost_center';
 const CHART_ACCOUNT_TABLE = 'financial_chart_of_account';
@@ -59,12 +60,9 @@ export interface CenterForPlanoOption {
   cost_center_description: string | null;
 }
 
-export class LookupServiceError extends Error {
-  status: number;
+export class LookupServiceError extends ApiServiceError {
   constructor(message: string, status: number) {
-    super(message);
-    this.name = 'LookupServiceError';
-    this.status = status;
+    super(message, status, 'LookupServiceError');
   }
 }
 

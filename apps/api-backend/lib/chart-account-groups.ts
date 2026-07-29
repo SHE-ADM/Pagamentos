@@ -16,6 +16,7 @@ import { getSupabaseAdmin } from './supabase-admin';
 import { resolveSort, type SortOrder } from './sort';
 import { resolveMatchingIds } from './search';
 import { validateTypeGroupScope } from './lookups';
+import { ApiServiceError } from './api-error';
 
 const TABLE = 'financial_chart_of_account_group';
 const SORTABLE_COLUMNS = ['group_code', 'group_description', 'group_type', 'type_group_id'] as const;
@@ -31,12 +32,9 @@ const DEFAULT_LIMIT = 20;
 // devolver o cadastro completo ao <select> de grupos; a paginação do CRUD usa DEFAULT_LIMIT.
 const MAX_LIMIT = 1000;
 
-export class ChartAccountGroupServiceError extends Error {
-  status: number;
+export class ChartAccountGroupServiceError extends ApiServiceError {
   constructor(message: string, status: number) {
-    super(message);
-    this.name = 'ChartAccountGroupServiceError';
-    this.status = status;
+    super(message, status, 'ChartAccountGroupServiceError');
   }
 }
 

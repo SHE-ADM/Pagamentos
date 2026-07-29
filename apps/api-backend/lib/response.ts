@@ -2,6 +2,8 @@
 // Envelope padrão de resposta da API (monorepo-crud-spec.md).
 // Todos os route handlers retornam { success, data?, error?, meta? }.
 
+import { ApiServiceError } from './api-error';
+
 // Contratos públicos do envelope — exportados por convenção (consumidos via
 // inferência de `ok`/`fail`), por isso marcados ts-prune-ignore.
 // ts-prune-ignore-next
@@ -28,16 +30,29 @@ export function fail(error: string, status = 400): Response {
   return Response.json({ success: false, error } satisfies ApiResponse, { status });
 }
 
-// Mapeia um erro (de service ou inesperado) para Response sem VAZAR detalhe interno:
-// erros 4xx (com `status` numérico < 500 — mensagens curadas em pt-BR) ecoam a mensagem;
-// 5xx (ou erro sem status) viram uma mensagem genérica e o detalhe vai só para o LOG do
-// servidor (evita expor nomes de tabela/coluna/constraint do Postgres ao cliente).
+// Mapeia um erro (de service ou inesperado) para Response sem VAZAR detalhe interno.
+//
+// A REGRA É SOBRE A ORIGEM DO ERRO, NÃO SOBRE O SEU FORMATO (não regredir):
+// só ecoa a mensagem quando o erro é um `ApiServiceError` — a base que o NOSSO código usa para
+// mensagens curadas em pt-BR — e o status é < 500. Qualquer outra coisa vira mensagem genérica,
+// com o detalhe indo só para o LOG do servidor.
+//
+// Antes, o teste era duck-typing (`typeof e.status === 'number' && status < 500`), o que ecoava
+// verbatim os erros de bibliotecas de terceiros que também carregam `status` — `AuthError` (400,
+// "Invalid login credentials") e `StorageApiError` (404, "Object not found") do Supabase, e os
+// erros do `@anthropic-ai/sdk` (429/401/400) que a Fase 2 vai encontrar. Ver o cabeçalho de
+// `lib/api-error.ts` para o raciocínio completo e §17.9 do doc de arquitetura do chat.
+//
 // `tag` identifica o recurso no log.
 export function failFromError(e: unknown, tag = 'api'): Response {
-  const rawStatus = (e as { status?: unknown } | null)?.status;
-  const status = typeof rawStatus === 'number' ? rawStatus : 500;
-  const message = e instanceof Error ? e.message : 'Erro inesperado';
-  if (status < 500) return fail(message, status);
-  console.error(`[${tag}] ${status}:`, message);
-  return fail('Erro interno ao processar a solicitação', status);
+  if (e instanceof ApiServiceError) {
+    // Mensagem deliberadamente escrita para o usuário: pode ir ao cliente.
+    if (e.status < 500) return fail(e.message, e.status);
+    console.error(`[${tag}] ${e.status}:`, e.message);
+    return fail('Erro interno ao processar a solicitação', e.status);
+  }
+  // Erro não curado (bug nosso, ou de terceiro): status honesto é 500 e a mensagem não sai daqui.
+  const detail = e instanceof Error ? `${e.name}: ${e.message}` : String(e);
+  console.error(`[${tag}] 500 (erro não curado):`, detail);
+  return fail('Erro interno ao processar a solicitação', 500);
 }

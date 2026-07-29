@@ -7,13 +7,11 @@ vi.mock('@/lib/auth', () => ({
   canSeeConta: vi.fn(),
   requireAdminGroup: vi.fn(),
 }));
-vi.mock('@/lib/contas', () => {
-  class ContaServiceError extends Error {
-    status: number;
+vi.mock('@/lib/contas', async () => {
+  const { ApiServiceError } = await vi.importActual<typeof import('@/lib/api-error')>('@/lib/api-error');
+  class ContaServiceError extends ApiServiceError {
     constructor(message: string, status: number) {
-      super(message);
-      this.name = 'ContaServiceError';
-      this.status = status;
+      super(message, status, 'ContaServiceError');
     }
   }
   return { contaService: { getById: vi.fn(), update: vi.fn(), remove: vi.fn() }, ContaServiceError };

@@ -20,6 +20,7 @@ import type { ZodError } from 'zod';
 import { getSupabaseAdmin } from './supabase-admin';
 import { setSupplierClassification } from './suppliers';
 import { checkClassificationPair } from './classification';
+import { ApiServiceError } from './api-error';
 
 const TABLE = 'financial_account_control';
 const SUPPLIER_TABLE = 'supplier';
@@ -61,12 +62,9 @@ const MAX_LIMIT = 100;
 // Colunas pesquisáveis no fornecedor (resolve sk_supplier por termo — índices trgm migration 029).
 const SUPPLIER_SEARCH_COLUMNS = ['legal_name', 'trade_name', 'cnpj', 'cpf', 'email', 'email2', 'email3', 'email4'];
 
-export class ContaServiceError extends Error {
-  status: number;
+export class ContaServiceError extends ApiServiceError {
   constructor(message: string, status: number) {
-    super(message);
-    this.name = 'ContaServiceError';
-    this.status = status;
+    super(message, status, 'ContaServiceError');
   }
 }
 

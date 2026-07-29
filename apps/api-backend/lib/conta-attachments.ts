@@ -30,6 +30,7 @@ import type { ZodError } from 'zod';
 import { isInAdminGroup } from './auth';
 import { contaService } from './contas';
 import { getSupabaseAdmin } from './supabase-admin';
+import { ApiServiceError } from './api-error';
 
 const TABLE = 'financial_account_attachment';
 export const ATTACHMENT_BUCKET = 'attachments';
@@ -42,12 +43,9 @@ const SELECT_COLUMNS = 'id,account_id,storage_key,file_name,mime_type,size_bytes
 // segundo colidiriam (o pipeline resolve isso pelo disco local, que aqui não existe).
 const RAND_LEN = 8;
 
-export class ContaAttachmentServiceError extends Error {
-  status: number;
+export class ContaAttachmentServiceError extends ApiServiceError {
   constructor(message: string, status: number) {
-    super(message);
-    this.name = 'ContaAttachmentServiceError';
-    this.status = status;
+    super(message, status, 'ContaAttachmentServiceError');
   }
 }
 

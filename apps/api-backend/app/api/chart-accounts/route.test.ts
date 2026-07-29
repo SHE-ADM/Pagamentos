@@ -2,13 +2,11 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { NextRequest } from 'next/server';
 
 vi.mock('@/lib/auth', () => ({ requireAuth: vi.fn() }));
-vi.mock('@/lib/lookups', () => {
-  class LookupServiceError extends Error {
-    status: number;
+vi.mock('@/lib/lookups', async () => {
+  const { ApiServiceError } = await vi.importActual<typeof import('@/lib/api-error')>('@/lib/api-error');
+  class LookupServiceError extends ApiServiceError {
     constructor(message: string, status: number) {
-      super(message);
-      this.name = 'LookupServiceError';
-      this.status = status;
+      super(message, status, 'LookupServiceError');
     }
   }
   return {
@@ -16,13 +14,11 @@ vi.mock('@/lib/lookups', () => {
     LookupServiceError,
   };
 });
-vi.mock('@/lib/chart-accounts', () => {
-  class ChartAccountServiceError extends Error {
-    status: number;
+vi.mock('@/lib/chart-accounts', async () => {
+  const { ApiServiceError } = await vi.importActual<typeof import('@/lib/api-error')>('@/lib/api-error');
+  class ChartAccountServiceError extends ApiServiceError {
     constructor(message: string, status: number) {
-      super(message);
-      this.name = 'ChartAccountServiceError';
-      this.status = status;
+      super(message, status, 'ChartAccountServiceError');
     }
   }
   return { chartAccountService: { list: vi.fn(), create: vi.fn() }, ChartAccountServiceError };

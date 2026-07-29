@@ -2,13 +2,11 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { NextRequest } from 'next/server';
 
 vi.mock('@/lib/auth', () => ({ requireAuth: vi.fn() }));
-vi.mock('@/lib/suppliers', () => {
-  class SupplierServiceError extends Error {
-    status: number;
+vi.mock('@/lib/suppliers', async () => {
+  const { ApiServiceError } = await vi.importActual<typeof import('@/lib/api-error')>('@/lib/api-error');
+  class SupplierServiceError extends ApiServiceError {
     constructor(message: string, status: number) {
-      super(message);
-      this.name = 'SupplierServiceError';
-      this.status = status;
+      super(message, status, 'SupplierServiceError');
     }
   }
   return { supplierService: { list: vi.fn(), create: vi.fn() }, SupplierServiceError };
