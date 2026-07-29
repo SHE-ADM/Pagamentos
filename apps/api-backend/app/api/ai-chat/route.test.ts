@@ -142,7 +142,7 @@ describe('POST /api/ai-chat — caminho feliz', () => {
 });
 
 describe('POST /api/ai-chat — auditoria (§17.3)', () => {
-  it('grava o log ANTES de responder, e aguarda (em serverless o fire-and-forget se perde)', async () => {
+  it('grava o log com os campos da interação', async () => {
     chat.mockResolvedValue(okResult);
     await POST(req({ question: 'quanto tenho em aberto?' }));
 
@@ -157,8 +157,35 @@ describe('POST /api/ai-chat — auditoria (§17.3)', () => {
         cacheReadTokens: 4000,
       }),
     );
-    // Aguardado: a promise já resolveu quando a resposta saiu.
-    expect(log.mock.results[0].value).resolves.toBeUndefined();
+  });
+
+  it('AGUARDA o log antes de responder — em serverless o fire-and-forget se perde', async () => {
+    chat.mockResolvedValue(okResult);
+
+    // Log preso até `liberaLog()`: é o que permite observar se a rota respondeu sem esperar.
+    let liberaLog!: () => void;
+    let logConcluido = false;
+    log.mockImplementationOnce(async () => {
+      await new Promise<void>((resolve) => {
+        liberaLog = resolve;
+      });
+      logConcluido = true;
+    });
+
+    let respondeu = false;
+    const resposta = POST(req({ question: 'quanto tenho em aberto?' })).then((r) => {
+      respondeu = true;
+      return r;
+    });
+
+    // Drena a fila de microtasks: se a rota NÃO aguardasse o log, já teria respondido aqui.
+    await new Promise((r) => setTimeout(r, 0));
+    expect(respondeu).toBe(false);
+    expect(logConcluido).toBe(false);
+
+    liberaLog();
+    expect((await resposta).status).toBe(200);
+    expect(logConcluido).toBe(true);
   });
 
   it('audita TAMBÉM a pergunta que falhou — é dela que sai "quais tools faltam"', async () => {
