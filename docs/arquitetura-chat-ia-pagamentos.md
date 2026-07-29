@@ -888,6 +888,10 @@ Regra: só traduza o que o usuário pode **agir**. O resto é 500 + log, que a b
 
 ### 17.8 Checklist de aceite da Fase 2
 
+> **Este é o checklist ORIGINAL (o que se exigiu antes de implementar) — as caixas ficam vazias de
+> propósito, como registro do requisito. A SITUAÇÃO ATUAL de cada item está no §18.5**, e sobrou
+> apenas um em aberto (`cache_read_input_tokens > 0`, que só uma chamada real fecha).
+
 - [ ] `export const maxDuration` na rota **e** streaming na chamada ao modelo
 - [ ] Teto de iterações no loop, com resposta honesta ao atingi-lo
 - [ ] Log gravado antes de responder (ou via `waitUntil`) — nunca fire-and-forget
@@ -900,3 +904,241 @@ Regra: só traduza o que o usuário pode **agir**. O resto é 500 + log, que a b
 - [ ] Erros do SDK da Anthropic **traduzidos antes** do `failFromError` (§17.9) — 429/401/400 não
       podem ecoar a mensagem crua do provider
 - [ ] Erros 5xx por `failFromError` (não vazam detalhe interno)
+
+---
+
+## 18. Resultado da Fase 2 — o gateway implementado (2026-07-29)
+
+Fase 2 **concluída**. O endpoint `POST /api/ai-chat` existe, tem 53 testes e passa o gate do
+projeto (lint · typecheck · prune · suíte). O que **não** foi feito: nenhuma chamada real à
+Claude API ainda — a validação de ponta a ponta (modelo → tool → RPC → RLS) consome tokens e é
+o primeiro passo da Fase 3.
+
+### 18.1 Arquivos
+
+| Arquivo | Papel |
+|---|---|
+| `lib/ai-chat/tools.ts` | As 6 tools em JSON Schema + validação Zod dos parâmetros + execução por RPC |
+| `lib/ai-chat/errors.ts` | Tradução dos erros do SDK (§17.9) |
+| `lib/ai-chat/gateway.ts` | Loop de tool use: teto de iterações, prompt caching, teto de resultado |
+| `lib/ai-chat/log.ts` | `analytics.ai_chat_log`, gravado **antes** de responder |
+| `app/api/ai-chat/route.ts` | Rota: `maxDuration`, envelope `{ success, data }`, auditoria |
+
+**Não segue Repository → Service → Route** (§17.7). Os CRUDs seguem porque são **recursos**; isto
+é uma **máquina de estados**. O molde de CRUD produziria um "service" que é só um loop, e o que
+precisa ser testável isoladamente (tools, tradução de erro, log) já está em arquivos próprios.
+
+### 18.2 `Content-Profile`, não `Accept-Profile` (custou uma sessão — não repetir)
+
+Para **RPC (POST)** o header que seleciona o schema é **`Content-Profile`**. Com `Accept-Profile`
+o PostgREST procura a função em `public` e devolve **`PGRST202` — "function does not exist"**, que
+aponta para o lugar errado: parece que a migration não rodou. O `.schema('analytics')` do
+supabase-js já envia o header certo — o achado importa para depuração e para qualquer chamada
+manual via cURL.
+
+### 18.3 Decisões da implementação
+
+**JSON Schema cru para as tools, Zod para os parâmetros.** O §6 já especifica os contratos em JSON
+Schema, que é o formato que a Claude API consome; converter para Zod só para o helper reconverter
+para JSON Schema seria trabalho circular (e o helper foi escrito contra Zod 3, enquanto o projeto
+está em Zod 4). O Zod fica onde agrega: validando o que o **modelo** produz, antes do banco.
+
+**`service_role` no log — exceção deliberada e estreita.** O princípio "sem service_role" veda
+acesso a **dado de negócio**. Deixar o usuário auditado escrever a própria trilha seria pior: ele
+poderia omitir a própria pergunta. A policy da 098 permite que ele **leia** apenas as próprias
+linhas; escrever, só o servidor.
+
+**Streaming (`.stream().finalMessage()`), não `.create()`.** A resposta ao cliente é a mesma (JSON
+único) — o ganho é o socket receber tokens continuamente em vez de ficar ocioso, evitando timeout
+de request/proxy num turno longo. É também de onde a Fase 3 puxará o texto parcial.
+
+### 18.4 Defeitos encontrados na autorrevisão (todos corrigidos e travados por teste)
+
+Achados **depois** de a implementação estar verde — registrados porque cada um passaria despercebido
+em produção:
+
+| Defeito | Por que passaria despercebido |
+|---|---|
+| `toolResultText` prometia teto de tamanho no comentário e **não tinha** | Nada falha: o contexto só incha (cada iteração reenvia o histórico) e o custo sobe |
+| `stop_reason: 'max_tokens'` tratado como resposta completa | Entrega uma frase cortada ao meio como se fosse a resposta final, com `truncated: false` |
+| Chamada de **fechamento** fora do `try` | Um 429 ali viraria 500 genérico — justamente na pergunta que já custou 6 chamadas |
+| Histórico sem alternância user/assistant | Vira **400 do provedor**, que o contrato de erro converte em 500 genérico e opaco |
+
+O teto de resultado corta **por registro**, nunca no meio do JSON: um fragmento de JSON é ilegível
+para o modelo, que tentaria interpretá-lo como dado.
+
+### 18.5 Checklist do §17.8 — situação
+
+| Item | Situação |
+|---|---|
+| `maxDuration` na rota | ✅ 300 s |
+| Streaming na chamada ao modelo | ✅ `.stream().finalMessage()` |
+| Teto de iterações, com resposta honesta | ✅ 6 + fechamento com `tool_choice: none` (ver §19.2 — omitir `tools` destruiria o cache) |
+| Log antes de responder, nunca fire-and-forget | ✅ aguardado |
+| Data corrente fora do bloco cacheado | ✅ travado por teste |
+| Sem `temperature`/`top_p`/`top_k` | ✅ (o Opus 5 rejeita com 400) |
+| `max_tokens` contando o thinking | ✅ 8192 |
+| Falha de tool como `tool_result` + `is_error` | ✅ |
+| Tool calls paralelos em uma única mensagem | ✅ travado por teste |
+| Erros do SDK traduzidos antes do `failFromError` | ✅ |
+| 5xx sem vazar detalhe | ✅ |
+| `cache_read_input_tokens > 0` observado | ⏳ **exige chamada real** — primeiro passo da Fase 3 |
+
+### 18.6 Fase 3 — o que vem
+
+1. **Validar de ponta a ponta com a API real** (uma pergunta), conferindo `cache_read_input_tokens`
+   e o recorte da RLS com dois usuários de grupos diferentes.
+2. **UI do chat** no `frontend-vite`, consumindo `/data-api/ai-chat`.
+3. **Variável `ANTHROPIC_API_KEY` no Vercel** (o `.env` local já a tem) — sem ela a rota devolve 500
+   em produção.
+
+---
+
+## 19. Code review da Fase 2 (2026-07-29) — achados e correções
+
+Review de robustez e estrutura feito **depois** de a Fase 2 estar verde (1.067 testes, lint,
+typecheck e prune em zero). Sete achados; **nenhum** produzia erro visível — é o padrão desta
+base: o que quebra em silêncio é o que sobrevive ao gate.
+
+### 19.1 CRÍTICO — a trilha de auditoria nunca teria gravado uma linha
+
+A **098** concedeu `USAGE`/`SELECT` no schema `analytics` ao papel `authenticated` e **nada** ao
+`service_role` — que é justamente quem grava `ai_chat_log` (exceção deliberada: deixar o usuário
+auditado escrever a própria trilha permitiria omitir a própria pergunta). Medido no catálogo:
+
+```
+nspacl de analytics ........................................ {postgres=UC/postgres, authenticated=U/postgres}
+has_schema_privilege(service_role,'analytics','USAGE') ..... false
+has_table_privilege(service_role,'analytics.ai_chat_log','INSERT') ... false
+```
+
+`service_role` burla RLS (`rolbypassrls`) mas **não é superuser**: sem GRANT o INSERT falha com
+`42501`. E `logInteraction` **nunca lança** por desenho — a falha iria só para o `console.error`.
+Resultado: o **pilar de auditoria (§8) estaria morto em produção**, sem um único sintoma, e
+descobriríamos ao abrir a tabela vazia depois de semanas de uso.
+
+Corrigido pela **migration 101**. Verificado com o papel real (`SET LOCAL ROLE service_role`, em
+transação revertida): o INSERT passa a funcionar **e** o caminho de dados continua fechado —
+`EXECUTE` nas 6 funções = `false`, `SELECT` nas views = `false`, `UPDATE` no log = `false` (o
+`service_role` grava a trilha, mas não pode adulterá-la).
+
+### 19.2 ALTO — a chamada de fechamento destruía o prompt cache
+
+O fechamento (após o teto de iterações) omitia `tools` para impedir novas chamadas. Mas, pela
+hierarquia de invalidação, **mudar a definição de tools invalida os três níveis** (tools + system +
+messages) — e o fechamento é a chamada com o histórico **mais longo** do turno, ou seja, pagaria
+prefixo cheio exatamente onde mais dói. Além disso, o histórico contém blocos `tool_use`, que a
+API espera acompanhados da definição das tools.
+
+Correção: o fechamento manda as **mesmas** `tools` + `tool_choice: { type: 'none' }`. Trocar
+`tool_choice` **preserva** o cache e continua garantindo que o modelo não chame ferramenta. Os
+`tools` viraram uma constante montada uma vez — reordená-los entre chamadas também invalidaria.
+
+### 19.3 ALTO — o invariante de concorrência não cobria o caminho do chat
+
+`auth.concurrency.test.ts` protege contra vazamento de JWT entre requisições concorrentes no
+singleton `getAnonClient()`. Ele exercita **`from()`**; o chat usa **`.schema('analytics').rpc()`**,
+que é código diferente. O invariante estava documentado como coberto e, para o caminho do chat,
+não estava.
+
+O caminho de RPC tem **quatro** camadas de isolamento (medidas com mutantes, não deduzidas):
+construtor do `PostgrestClient` (via `schema()`), `rpc()` clonando os headers, construtor do
+`PostgrestBuilder`, e `setHeader` com copy-on-write. Sabotar **1+2+4 não vaza** — a camada 3
+sozinha ainda isola; só com as **quatro** desativadas os dois tokens colidem, e é aí que o teste
+novo falha. Ou seja: poder de detecção comprovado, e a segurança tem folga real.
+
+### 19.4 MÉDIO — impossível saber se o prompt caching funciona
+
+`usage.input_tokens` da API é **apenas o resto não-cacheado**. Registrando só ele, duas coisas
+ficavam impossíveis: estimar custo (§10) e **notar um invalidador silencioso do cache** — que não
+gera erro, só zera `cache_read_input_tokens` e aumenta a fatura. O defeito de 19.2 era exatamente
+esse tipo de invalidador, e teria passado despercebido.
+
+Migration 101 acrescenta `cache_read_input_tokens` e `cache_creation_input_tokens`; o gateway
+acumula os quatro campos num acumulador único (dois pontos de soma divergem na primeira alteração).
+
+### 19.5 MÉDIO — a falha cara era auditada como "0 tokens, 0 tools"
+
+Quando o gateway falhava na 5ª iteração, a rota logava zeros: sumia justamente o registro das
+perguntas caras que falharam — a fonte para descobrir quais tools faltam (§11) — e o custo real
+ficava subestimado. O gateway passou a **anexar o estado parcial ao erro** (símbolo não-enumerável,
+para não vazar em `JSON.stringify` de outra camada) e a rota o consome.
+
+### 19.6 BAIXO — dois desvios entre o domínio declarado e o validado
+
+- **5xx do provedor**: só o 529 era traduzido, embora a regra declarada seja "traduza o que o
+  usuário pode agir". Uma indisponibilidade da Anthropic virava "erro interno", indistinguível de
+  bug nosso. Agora qualquer 5xx do provedor vira **503 "indisponível"** (não 429: o usuário não
+  excedeu limite nenhum). O `RateLimitError` real continua 429.
+- **`sk_company` e `nature_ids`**: o JSON Schema restringia a `{1,2,3}`, o Zod aceitava qualquer
+  inteiro. O modelo receberia lista vazia e concluiria "não há contas dessa empresa" em vez de um
+  erro corrigível — o oposto do propósito da camada. `nature_ids` idem, contra a faixa de
+  `smallint`.
+
+### 19.7 Observação deliberada — tools executadas em série
+
+O loop executa as tools de um turno sequencialmente, mesmo quando o modelo as pede em paralelo.
+Medido: um RPC leva ~4–40 ms contra ~5–30 s de um turno do modelo, então paralelizar economizaria
+~0,3% da latência ao custo de ordenação não-determinística no log. **Mantido em série de
+propósito** — não é omissão.
+
+### 19.8 Situação após o review
+
+69 testes em `lib/ai-chat/` + rota + concorrência; gate do projeto em zero. Item do §17.8 que segue
+aberto (e só a Fase 3 fecha): observar `cache_read_input_tokens > 0` numa chamada real — agora com
+coluna para registrá-lo.
+
+### 19.9 Segunda passada — dois defeitos introduzidos PELAS correções
+
+Review das próprias correções de §19.1–19.6. Duas delas tinham defeito, ambos provados com uma
+sonda antes de mexer:
+
+**(a) `attachPartialRun` podia DESTRUIR o erro que existe para preservar.** `Object.defineProperty`
+**lança** num objeto não-extensível (erro congelado por alguma camada). Como a função é chamada
+dentro do `catch` do gateway, na própria expressão do `throw`, essa exceção substituiria o erro
+traduzido: um 429 viraria `TypeError` genérico e a causa real sumiria do log. Ou seja, a melhoria
+de auditoria podia apagar a informação de erro. Medido:
+
+```
+defineProperty em erro congelado LANÇA: TypeError - object is not extensible
+```
+
+Corrigido com `try/catch` + log. A regra: na dúvida perde-se a auditoria parcial e **preserva-se o
+erro**, nunca o contrário.
+
+**(b) O teto de resultado não segurava UM registro grande.** `additional_info` é `TEXT` sem limite
+no banco, então uma única conta pode estourar o teto sozinha — e o corte "por registro" não tem o
+que dividir. Medido: um registro de 200 KB saía **inteiro** (200.072 chars contra teto de 60.000)
+**e ainda afirmava** `[Resultado truncado: 1 de 1 registros]` — duas mentiras: não truncou e disse
+que truncou. Agora a string é cortada e o corte é **declarado** (`JSON CORTADO`), para o modelo não
+ler o fragmento final como dado.
+
+**Bookkeeping:** a migration 101 foi aplicada em duas chamadas MCP, então o ledger do Supabase
+registra dois nomes para um arquivo. O ledger nunca foi a fonte de verdade aqui (as migrations
+aplicadas pelo SQL Editor sequer aparecem nele) — o diretório numerado é. O arquivo foi renomeado
+para `101_ai_chat_log_grant_and_cache_tokens.sql`, porque o nome anterior escondia a correção mais
+importante, e o estado do banco foi conferido campo a campo contra o conteúdo dele.
+
+**Lição que generaliza:** os dois defeitos estão em código **defensivo** — o que existe para não
+derrubar o caminho principal. É a categoria que menos aparece em teste, porque só roda quando algo
+já deu errado. Todo `catch`/teto/fallback novo merece uma sonda que force o caminho ruim.
+
+### 19.10 Prefixo cacheável medido — e o knob que pode desligá-lo em silêncio
+
+O prompt caching tem um **tamanho mínimo de prefixo** que varia por modelo; abaixo dele o
+`cache_control` é ignorado sem erro — só `cache_read_input_tokens` zerado. Medido no código atual:
+
+| | |
+|---|---|
+| `SYSTEM_PROMPT` | 1.977 chars |
+| definição das 6 tools | ~5.200 chars |
+| **prefixo cacheado** | ~7.177 chars ≈ **2.175 tokens** |
+
+Confortável para o mínimo do **Opus 5 (512)**. Mas `MODEL` é configurável por
+`ANTHROPIC_MODEL`, e o mínimo **não é monotônico entre gerações**: Opus 4.6 e Haiku 4.5 exigem
+**4.096**. Trocar o modelo por um desses desligaria o cache **sem nenhum sintoma além do custo** —
+o mesmo modo de falha silenciosa de §19.2 e §19.4, agora por configuração em vez de código.
+
+Registrado como comentário na constante `MODEL` (onde quem troca o modelo vai olhar), e a
+verificação é a coluna criada em §19.4: conferir `cache_read_input_tokens` em `analytics.ai_chat_log`
+depois de qualquer troca de modelo.
