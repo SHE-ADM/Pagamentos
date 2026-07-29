@@ -21,6 +21,7 @@ import {
 import type { ZodError } from 'zod';
 import { getSupabaseAdmin } from './supabase-admin';
 import { resolveSort, type SortOrder } from './sort';
+import { ApiServiceError } from './api-error';
 
 const COST_CENTER_TABLE = 'financial_cost_center';
 // Colunas ordenáveis (própria tabela) — alimenta o sort server-side do grid.
@@ -32,12 +33,9 @@ const DEFAULT_LIMIT = 20;
 const MAX_LIMIT = 100;
 
 // Erro de negócio com status HTTP — capturado por instanceof nos route handlers.
-export class CostCenterServiceError extends Error {
-  status: number;
+export class CostCenterServiceError extends ApiServiceError {
   constructor(message: string, status: number) {
-    super(message);
-    this.name = 'CostCenterServiceError';
-    this.status = status;
+    super(message, status, 'CostCenterServiceError');
   }
 }
 

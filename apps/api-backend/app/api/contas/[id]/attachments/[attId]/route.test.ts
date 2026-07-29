@@ -2,12 +2,11 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { NextRequest } from 'next/server';
 
 vi.mock('@/lib/auth', () => ({ getAuthenticatedUser: vi.fn(), canSeeConta: vi.fn() }));
-vi.mock('@/lib/conta-attachments', () => {
-  class ContaAttachmentServiceError extends Error {
-    status: number;
+vi.mock('@/lib/conta-attachments', async () => {
+  const { ApiServiceError } = await vi.importActual<typeof import('@/lib/api-error')>('@/lib/api-error');
+  class ContaAttachmentServiceError extends ApiServiceError {
     constructor(m: string, s: number) {
-      super(m);
-      this.status = s;
+      super(m, s, 'ContaAttachmentServiceError');
     }
   }
   return { contaAttachmentService: { remove: vi.fn() }, ContaAttachmentServiceError };

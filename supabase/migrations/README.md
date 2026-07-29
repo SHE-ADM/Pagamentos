@@ -3,6 +3,69 @@
 As migrations `001 → 061` são aplicadas **manualmente no SQL Editor do Supabase**, em
 **ordem numérica** e **uma única vez cada**. Não há runner automático.
 
+> **`100_restore_service_role_default_dml.sql` (idempotente — aplicada DIRETO via Supabase MCP em
+> 2026-07-29)** — devolve `SELECT/INSERT/UPDATE/DELETE` ao papel **`service_role`** no DEFAULT de
+> tabelas novas (schemas `public` e `analytics`), sem devolver nada a `anon`/`authenticated`.
+>
+> **Contexto:** ao desligar o toggle **Data API → "Automatically expose new tables"** (2026-07-29),
+> o Supabase tratou `service_role` como "Data API role" e o removeu junto — o default do papel
+> `postgres` virou `service_role=Dxtm`, isto é, **sem DML**. Como é com `service_role` que o
+> pipeline Python e a Next API escrevem, a próxima migration que criasse uma tabela produziria
+> `permission denied` no pipeline, com o sintoma longe da causa. Nada quebrou na hora: default
+> privileges só valem para objeto NOVO (as 19 tabelas existentes seguiram intactas).
+>
+> **Seguro porque** a chave `service_role` é server-side (fica no `.env` e nas env vars da Vercel,
+> nunca no browser). Quem não pode receber privilégio por default é `anon` (chave pública) e
+> `authenticated` — e esses continuam de fora.
+>
+> ⚠️ **O que continua aberto e NÃO tem correção por SQL:** o default do papel **`supabase_admin`**
+> segue com `anon=arwdDxtm`/`authenticated=arwdDxtm` — desligar o toggle **não o alterou**. É o
+> papel que cria tabela pelo **Table Editor**, e `ALTER DEFAULT PRIVILEGES` nele exige superuser.
+> → **Criar tabela sempre por migration, nunca pela UI do dashboard.**
+
+> **`099_revoke_rls_bypass_rpcs.sql` (SEGURANÇA CRÍTICA, idempotente — aplicada DIRETO via
+> Supabase MCP em 2026-07-29)** — fecha duas RPCs que **contornavam a RLS** e eram executáveis por
+> **`anon`**, ou seja, **sem login**, com a anon key que é pública por design (vai no bundle do
+> browser). Achadas pelos advisors do Supabase durante a Fase 1 do chat de IA.
+>
+> 1. **`fn_delete_all_emails()`** — `SECURITY DEFINER`, `RETURNS text` (logo, chamável em
+>    `/rest/v1/rpc/`), fazia `DELETE` em `financial_account_control`, `email_control` e
+>    `email_processing_errors` + reset das sequences. Qualquer pessoa na internet podia **apagar a
+>    base inteira** com um POST. A função foi **PRESERVADA** (só `REVOKE`) — é a ferramenta manual
+>    de "Limpeza / reset de dados", usada pelo SQL Editor, que roda como `postgres`.
+> 2. **`search_text(p_table, p_column, p_termo)`** — `SECURITY DEFINER` com `EXECUTE format('%I')`.
+>    O `%I` barra SQL injection, mas rodando como `postgres` a função **ignora a RLS** e devolve
+>    `SELECT *` de qualquer tabela, 50 linhas por chamada. **Exploração confirmada como `anon`:**
+>    50 contas (com `amount`/`created_by`) e 50 fornecedores. Depois do fix, o mesmo POST via HTTP
+>    responde `42501 permission denied`.
+> 3. **View `app_user`** — `REVOKE SELECT ... FROM anon` (lia os 12 e-mails de todos os usuários sem
+>    login). **`authenticated` MANTÉM o SELECT** — sem ele o "Criado por" some do detalhe de
+>    `/consulta`. A 081 já havia fechado a ESCRITA nela; faltava a leitura por `anon`.
+> 4. `DROP TABLE public.supplier_tmp` (staging residual, 464 linhas; 0 FKs e 0 views dependentes).
+>
+> **NÃO REGREDIR — o que a 099 deliberadamente NÃO toca:** `auth_group_sees_only_own()` também é
+> apontada pelos advisors, mas **revogar o EXECUTE dela quebraria TODA a RLS** — ela é chamada
+> DENTRO das policies 076/078, avaliadas como `authenticated`. É a mesma regressão que a **074**
+> teve de consertar depois da 072. As 6 funções `RETURNS trigger` são ruído do linter (o PostgreSQL
+> recusa chamada direta a função de trigger).
+
+> **`098_create_analytics_schema.sql` (Fase 1 do chat de IA, idempotente — aplicada DIRETO via
+> Supabase MCP em 2026-07-29)** — cria o schema `analytics` (camada semântica read-only): as views
+> `vw_payables`/`vw_aging_vencidos` (`security_invoker = true`), as **6 funções** de tool calling
+> (`SECURITY INVOKER` + `STABLE`), a `ai_chat_log` com RLS e os GRANT/REVOKE. Ver
+> `docs/arquitetura-chat-ia-pagamentos.md`.
+>
+> ⚠️ **PASSO MANUAL PENDENTE, fora da migration:** expor o schema no PostgREST em
+> **Supabase Dashboard → Settings → API → Exposed schemas** → acrescentar `analytics`. Sem isso,
+> `supabase.schema('analytics').rpc(...)` responde **404** e a Fase 2 (gateway) não funciona. Os
+> objetos existem e respondem por SQL direto — só a exposição HTTP depende desse passo.
+>
+> **Não regredir:** as views/funções são `SECURITY INVOKER` de propósito — é isso que faz a RLS de
+> `financial_account_control` (076) valer para o chat. Trocar por `DEFINER` seria escalada de
+> privilégio silenciosa; usar `service_role` no gateway teria o mesmo efeito. Validado com o papel
+> `authenticated` real: ester (Comercial, restrita) vê **48** contas, barbara (Financeiro) vê
+> **578**.
+
 > **`095_fix_status_trigger_reference_date.sql` (BUG DE FUNDAÇÃO, idempotente — aplicada
 > DIRETO via Supabase MCP em 2026-07-23)** — a trigger `fn_set_status_from_due_date`
 > (desde a `034`, 2026-06-18) calculava a data de referência como

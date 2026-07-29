@@ -1,13 +1,11 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { NextRequest } from 'next/server';
 
-vi.mock('@/lib/users', () => {
-  class UserServiceError extends Error {
-    status: number;
+vi.mock('@/lib/users', async () => {
+  const { ApiServiceError } = await vi.importActual<typeof import('@/lib/api-error')>('@/lib/api-error');
+  class UserServiceError extends ApiServiceError {
     constructor(message: string, status: number) {
-      super(message);
-      this.name = 'UserServiceError';
-      this.status = status;
+      super(message, status, 'UserServiceError');
     }
   }
   return { userService: { login: vi.fn() }, UserServiceError };

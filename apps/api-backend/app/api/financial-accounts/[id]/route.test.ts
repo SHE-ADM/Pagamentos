@@ -2,12 +2,11 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { NextRequest } from 'next/server';
 
 vi.mock('@/lib/auth', () => ({ requireAuth: vi.fn(), requireAdminGroup: vi.fn() }));
-vi.mock('@/lib/financial-accounts', () => {
-  class FinancialAccountServiceError extends Error {
-    status: number;
+vi.mock('@/lib/financial-accounts', async () => {
+  const { ApiServiceError } = await vi.importActual<typeof import('@/lib/api-error')>('@/lib/api-error');
+  class FinancialAccountServiceError extends ApiServiceError {
     constructor(m: string, s: number) {
-      super(m);
-      this.status = s;
+      super(m, s, 'FinancialAccountServiceError');
     }
   }
   return {

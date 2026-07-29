@@ -2,12 +2,11 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { NextRequest } from 'next/server';
 
 vi.mock('@/lib/auth', () => ({ requireAuth: vi.fn() }));
-vi.mock('@/lib/lookups', () => {
-  class LookupServiceError extends Error {
-    status: number;
+vi.mock('@/lib/lookups', async () => {
+  const { ApiServiceError } = await vi.importActual<typeof import('@/lib/api-error')>('@/lib/api-error');
+  class LookupServiceError extends ApiServiceError {
     constructor(m: string, s: number) {
-      super(m);
-      this.status = s;
+      super(m, s, 'LookupServiceError');
     }
   }
   return { statusService: { list: vi.fn() }, LookupServiceError };

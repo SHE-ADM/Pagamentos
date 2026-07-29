@@ -2,12 +2,11 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { NextRequest } from 'next/server';
 
 vi.mock('@/lib/auth', () => ({ requireAuth: vi.fn() }));
-vi.mock('@/lib/chart-account-subgroups', () => {
-  class ChartAccountSubgroupServiceError extends Error {
-    status: number;
+vi.mock('@/lib/chart-account-subgroups', async () => {
+  const { ApiServiceError } = await vi.importActual<typeof import('@/lib/api-error')>('@/lib/api-error');
+  class ChartAccountSubgroupServiceError extends ApiServiceError {
     constructor(m: string, s: number) {
-      super(m);
-      this.status = s;
+      super(m, s, 'ChartAccountSubgroupServiceError');
     }
   }
   return { chartAccountSubgroupService: { list: vi.fn(), create: vi.fn() }, ChartAccountSubgroupServiceError };

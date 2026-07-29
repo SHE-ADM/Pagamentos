@@ -853,11 +853,31 @@ escrita — o default do Supabase é permissivo e a RLS da tabela-base NÃO prot
 **Escala futura (fora das Etapas 1–2):** `auth_is_admin()` (bypass por papel) e as dimensões de
 visibilidade do blueprint (`docs/design/permissoes-por-grupo.md`: empresa/centro/plano).
 
-**Erros 5xx não vazam detalhe interno (segurança §3 M-2):** os route handlers de CRUD usam
-`failFromError(e, '<tag>')` (`lib/response.ts`) — erro com `status` 4xx ecoa a mensagem
-curada; 5xx (ou sem status) vira `'Erro interno ao processar a solicitação'` e o detalhe
-(mensagem crua de Postgres/PostgREST) vai só para o **log do servidor** (`console.error`).
+**Erros não vazam detalhe interno — o contrato é a ORIGEM do erro, não o formato (segurança §3
+M-2; endurecido em 2026-07-29):** os route handlers usam `failFromError(e, '<tag>')`
+(`lib/response.ts`), que **só ecoa a mensagem quando o erro é um `ApiServiceError`**
+(`lib/api-error.ts`) com status < 500. Qualquer outra coisa — incluindo erro de terceiro — vira
+`'Erro interno ao processar a solicitação'` **500**, com o detalhe indo só para o `console.error`.
 Não reintroduzir `fail(e.message, 500)` nos handlers.
+
+> **Por que deixou de ser duck-typing (não regredir):** a regra antiga era "tem `.status` numérico
+> < 500? ecoa a mensagem" — e isso é **verdadeiro para erros de bibliotecas de terceiros**, que
+> também carregam `status`. Medido: `AuthError` (`@supabase/auth-js`) = **400** / "Invalid login
+> credentials"; `StorageApiError` (`@supabase/storage-js`) = **404** / "Object not found". Bastava
+> um `catch` novo repassar o erro cru para o usuário do financeiro ver texto em inglês do provider,
+> silenciosamente e sem teste vermelho. Os services já convertiam esses erros por disciplina, mas
+> disciplina não é contrato. Vale ainda mais para a **Fase 2 do chat**, cujos erros do
+> `@anthropic-ai/sdk` são 429/401/400 (§17.9 do doc de arquitetura).
+>
+> **Ao criar uma classe de erro de service nova, ela DEVE estender `ApiServiceError`** — senão a
+> mensagem curada nunca chega ao cliente (vira 500 genérico). As 12 existentes já estendem.
+>
+> **Mock de teste também estende a base.** Os 23 arquivos de teste de rota que redefiniam
+> `class XServiceError extends Error` dentro do `vi.mock` foram migrados para
+> `extends ApiServiceError` via `vi.importActual('@/lib/api-error')` — um mock que duplica o
+> contrato em vez de reusá-lo fica desatualizado quando o contrato muda (foi exatamente o que
+> aconteceu: 36 testes quebraram na migração). `failFromError` tem cobertura própria em
+> `lib/response.test.ts`, incluindo os dois formatos de erro de terceiro.
 
 ### 4 — Conventional Commits (todo o projeto)
 
@@ -1300,17 +1320,45 @@ Supabase (PostgreSQL)  ── financial_account_control (dados extraídos)
 > (`PYTHON_BRIDGE_TIMEOUT_MS`, a leitura síncrona real leva minutos) e **5s** no health; o timeout
 > vira `PythonBridgeError(504)` (indisponível segue `502`). Teste em `lib/python-bridge.test.ts`.
 
-## Chat de IA (PLANEJADO — nada aplicado no banco)
+## Chat de IA (Fase 1 APLICADA — schema `analytics` no banco; gateway ainda não existe)
 
 Chat conversacional embarcado no app para análise **read-only** dos dados de contas a pagar
 (perguntas em linguagem natural → texto + tabela/gráfico). Desenho completo em
 **[docs/arquitetura-chat-ia-pagamentos.md](docs/arquitetura-chat-ia-pagamentos.md)** — ler antes
 de implementar qualquer parte.
 
-**Status: Fase 0 (validação de schema) CONCLUÍDA em 2026-07-28 — nada aplicado no banco.** Não há
-código, migration, view, role nem tabela criados. Pilares que permanecem: **nunca usar
-`service_role`** no caminho de leitura do chat · **tool calling** sobre funções de negócio como via
-primária · log de toda interação para auditoria.
+**Status: Fases 0 e 1 CONCLUÍDAS (2026-07-28 / 2026-07-29).** A **migration 098** criou o schema
+**`analytics`** no banco: 2 views (`vw_payables`, `vw_aging_vencidos`), as **6 funções** de tool
+calling, `ai_chat_log` com RLS e os GRANT/REVOKE. **Ainda NÃO existe** gateway, rota, componente de
+chat nem `@anthropic-ai/sdk` (Fases 2–3). Pilares que permanecem: **nunca usar `service_role`** no
+caminho de leitura · **tool calling** sobre funções de negócio como via primária · log de toda
+interação para auditoria.
+
+**`analytics` está EXPOSTO no PostgREST** (Data API → Settings → Exposed schemas: `public`,
+`graphql_public`, `analytics`) — passo de dashboard, feito em 2026-07-29. Conferido por HTTP com a
+anon key real: `POST /rest/v1/rpc/resumo_situacao` + `Accept-Profile: analytics` devolve
+`42501 permission denied for schema analytics` para `anon` (correto — roteia para o schema **e**
+barra o papel anônimo). Se algum dia voltar `PGRST106 Invalid schema`, a exposição foi desfeita.
+
+**Invariantes da camada `analytics` (não regredir):**
+
+- **Views e funções são `SECURITY INVOKER`** — é isso, e só isso, que faz a RLS de
+  `financial_account_control` (076) valer para o chat. `SECURITY DEFINER` aqui, ou `service_role`
+  no gateway, seria escalada de privilégio silenciosa: o chat passaria a ver contas de todo mundo.
+  Validado com o papel `authenticated` real — ester (Comercial) vê **48** contas, barbara
+  (Financeiro) vê **578**.
+- **O `REVOKE EXECUTE ... FROM PUBLIC` é obrigatório** em função nova do schema: o PostgreSQL
+  concede `EXECUTE` a `PUBLIC` por default, então sem ele o `anon` executaria a função mesmo sem
+  `USAGE` no schema. Mesma família do resíduo que a 097 limpou.
+- **Despacho de parâmetro (`date_field`, `granularity`, `group_by`) é por `CASE` + `IN (...)`,
+  nunca SQL dinâmico.** Tudo viaja como bind, e valor fora do domínio devolve **vazio** em vez de
+  agregar errado em silêncio.
+- **`cancelado` (id 9) fica fora dos totais por padrão**; "em aberto" é o set explícito
+  `status_id IN (1,2,3)` (as flags `has_opened`/`has_closed` da dimensão `status` estão todas
+  `false`); e **aging é por `due_date < CURRENT_DATE`, nunca pelo rótulo `status_name`** — que é
+  defasado pela trigger + batch diário (6 rotuladas `vencido` contra 100+ em atraso real).
+- **Âncora de teste NÃO pode ser número absoluto** — o dado deriva em 24 h (574→578 contas entre
+  28 e 29/07). Usar oráculo diferencial (tool × query de controle) ou janela histórica fechada.
 
 **O documento JÁ FOI REVISADO** com o resultado da Fase 0 (views validadas contra o banco, 6 tools,
 roadmap re-baselinado, §13 substituída pelos achados). O resumo abaixo é o essencial; o documento é
@@ -1356,10 +1404,32 @@ aberto" só se obtém pelo set explícito `{1,2,3}`; o fact precisa da classific
 plano, grupo, subgrupo) com o sentinela id 0 → "não informado"; e **não usar materialized view**
 (574 linhas, 19 índices).
 
-**Fase 1 (primeiro passo da implementação):** criar o schema `analytics` com as views/funções do
-documento, a `ai_chat_log` com RLS, os `GRANT`/`REVOKE`, e **expor `analytics` no PostgREST**
-(Settings → API → Exposed schemas — passo de dashboard, não de migration). O
-`@anthropic-ai/sdk` **não existe** em nenhum app/pacote do monorepo: o gateway é greenfield.
+**Fase 2 (o próximo passo) — gateway na Next API.** A camada de dados já existe (migration 098); o
+que falta é o orquestrador: `npm i @anthropic-ai/sdk -w apps/api-backend` (**não existe** em
+nenhum app/pacote — é greenfield), `ANTHROPIC_API_KEY` server-side, `lib/ai-chat/` (tools +
+gateway + log, um arquivo cada — o gateway **não** é Repository→Service→Route, é orquestrador),
+`app/api/ai-chat/route.ts` e o INSERT em `ai_chat_log`. A chamada às funções segue o padrão de
+`canSeeConta` (`getAnonClient()` + `.setHeader('Authorization', 'Bearer <token>')`) — **nunca
+`getSupabaseAdmin`**, que ignoraria a RLS. Erros por `failFromError` (5xx não vaza detalhe).
+
+> ⚠️ **LER O §17 do doc de arquitetura ANTES de escrever o gateway** (code review de 2026-07-29).
+> Três itens do desenho **não funcionam em produção** como descritos: (1) **sem `maxDuration` na
+> rota o gateway dá timeout** — o default da Vercel é 10–15 s e o loop de tool use passa disso
+> (precisa de `maxDuration` **e** streaming; um não substitui o outro); (2) o **loop não tem teto de
+> iterações**, então não há limite de custo por pergunta; (3) o **log "assíncrono" não executa** —
+> em serverless a function congela no `return`, então fire-and-forget perde a `ai_chat_log` (use
+> `waitUntil` ou log síncrono). Mais as armadilhas do Opus 5 (`temperature`/`top_p` → **400**;
+> `thinking` on por default consome o `max_tokens`) e o risco de o prompt caching **nunca acertar**
+> se a data corrente entrar no bloco cacheado do dicionário. Checklist de aceite no §17.8.
+
+**Alicerce verificado (não regredir):** `canSeeConta` — e o gateway, que reusa o padrão — chama
+`.setHeader()` sobre o **singleton** `getAnonClient()`. O postgrest-js isola as requisições por
+**duas** camadas (`from()` clona os headers; `setHeader` faz copy-on-write), então não há vazamento
+de token entre requisições concorrentes. Isso é garantia da **versão instalada**, não do contrato
+público, e a falha seria silenciosa (um usuário lendo a conta de outro, sem erro) — por isso o
+invariante está travado em `apps/api-backend/lib/auth.concurrency.test.ts`, em arquivo separado de
+`auth.test.ts` (que mocka o SDK inteiro e portanto **não** cobre isto). O teste foi validado contra
+o mutante das duas camadas sabotadas: ele falha quando o defeito existe.
 
 ## Comandos
 
@@ -1536,6 +1606,16 @@ py -3 skills\backup-supabase\scripts\run.py --dry-run     # valida config/conex�
 py -3 skills\backup-supabase\scripts\run.py               # backup completo (banco + Storage)
 py -3 skills\backup-supabase\scripts\run.py --skip-storage  # só o banco  (valida a senha)
 py -3 skills\backup-supabase\scripts\run.py --skip-db       # só o Storage
+```
+
+Verificar se a **máquina de produção está com os mesmos arquivos do repositório** — rodar EM
+PRODUÇÃO depois de qualquer cópia (compara o SHA-256 dos 26 arquivos de deploy; **exit 1** em
+divergência, portanto agendável). Ver "COMO SABER SE PRODUÇÃO ESTÁ ATUALIZADA" na seção de deploy:
+
+```powershell
+cd C:\Sheild\API\Pagamentos
+py -3 scheduler\check_deploy_parity.py            # em PRODUÇÃO: FALTANDO / DIVERGENTE / EXTRA
+py -3 scheduler\check_deploy_parity.py --update   # no DEV: regrava o manifesto (mesmo commit)
 ```
 
 Dependências:
@@ -3940,8 +4020,60 @@ local/agendada (ver flag `EMAIL_READER_ENABLED` acima e memória [[vercel-deploy
 ## Banco de dados (Supabase)
 
 Migrations em `supabase/migrations/`, aplicadas **manualmente no SQL Editor** (ou via Supabase
-MCP — ver a nota de cada uma) em ordem numérica (`001` → `097`). **Próxima migration = `098`**
+MCP — ver a nota de cada uma) em ordem numérica (`001` → `100`). **Próxima migration = `101`**
 (verificar sempre antes de criar nova).
+
+**A `100` restaura o DML do `service_role` no DEFAULT de tabelas novas** (aplicada via Supabase MCP
+em 2026-07-29, idempotente), sem devolver nada a `anon`/`authenticated`. É a correção do efeito
+colateral de desligar o toggle "Automatically expose new tables" — ver o bloco da `097` abaixo.
+**Estado final verificado com uma tabela-sonda real** (CREATE TABLE + `has_table_privilege` +
+ROLLBACK): tabela nova nasce com `service_role` = SELECT/INSERT/UPDATE/DELETE e **`anon` e
+`authenticated` sem nada, nem SELECT** — melhor que o estado anterior ao toggle, em que os dois
+nasciam com SELECT. Cobre os schemas `public` e `analytics`.
+
+**A `099` fecha DUAS RPCs que CONTORNAVAM a RLS, executáveis por `anon` (sem login)** — aplicada
+via Supabase MCP em 2026-07-29, idempotente. Achadas pelos advisors do Supabase durante a Fase 1 do
+chat de IA. A RLS **não** estava falhando (acesso direto às tabelas como `anon` já devolvia 0
+linhas); o problema eram dois `SECURITY DEFINER` de owner `postgres` e uma view
+`security_invoker = false` — três caminhos que **passam por fora** dela:
+
+- **`fn_delete_all_emails()`** (`RETURNS text`, logo chamável em `/rest/v1/rpc/`) fazia `DELETE` em
+  `financial_account_control` + `email_control` + `email_processing_errors` e reiniciava as
+  sequences: **qualquer um na internet apagava a base inteira com um POST**, porque a anon key é
+  pública por design (vai no bundle do browser). A função foi **PRESERVADA (só `REVOKE`)** — é a
+  ferramenta de "Limpeza / reset de dados" usada pelo SQL Editor, que roda como `postgres`.
+- **`search_text(p_table, p_column, p_termo)`** — `EXECUTE format('SELECT * FROM %I ...')`. O `%I`
+  barra SQL injection, e é por isso que ela "parecia" segura; o problema é rodar como `postgres` e
+  **ignorar a RLS**, devolvendo 50 linhas de QUALQUER tabela escolhida pelo cliente. **Exploração
+  confirmada como `anon`:** 50 contas com `amount`/`created_by` e 50 fornecedores — toda a
+  visibilidade por dono (076/078/080/081) contornada por uma função. Pós-fix, o mesmo POST HTTP com
+  a anon key devolve `42501 permission denied`.
+- **View `app_user`** — `REVOKE SELECT FROM anon` (lia os 12 e-mails de todos os usuários **sem
+  login** — lista pronta para phishing dirigido). **`authenticated` MANTÉM o SELECT**: sem ele o
+  "Criado por" desaparece do painel de detalhe de `/consulta`. A **081** já fechara a ESCRITA nessa
+  view (escalada de privilégio via view auto-atualizável); a LEITURA por `anon` passou batido.
+- `DROP TABLE public.supplier_tmp` (staging residual de 464 linhas; 0 FKs, 0 views dependentes).
+
+> **NÃO REGREDIR — `auth_group_sees_only_own()` NÃO pode ter o EXECUTE revogado**, embora os
+> advisors a apontem: ela é chamada DENTRO das policies 076/078, avaliadas com o papel
+> `authenticated`; sem EXECUTE, todo SELECT de contas levaria `42501` e a RLS inteira quebraria. É
+> exatamente a regressão que a **074** teve de consertar após a 072. As 6 funções `RETURNS trigger`
+> (`handle_new_user`, `fn_set_payment_date`, …) que os advisors listam são **ruído**: o PostgreSQL
+> recusa chamada direta a função de trigger.
+>
+> **Lição que generaliza (a 3ª repetição do mesmo padrão — 072, 081, 099):** neste projeto o
+> perímetro do PostgREST **não é só a policy**. Toda função `SECURITY DEFINER` e toda view
+> `security_invoker = false` é um furo em potencial na RLS, e o default do PostgreSQL/Supabase é
+> **permissivo** (`EXECUTE` a `PUBLIC` em função nova; escrita a `authenticated` em objeto novo).
+> Ao criar qualquer um dos dois, o `REVOKE` explícito faz parte da migration — e rodar
+> `get_advisors` depois de DDL é barato.
+
+**A `098` cria o schema `analytics`** — a camada semântica read-only do chat de IA (Fase 1;
+aplicada via Supabase MCP em 2026-07-29, idempotente). Views `vw_payables`/`vw_aging_vencidos`
+(`security_invoker = true`), as 6 funções de tool calling (`SECURITY INVOKER` + `STABLE`),
+`ai_chat_log` com RLS e os GRANT/REVOKE. **É o único schema fora do `public`** neste banco, e o
+único cujo `ALTER DEFAULT PRIVILEGES` já nasce corrigido. Detalhes, invariantes e o passo de
+dashboard pendente (expor `analytics` no PostgREST): ver "Chat de IA" acima.
 
 **A `097` faz a HIGIENE dos grants default de escrita** de `anon`/`authenticated` no schema
 `public` **e corrige a causa raiz** (aplicada via Supabase MCP em 2026-07-28). Três passos:
@@ -3966,6 +4098,29 @@ escrita**.
 > os default privileges do papel `supabase_admin`** (exigiria superuser). Como as tabelas deste
 > projeto são criadas por `postgres`, o passo 3 cobre o caso real — mas objeto criado por
 > `supabase_admin` ainda precisaria de `REVOKE` explícito.
+>
+> **MEDIDO em 2026-07-29 (a lacuna do `supabase_admin` é REAL, não teórica):** consultando
+> `pg_default_acl`, o ACL default de TABELAS no schema `public` é
+> `anon=r` / `authenticated=r` quando o criador é **`postgres`** (só leitura — o efeito da 097),
+> mas **`anon=arwdDxtm` / `authenticated=arwdDxtm`** quando o criador é **`supabase_admin`** —
+> isto é, INSERT, UPDATE, DELETE, TRUNCATE, REFERENCES, TRIGGER e MAINTAIN. Na prática: **toda
+> tabela criada pelo Table Editor do dashboard nasce gravável por `anon`**, e a 097 não a alcança.
+>
+> **O toggle "Automatically expose new tables" foi DESLIGADO em 2026-07-29 — e NÃO fechou essa
+> lacuna (não regredir a conclusão errada):** medido depois de desligar, o default do
+> **`supabase_admin` permaneceu `anon=arwdDxtm` / `authenticated=arwdDxtm`**. O toggle só mexeu no
+> default do papel **`postgres`**. Como `ALTER DEFAULT PRIVILEGES FOR ROLE supabase_admin` exige
+> superuser (o papel do MCP/psql é `postgres`, que **não é superuser nem membro de
+> `supabase_admin`**), **não há correção por SQL**. → A mitigação é de **PROCESSO: criar tabela
+> sempre por migration, nunca pelo Table Editor do dashboard.** Tabela criada pela UI nasce
+> gravável e truncável por `anon` e precisa de REVOKE explícito no mesmo dia.
+>
+> **Efeito colateral do toggle, corrigido pela `100`:** desligá-lo também removeu o DML do
+> **`service_role`** (o default do `postgres` virou `service_role=Dxtm` — sem INSERT/SELECT/UPDATE/
+> DELETE), e é com esse papel que o pipeline Python e a Next API escrevem. Não quebrou nada na hora
+> (default privileges só valem para objeto NOVO; as 19 tabelas existentes seguiram intactas), mas
+> a próxima migration que criasse tabela geraria um `permission denied` no pipeline, longe da causa.
+> Ver a **migration 100**.
 >
 > **Estado verificado após aplicar:** 0 privilégios de escrita de tabela sobrando para
 > `anon`/`authenticated`; os **4** grants por coluna da curadoria **intactos**
@@ -4844,8 +4999,50 @@ instalados na máquina. Guia: `scheduler/INSTALL.md`.
 > daqui**. Todo deploy do pipeline Python (reader, cobrança, backup, baixa) é feito
 > **manualmente NA máquina de produção**, por quem tem acesso a ela. O papel do Claude é
 > deixar o fix canônico em `main` (via commit/PR/merge) e **entregar o passo de cópia +
-> comando de validação**; a execução em produção é do operador. Os avisos "PENDENTE de
-> cópia p/ prod" abaixo listam o que ainda falta aplicar lá.
+> comando de validação**; a execução em produção é do operador.
+>
+> **COMO SABER SE PRODUÇÃO ESTÁ ATUALIZADA — `scheduler/check_deploy_parity.py`:**
+>
+> ```powershell
+> cd C:\Sheild\API\Pagamentos
+> py -3 scheduler\check_deploy_parity.py
+> ```
+>
+> Compara o SHA-256 dos **26 arquivos de deploy** (os 4 pipelines + os `.ps1` do Agendador) com
+> `scheduler/deploy-manifest.json`, versionado junto do código. Reporta `FALTANDO` / `DIVERGENTE` /
+> `EXTRA` por arquivo e sai com **exit 1** quando há divergência — portanto **agendável**: uma
+> tarefa semanal acusa deriva sem ninguém precisar lembrar. Fim de linha é normalizado, então um
+> arquivo copiado em CRLF **não** vira falso positivo (o ruído que faria a verificação ser ignorada).
+>
+> **No DEV, após alterar qualquer script de deploy, regrave o manifesto no mesmo commit:**
+> `py -3 scheduler\check_deploy_parity.py --update`. Se um arquivo NOVO passar a ser necessário em
+> produção, ele precisa entrar em `DEPLOY_GLOBS` — é exatamente o caso que ninguém percebe faltar
+> (aconteceu com `febraban.py`, extraído em 2026-07-28).
+>
+> **Estado medido em 2026-07-29: 26/26 conferem** — produção em paridade, com todos os deploys que
+> estavam pendentes aplicados. Antes disso o estado real nunca havia sido verificado.
+>
+> **Duas exclusões DELIBERADAS em `DEPLOY_EXCLUDE` (não "completar" a lista):**
+> `scheduler/deploy-prod.ps1` roda **no dev** (copia PARA produção) e o operador não o usa; e o
+> **próprio verificador** fica de fora porque um manifesto que se auto-inclui muda de hash a cada
+> edição do script, acusando "produção desatualizada" falsamente. Incluir qualquer um dos dois
+> produz um `FALTANDO` eterno — e um alerta que sempre grita é um alerta que se aprende a ignorar,
+> que é como esta verificação falharia na prática.
+>
+> **`_ansi_supported()` e o `reconfigure(errors="replace")` NÃO são enfeite (não remover):** o
+> primeiro só liga cor depois de habilitar `ENABLE_VIRTUAL_TERMINAL_PROCESSING` via `ctypes` —
+> `isatty()` sozinho é verdadeiro no console do Windows, que porém descarta ANSI e imprime os
+> códigos crus (`[32mOK … [0m`) no meio do relatório (observado em produção). O segundo evita
+> `UnicodeEncodeError` num console de code page legada: **medido**, um `print("Produção…")` sob
+> cp437 sai com **exit 1** — e como exit 1 é o sinal de "produção desatualizada", a tarefa
+> agendada daria alarme falso vindo justamente do mecanismo criado para evitar alarme falso.
+>
+> **Por que isto existe:** até 2026-07-29 o estado de produção só era conhecido relendo avisos
+> espalhados por este documento. O resultado foi **13 deploys pendentes acumulados**, o mais antigo
+> com 19 dias — correções mescladas em `main` que não valiam em produção, sem nada apontando isso.
+> Arquivo esquecido não dá erro: o pipeline segue rodando a versão velha e o bug "corrigido"
+> continua acontecendo. Os blocos `DEPLOY …` abaixo permanecem como **histórico do que cada
+> mudança fez e como validá-la** — o estado atual quem responde é o script, não eles.
 >
 > **Regra geral (não só limitação técnica — é DECISÃO DO USUÁRIO):** toda instalação na
 > máquina de produção — cópia de arquivos/skills, registro/atualização de tarefas no
@@ -4860,7 +5057,7 @@ instalados na máquina. Guia: `scheduler/INSTALL.md`.
 
 ### Deploy manual do Email Reader em produção (caso específico — não regredir)
 
-> **DEPLOY 2026-07-17 — split multi-pagável genérico (PENDENTE de cópia p/ prod):** o
+> **DEPLOY 2026-07-17 — split multi-pagável genérico (APLICADO em prod — 2026-07-29):** o
 > `extract_pdf.py` passou a dividir PDF com ≥2 pagáveis por **instrumento de pagamento** (linha
 > digitável / arrecadação 48 / PIX EMV), não só por linha digitável — recupera guias FGTS Digital
 > e afins (ver "Split multi-pagável por INSTRUMENTO DE PAGAMENTO"). **Esta mudança é no
@@ -4922,7 +5119,7 @@ lê os arquivos do disco.
 > estável é desejável). Validação ampliada (esperado `True True True`):
 > `py -3 -c "import sys; sys.path.insert(0,'skills/email-reader/scripts'); import read_emails as R; print(hasattr(R,'apply_forced_classification'), hasattr(R,'resolve_forced_classification'), 'cartorio' in R.KEYWORDS_DEFAULT)"`
 
-> **DEPLOY 2026-07-06 (posterior) — ignorar confirmação de pagamento (PENDENTE de re-cópia p/ prod):**
+> **DEPLOY 2026-07-06 (posterior) — ignorar confirmação de pagamento (APLICADO em prod — 2026-07-29):**
 > a regra `subject_is_payment_confirmation` (ver "Confirmação de pagamento → `ignorado`") foi
 > acrescentada ao `read_emails.py` **depois** do deploy acima, então a produção precisa de uma
 > **RE-CÓPIA do `read_emails.py`** para recebê-la (`extract_pdf.py` **não** muda nesta; sem `.env`
@@ -4931,7 +5128,7 @@ lê os arquivos do disco.
 > (esperado `True`): `py -3 -c "import sys; sys.path.insert(0,'skills/email-reader/scripts'); import
 > read_emails as R; print(hasattr(R,'subject_is_payment_confirmation'))"`
 
-> **DEPLOY 2026-07-10 — `pix` deixa de ser tipo de documento (PENDENTE de cópia p/ prod):** PIX é só
+> **DEPLOY 2026-07-10 — `pix` deixa de ser tipo de documento (APLICADO em prod — 2026-07-29):** PIX é só
 > forma de pagamento; `document_type='outro'` quando não há tipo claro (migration 075 + `extract_pdf.py`
 > sem `apply_pix_override` + ramo `has_pix` do corpo em `read_emails.py`). Deploy = copiar os **2
 > arquivos** (`read_emails.py` **e** `extract_pdf.py`, interdependentes — o sintético `pix_valor` vive
@@ -4941,7 +5138,7 @@ lê os arquivos do disco.
 > `py -3 -c "import sys; sys.path.insert(0,'skills/pdf-contas-pagar/scripts'); import extract_pdf as e;
 > print(hasattr(e,'apply_pix_override'))"`
 
-> **DEPLOY 2026-07-10 — autoria `created_by` na extração (PENDENTE de cópia p/ prod):** a Etapa 1 de
+> **DEPLOY 2026-07-10 — autoria `created_by` na extração (APLICADO em prod — 2026-07-29):** a Etapa 1 de
 > visibilidade por dono (migration 076) faz o pipeline gravar o DONO da conta a partir do remetente.
 > Deploy = copiar **só** `read_emails.py` (novos `SupabaseControl.resolve_user` + injeção de `created_by`
 > no `register_financial`; `extract_pdf.py` NÃO muda nesta). **Sem `.env`.** A **migration 076** já rodou
@@ -4952,7 +5149,7 @@ lê os arquivos do disco.
 > **Etapa 2 (auditoria de autor, migration 077) NÃO muda o Python** — só migration (já aplicada) +
 > Next API/frontend (Vercel). A cópia pendente do `read_emails.py` é só a da Etapa 1 (mesma).
 
-> **DEPLOY 2026-07-15 — vínculo do anexo do e-mail (PENDENTE de cópia p/ prod):** a migration 079
+> **DEPLOY 2026-07-15 — vínculo do anexo do e-mail (APLICADO em prod — 2026-07-29):** a migration 079
 > (anexos múltiplos) faz o reader REGISTRAR em `financial_account_attachment` o anexo que já sobe ao
 > Storage. Deploy = copiar **só** `read_emails.py` (`register_financial` agora devolve o **id** da
 > conta via `return=representation`, + `SupabaseControl.register_attachment` + o vínculo no Passo 2;
@@ -4966,7 +5163,7 @@ lê os arquivos do disco.
 > `py -3 -c "import sys; sys.path.insert(0,'skills/email-reader/scripts'); import read_emails as R;
 > print(hasattr(R.SupabaseControl,'register_attachment'), hasattr(R.SupabaseControl,'resolve_user'))"`
 
-> **DEPLOY 2026-07-16 — contato do fornecedor na extração (PENDENTE de cópia p/ prod):** o reader passa
+> **DEPLOY 2026-07-16 — contato do fornecedor na extração (APLICADO em prod — 2026-07-29):** o reader passa
 > a detectar telefone/WhatsApp/chave PIX no corpo e gravar em `supplier` (write-back, 2 slots — ver
 > "Contato do fornecedor"). Deploy = copiar **só** `read_emails.py` (novos `parse_supplier_contacts`,
 > `apply_contact_writeback`, `SupabaseControl.update_supplier_contact`; `extract_pdf.py` NÃO muda —
@@ -4980,7 +5177,7 @@ lê os arquivos do disco.
 > `py -3 -c "import sys; sys.path.insert(0,'skills/email-reader/scripts'); import read_emails as R;
 > print(hasattr(R,'parse_supplier_contacts'), hasattr(R.SupabaseControl,'update_supplier_contact'))"`
 
-> **DEPLOY 2026-07-16 — Beneficiário Final vence Beneficiário/Cedente (PENDENTE de cópia p/ prod):** em
+> **DEPLOY 2026-07-16 — Beneficiário Final vence Beneficiário/Cedente (APLICADO em prod — 2026-07-29):** em
 > boleto securitizado, o fornecedor passa a ser o **Beneficiário Final** (não o cedente/cobrança) — ver
 > "Beneficiário Final vence Beneficiário/Cedente". Deploy = copiar **só** `extract_pdf.py` (novos
 > `extract_beneficiario_final`/`apply_beneficiario_final` + chamada em `build_record`; **`read_emails.py`
@@ -4991,7 +5188,7 @@ lê os arquivos do disco.
 > `py -3 -c "import sys; sys.path.insert(0,'skills/pdf-contas-pagar/scripts'); import extract_pdf as E;
 > print(hasattr(E,'apply_beneficiario_final'))"`
 
-> **DEPLOY 2026-07-16 — dedup por NOSSO NÚMERO (PENDENTE de cópia p/ prod):** a dedup ganhou a impressão
+> **DEPLOY 2026-07-16 — dedup por NOSSO NÚMERO (APLICADO em prod — 2026-07-29):** a dedup ganhou a impressão
 > **1b** (`sk_supplier` + `nosso_numero`) para pegar reemissão/2ª via/aviso de vencimento que muda valor
 > (juros) E vencimento — ver "Impressão 1b". Deploy = copiar **só** `read_emails.py` (novos
 > `_is_real_nosso_numero` + impressão 1b em `find_financial_duplicate`; **`extract_pdf.py` NÃO muda**
@@ -5024,7 +5221,7 @@ lê os arquivos do disco.
 > `Enable-ScheduledTask -TaskName "Pagamentos - Email Reader" -TaskPath "\Sheild\"` (foi pausada
 > para o rollout). A máquina de dev (SHE-DEV) não a enxerga.
 
-> **DEPLOY 2026-07-17 — empresa pagadora por PRECEDÊNCIA, 3 empresas (PENDENTE de cópia p/ prod):**
+> **DEPLOY 2026-07-17 — empresa pagadora por PRECEDÊNCIA, 3 empresas (APLICADO em prod — 2026-07-29):**
 > o reader grava `sk_company` por **1º ester→3 (FARDOS) · 2º lebianco→2 · 3º default→1 (TECIDOS)** —
 > ver "Empresa pagadora (`sk_company`) — regra por PRECEDÊNCIA". Deploy = copiar **só**
 > `read_emails.py` (`FARDOS_SENDER`/`_is_fardos_sender`/`SK_COMPANY_FARDOS` + a ordem em
@@ -5043,8 +5240,8 @@ lê os arquivos do disco.
 > (esperado **`3 2 1`** — a ester vencendo até a menção a lebianco; lebianco; e outro usuário
 > `@otimotex.com.br` caindo no default.)
 
-> **DEPLOY 2026-07-20 — descartar extrato/relatório que acompanha o boleto (PENDENTE de cópia p/
-> prod):** a regra fatura+boleto ganhou uma 2ª guarda que descarta a linha SEM barcode reconhecida
+> **DEPLOY 2026-07-20 — descartar extrato/relatório que acompanha o boleto (APLICADO em
+> prod — 2026-07-29):** a regra fatura+boleto ganhou uma 2ª guarda que descarta a linha SEM barcode reconhecida
 > como **extrato/demonstrativo/relatório** (por nome/descrição), mesmo com valor DISTINTO do boleto
 > — ver "SEGUNDA GUARDA — EXTRATO/DEMONSTRATIVO/RELATÓRIO". Deploy = copiar **só** `read_emails.py`
 > (`_STATEMENT_DOC_RE`/`_is_statement_document` + o branch `has_real_boleto and
@@ -5056,8 +5253,8 @@ lê os arquivos do disco.
 > 605) já valeu para dev+prod (mesma Supabase). Validação (esperado `True`):
 > `py -3 -c "import sys; sys.path.insert(0,'skills/email-reader/scripts'); import read_emails as R; print(R._is_statement_document({'source_file':'Extrato_sintetico_07.pdf','barcode':None}))"`
 
-> **DEPLOY 2026-07-23 — remetente encaminhado no corpo + "Fatura No:" (PENDENTE de cópia p/
-> prod):** o fornecedor passa a ser resolvido pelo remetente ORIGINAL de um bloco encaminhado no
+> **DEPLOY 2026-07-23 — remetente encaminhado no corpo + "Fatura No:" (APLICADO em
+> prod — 2026-07-29):** o fornecedor passa a ser resolvido pelo remetente ORIGINAL de um bloco encaminhado no
 > corpo (`_supplier_from_forwarded_sender`, fallback 2 de `_finalize_supplier` — ver "REMETENTE
 > ORIGINAL encaminhado no CORPO vence o assunto") e o nº de fatura passa a reconhecer o rótulo
 > "Fatura No: NNNN" sem sinal º/° (`_BODY_INVOICE_NO_RE`, ver "Captura do nº de documento no
@@ -5070,7 +5267,7 @@ lê os arquivos do disco.
 > para dev+prod (mesma Supabase). Validação (esperado `True True`):
 > `py -3 -c "import sys; sys.path.insert(0,'skills/email-reader/scripts'); import read_emails as R; print(hasattr(R,'_supplier_from_forwarded_sender'), hasattr(R,'_BODY_INVOICE_NO_RE'))"`
 
-> **DEPLOY 2026-07-23 — NFS-e/NF-e combinada com boleto vira conta (PENDENTE de cópia p/ prod):**
+> **DEPLOY 2026-07-23 — NFS-e/NF-e combinada com boleto vira conta (APLICADO em prod — 2026-07-29):**
 > um documento COMBINADO NFS-e + boleto no mesmo PDF (ex.: Amil "e-Faturamento") passa a gerar a
 > conta a pagar em vez de ser descartado como documento fiscal — o skip de `SKIP_ACCOUNT_TYPES` no
 > Passo 2 só dispara quando a linha NÃO tem boleto real; tendo linha digitável válida, é re-rotulada
@@ -5084,7 +5281,7 @@ lê os arquivos do disco.
 > `py -3 -c "import sys; sys.path.insert(0,'skills/email-reader/scripts'); import read_emails as R; bc='34192153100007217911092614333532938395767000'; print('boleto' if R._is_boleto_barcode(bc) else 'skip')"`
 
 > **DEPLOY 2026-07-28 — regra de SEGURADORA + porta livre no guard SSRF + PDF espelhado
-> (PENDENTE de cópia p/ prod):** e-mail de seguradora passa a gerar conta só com boleto de
+> (APLICADO em prod — 2026-07-29):** e-mail de seguradora passa a gerar conta só com boleto de
 > linha digitável válida (`document_type='seguro'`) e, sem boleto, vira `ignorado` em vez de
 > `falha` — ver "SEGURADORA: só boleto com linha digitável válida vira conta". Junto vão as
 > duas correções que destravaram o caso: a **remoção da allowlist de portas** do guard
@@ -5101,7 +5298,7 @@ lê os arquivos do disco.
 > reprocessável (fora da INBOX) e segue em `falha`. Validação (esperado `True True True`):
 > `py -3 -c "import sys; sys.path.insert(0,'skills/email-reader/scripts'); sys.path.insert(0,'skills/pdf-contas-pagar/scripts'); import read_emails as R, extract_pdf as E; print(R._is_insurance_context('SEGUROS SURA VID_G_002'), R._is_safe_download_url('http://mdi.li:7000/api/item/x'), hasattr(E,'is_mirrored_text'))"`
 
-> **DEPLOY 2026-07-28 — tabela de faturas achatada no corpo (PENDENTE de cópia p/ prod):** o
+> **DEPLOY 2026-07-28 — tabela de faturas achatada no corpo (APLICADO em prod — 2026-07-29):** o
 > corpo cujo rótulo fica no CABEÇALHO da tabela passa a render nº do documento, emissão,
 > vencimento e **linha digitável** corretos — ver "TABELA DE FATURAS achatada". Deploy = copiar
 > os **DOIS** arquivos (interdependentes: o corpo chama o extrator canônico do PDF):
@@ -5114,7 +5311,7 @@ lê os arquivos do disco.
 > Validação (esperado `454663_01 2026-08-01 True`):
 > `py -3 -c "import sys; sys.path.insert(0,'skills/email-reader/scripts'); import read_emails as R; b=' 454663_01 \r\n 22/07/2026 \r\n 01/08/2026 \r\n R$ 181.90 \r\n 23793.39100.90000.004375.07000.842000.3.15250000018190 '; r=R._extract_body_invoice_row(b); print(r['doc'], r['due_date'], bool(r['barcode']))"`
 
-> **DEPLOY 2026-07-28 — endurecimento do caminho do corpo (PENDENTE de cópia p/ prod):**
+> **DEPLOY 2026-07-28 — endurecimento do caminho do corpo (APLICADO em prod — 2026-07-29):**
 > resolução dos riscos residuais do code review — corte do rodapé por POSIÇÃO
 > (`_ns_keep_len`), barcode do corpo pela FORMA antes do RÓTULO, janela
 > `_INVOICE_ROW_BARCODE_WINDOW` na última linha da tabela, rótulo de emissor tolerando linha
@@ -5132,7 +5329,7 @@ lê os arquivos do disco.
 > todas as pendências anteriores. Validação (esperado `dinheiro True None True`):
 > `py -3 -c "import sys; sys.path.insert(0,'skills/email-reader/scripts'); sys.path.insert(0,'skills/pdf-contas-pagar/scripts'); import read_emails as R, extract_pdf as E; print(R._classify_body_payment_method('Pago em dinheiro. Esta cobranca foi gerada pela Efi. cartao de credito'), len(R._ns_keep_len('AÇÃO Àé'))==len('AÇÃO Àé'), E.normalize_barcode('1'*48), E.normalize_barcode_allow_misread('34191125902026142931864598900021503000324000') is not None)"`
 
-> **DEPLOY 2026-07-28 — ignorar "Recebemos o seu pagamento" (PENDENTE de cópia p/ prod):**
+> **DEPLOY 2026-07-28 — ignorar "Recebemos o seu pagamento" (APLICADO em prod — 2026-07-29):**
 > `subject_is_payment_confirmation` passou a cobrir o aviso do credor de que recebeu, com a
 > guarda da forma NEGADA ("não recebemos" = cobrança) — ver "Extensão 'Recebemos o seu
 > pagamento'". Deploy = copiar **só** `read_emails.py`. **Sem `.env`, sem dependência nova, sem
@@ -5142,7 +5339,7 @@ lê os arquivos do disco.
 > Supabase compartilhada. Validação (esperado `True False`):
 > `py -3 -c "import sys; sys.path.insert(0,'skills/email-reader/scripts'); import read_emails as R; print(R.subject_is_payment_confirmation('Leadster | Recebemos o seu pagamento'), R.subject_is_payment_confirmation('Ainda nao recebemos o seu pagamento'))"`
 
-> **DEPLOY 2026-07-28 — notificação de cobrança de plataforma (PENDENTE de cópia p/ prod):** o
+> **DEPLOY 2026-07-28 — notificação de cobrança de plataforma (APLICADO em prod — 2026-07-29):** o
 > corpo de boleto de assinatura (Efí/Gerencianet) passa a render fornecedor ("Dados do emissor"),
 > nº do documento ("Cobrança Nº") e forma de pagamento **boleto** (o rodapé institucional deixa de
 > declarar "crédito") — ver "NOTIFICAÇÃO DE COBRANÇA DE PLATAFORMA". Deploy = copiar **só**
@@ -5277,7 +5474,7 @@ regra, via `service_role`). Mesma **preferência do usuário**: atualização de
 **cópia manual + validação** (nunca `deploy-prod.ps1`).
 
 > **DEPLOY 2026-07-23 — Regra 2 (marcação de vencidos) adicionada + horário movido de
-> 06:00 para 08:00 (PENDENTE de cópia/reagendamento p/ prod):** o `run.py` ganhou
+> 06:00 para 08:00 (APLICADO em prod — 2026-07-29):** o `run.py` ganhou
 > `VENCIDO_ELIGIBLE_STATUS_IDS`/`STATUS_ID_VENCIDO`/`build_filter_vencido`/
 > `count_eligible_vencido`/`apply_vencido` + `main()` reescrito para rodar as duas regras
 > isoladas (`_run_baixa_step`/`_run_vencido_step`). A Regra 1 (baixa para `pago`) está

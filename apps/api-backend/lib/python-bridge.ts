@@ -4,6 +4,8 @@
 // spawnar Python — preserva a lógica única de run_reader() e evita problemas
 // de descoberta de interpretador no Windows.
 
+import { ApiServiceError } from './api-error';
+
 const PYTHON_SERVICE_URL = process.env.PYTHON_SERVICE_URL ?? 'http://127.0.0.1:8000';
 
 // S3-1: um Flask travado (IMAP pendurado) não pode pendurar o handler Next junto —
@@ -41,13 +43,9 @@ interface FlaskReadResponse {
 }
 
 // Erro de domínio da ponte — carrega o status HTTP a propagar ao cliente.
-export class PythonBridgeError extends Error {
-  constructor(
-    message: string,
-    public readonly status: number,
-  ) {
-    super(message);
-    this.name = 'PythonBridgeError';
+export class PythonBridgeError extends ApiServiceError {
+  constructor(message: string, status: number) {
+    super(message, status, 'PythonBridgeError');
   }
 }
 

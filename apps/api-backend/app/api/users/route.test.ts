@@ -6,13 +6,11 @@ vi.mock('@/lib/auth', () => ({ requireAdmin: vi.fn(async () => null) }));
 
 // Mock do service — UserServiceError precisa ser classe real (a rota usa instanceof),
 // compartilhada entre o mock e o SUT por vir do mesmo módulo mockado.
-vi.mock('@/lib/users', () => {
-  class UserServiceError extends Error {
-    status: number;
+vi.mock('@/lib/users', async () => {
+  const { ApiServiceError } = await vi.importActual<typeof import('@/lib/api-error')>('@/lib/api-error');
+  class UserServiceError extends ApiServiceError {
     constructor(message: string, status: number) {
-      super(message);
-      this.name = 'UserServiceError';
-      this.status = status;
+      super(message, status, 'UserServiceError');
     }
   }
   return { userService: { register: vi.fn() }, UserServiceError };
