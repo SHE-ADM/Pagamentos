@@ -982,7 +982,7 @@ para o modelo, que tentaria interpretá-lo como dado.
 | Tool calls paralelos em uma única mensagem | ✅ travado por teste |
 | Erros do SDK traduzidos antes do `failFromError` | ✅ |
 | 5xx sem vazar detalhe | ✅ |
-| `cache_read_input_tokens > 0` observado | ⏳ **exige chamada real** — primeiro passo da Fase 3 |
+| `cache_read_input_tokens > 0` observado | ✅ **medido em produção em 30/07/2026** — 5 de 5 interações reais (§20.9) |
 
 ### 18.6 Fase 3 — o que vem
 
@@ -1132,7 +1132,14 @@ O prompt caching tem um **tamanho mínimo de prefixo** que varia por modelo; aba
 |---|---|
 | `SYSTEM_PROMPT` | 1.977 chars |
 | definição das 6 tools | ~5.200 chars |
-| **prefixo cacheado** | ~7.177 chars ≈ **2.175 tokens** |
+| **prefixo cacheado** | ~7.177 chars ≈ ~~2.175~~ → **3.653 tokens** (medido) |
+
+> **Corrigido em 30/07/2026 pela primeira execução real (§20.9).** A estimativa de 2.175 tokens
+> vinha de contagem de caracteres e era **68% baixa**. O número real aparece sozinho no
+> `cache_read_input_tokens` das 5 primeiras interações: **7306 = 2 × 3653** e **10959 = 3 × 3653**
+> — múltiplos exatos, porque o gateway soma o usage de todas as chamadas do turno. A conclusão do
+> parágrafo abaixo **não muda, fica mais firme**: 3.653 continua ABAIXO dos 4.096 exigidos pelo
+> Opus 4.6 e pelo Haiku 4.5.
 
 Confortável para o mínimo do **Opus 5 (512)**. Mas `MODEL` é configurável por
 `ANTHROPIC_MODEL`, e o mínimo **não é monotônico entre gerações**: Opus 4.6 e Haiku 4.5 exigem
@@ -1362,3 +1369,59 @@ resposta que **nenhuma chamada real exercitou ainda**. Construir três camadas s
 verificado é o oposto de robustez. Quando a v1 estiver validada em produção, o caminho natural é
 começar pelas linhas do último tool call (o `RankingList`/`BreakdownDonut` do projeto já renderizam
 agregados sem dependência nova).
+
+### 20.9 Primeira execução real (30/07/2026) — o que ela provou e o que ela revelou
+
+Cinco perguntas reais, dois usuários, 11:06–11:16. Lido de `analytics.ai_chat_log` por psql.
+
+| Critério | Resultado |
+|---|---|
+| `error IS NULL` | ✅ **5 de 5** — modelo → tool → RPC → RLS → resposta → log funciona ponta a ponta |
+| `tool_calls` não vazio | ✅ 5 de 5, com **4 tools distintas** (`resumo_situacao`, `aging_vencidos`, `gasto_por_fornecedor`, `gasto_por_classificacao`) |
+| `cache_read_input_tokens > 0` | ✅ **5 de 5** — fecha o único item ⏳ do §18.5 |
+| Latência | 8,3 s a 30,1 s (teto de 300 s do plano Pro) |
+| Volume | 61.416 tokens de prompt, **65% servidos do cache**; 4.892 de saída |
+
+**O prefixo cacheável real é 3.653 tokens** — ver a correção no §19.10. Não foi preciso instrumentar
+nada para descobrir: os valores de `cache_read` são múltiplos exatos dele, porque o gateway soma o
+usage das chamadas de um mesmo turno. É o tipo de número que só a execução real entrega.
+
+#### O que a execução revelou — auditoria cega para o teto de iterações
+
+A interação id 6 registrou **seis** chamadas a `gasto_por_fornecedor`, 101 linhas, 30 s e 9.877
+tokens de entrada. O teto do loop é **6**. Ou seja: essa pergunta pode ter batido no limite e
+devolvido resposta incompleta — **e não havia como saber pelo log**. `truncated` existia no
+`ChatResult` e nunca era persistido; o número de iterações não existia em lugar nenhum.
+
+Isso morde exatamente onde o §11 diz que o `ai_chat_log` é a fonte de verdade para descobrir *quais
+tools faltam*: a pergunta que estoura o teto é a mais informativa **e** a mais cara, e era
+indistinguível de um run limpo que por acaso usou 6 consultas.
+
+**Migration 102** acrescenta `truncated BOOLEAN` e `iterations SMALLINT` (nullable, sem backfill —
+as 5 linhas anteriores são legitimamente desconhecidas). O gateway passou a contar as chamadas do
+loop **no mesmo contador do teto** (dois contadores divergiriam na primeira alteração), a `PartialRun`
+leva `iterations` para o caminho de erro — é ele que mostra ONDE a pergunta cara parou — e o log
+grava os dois. No caminho de erro, `truncated` é `false`: não existe resposta para estar cortada, e
+quem distingue a linha é o `error`. A consulta que a feature habilita:
+
+```sql
+SELECT question, iterations, row_count, input_tokens
+  FROM analytics.ai_chat_log WHERE truncated;
+```
+
+O guarda de colunas de `log.test.ts` foi estendido às migrations 098/101/**102** e revalidado contra
+mutante (`iterations` → `iteration_count`: o teste acusa `expected [ 'iteration_count' ] to deeply
+equal []`).
+
+#### Recorte da RLS — verificação ADIADA por decisão de produto
+
+Os dois usuários que testaram (`ricardo@sheild.com.br` = Administrador, `samuel@otimotex.com.br` =
+Diretor) estão em grupos **irrestritos** (`sees_only_own_accounts = false`), e fizeram perguntas
+diferentes — os `row_count` não são comparáveis. A prova exigiria `ester@otimotex.com.br` (Comercial,
+o único grupo com a flag) repetindo a pergunta de um irrestrito.
+
+**O dono do produto decidiu não fazer esse teste agora**, porque a direção provável é **limitar o uso
+da IA por usuário** — o que muda a pergunta a ser respondida (deixa de ser só "a RLS recorta?" e
+passa a incluir "quem pode usar o chat?"). Fica registrado como **verificação em aberto por decisão,
+não por esquecimento**: o mecanismo em si (`security_invoker` + JWT do usuário) foi validado na Fase
+1 com o papel `authenticated` real (§16.3), onde ester via 48 contas e barbara 578.

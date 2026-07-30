@@ -1336,10 +1336,14 @@ de implementar qualquer parte (§18 = Fase 2 · §19 = code review · §20 = Fas
 `apps/api-backend/lib/ai-chat/` (`tools.ts` · `errors.ts` · `gateway.ts` · `log.ts`) +
 `app/api/ai-chat/route.ts`, com `@anthropic-ai/sdk` e **73 testes**. A **Fase 3** entregou a **UI**
 (widget flutuante global — ver "Widget do assistente" abaixo) e a configuração da chave em
-`apps/api-backend/.env.local`. **Falta:** (1) a **primeira chamada real** à Claude API — nenhuma foi
-feita ainda; é ela que fecha `cache_read_input_tokens > 0` (§18.5) e comprova o recorte da RLS com
-dois usuários de grupos diferentes; (2) **`ANTHROPIC_API_KEY` no Vercel** (`pagamentos-api-backend`
-→ Settings → Environment Variables), sem a qual a rota é 500 em produção. Pilares que permanecem:
+`apps/api-backend/.env.local`. **VALIDADO EM PRODUÇÃO em 30/07/2026** (§20.9): 5 perguntas
+reais, 2 usuários, `error IS NULL` em todas, 4 tools distintas exercitadas e
+**`cache_read_input_tokens > 0` em 5 de 5** — o que fecha o único item ⏳ do §18.5. A chave já está
+no Vercel. **Prefixo cacheável real: 3.653 tokens/chamada** (a estimativa de ~2.175 do §19.10 era
+68% baixa; segue ABAIXO dos 4.096 do Opus 4.6/Haiku 4.5, então o risco de trocar de modelo é real).
+**Em aberto por DECISÃO, não esquecimento:** a prova do recorte da RLS com um usuário do grupo
+Comercial foi adiada — a direção provável é **limitar o uso da IA por usuário**, o que muda a
+pergunta a responder. O mecanismo (`security_invoker` + JWT) já fora validado na Fase 1 (§16.3). Pilares que permanecem:
 **nunca usar `service_role`** no caminho de leitura · **tool calling** sobre funções de negócio como
 via primária · log de toda interação para auditoria.
 
@@ -1433,7 +1437,8 @@ voltar `PGRST106 Invalid schema`, a exposição foi desfeita.
   declaradas nas **migrations 098/101** (guarda cross-layer, no molde de
   `test_doc_type_domain_consistency.py`), tem asserção de sanidade do parser e é ancorado em
   `import.meta.dirname` (não `process.cwd()`, que muda conforme o vitest é invocado). Ao acrescentar
-  campo ao log, a migration e este teste andam juntos.
+  campo ao log, a migration e este teste andam juntos — foi o que a **102** fez ao trazer
+  `truncated`/`iterations`.
 - **`export const maxDuration = 300` na rota.** O default da Vercel (10–15 s) mata um loop de 2–3
   iterações que funciona perfeitamente em dev.
 - **Teto de 6 iterações**, e ao atingi-lo uma chamada final que **não pode usar tools**
@@ -4201,8 +4206,17 @@ local/agendada (ver flag `EMAIL_READER_ENABLED` acima e memória [[vercel-deploy
 ## Banco de dados (Supabase)
 
 Migrations em `supabase/migrations/`, aplicadas **manualmente no SQL Editor** (ou via Supabase
-MCP — ver a nota de cada uma) em ordem numérica (`001` → `101`). **Próxima migration = `102`**
+MCP — ver a nota de cada uma) em ordem numérica (`001` → `102`). **Próxima migration = `103`**
 (verificar sempre antes de criar nova).
+
+**A `102` acrescenta `truncated`/`iterations` a `analytics.ai_chat_log`** (aplicada via psql em
+2026-07-30, idempotente, aditiva e sem backfill). Achado da **primeira execução real** (§20.9): uma
+interação registrou 6 chamadas à mesma tool — e o teto do loop é 6 —, ou seja, pode ter devolvido
+resposta incompleta **sem que o log dissesse**. `truncated` já existia no `ChatResult` e não era
+persistido; o nº de iterações não existia. Isso cega justamente a análise que o §11 apoia no log
+("quais tools faltam"): a pergunta que estoura o teto é a mais cara E a mais informativa. Consulta
+que a coluna habilita: `SELECT question, iterations FROM analytics.ai_chat_log WHERE truncated`.
+Sem GRANT novo — coluna de tabela existente herda o privilégio de tabela concedido pela 101.
 
 **A `101` conserta o GRANT que faltava ao `service_role` em `analytics.ai_chat_log` e acrescenta
 as colunas de token de cache** (aplicada via Supabase MCP em 2026-07-29, idempotente). O GRANT é

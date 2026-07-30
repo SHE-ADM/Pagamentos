@@ -38,6 +38,7 @@ const okResult = {
   cacheReadTokens: 4000,
   cacheCreationTokens: 0,
   truncated: false,
+  iterations: 2,
 };
 
 beforeEach(() => {
@@ -228,6 +229,7 @@ describe('POST /api/ai-chat — auditoria (§17.3)', () => {
       cacheCreationTokens: 0,
       toolCalls: [{ name: 'resumo_situacao', params: {}, rows: 3, ms: 12 }],
       rowCount: 3,
+      iterations: 5,
     });
     chat.mockRejectedValue(erro);
 
@@ -255,6 +257,7 @@ describe('POST /api/ai-chat — auditoria (§17.3)', () => {
       cacheCreationTokens: 0,
       toolCalls: [{ name: 'resumo_situacao', params: {}, rows: 5, ms: 30 }],
       rowCount: 5,
+      iterations: 3,
     });
     chat.mockRejectedValue(erro);
 
