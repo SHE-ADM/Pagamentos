@@ -13,7 +13,7 @@ import { POST } from './route';
 import { getAuthenticatedUser, getBearerToken } from '@/lib/auth';
 import { runChat } from '@/lib/ai-chat/gateway';
 import { logInteraction } from '@/lib/ai-chat/log';
-import { AiChatError, attachPartialRun } from '@/lib/ai-chat/errors';
+import { AiChatAbortedError, AiChatError, attachPartialRun } from '@/lib/ai-chat/errors';
 
 const getUser = vi.mocked(getAuthenticatedUser);
 const getToken = vi.mocked(getBearerToken);
@@ -21,8 +21,13 @@ const chat = vi.mocked(runChat);
 const log = vi.mocked(logInteraction);
 
 const USER = { id: '11111111-1111-1111-1111-111111111111' };
-const req = (body: unknown) =>
-  ({ json: async () => body }) as unknown as NextRequest;
+/**
+ * `signal` faz parte do contrato desta rota: é o que o gateway usa para parar de gastar tokens
+ * quando o cliente desiste. Por isso a request falsa o expõe — um mock sem ele passaria
+ * `undefined` adiante e o teste do caminho feliz não veria a diferença.
+ */
+const req = (body: unknown, signal: AbortSignal = new AbortController().signal) =>
+  ({ json: async () => body, signal }) as unknown as NextRequest;
 
 const okResult = {
   answer: 'Você tem R$ 1.000,00 em aberto.',
@@ -124,9 +129,23 @@ describe('POST /api/ai-chat — caminho feliz', () => {
       },
     });
     // O JWT do usuário chega ao gateway — é o que faz a RLS valer.
-    expect(chat).toHaveBeenCalledWith(expect.anything(), 'jwt-do-usuario', {
-      question: 'quanto tenho em aberto?',
-    });
+    expect(chat).toHaveBeenCalledWith(
+      expect.anything(),
+      'jwt-do-usuario',
+      { question: 'quanto tenho em aberto?' },
+      expect.any(AbortSignal),
+    );
+  });
+
+  // Sem o signal, o cliente desconecta e o loop segue conversando com o modelo até o fim,
+  // cobrando por uma resposta que ninguém vai ler.
+  it('repassa o signal da request ao gateway', async () => {
+    chat.mockResolvedValue(okResult);
+    const controller = new AbortController();
+
+    await POST(req({ question: 'pergunta válida' }, controller.signal));
+
+    expect(chat.mock.calls[0][3]).toBe(controller.signal);
   });
 
   it('não expõe ms nem o erro interno das tools na resposta', async () => {
@@ -221,6 +240,33 @@ describe('POST /api/ai-chat — auditoria (§17.3)', () => {
         cacheReadTokens: 4000,
         rowCount: 3,
         toolCalls: [expect.objectContaining({ name: 'resumo_situacao' })],
+      }),
+    );
+  });
+
+  // Cancelamento é auditado COMO cancelamento: os tokens já gastos não voltam, e sumir com eles
+  // subestimaria o custo real. O rótulo é distinto de uma falha para não contaminar a busca por
+  // problemas reais no ai_chat_log.
+  it('cancelamento vai ao log com rótulo próprio e o custo já gasto', async () => {
+    const erro = attachPartialRun(new AiChatAbortedError(), {
+      inputTokens: 700,
+      outputTokens: 90,
+      cacheReadTokens: 2175,
+      cacheCreationTokens: 0,
+      toolCalls: [{ name: 'resumo_situacao', params: {}, rows: 5, ms: 30 }],
+      rowCount: 5,
+    });
+    chat.mockRejectedValue(erro);
+
+    const res = await POST(req({ question: 'pergunta cancelada' }));
+
+    expect(res.status).toBe(499);
+    expect(log).toHaveBeenCalledWith(
+      expect.objectContaining({
+        question: 'pergunta cancelada',
+        error: 'cancelado pelo cliente',
+        inputTokens: 700,
+        rowCount: 5,
       }),
     );
   });

@@ -40,8 +40,11 @@ const TW: Record<string, string> = {
   'gray-500': '#6b7280',
   'gray-600': '#4b5563',
   'slate-50': '#f8fafc',
+  'slate-100': '#f1f5f9',
   'slate-400': '#94a3b8',
   'slate-500': '#64748b',
+  'slate-600': '#475569',
+  'slate-700': '#334155',
   'slate-800': '#1e293b',
   'zinc-50': '#fafafa',
   'amber-50': '#fffbeb',
@@ -116,6 +119,16 @@ const COMPLIANT: Pair[] = [
   // sobre o card já ativo (2.4.7).
   { fg: 'brand', bg: 'white', min: 3, where: 'anel do card de KPI ATIVO (dashboards)' },
   { fg: 'brand-dark', bg: 'white', min: 3, where: 'anel de FOCO do card de KPI (dashboards)' },
+  // Assistente de IA (AiChatWidget/AiChatPanel + MarkdownMessage). O corpo da conversa é
+  // bg-gray-50; a resposta e as sugestões, cards brancos; os chips de tool e o cabeçalho da
+  // tabela, bg-slate-50; o código inline, bg-slate-100.
+  { fg: 'slate-600', bg: 'gray-50', min: 4.5, where: 'texto do corpo do chat (vazio/"Consultando…"/botões)' },
+  { fg: 'slate-600', bg: 'slate-50', min: 4.5, where: 'chips de tool + .table-header da tabela na resposta (chat)' },
+  { fg: 'slate-700', bg: 'white', min: 4.5, where: 'resposta do assistente e botões de sugestão (chat)' },
+  { fg: 'slate-700', bg: 'slate-50', min: 4.5, where: 'botão de sugestão no hover (chat)' },
+  { fg: 'slate-700', bg: 'slate-100', min: 4.5, where: 'código inline na resposta (MarkdownMessage)' },
+  { fg: 'slate-800', bg: 'white', min: 4.5, where: 'subtítulo em negrito da resposta (MarkdownMessage)' },
+  { fg: 'white', bg: 'brand-dark', min: 4.5, where: 'bolha da pergunta do usuário e botão flutuante (chat)' },
   { fg: 'amber-600', bg: 'white', min: 3, where: 'ícone KPI "Sem valor" (Erros)' },
   { fg: 'amber-600', bg: 'amber-50', min: 3, where: 'ícone FileWarning "anexo não encontrado" (AttachmentViewer)' },
   { fg: 'orange-600', bg: 'white', min: 3, where: 'ícone KPI "Sem fornecedor" (Erros)' },

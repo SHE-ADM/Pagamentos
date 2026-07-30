@@ -54,6 +54,14 @@ describe('Layout (sidebar)', () => {
     expect(screen.getByText('Indicadores de Vencimentos')).toBeInTheDocument();
   });
 
+  // O assistente de IA vive no Layout (não numa rota) para estar em TODAS as telas
+  // protegidas; aqui entra só o botão flutuante — o painel é lazy.
+  it('monta o botão flutuante do assistente de IA', () => {
+    renderLayout();
+    expect(screen.getByRole('button', { name: /abrir assistente/i })).toBeInTheDocument();
+    expect(screen.queryByRole('heading', { name: /assistente de contas a pagar/i })).not.toBeInTheDocument();
+  });
+
   it('aciona signOut ao clicar em sair', async () => {
     const user = userEvent.setup();
     renderLayout();

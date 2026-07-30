@@ -36,7 +36,7 @@ vi.mock('./tools', async () => {
 });
 
 import { runChat } from './gateway';
-import { AiChatError, readPartialRun } from './errors';
+import { AiChatAbortedError, AiChatError, readPartialRun } from './errors';
 
 const supabase = {} as never;
 const TOKEN = 'jwt';
@@ -436,12 +436,78 @@ describe('runChat — estado parcial anexado ao erro (auditoria de falha)', () =
   });
 });
 
+// O ponto desta feature é PARAR DE GASTAR quando ninguém está mais esperando.
+describe('runChat — cancelamento pelo cliente', () => {
+  it('não chama o modelo nenhuma vez se o cliente já desistiu', async () => {
+    const controller = new AbortController();
+    controller.abort();
+    reply(textReply('não deveria ser pedido'));
+
+    await expect(
+      runChat(supabase, TOKEN, { question: 'x' }, controller.signal),
+    ).rejects.toBeInstanceOf(AiChatAbortedError);
+    expect(create).not.toHaveBeenCalled();
+  });
+
+  it('para no LIMITE da iteração seguinte — não gasta as demais', async () => {
+    const controller = new AbortController();
+    // 1ª iteração pede tool; a tool aborta (simula o usuário clicando em "Parar" durante a
+    // consulta). A 2ª chamada ao modelo — a que custaria de novo — não pode acontecer.
+    reply(toolReply([{ id: 't1', name: 'resumo_situacao', input: {} }]), textReply('tarde demais'));
+    runToolMock.mockImplementationOnce(async () => {
+      controller.abort();
+      return [{ x: 1 }];
+    });
+
+    const erro = await runChat(supabase, TOKEN, { question: 'x' }, controller.signal)
+      .catch((e: unknown) => e);
+
+    expect(erro).toBeInstanceOf(AiChatAbortedError);
+    expect(create).toHaveBeenCalledTimes(1);
+    // O custo já gasto acompanha o erro: cancelar não devolve tokens, e a auditoria os quer.
+    expect(readPartialRun(erro)?.toolCalls).toHaveLength(1);
+    expect(readPartialRun(erro)?.inputTokens).toBeGreaterThan(0);
+  });
+
+  it('repassa o signal à chamada do modelo (aborta o turno EM VOO)', async () => {
+    const controller = new AbortController();
+    reply(textReply('ok'));
+
+    await runChat(supabase, TOKEN, { question: 'x' }, controller.signal);
+
+    // 2º argumento de `messages.stream(params, options)`.
+    expect(create.mock.calls[0][1]).toEqual({ signal: controller.signal });
+  });
+
+  it('sem signal, funciona como antes (parâmetro opcional)', async () => {
+    reply(textReply('ok'));
+    const res = await runChat(supabase, TOKEN, { question: 'x' });
+    expect(res.answer).toBe('ok');
+    expect(create.mock.calls[0][1]).toEqual({ signal: undefined });
+  });
+});
+
 describe('runChat — erros do provedor', () => {
   it('erro do SDK é traduzido antes de subir', async () => {
     const { default: Anthropic } = await import('@anthropic-ai/sdk');
     reply(new Anthropic.RateLimitError(429, undefined, 'rate_limit', new Headers()));
 
     await expect(runChat(supabase, TOKEN, { question: 'x' })).rejects.toBeInstanceOf(AiChatError);
+  });
+
+  it('cancelamento NÃO é traduzido como erro do provedor', async () => {
+    const { default: Anthropic } = await import('@anthropic-ai/sdk');
+    const controller = new AbortController();
+    // O SDK, ao ser abortado, levanta o seu próprio erro. Se a classificação fosse pelo TIPO do
+    // erro, este caso viraria 500 genérico — auditando um cancelamento como falha do assistente.
+    reply(new Anthropic.RateLimitError(429, undefined, 'rate_limit', new Headers()));
+    controller.abort();
+
+    const erro = await runChat(supabase, TOKEN, { question: 'x' }, controller.signal)
+      .catch((e: unknown) => e);
+
+    expect(erro).toBeInstanceOf(AiChatAbortedError);
+    expect((erro as AiChatAbortedError).status).toBe(499);
   });
 
   it('erro na chamada de FECHAMENTO também é traduzido', async () => {

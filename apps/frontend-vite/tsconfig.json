@@ -2,7 +2,13 @@
   "compilerOptions": {
     "target": "ES2020",
     "useDefineForClassFields": true,
-    "lib": ["ES2020", "DOM", "DOM.Iterable"],
+      // ES2022.Error entra só pelo `cause` do construtor de Error: a regra core
+    // `preserve-caught-error` (ESLint 10) exige repassar o erro original ao
+    // traduzir a mensagem num catch, e sem esta lib o 2º argumento não é tipado.
+    // ES2023.Array entra pelo `findLast` (Chrome 97+/Safari 15.4+ — abaixo do que o app já
+    // exige, ex.: AbortSignal.timeout e h-dvh). Evita o `[...arr].reverse().find()`, que copia
+    // o array para responder "qual foi a última".
+    "lib": ["ES2020", "ES2022.Error", "ES2023.Array", "DOM", "DOM.Iterable"],
     "module": "ESNext",
     // Mantido: sem isto, o typecheck quebra com erros de tipos de terceiros
     // (@supabase/auth-js webauthn.dom + @tanstack/table-core ColumnMeta) — não
