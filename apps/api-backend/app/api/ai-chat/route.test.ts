@@ -179,6 +179,19 @@ describe('POST /api/ai-chat — auditoria (§17.3)', () => {
     );
   });
 
+  // A migration 102 existe para tornar VISÍVEL a pergunta que estourou o teto. Se a rota gravasse
+  // um `truncated` fixo (é o que ela faz de propósito no caminho de ERRO), a coluna nasceria morta
+  // e a consulta `WHERE truncated` nunca acharia nada — sem erro em lugar nenhum.
+  it('leva o truncated e as iterações do gateway para o log, não valores fixos', async () => {
+    chat.mockResolvedValue({ ...okResult, truncated: true, iterations: 6 });
+
+    await POST(req({ question: 'pergunta que estourou o teto' }));
+
+    expect(log).toHaveBeenCalledWith(
+      expect.objectContaining({ truncated: true, iterations: 6 }),
+    );
+  });
+
   it('AGUARDA o log antes de responder — em serverless o fire-and-forget se perde', async () => {
     chat.mockResolvedValue(okResult);
 
