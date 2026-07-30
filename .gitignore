@@ -57,3 +57,6 @@ coverage/
 apps/*/coverage/
 coverage.xml
 .coverage
+
+# Config local do Claude Code (preferencias da maquina, nao do time)
+.claude/settings.local.json
