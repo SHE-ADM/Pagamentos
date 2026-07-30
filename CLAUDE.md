@@ -419,7 +419,8 @@ botão limpar/X que aparece só com texto e devolve o foco ao input) — compart
 `CostCentersPage` e `SuppliersPage`. A célula "Ações" do grid renderiza o lápis (editar) e, **para o
 grupo Administrador**, a lixeira (excluir) — `editCell`/`actionsCell` em `useGridColumns`.
 Lookups nos forms via **`atoms/LabeledSelect.tsx`** (`<select>` rotulado, associação `htmlFor`/`id`).
-Cliente HTTP compartilhado em **`services/dataApi.ts`** (`dataApiCall`/`dataApiListPaged`/`dataApiDelete`).
+Cliente HTTP compartilhado em **`services/dataApi.ts`** (`dataApiCall`/`dataApiListPaged`/`dataApiDelete`)
+— também usado pelo **chat de IA** (`services/aiChat.ts`: `askAiChat`/`buildHistory`, ver "Chat de IA").
 
 **Hard delete dos cadastros (grupo Administrador):** o botão de exclusão dos **6 cadastros do grupo
 Tabelas** aparece **apenas para usuários do grupo Administrador** (`user_profile.group_id = 1`,
@@ -1128,7 +1129,9 @@ Alvo: **WCAG 2.1 Nível AA** em todas as telas. Regras práticas:
 - **Camada de acessibilidade em NAVEGADOR REAL** (Playwright + `@axe-core/playwright`) — cobre o
   que o jsdom não vê: contraste sob render efetivo, ordem de foco e autofill. Config em
   `playwright.config.ts`, specs em `e2e/*.a11y.e2e.ts` (`public-auth` = login/forgot/reset sem
-  login; `protected` = `/consulta`/`/emails`/`/erros`/**`/dashboard_vencimentos`** atrás de `A11Y_TEST_EMAIL`/
+  login; `protected` = `/consulta`/`/emails`/`/erros`/**`/dashboard_vencimentos`** + o **painel do
+  assistente de IA aberto** (o `<dialog>` só existe no DOM depois do clique; o caso NÃO envia
+  pergunta — a resposta viria da Claude API, paga e não-determinística) atrás de `A11Y_TEST_EMAIL`/
   `A11Y_TEST_PASSWORD`, pulado sem credencial — o Dashboard entrou no scan pelo achado A3-8),
   helper `e2e/axe.ts` (tags AA). O reporter do `axe.ts` emite, por nó, o **`failureSummary`**
   (para color-contrast: `foreground`/`background`/`ratio`/esperado) **+ o HTML do elemento**, além
@@ -1320,22 +1323,88 @@ Supabase (PostgreSQL)  ── financial_account_control (dados extraídos)
 > (`PYTHON_BRIDGE_TIMEOUT_MS`, a leitura síncrona real leva minutos) e **5s** no health; o timeout
 > vira `PythonBridgeError(504)` (indisponível segue `502`). Teste em `lib/python-bridge.test.ts`.
 
-## Chat de IA (Fases 1 e 2 APLICADAS — `POST /api/ai-chat` existe; falta a UI e a validação real)
+## Chat de IA (Fases 1–3 APLICADAS — endpoint + UI prontos; falta a primeira chamada REAL)
 
 Chat conversacional embarcado no app para análise **read-only** dos dados de contas a pagar
-(perguntas em linguagem natural → texto + tabela/gráfico). Desenho completo em
+(perguntas em linguagem natural → texto + tabela). Desenho completo em
 **[docs/arquitetura-chat-ia-pagamentos.md](docs/arquitetura-chat-ia-pagamentos.md)** — ler antes
-de implementar qualquer parte (§18 = resultado da Fase 2).
+de implementar qualquer parte (§18 = Fase 2 · §19 = code review · §20 = Fase 3).
 
-**Status: Fases 0, 1 e 2 CONCLUÍDAS (2026-07-28 / 07-29).** A **migration 098** criou o schema
+**Status: Fases 0–3 aplicadas (2026-07-28 → 07-30).** A **migration 098** criou o schema
 **`analytics`**: 2 views (`vw_payables`, `vw_aging_vencidos`), as **6 funções** de tool calling,
 `ai_chat_log` com RLS e os GRANT/REVOKE. A **Fase 2** entregou o gateway —
 `apps/api-backend/lib/ai-chat/` (`tools.ts` · `errors.ts` · `gateway.ts` · `log.ts`) +
-`app/api/ai-chat/route.ts`, com `@anthropic-ai/sdk` e **73 testes**. **Falta a Fase 3:** UI no
-`frontend-vite`, `ANTHROPIC_API_KEY` no Vercel e a **primeira chamada real** à Claude API (nenhuma
-foi feita ainda — a validação de ponta a ponta consome tokens). Pilares que permanecem: **nunca
-usar `service_role`** no caminho de leitura · **tool calling** sobre funções de negócio como via
-primária · log de toda interação para auditoria.
+`app/api/ai-chat/route.ts`, com `@anthropic-ai/sdk` e **73 testes**. A **Fase 3** entregou a **UI**
+(widget flutuante global — ver "Widget do assistente" abaixo) e a configuração da chave em
+`apps/api-backend/.env.local`. **Falta:** (1) a **primeira chamada real** à Claude API — nenhuma foi
+feita ainda; é ela que fecha `cache_read_input_tokens > 0` (§18.5) e comprova o recorte da RLS com
+dois usuários de grupos diferentes; (2) **`ANTHROPIC_API_KEY` no Vercel** (`pagamentos-api-backend`
+→ Settings → Environment Variables), sem a qual a rota é 500 em produção. Pilares que permanecem:
+**nunca usar `service_role`** no caminho de leitura · **tool calling** sobre funções de negócio como
+via primária · log de toda interação para auditoria.
+
+> **A `ANTHROPIC_API_KEY` do `.env` da RAIZ NÃO vale para a Next API (não regredir):** o Next
+> carrega env do diretório do próprio app, então a chave tem de estar em
+> `apps/api-backend/.env.local` (o `.env` da raiz é do pipeline Python). Até 2026-07-30 ela só
+> existia na raiz — e por isso a rota devolvia **500 em dev também**, não apenas na Vercel. O
+> `.env.example` do app documenta a chave + `ANTHROPIC_MODEL`/`ANTHROPIC_TIMEOUT_MS`.
+
+**Widget do assistente (frontend-vite — Fase 3):** `organisms/AiChatWidget.tsx` (botão flutuante +
+**o estado da conversa**) montado **uma vez no `Layout`**, logo presente em TODAS as telas
+protegidas e em nenhuma de auth; `organisms/AiChatPanel.tsx` (side sheet apresentacional, carregado
+por `lazy()`) usa `<dialog>` + `showModal()` — role/aria-modal, trap de foco, Esc e retorno de foco
+nativos, mesmo padrão de `AttachmentViewer`/`ExpenseDetailModal`. A resposta é markdown renderizado
+por `lib/markdownLite.ts` + `molecules/MarkdownMessage.tsx` (parágrafo · lista · tabela GFM ·
+negrito · código), **JSX puro, sem `dangerouslySetInnerHTML`** e sem dependência nova: o
+`SYSTEM_PROMPT` pede tabela markdown e o backend devolve **só texto** (`tool_calls` traz a
+CONTAGEM de linhas, não as linhas — não há `chart_spec`). Cliente em `services/aiChat.ts`
+(`dataApiCall('/ai-chat')` + timeout de 180 s traduzido para pt-BR).
+**`buildHistory` só envia PARES completos** (máx. 8 mensagens): a rota **rejeita com 422**
+histórico ímpar ou fora da alternância, e a conversa em tela termina em `user` em dois estados
+normais (aguardando resposta e após falha) — daí o widget poder passar a lista inteira, que a
+pergunta sem par é descartada sozinha. É isso que faz o **"Tentar novamente"** (reenvia a mesma
+pergunta sem duplicá-la na tela) não virar 422. **`buildHistory` também NORMALIZA** para
+`{role, content}` — sem isso, `toolCalls`/`truncated` das respostas viajariam dentro de cada item de
+`history` (o Zod da rota os descarta, mas o payload deve ser o que o contrato declara), e é o que
+permite o widget entregar as próprias entradas sem um `map`. **`ChatEntry` mora no SERVIÇO**
+(`extends AiChatMessage`), não no componente: é o modelo do domínio, e no painel obrigaria o widget
+a importar tipo de um chunk que ele carrega sob demanda.
+
+> **CANCELAMENTO É PONTA A PONTA — não regredir (§20.8):** o botão **"Parar"** (e o "Nova
+> conversa") aborta um `AbortController` do widget; `askAiChat` combina esse signal com o teto de
+> tempo via **`AbortSignal.any`** (preserva o `reason`, que é o que distingue cancelamento de
+> timeout); a rota repassa **`request.signal`** ao gateway, que checa `throwIfAborted` no **limite de
+> cada iteração** e manda `{ signal }` na chamada ao modelo. Sem isso, desistir era só fechar o
+> painel — e o servidor seguia gastando tokens até o fim. **Quem decide se foi aborto é o SIGNAL, não
+> o tipo do erro:** medido no SDK 0.115.0, `APIUserAbortError` tem `name === 'Error'` (checar por
+> nome não pega) e `instanceof` num membro do namespace **lança** se a classe não existir — dentro de
+> um `catch`, essa exceção substituiria o erro real. Cancelamento é **aviso, não erro**: no cliente
+> vira `Alert variant="info"` (daí o painel receber `feedback: {variant,text}`, não `error: string`);
+> no servidor, `AiChatAbortedError` (**499**) é logado como **`'cancelado pelo cliente'`** COM o custo
+> parcial — os tokens gastos não voltam, e omiti-los subestimaria o custo e contaminaria a busca por
+> falhas reais. O signal **não** vai às RPCs de `runTool` (a falha de tool virá como `tool_result
+> is_error` e seguiria o loop — a checagem de iteração pega o abort logo depois).
+
+> **NÃO existe trava de reentrância no widget — é intencional (§20.8b):** enquanto `loading` é
+> `true` o painel desabilita campo, envio e "Tentar novamente" e nem renderiza as sugestões, e o
+> React libera eventos discretos já com o estado aplicado — a exclusão mútua é **estrutural**. Uma
+> trava adicional seria código que nenhum caminho alcança e que daria a impressão de garantir um
+> invariante mantido pelo `loading`. Ao criar um call site novo de envio (atalho de teclado, deep
+> link), respeite o `loading`.
+
+> **GUARDA DE GERAÇÃO no `AiChatWidget` — não regredir (achado do code review §20.6):** o widget
+> mantém um `generationRef` incrementado em "Nova conversa"; resposta de geração anterior é
+> **descartada** ao chegar. Sem ela, resetar a conversa com uma requisição em voo faz o `setEntries`
+> anexar a resposta a uma conversa **vazia** — balão de resposta sem pergunta e histórico começando
+> em `assistant`, sem erro nenhum. Uma requisição leva dezenas de segundos, então a janela é larga.
+> O `setLoading(false)` fica **fora** da guarda, senão o painel trava em "Consultando…". O teste
+> `AiChatWidget.test.tsx` foi validado contra o mutante (removida a linha da guarda, ele falha).
+
+**Trade-off assumido:** o `showModal()` deixa a
+página de fundo inerte — não se consulta o grid de `/consulta` com o chat aberto; é o preço do trap
+de foco/Esc nativos, e trocar para painel não-modal é mudança contida ao `AiChatPanel`. O footer de
+`/consulta` leva `pl-1 pr-20` (não `px-1`) para o botão flutuante não cobrir o "Carregar mais" — o
+único controle no canto inferior direito do app.
 
 **`analytics` está EXPOSTO no PostgREST** (Data API → Settings → Exposed schemas: `public`,
 `graphql_public`, `analytics`) — passo de dashboard, feito em 2026-07-29. Conferido por HTTP com a
@@ -1358,6 +1427,13 @@ voltar `PGRST106 Invalid schema`, a exposição foi desfeita.
 - **Log gravado ANTES de responder e aguardado.** Em serverless a function é **congelada** no
   `return`, então `void gravarLog()` depois dele simplesmente não roda — e nada acusaria a perda.
   A pergunta que **falhou** também é auditada: é dela que sai "quais tools faltam" (§11).
+  **O mapeamento de colunas é travado por teste (`lib/ai-chat/log.test.ts` — achado nº 8, §20.7):**
+  como `logInteraction` **nunca lança**, um nome de coluna errado deixaria a auditoria **morta em
+  produção** sem erro, sem teste vermelho e sem log. O caso central compara o payload com as colunas
+  declaradas nas **migrations 098/101** (guarda cross-layer, no molde de
+  `test_doc_type_domain_consistency.py`), tem asserção de sanidade do parser e é ancorado em
+  `import.meta.dirname` (não `process.cwd()`, que muda conforme o vitest é invocado). Ao acrescentar
+  campo ao log, a migration e este teste andam juntos.
 - **`export const maxDuration = 300` na rota.** O default da Vercel (10–15 s) mata um loop de 2–3
   iterações que funciona perfeitamente em dev.
 - **Teto de 6 iterações**, e ao atingi-lo uma chamada final que **não pode usar tools**
@@ -1504,10 +1580,24 @@ merece uma sonda que force o caminho ruim** — os dez achados das duas passadas
 conferindo o código contra o SISTEMA REAL (catálogo do Postgres, tabela de invalidação de cache da
 API, mutantes no SDK instalado), não relendo o código.
 
-**Fase 3 (o próximo passo):** (1) **primeira chamada real** à Claude API, conferindo
-`cache_read_input_tokens > 0` e o recorte da RLS com dois usuários de grupos diferentes;
-(2) UI do chat no `frontend-vite` consumindo `/data-api/ai-chat`; (3) **`ANTHROPIC_API_KEY` nas env
-vars do Vercel** — sem ela a rota devolve 500 em produção (o `.env` local já a tem).
+**Fase 3 — aplicada em 2026-07-30 (§20 do doc):** UI entregue (widget global — ver o bloco de status
+no topo desta seção) e chave configurada em `apps/api-backend/.env.local`. **O que resta é
+verificação, não código:** a **primeira chamada real** (o usuário pergunta logado no navegador) e a
+leitura da trilha para conferir `cache_read_input_tokens > 0`, `error IS NULL`, `tool_calls` não
+vazio e `row_count` DIFERENTE entre dois usuários de grupos distintos:
+
+```sql
+SELECT created_at, user_id, left(question, 40) AS pergunta, row_count,
+       input_tokens, cache_read_input_tokens, cache_creation_input_tokens,
+       latency_ms, jsonb_path_query_array(tool_calls, '$[*].name') AS tools, error
+FROM analytics.ai_chat_log ORDER BY created_at DESC LIMIT 10;
+```
+
+Mais a `ANTHROPIC_API_KEY` na Vercel (passo do usuário). **Armadilha de teste encontrada aqui (não
+repetir):** `beforeEach(() => mock.mockReset())` **com corpo de expressão** — `mockReset()` devolve o
+próprio mock, e o Vitest trata retorno de função num hook como **teardown**, chamando o mock ao fim
+do teste; com `mockRejectedValue` ativo isso gera rejeição não tratada e o teste falha exibindo a
+mensagem do erro, não uma asserção. Hook de reset sempre em **bloco**.
 
 **Alicerce verificado (não regredir):** `canSeeConta` — e o gateway, que reusa o padrão — chama
 `.setHeader()` sobre o **singleton** `getAnonClient()`. O postgrest-js isola as requisições por
@@ -1753,13 +1843,16 @@ apps/frontend-vite/src/components/
 │   ├── GridToolbar.tsx        # (grid) barra: colunas + densidade + restaurar + ações de seleção
 │   ├── AttachmentPicker.tsx   # (anexos) fila CONTROLADA de arquivos a enviar — valida mime/tamanho/duplicata no cliente
 │   ├── AttachmentList.tsx     # (anexos) lista apresentacional PURA (serve a fila e os salvos) — ícone/tamanho/selo e-mail
-│   └── SearchInput.tsx        # (cadastros) busca com lupa + botão limpar (X) — usado pelo grupo Tabelas + /fornecedores
+│   ├── SearchInput.tsx        # (cadastros) busca com lupa + botão limpar (X) — usado pelo grupo Tabelas + /fornecedores
+│   └── MarkdownMessage.tsx    # (chat IA) renderiza a resposta a partir de lib/markdownLite (parágrafo/lista/tabela GFM/negrito/código) — JSX puro, sem dangerouslySetInnerHTML
 ├── organisms/
 │   ├── LoginForm.tsx          # (v2) estado + validação + supabase.auth.signInWithPassword
 │   ├── ForgotPasswordForm.tsx # (gradient) resetPasswordForEmail + mensagem genérica
 │   ├── ResetPasswordForm.tsx  # (gradient) updateUser + signOut + redirect (fluxo "esqueci a senha")
 │   ├── ChangePasswordForm.tsx # (auth) troca obrigatória no 1º acesso — updateUser + marca password_changed (sem deslogar)
 │   ├── ResendErrosAction.tsx  # (cobrança) barra de seleção "Reenviar e-mails (N)" + confirmação inline + poll de progresso
+│   ├── AiChatWidget.tsx       # (chat IA) botão flutuante + ESTADO da conversa; montado no Layout (todas as telas protegidas); painel por lazy()
+│   ├── AiChatPanel.tsx        # (chat IA) side sheet apresentacional em <dialog>+showModal (foco/Esc nativos) — mensagens, sugestões, chips de tool, retry, "Nova conversa"
 │   ├── ContaForm.tsx          # (contas) form criar/editar conta — supplier + cascata INVERTIDA plano→centro; onSubmit(data, pendingFiles) — a fila de anexos sobe no PAI, após gravar a conta
 │   ├── ContaAttachments.tsx   # (anexos) anexos SALVOS de uma conta — lista + viewer + soft delete (com confirmação); fallback legacySourceFile
 │   ├── SupplierForm.tsx       # (fornecedores) form criar/editar fornecedor — classificação default (cascata INVERTIDA plano→centro) + contatos (telefone/WhatsApp/chave PIX, 2 slots)
@@ -1906,9 +1999,10 @@ classes Tailwind — `clsx` + `tailwind-merge`, base do padrão CVA), `supabaseC
 `setRememberPreference`/`getRememberPreference` — preferência "Lembrar-me"; ver
 seção Autenticação), `getStatusExplanation.ts` (texto pt-BR no `Alert` do card de `/emails`
 explicando por que um e-mail ficou em `falha` (error), `pendente` (warning) ou `ignorado`
-(info); reusa `getFailureReason.ts` para o caso `falha`) e `chunkReload.ts` (recuperação de
+(info); reusa `getFailureReason.ts` para o caso `falha`), `chunkReload.ts` (recuperação de
 chunk lazy obsoleto: `isChunkLoadError`/`reloadOnceForChunk`/`installPreloadErrorReload` —
-ver "Build e code-splitting").
+ver "Build e code-splitting") e `markdownLite.ts` (parser puro do subconjunto de markdown que o
+chat de IA produz → blocos; devolve ESTRUTURA, nunca HTML — ver "Chat de IA").
 
 Em `tests/` (fora de `src/`) ficam a infra de a11y e os guardas de configuração:
 `setup.ts` (matcher `toHaveNoViolations`), `axe.ts` (runner AA + `color-contrast`
