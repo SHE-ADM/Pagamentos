@@ -22,6 +22,7 @@ import {
 } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
 import { cn } from '../lib/cn';
+import AiChatWidget from './organisms/AiChatWidget';
 
 // Link de navegação — estado ativo via cva (fonte única das classes). Local e
 // não exportado, então não dispara react-refresh/only-export-components.
@@ -201,6 +202,10 @@ export default function Layout({ children }: Readonly<{ children: ReactNode }>) 
 
         <div className="flex-1 min-h-0">{children}</div>
       </main>
+
+      {/* Assistente de IA — fica no Layout (não numa rota) para estar em todas as telas
+          protegidas. O painel é lazy; aqui entra só o botão flutuante. */}
+      <AiChatWidget />
     </div>
   );
 }

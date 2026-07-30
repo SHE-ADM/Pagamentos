@@ -1142,3 +1142,223 @@ o mesmo modo de falha silenciosa de §19.2 e §19.4, agora por configuração em
 Registrado como comentário na constante `MODEL` (onde quem troca o modelo vai olhar), e a
 verificação é a coluna criada em §19.4: conferir `cache_read_input_tokens` em `analytics.ai_chat_log`
 depois de qualquer troca de modelo.
+
+---
+
+## 20. Fase 3 — a UI e o que ela destravou (2026-07-30)
+
+Fase 3 = os três itens do §18.6. **Entregues nesta sessão: a UI e a configuração.** A primeira
+chamada real à Claude API é feita **pelo usuário no navegador** (nenhuma credencial de usuário
+existe na máquina de dev para um script obter um JWT — ver §20.4), e a conferência sai da própria
+trilha de auditoria.
+
+### 20.1 O `.env` que faltava — corrige o §18.6
+
+O §18.6 dizia *"o `.env` local já a tem"* sobre a `ANTHROPIC_API_KEY`. **Vale só para o `.env` da
+RAIZ**, lido pelo pipeline Python via `python-dotenv`. O Next carrega env do diretório do próprio
+app, e `apps/api-backend/.env.local` **não tinha a chave** — ou seja, a rota devolvia 500 em dev
+também, não apenas na Vercel. Corrigido: a chave está no `.env.local` (gitignored) e documentada no
+`.env.example`, junto de `ANTHROPIC_MODEL`/`ANTHROPIC_TIMEOUT_MS` e do aviso de §19.10.
+
+Pendente e **do usuário**: cadastrar `ANTHROPIC_API_KEY` no projeto `pagamentos-api-backend` da
+Vercel (Settings → Environment Variables). Sem ela, produção continua em 500.
+
+### 20.2 Decisões da UI
+
+| Tema | Decisão | Por quê |
+|---|---|---|
+| Forma | **Widget flutuante global** (`AiChatWidget` montado no `Layout`) | escolha do dono do produto: consultar de qualquer tela, não navegar até uma página |
+| Painel | `<dialog>` + `showModal()` como side sheet à direita | role/aria-modal, trap de foco, Esc e retorno de foco vêm do navegador — mesmo padrão de `AttachmentViewer` e `ExpenseDetailModal` |
+| Markdown | **parser próprio** (`lib/markdownLite.ts`) | o `SYSTEM_PROMPT` pede tabela markdown e o backend devolve só texto; o subconjunto que o modelo produz é pequeno e previsível, então não entra dependência nova no bundle |
+| Estado | conversa no **widget**, não no painel | fechar e reabrir preserva a conversa da sessão |
+| Carregamento | painel por `lazy()` | o launcher é um botão; o parser só é baixado quando o chat abre |
+
+**Trade-off assumido:** `showModal()` deixa a página de fundo inerte — não se consulta o grid de
+`/consulta` com o chat aberto. É o preço de ter trap de foco e Esc nativos em vez de reimplementá-los;
+trocar para painel não-modal é mudança contida ao `AiChatPanel`.
+
+**Não há `chart_spec` nem tabela estruturada** (§4.1/§5 previam): o backend devolve
+`{ answer, tool_calls, truncated }`, e `tool_calls` traz a **contagem** de linhas, não as linhas.
+Gráfico exigiria mudar o contrato da rota — fica para depois de a v1 rodar de fato.
+
+### 20.3 Contrato do histórico — onde estava o erro fácil
+
+A rota **rejeita com 422** histórico de tamanho ímpar ou fora da alternância `user`/`assistant`
+(§18.4). Mas a conversa em tela termina em `user` em dois estados normais: enquanto a resposta não
+voltou, e depois de uma falha (a mensagem de erro nunca vira `assistant`). Por isso
+`buildHistory` (`services/aiChat.ts`) monta o histórico **só com pares completos**, varrendo do fim
+para o começo, com teto de 8 mensagens — e o widget pode passar a lista inteira, pergunta pendente
+inclusa, que ela é descartada sozinha. É o que faz o "Tentar novamente" (reenvio da mesma pergunta,
+sem duplicá-la na tela) não virar 422.
+
+### 20.4 Armadilha de teste encontrada aqui (não repetir)
+
+`beforeEach(() => mock.mockReset())` **com corpo de expressão** quebra de um jeito que não parece
+teste quebrado: `mockReset()` **devolve o próprio mock**, e o Vitest trata um retorno de função num
+hook como **teardown** — ao fim do teste ele chama o mock sem argumentos. Com `mockRejectedValue`
+ativo, esse chamado gera uma **rejeição não tratada** e o teste falha exibindo a mensagem do erro
+(apontando para a linha do `new Error(...)`), não uma asserção. Dois testes deste PR falharam assim,
+e a sonda mostrou que **até o `try/catch` explícito** falhava — o que descarta o `expect().rejects`
+como culpado. Regra: hook de reset sempre em **bloco** (`() => { mock.mockReset(); }`).
+
+### 20.5 Verificação — o que já está fechado e o que depende da chamada real
+
+Fechado nesta sessão: gate do projeto em zero (lint · typecheck · prune · **445 + 689 + 2 testes**),
+com cobertura nova para o parser, o renderizador, o recorte de histórico, o widget (envio, histórico
+na 2ª pergunta, erro + retry, `truncated`, nova conversa, persistência ao reabrir, Enter/Shift+Enter),
+a11y por `axe` (fechado e aberto) e os 7 pares de contraste novos travados em
+`tests/contrast-usage.a11y.test.ts`. A camada de navegador ganhou um caso que abre o painel
+(`e2e/protected.a11y.e2e.ts`) — roda no CI/máquina do usuário, **não** no sandbox do agente.
+
+Aberto, e só a chamada real fecha (roteiro no plano da sessão):
+
+| Item | Como conferir |
+|---|---|
+| `cache_read_input_tokens > 0` na 2ª pergunta | `SELECT ... FROM analytics.ai_chat_log ORDER BY created_at DESC` |
+| tool calling de ponta a ponta | `tool_calls` não vazio e `error IS NULL` na mesma linha |
+| recorte da RLS por grupo | mesma pergunta com dois usuários (Comercial × Financeiro) → `row_count` diferente |
+| produção | pergunta em `pag.otimotex.com.br` depois da env var na Vercel |
+
+### 20.6 Code review da Fase 3 — 7 achados, nenhum com erro visível
+
+Review de robustez e estrutura feito **depois** de a Fase 3 estar verde (gate em zero, build ok). O
+padrão desta base se repetiu: **nenhum dos achados produzia erro na tela** — o que quebra em
+silêncio é o que sobrevive ao gate.
+
+| # | Gravidade | Achado | Por que passava despercebido |
+|---|---|---|---|
+| 1 | **CRÍTICO** | Resposta **órfã**: "Nova conversa" com requisição em voo fazia o `setEntries` anexar a resposta a uma conversa **vazia** | Nenhum erro. Aparece um balão de resposta sem pergunta, e o histórico seguinte começa em `assistant`. Uma requisição leva dezenas de segundos: a janela é larga |
+| 2 | Médio | `history` no corpo do POST levava `toolCalls`/`truncated` dentro de cada item | O Zod da rota **descarta** chave desconhecida — funciona, e o payload divergindo do contrato nunca reclama |
+| 3 | Médio | Resposta sem texto utilizável renderizava **balão em branco** | O usuário lê "o assistente não respondeu" sem nada explicando; o gateway garante fallback, então só apareceria em contrato quebrado |
+| 4 | Estrutural | `ChatEntry` morava no componente **lazy**, obrigando o widget a importar tipo de um chunk que ele carrega sob demanda | Type-only, some no build. Custava um `.map()` por envio para reconstruir `{role, content}` |
+| 5 | Estrutural | `parseInline` usava regex de módulo com flag `g` e `lastIndex` **compartilhado**, zerado por disciplina | Correto hoje; um `return` no meio do laço (ou uso reentrante) deixaria o regex sujo para o próximo chamador |
+| 6 | Estrutural | Dispatch de blocos por cadeia de `if`s, com complexidade cognitiva no limite do **S3776** | Não falha nada — só torna a função progressivamente irrevisável a cada bloco novo |
+| 7 | Menor | `id` do textarea literal onde o resto do projeto usa `useId`; e `AiChatToolCall` virou export órfão depois do #4 | O `ts-prune` pegou o export; o `id` só morderia se o painel coexistisse com outro |
+
+**Correções.** (1) contador de **geração** da conversa (`useRef`), incrementado no reset: resposta de
+geração anterior é descartada ao chegar — e o `setLoading(false)` fica **fora** da guarda, senão o
+painel travava em "Consultando…". (2) `buildHistory` passou a **normalizar** para `{role, content}`,
+o que também deixou o widget entregar as próprias entradas sem `map`. (3) guarda de contrato no
+serviço (`typeof answer !== 'string' || vazio` → erro legível), com 4 casos de teste. (4) `ChatEntry`
+mudou para `services/aiChat.ts` como `extends AiChatMessage` — é o modelo do domínio, não prop de
+componente. (5) `matchAll`, que opera sobre um clone: o estado mutável **deixa de existir** em vez de
+depender de disciplina. (6) tabela `BLOCK_READERS` em ordem de precedência — bloco novo é uma LINHA,
+não mais um ramo aninhado (mesmo padrão de `_BODY_INVOICE_SOURCES` no pipeline Python); o parágrafo
+fica de fora, como fallback explícito. (7) `useId` + `export` removido.
+
+**A guarda de geração foi validada contra o mutante**, não só contra a suíte: removida a linha
+`if (generation !== generationRef.current) return`, o teste novo **falha**; recolocada, passa. Teste
+que não morre com o defeito reintroduzido não prova nada — foi a lição do §19.
+
+**Reentrância documentada, não testada — de propósito.** A trava `inFlightRef` do widget não tem
+teste próprio porque **não existe caminho de UI** que dispare duas chamadas: durante a requisição o
+painel desabilita campo, botão Enviar e "Tentar novamente", e nem renderiza as sugestões. O teste
+verifica exatamente isso (os controles travados); a trava é defesa em profundidade para um call site
+futuro, e inventar um teste que a force por dentro só criaria a ilusão de cobertura.
+
+**Efeito no bundle:** o widget vive no chunk principal e importa o serviço, então o antigo chunk
+`dataApi-*.js` foi **absorvido** pelo `index` — main +0,21 kB e uma requisição HTTP a menos. O painel
+segue chunk próprio (13,2 kB), que é o que importa: quem não abre o chat não paga por ele.
+
+### 20.7 Achado nº 8 — a trilha de auditoria não tinha teste nenhum
+
+Encontrado numa varredura posterior, procurando **o que não tem teste** em vez de reler o que tem.
+`lib/ai-chat/log.ts` era o único módulo de `lib/ai-chat/` **sem arquivo de teste**: aparecia apenas
+em `app/api/ai-chat/route.test.ts`, e lá **mockado**.
+
+Isso combina os dois ingredientes do modo de falha silenciosa desta base:
+
+1. `logInteraction` **nunca lança** — decisão correta (falha ao auditar não pode derrubar uma
+   resposta já produzida), mas que apaga o sintoma;
+2. nenhum teste exercitava o mapeamento de colunas.
+
+Consequência: um nome de coluna errado, um schema trocado ou um campo esquecido deixaria o **pilar 3
+do desenho (auditoria) MORTO em produção**, sem erro na tela, sem teste vermelho e sem log — só a
+tabela vazia esperando alguém desconfiar. É o mesmo modo de falha do §19.1, em que o GRANT ausente do
+`service_role` só apareceu em auditoria de catálogo.
+
+`lib/ai-chat/log.test.ts` (6 casos) trava: schema `analytics` + tabela `ai_chat_log`; os **4 campos
+de token** (sem eles não há como notar um invalidador silencioso do cache — §19.4/§19.10); a pergunta
+que FALHOU sendo auditada com o erro; e as duas metades do "nunca lança" (erro devolvido pelo
+PostgREST e exceção crua do cliente), conferindo a mensagem que vai ao `console.error`.
+
+O caso central compara o payload contra as **colunas declaradas nas migrations** (`CREATE TABLE` da
+098 + `ADD COLUMN` da 101) — guarda cross-layer, mesmo padrão de
+`tests/test_doc_type_domain_consistency.py`. Detalhes que o fazem valer:
+
+- o parser tem **asserção de sanidade** (`question` e `cache_read_input_tokens` têm de aparecer):
+  sem ela, um regex que deixasse de casar tornaria o teste vacuamente verdadeiro — um guarda que
+  não guarda nada e ninguém percebe;
+- o caminho é ancorado em **`import.meta.dirname`**, não em `process.cwd()`: o cwd muda conforme o
+  vitest é invocado da raiz do monorepo ou de dentro do app (foi o que fez os guardas de contraste
+  do `frontend-vite` falharem quando rodei a suíte com `--root`). Verificado passando dos **dois**
+  diretórios.
+
+**Validado contra mutante:** trocando `row_count` por `rowcount` em `log.ts`, o teste acusa
+`expected [ 'rowcount' ] to deeply equal []`; restaurado, passa.
+
+### 20.8 As limitações conhecidas, resolvidas (2026-07-30)
+
+Duas das três limitações registradas em §20.5/§20.6 eram de robustez e foram **eliminadas**; a
+terceira é escopo de produto e permanece registrada como decisão.
+
+#### (a) Cancelar agora cancela de verdade — ponta a ponta
+
+Antes: o teto de 180 s do cliente derrubava só a espera do navegador. A function seguia até 300 s,
+**gastava os tokens** e gravava o log — e "desistir" era fechar o painel, sem efeito algum no
+servidor. Agora existe um botão **"Parar"** e o corte chega ao gateway:
+
+| Camada | O que faz |
+|---|---|
+| `AiChatPanel` | botão "Parar" ao lado de "Consultando os dados…" |
+| `AiChatWidget` | `AbortController` por requisição; "Parar" e **"Nova conversa"** abortam |
+| `services/aiChat` | `AbortSignal.any([externo, timeout])` — combina os dois e **preserva o `reason`**, que é o que distingue cancelamento de estouro de tempo |
+| `app/api/ai-chat/route.ts` | repassa `request.signal` ao gateway |
+| `lib/ai-chat/gateway.ts` | `throwIfAborted` no **limite de cada iteração** + `{ signal }` na chamada ao modelo (aborta o turno em voo) |
+
+**Quem decide se foi aborto é o SIGNAL, não o tipo do erro** — e essa escolha veio de medição, não de
+preferência. Duas coisas foram verificadas no SDK 0.115.0 instalado: a instância de
+`APIUserAbortError` tem **`name === 'Error'`** (checar por nome não a pegaria) e
+`e instanceof Anthropic.APIUserAbortError` **lança** se a classe não existir no namespace — e isso
+roda dentro de um `catch`, onde a exceção substituiria o erro real (§19.9a). O mock do teste do
+gateway, que não exporta essa classe, produziu exatamente esse `TypeError` em 4 testes e revelou o
+problema antes de qualquer commit. `signal?.aborted` não depende do SDK, não pode lançar e responde
+à pergunta certa: *"ainda tem alguém esperando?"*.
+
+**Cancelamento é aviso, não erro**, nas duas pontas: no cliente, `AiChatCancelledError` produz um
+`Alert variant="info"` (pintar de vermelho o que o usuário pediu seria culpá-lo pela própria ação) —
+por isso o painel passou a receber `feedback: { variant, text }` em vez de `error: string`; no
+servidor, `AiChatAbortedError` (499) é logado como **`'cancelado pelo cliente'`**, com o custo
+parcial anexado: cancelar não devolve os tokens já gastos, e sumir com eles subestimaria o custo real
+e contaminaria a busca por falhas verdadeiras no `ai_chat_log`.
+
+O signal **não** é propagado às RPCs de `runTool`, de propósito: uma consulta abortada apareceria no
+`catch` por tool, que por contrato converte falha em `tool_result` com `is_error` e SEGUE o loop
+(§17.6) — seria um segundo caminho de cancelamento, meio-tratado, para uma chamada de
+milissegundos. A checagem no limite da iteração pega o mesmo abort imediatamente depois.
+
+Cobertura: 4 casos no gateway (nunca chama o modelo se já abortou · para no limite da iteração
+seguinte, com o parcial preservado · repassa o signal · segue funcionando sem signal), 2 na rota
+(repassa o `request.signal` · loga como cancelamento com o custo), 3 no serviço e 2 no widget. O
+teste do widget rejeita **só quando o signal aborta**: se o widget deixasse de repassá-lo, o teste
+estouraria por timeout em vez de passar por acidente.
+
+#### (b) A trava de reentrância especulativa saiu
+
+`inFlightRef` existia "por segurança" e **nenhum caminho de UI a alcançava** — enquanto `loading` é
+`true` o painel desabilita campo, botão de envio e "Tentar novamente", e nem renderiza as sugestões;
+e o React libera eventos discretos já com o estado novo aplicado. Guarda que não pode ser exercitada
+não protege nada: ela apenas **dá a impressão** de garantir um invariante que na verdade quem mantém
+é o `loading`. Foi removida, com o motivo documentado no lugar dela, e o teste passou a verificar o
+que de fato sustenta a exclusão mútua (os controles travados). O `AbortController` que ficou no ref
+tem função real: é o alvo do "Parar".
+
+#### (c) Gráfico/`chart_spec` — decisão, não dívida
+
+**Não implementado, deliberadamente.** Não é limitação da implementação: é escopo. Fazê-lo agora
+exigiria (1) mudar o contrato da rota para devolver as LINHAS, (2) o modelo emitir uma `chart_spec`
+e (3) uma biblioteca de gráficos nova no bundle do frontend — tudo isso montado sobre um contrato de
+resposta que **nenhuma chamada real exercitou ainda**. Construir três camadas sobre terreno não
+verificado é o oposto de robustez. Quando a v1 estiver validada em produção, o caminho natural é
+começar pelas linhas do último tool call (o `RankingList`/`BreakdownDonut` do projeto já renderizam
+agregados sem dependência nova).

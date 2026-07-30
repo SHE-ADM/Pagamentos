@@ -27,6 +27,32 @@ export class AiChatError extends ApiServiceError {
 }
 
 /**
+ * O cliente abortou (usuário clicou em "Parar", fechou a aba, perdeu a rede).
+ *
+ * NÃO é falha: é a saída correta do loop quando ninguém mais espera a resposta. Existe como classe
+ * própria — em vez de um erro genérico — porque a rota precisa distinguir três coisas ao tratá-lo:
+ * ele **não é logado como erro do assistente** (é logado como abortado, para o custo já gasto não
+ * desaparecer da auditoria), **não vira 500** e **não merece mensagem de erro na tela** (o usuário
+ * sabe que cancelou). Estende `ApiServiceError` como manda o contrato de `failFromError`.
+ *
+ * O status 499 é a convenção do nginx para "cliente fechou a requisição": a família 4xx padrão não
+ * tem código para isso, e 400/408 diriam a coisa errada no log de acesso.
+ *
+ * COMO O ABORTO É DETECTADO (não trocar por classificação de erro): quem decide é o **signal**
+ * (`signal?.aborted` no gateway), não o tipo do erro capturado. Medido no SDK 0.115.0: a instância
+ * de `APIUserAbortError` tem `name === 'Error'`, então checar por nome não a pegaria; e
+ * `e instanceof Anthropic.APIUserAbortError` **lança** se a classe não existir no namespace (SDK
+ * futuro, mock de teste incompleto) — dentro de um `catch`, essa exceção substituiria o erro real,
+ * exatamente o modo de falha do §19.9(a). Perguntar ao signal não depende do SDK, não pode lançar e
+ * responde a pergunta certa: "ainda tem alguém esperando?".
+ */
+export class AiChatAbortedError extends ApiServiceError {
+  constructor() {
+    super('Consulta cancelada.', 499, 'AiChatAbortedError');
+  }
+}
+
+/**
  * Converte um erro do SDK em `AiChatError` quando há algo útil a dizer; devolve o erro original
  * quando não há (aí `failFromError` faz o 500 genérico + log, que é o comportamento correto).
  *

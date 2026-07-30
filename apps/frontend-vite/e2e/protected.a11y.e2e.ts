@@ -41,4 +41,16 @@ test.describe('Acessibilidade WCAG AA — páginas protegidas (navegador real)',
       await expectNoA11yViolations(page);
     });
   }
+
+  // Assistente de IA: é um <dialog> em modal, então o painel só existe no DOM (e no top layer)
+  // depois do clique — o scan das páginas acima cobre apenas o botão flutuante. NÃO envia
+  // pergunta: a resposta viria da Claude API (chamada paga e não-determinística); o que este
+  // teste escaneia é o chrome do painel, onde vive o contraste sob render real.
+  test('Assistente de IA — painel aberto', async ({ page }) => {
+    await page.goto('/consulta');
+    await page.waitForLoadState('networkidle');
+    await page.getByRole('button', { name: /abrir assistente/i }).click();
+    await page.getByLabel('Sua pergunta').waitFor();
+    await expectNoA11yViolations(page);
+  });
 });

@@ -10,7 +10,7 @@
 import Anthropic from '@anthropic-ai/sdk';
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { TOOL_DEFINITIONS, isToolName, parseToolInput, runTool } from './tools';
-import { attachPartialRun, translateAnthropicError } from './errors';
+import { AiChatAbortedError, attachPartialRun, translateAnthropicError } from './errors';
 import type { LoggedToolCall } from './log';
 
 /**
@@ -189,11 +189,15 @@ function toolResultText(rows: unknown[]): string {
  *
  * @param supabase Cliente ANON (nunca service_role) — é o que faz a RLS valer.
  * @param token    JWT do usuário, repassado a cada RPC.
+ * @param signal   Aborta o run quando o cliente desiste (`request.signal` da rota). Sem ele o
+ *   loop segue gastando tokens numa resposta que ninguém vai receber — ver o comentário de
+ *   `throwIfAborted`.
  */
 export async function runChat(
   supabase: SupabaseClient,
   token: string,
   req: ChatRequest,
+  signal?: AbortSignal,
 ): Promise<ChatResult> {
   const anthropic = getAnthropic();
   const toolCalls: LoggedToolCall[] = [];
@@ -220,6 +224,12 @@ export async function runChat(
 
   try {
     for (let iteration = 0; ; iteration += 1) {
+      // Checagem no LIMITE de cada iteração: é aqui que o run custa dinheiro. Um usuário que
+      // clicou em "Parar" (ou fechou a aba) na 1ª de 3 iterações economiza as outras duas — sem
+      // isto, o cliente desconecta e o servidor segue conversando com o modelo até o fim, cobrando
+      // por uma resposta que ninguém vai ler.
+      throwIfAborted(signal);
+
       if (iteration >= MAX_ITERATIONS) {
         truncated = true;
         break;
@@ -230,15 +240,20 @@ export async function runChat(
       // é o que evita timeout de request/proxy num turno longo, e é o ponto de onde a Fase 3
       // puxará o texto parcial para a tela.
       const response = await anthropic.messages
-        .stream({
-          model: MODEL,
-          max_tokens: MAX_TOKENS,
-          // cache_control no bloco estável: só o system+tools é cacheado; a pergunta (volátil)
-          // vem depois e não invalida o prefixo.
-          system: [{ type: 'text', text: SYSTEM_PROMPT, cache_control: { type: 'ephemeral' } }],
-          tools: toolParams,
-          messages,
-        })
+        .stream(
+          {
+            model: MODEL,
+            max_tokens: MAX_TOKENS,
+            // cache_control no bloco estável: só o system+tools é cacheado; a pergunta (volátil)
+            // vem depois e não invalida o prefixo.
+            system: [{ type: 'text', text: SYSTEM_PROMPT, cache_control: { type: 'ephemeral' } }],
+            tools: toolParams,
+            messages,
+          },
+          // O signal também vai à chamada EM VOO: sem ele o abort só seria notado na próxima
+          // iteração, e um turno longo continuaria streamando até terminar.
+          { signal },
+        )
         .finalMessage();
 
       accumulate(response.usage);
@@ -332,7 +347,7 @@ export async function runChat(
               + 'apurou, deixando claro o que ficou sem verificar.',
           },
         ],
-      })
+      }, { signal })
       .finalMessage();
     accumulate(fechamento.usage);
 
@@ -347,8 +362,28 @@ export async function runChat(
     // Anexa o que JÁ foi gasto e apurado. Sem isso, uma falha na 5ª iteração é auditada como
     // "0 tokens, 0 tools" — some justamente o registro das perguntas caras que falharam, que é a
     // fonte para descobrir quais tools faltam (§11) e para não subestimar o custo real.
-    throw attachPartialRun(translateAnthropicError(e), { ...usage, toolCalls, rowCount });
+    //
+    // Quem decide se foi aborto é o SIGNAL, não o tipo do erro — ver o comentário de
+    // `AiChatAbortedError`. Se o cliente já desistiu, o que o SDK levantou é consequência disso, e
+    // traduzir viraria 500 genérico ("erro interno"), auditando um cancelamento como falha do
+    // assistente e poluindo a fonte que serve para achar o que está realmente quebrado. O estado
+    // parcial vai junto: cancelar não devolve os tokens já gastos, e a auditoria de custo os quer.
+    const erro = signal?.aborted ? new AiChatAbortedError() : translateAnthropicError(e);
+    throw attachPartialRun(erro, { ...usage, toolCalls, rowCount });
   }
+}
+
+/**
+ * Levanta `AiChatAbortedError` se o cliente já desistiu.
+ *
+ * NÃO propaga o signal para as RPCs de `runTool` — decisão deliberada: uma consulta abortada
+ * apareceria dentro do `catch` por tool, que por contrato converte falha em `tool_result` com
+ * `is_error` e SEGUE o loop (§17.6). Distinguir abort ali criaria um segundo caminho de
+ * cancelamento, meio-tratado, para uma chamada que leva milissegundos — enquanto esta checagem, no
+ * limite da iteração, pega o mesmo abort imediatamente depois e para o loop de verdade.
+ */
+function throwIfAborted(signal: AbortSignal | undefined): void {
+  if (signal?.aborted) throw new AiChatAbortedError();
 }
 
 function errorResult(id: string, message: string): Anthropic.ToolResultBlockParam {

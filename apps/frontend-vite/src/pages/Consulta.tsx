@@ -1196,7 +1196,11 @@ export default function Consulta() {
           />
         </div>
 
-        <div className="flex items-center justify-between py-2 px-1 mb-4">
+        {/* pl-1/pr-20 (não px-1): o pr-20 abre espaço para o botão flutuante do assistente de IA
+            (fixed bottom-5 right-5, 48px) não cobrir o "Carregar mais", que é o único controle
+            no canto inferior direito do app. Classes de padding separadas de propósito — `px-1`
+            + `pr-20` na mesma lista dependeria da ordem do CSS gerado para decidir o vencedor. */}
+        <div className="flex items-center justify-between py-2 pl-1 pr-20 mb-4">
           <span className="text-xs text-slate-500">
             {loadedNonCancelled} de {filteredCount ?? loadedNonCancelled} registros
             {filteredValue != null && ` · Valor total: ${fmtMoney(filteredValue)}`}

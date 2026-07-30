@@ -11,7 +11,7 @@ import { getAnonClient, getAuthenticatedUser, getBearerToken } from '@/lib/auth'
 import { ok, fail, failFromError } from '@/lib/response';
 import { runChat } from '@/lib/ai-chat/gateway';
 import { logInteraction } from '@/lib/ai-chat/log';
-import { readPartialRun } from '@/lib/ai-chat/errors';
+import { AiChatAbortedError, readPartialRun } from '@/lib/ai-chat/errors';
 
 /**
  * Teto de duração da function (§17.1 — não remover).
@@ -64,7 +64,10 @@ export async function POST(req: NextRequest): Promise<Response> {
   }
 
   try {
-    const result = await runChat(getAnonClient(), token, parsed.data);
+    // `req.signal` aborta quando o cliente desconecta (usuário clicou em "Parar", fechou a aba,
+    // caiu a rede). Repassá-lo é o que faz o loop parar de gastar tokens numa resposta que ninguém
+    // vai receber — ver `throwIfAborted` no gateway.
+    const result = await runChat(getAnonClient(), token, parsed.data, req.signal);
 
     // Log ANTES de responder e aguardado (§17.3): em serverless a function congela no `return`,
     // então fire-and-forget perderia a auditoria silenciosamente.
@@ -89,6 +92,14 @@ export async function POST(req: NextRequest): Promise<Response> {
     // A pergunta que falhou também é auditada — é dela que sai "quais tools faltam" (§11).
     // O gateway anexa ao erro o que já havia gasto e apurado; zerar aqui faria a falha de uma
     // pergunta cara (5 iterações antes do 429) ser auditada como "0 tokens, 0 tools".
+    //
+    // Cancelamento é auditado COMO CANCELAMENTO, e continua sendo auditado: os tokens já gastos não
+    // voltam, e sumir com eles do log subestimaria o custo real (e faria um "Parar" frequente
+    // parecer economia total). O texto é distinto de uma falha para não contaminar a busca por
+    // problemas reais no `ai_chat_log`.
+    // Consts antes do objeto: ternário aninhado dentro do payload é o smell S3358 do Sonar.
+    const detalhe = e instanceof Error ? e.message : String(e);
+    const aborted = e instanceof AiChatAbortedError;
     const partial = readPartialRun(e);
     await logInteraction({
       userId: user.id,
@@ -100,8 +111,11 @@ export async function POST(req: NextRequest): Promise<Response> {
       outputTokens: partial?.outputTokens ?? 0,
       cacheReadTokens: partial?.cacheReadTokens ?? 0,
       cacheCreationTokens: partial?.cacheCreationTokens ?? 0,
-      error: e instanceof Error ? e.message : String(e),
+      error: aborted ? 'cancelado pelo cliente' : detalhe,
     });
+    // `failFromError` cuida do 499: `AiChatAbortedError` estende ApiServiceError com status < 500,
+    // então a mensagem curada ("Consulta cancelada.") é ecoada. Na prática ninguém a lê — o cliente
+    // já foi —, mas a resposta permanece coerente com o resto da API.
     return failFromError(e, 'ai-chat');
   }
 }
