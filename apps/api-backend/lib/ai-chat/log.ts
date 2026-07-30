@@ -48,6 +48,15 @@ export interface ChatLogEntry {
    */
   cacheReadTokens: number;
   cacheCreationTokens: number;
+  /**
+   * Resposta possivelmente incompleta (teto de iterações ou corte por `max_tokens`) e quantas
+   * chamadas ao modelo o loop consumiu — colunas da migration 102.
+   *
+   * Sem estes dois, a pergunta que estourou o teto (a mais cara, e a que revela qual tool falta —
+   * §11) era indistinguível no log de um run limpo que por acaso usou o mesmo número de consultas.
+   */
+  truncated: boolean;
+  iterations: number;
   error?: string;
 }
 
@@ -71,6 +80,8 @@ export async function logInteraction(entry: ChatLogEntry): Promise<void> {
         output_tokens: entry.outputTokens,
         cache_read_input_tokens: entry.cacheReadTokens,
         cache_creation_input_tokens: entry.cacheCreationTokens,
+        truncated: entry.truncated,
+        iterations: entry.iterations,
         error: entry.error ?? null,
       });
     if (error) console.error('[ai-chat] falha ao gravar ai_chat_log:', error.message);

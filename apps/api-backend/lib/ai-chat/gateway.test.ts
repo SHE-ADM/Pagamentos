@@ -342,6 +342,21 @@ describe('runChat — teto de iterações (§17.2)', () => {
 
     expect(r.truncated).toBe(true);
     expect(create).toHaveBeenCalledTimes(7); // 6 iterações + 1 fechamento
+    // `iterations === MAX_ITERATIONS` é a ASSINATURA da pergunta que estourou o teto no
+    // ai_chat_log (migration 102) — sem ela, este run é indistinguível de um limpo com 6 consultas.
+    // O fechamento nao conta: ele e implicado por truncated = true.
+    expect(r.iterations).toBe(MAX_ITERATIONS);
+  });
+
+  it('conta as iterações de um run normal (auditoria do custo)', async () => {
+    reply(toolReply([{ id: 't1', name: 'resumo_situacao', input: {} }]), textReply('pronto'));
+    runToolMock.mockResolvedValueOnce([{ x: 1 }]);
+
+    const r = await runChat(supabase, TOKEN, { question: 'x' });
+
+    // Duas chamadas ao modelo: a que pediu a tool e a que respondeu.
+    expect(r.iterations).toBe(2);
+    expect(r.truncated).toBe(false);
   });
 
   it('o fechamento MANTÉM as tools e usa tool_choice none — omiti-las destruiria o cache', async () => {
@@ -427,6 +442,8 @@ describe('runChat — estado parcial anexado ao erro (auditoria de falha)', () =
     expect(parcial?.toolCalls).toHaveLength(1);
     expect(parcial?.rowCount).toBe(2);
     expect(parcial?.inputTokens).toBeGreaterThan(0);
+    // Onde a pergunta cara parou: a 1ª chamada concluiu (pediu a tool), a 2ª falhou.
+    expect(parcial?.iterations).toBe(1);
   });
 
   it('readPartialRun devolve null para erro sem estado anexado', () => {

@@ -18,9 +18,12 @@ import type { LoggedToolCall } from './log';
  *
  * ATENÇÃO AO TROCAR: o prompt caching tem um tamanho MÍNIMO de prefixo que varia por modelo, e
  * abaixo dele o `cache_control` é ignorado **em silêncio** — sem erro, só `cache_read` zerado e a
- * conta subindo. Medido aqui: system + tools ≈ **2.175 tokens**, confortável para o mínimo de 512
- * do Opus 5, mas ABAIXO do mínimo de 4.096 do Opus 4.6 e do Haiku 4.5. Trocar para um desses
- * desliga o cache sem nenhum sintoma além do custo. Confira `cache_read_input_tokens` em
+ * conta subindo. Prefixo (system + tools) MEDIDO EM PRODUÇÃO em 30/07/2026: **3.653 tokens** — o
+ * `cache_read_input_tokens` das 5 primeiras interações reais é sempre múltiplo exato desse valor
+ * (7306 = 2x, 10959 = 3x), porque o usage é somado entre as chamadas do turno. A estimativa
+ * anterior (~2.175, derivada de contagem de caracteres) era 68% baixa. Confortável para o mínimo de
+ * 512 do Opus 5 e ainda ABAIXO do mínimo de 4.096 do Opus 4.6 e do Haiku 4.5 — ou seja, o risco de
+ * trocar para um desses é REAL, agora com número medido. Confira `cache_read_input_tokens` em
  * `analytics.ai_chat_log` depois de qualquer troca de modelo.
  */
 const MODEL = process.env.ANTHROPIC_MODEL ?? 'claude-opus-5';
@@ -85,6 +88,12 @@ export interface ChatResult {
   cacheCreationTokens: number;
   /** true quando a resposta pode estar incompleta: teto de iterações OU corte por `max_tokens`. */
   truncated: boolean;
+  /**
+   * Chamadas ao modelo DENTRO do loop (a de fechamento não conta). Auditado desde a migration 102:
+   * `iterations === MAX_ITERATIONS` é a assinatura da pergunta que estourou o teto — a mais cara e
+   * a mais informativa (§11: candidata a tool nova), antes indistinguível de um run limpo.
+   */
+  iterations: number;
 }
 
 let client: Anthropic | null = null;
@@ -221,16 +230,22 @@ export async function runChat(
   ];
 
   let truncated = false;
+  /**
+   * Chamadas ao modelo concluídas no loop. É o MESMO contador do teto e da auditoria: manter um
+   * segundo, só para o log, é a duplicação que passa a divergir na primeira alteração. Conta as
+   * concluídas (depois do `accumulate`), porque é para elas que existe usage medido.
+   */
+  let iterations = 0;
 
   try {
-    for (let iteration = 0; ; iteration += 1) {
+    for (;;) {
       // Checagem no LIMITE de cada iteração: é aqui que o run custa dinheiro. Um usuário que
       // clicou em "Parar" (ou fechou a aba) na 1ª de 3 iterações economiza as outras duas — sem
       // isto, o cliente desconecta e o servidor segue conversando com o modelo até o fim, cobrando
       // por uma resposta que ninguém vai ler.
       throwIfAborted(signal);
 
-      if (iteration >= MAX_ITERATIONS) {
+      if (iterations >= MAX_ITERATIONS) {
         truncated = true;
         break;
       }
@@ -257,6 +272,7 @@ export async function runChat(
         .finalMessage();
 
       accumulate(response.usage);
+      iterations += 1;
 
       // Preserva a resposta INTEIRA (inclui os blocos tool_use) — extrair só o texto quebraria
       // o pareamento tool_use/tool_result na próxima iteração.
@@ -271,6 +287,7 @@ export async function runChat(
           rowCount,
           ...usage,
           truncated: response.stop_reason === 'max_tokens',
+          iterations,
         };
       }
 
@@ -357,6 +374,7 @@ export async function runChat(
       rowCount,
       ...usage,
       truncated,
+      iterations,
     };
   } catch (e) {
     // Anexa o que JÁ foi gasto e apurado. Sem isso, uma falha na 5ª iteração é auditada como
@@ -369,7 +387,7 @@ export async function runChat(
     // assistente e poluindo a fonte que serve para achar o que está realmente quebrado. O estado
     // parcial vai junto: cancelar não devolve os tokens já gastos, e a auditoria de custo os quer.
     const erro = signal?.aborted ? new AiChatAbortedError() : translateAnthropicError(e);
-    throw attachPartialRun(erro, { ...usage, toolCalls, rowCount });
+    throw attachPartialRun(erro, { ...usage, toolCalls, rowCount, iterations });
   }
 }
 

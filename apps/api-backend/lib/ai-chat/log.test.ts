@@ -31,17 +31,19 @@ const ENTRY = {
   latencyMs: 3210,
   inputTokens: 180,
   outputTokens: 420,
-  cacheReadTokens: 2175,
+  cacheReadTokens: 3653,
   cacheCreationTokens: 0,
+  truncated: false,
+  iterations: 2,
 };
 
-/** Colunas de `analytics.ai_chat_log` conforme as migrations (CREATE TABLE 098 + ALTER 101). */
+/** Colunas de `analytics.ai_chat_log` conforme as migrations (CREATE TABLE 098 + ALTER 101/102). */
 function columnsFromMigrations(): Set<string> {
   // Ancorado no ARQUIVO, não em `process.cwd()`: o cwd depende de como o vitest foi invocado (da
   // raiz do monorepo com `--root`, ou de dentro do app), e um caminho que muda com isso transforma
   // o guarda num teste que falha por motivo errado. lib/ai-chat → lib → api-backend → apps → raiz.
   const dir = resolve(import.meta.dirname, '..', '..', '..', '..', 'supabase', 'migrations');
-  const files = readdirSync(dir).filter((f) => /^(098|101)_.*\.sql$/.test(f));
+  const files = readdirSync(dir).filter((f) => /^(098|101|102)_.*\.sql$/.test(f));
   const cols = new Set<string>();
 
   for (const f of files) {
@@ -87,14 +89,17 @@ describe('logInteraction — trilha de auditoria', () => {
     // Sanidade do parser: se ele não achou o schema, o teste seria vacuamente verdadeiro.
     expect(declared.has('question')).toBe(true);
     expect(declared.has('cache_read_input_tokens')).toBe(true);
+    expect(declared.has('iterations')).toBe(true); // migration 102
 
     const desconhecidas = Object.keys(payload).filter((k) => !declared.has(k));
     expect(desconhecidas).toEqual([]);
   });
 
   // Sem os 4 campos de token não há como estimar custo nem NOTAR um invalidador silencioso do
-  // prompt caching (§19.4/§19.10): ele não gera erro, só zera o número e aumenta a fatura.
-  it('registra os quatro campos de token, o custo e o resultado', async () => {
+  // prompt caching (§19.4/§19.10): ele não gera erro, só zera o número e aumenta a fatura. E sem
+  // `truncated`/`iterations` (migration 102), a pergunta que estourou o teto — a mais cara e a que
+  // revela qual tool falta — é indistinguível de um run limpo.
+  it('registra os quatro campos de token, o teto de iterações e o resultado', async () => {
     await logInteraction(ENTRY);
     expect(insert).toHaveBeenCalledWith({
       user_id: ENTRY.userId,
@@ -104,8 +109,10 @@ describe('logInteraction — trilha de auditoria', () => {
       latency_ms: 3210,
       input_tokens: 180,
       output_tokens: 420,
-      cache_read_input_tokens: 2175,
+      cache_read_input_tokens: 3653,
       cache_creation_input_tokens: 0,
+      truncated: false,
+      iterations: 2,
       error: null,
     });
   });

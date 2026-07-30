@@ -81,6 +81,8 @@ export async function POST(req: NextRequest): Promise<Response> {
       outputTokens: result.outputTokens,
       cacheReadTokens: result.cacheReadTokens,
       cacheCreationTokens: result.cacheCreationTokens,
+      truncated: result.truncated,
+      iterations: result.iterations,
     });
 
     return ok({
@@ -111,6 +113,11 @@ export async function POST(req: NextRequest): Promise<Response> {
       outputTokens: partial?.outputTokens ?? 0,
       cacheReadTokens: partial?.cacheReadTokens ?? 0,
       cacheCreationTokens: partial?.cacheCreationTokens ?? 0,
+      // `truncated: false` no caminho de erro é a leitura honesta: não existe resposta para estar
+      // cortada. Quem distingue a linha é o `error`, sempre preenchido aqui. Já `iterations` importa
+      // muito: é ele que mostra ONDE a pergunta cara parou.
+      truncated: false,
+      iterations: partial?.iterations ?? 0,
       error: aborted ? 'cancelado pelo cliente' : detalhe,
     });
     // `failFromError` cuida do 499: `AiChatAbortedError` estende ApiServiceError com status < 500,

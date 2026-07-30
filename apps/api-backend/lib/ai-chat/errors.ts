@@ -105,6 +105,8 @@ export interface PartialRun {
   cacheCreationTokens: number;
   toolCalls: LoggedToolCall[];
   rowCount: number;
+  /** Chamadas ao modelo já concluídas — mostra ONDE a pergunta cara parou (migration 102). */
+  iterations: number;
 }
 
 // Símbolo, não propriedade nomeada: não colide com nada do SDK e não aparece em `JSON.stringify`

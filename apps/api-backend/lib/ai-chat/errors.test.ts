@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
 import Anthropic from '@anthropic-ai/sdk';
-import { translateAnthropicError, AiChatError, attachPartialRun, readPartialRun } from './errors';
+import { translateAnthropicError, AiChatError, attachPartialRun, readPartialRun, type PartialRun } from './errors';
 import { ApiServiceError } from '../api-error';
 import { failFromError } from '../response';
 
@@ -61,13 +61,16 @@ describe('translateAnthropicError', () => {
 });
 
 describe('attachPartialRun / readPartialRun', () => {
-  const run = {
+  // Tipado: `PartialRun` ganhou `iterations` na migration 102, e um literal solto deixaria de
+  // acusar o próximo campo novo — que é justamente o valor de exigir o tipo aqui.
+  const run: PartialRun = {
     inputTokens: 900,
     outputTokens: 12,
     cacheReadTokens: 4000,
     cacheCreationTokens: 0,
     toolCalls: [],
     rowCount: 0,
+    iterations: 3,
   };
 
   it('anexa sem aparecer em JSON.stringify (não polui log de outra camada)', () => {
