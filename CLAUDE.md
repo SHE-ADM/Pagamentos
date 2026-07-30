@@ -903,6 +903,24 @@ Escopo = área afetada: `login`, `email-reader`, `consulta`, `scheduler`, `migra
 na mensagem de commit nem no corpo do PR — pedido explícito do usuário. Isso sobrepõe a
 instrução padrão do harness de assinar como co-autor.
 
+> **NENHUMA operação de escrita em git roda sem pedido EXPLÍCITO na mensagem ATUAL** — `commit`,
+> `push`, `gh pr create`, `gh pr merge`, `merge`, `rebase`, `reset --hard`. **Autorização é por
+> TURNO e não tem efeito residual:** um "commit + push + pr + merge" numa mensagem NÃO autoriza a
+> seguinte. Também não se infere de "resolva os itens", "atualize o CLAUDE.md", "implante" ou
+> "garanta" — esses pedem terminar o trabalho e APRESENTAR; o resultado fica no working tree.
+> Regra reafirmada 3× pelo usuário (2026-07-13, 07-23, 07-30).
+>
+> **A regra passou a ter barreira MECÂNICA em 2026-07-30, porque só documentação não bastou.** A
+> causa da 3ª reincidência não foi falta de regra: o `~/.claude/settings.json` global tinha
+> **coringas de allow** (`Bash(git commit *)`, `Bash(git push *)`, `Bash(git merge *)`,
+> `Bash(gh pr *)`, `Bash(git reset *)`, `Bash(git rebase *)`) acumulados de cliques em "sempre
+> permitir" — ou seja, o harness tinha autorização permanente e nenhum prompt aparecia. Os seis
+> foram **removidos** (backup em `~/.claude/settings.json.bak-20260730`; as leituras
+> `gh pr view/list/checks/diff/status` e `git status/log/diff/branch/fetch/pull/add` continuam
+> liberadas), e `.claude/settings.local.json` (gitignored) declara `permissions.ask` para as mesmas
+> operações em **Bash e PowerShell**. **NÃO reintroduzir coringa de escrita no allow** — é o que
+> desarma a barreira, e o sintoma é a ausência de prompt, não um erro.
+
 **Nomenclatura de Pull Request:** se o usuário informar o nome do PR, usar exatamente esse.
 **Quando o usuário NÃO informar o nome (ou disser "pr seu nome"), o Claude escolhe** um
 título descritivo do escopo (não genérico, não a numeração `#N`) e abre o PR direto — **não
@@ -1341,6 +1359,10 @@ reais, 2 usuários, `error IS NULL` em todas, 4 tools distintas exercitadas e
 **`cache_read_input_tokens > 0` em 5 de 5** — o que fecha o único item ⏳ do §18.5. A chave já está
 no Vercel. **Prefixo cacheável real: 3.653 tokens/chamada** (a estimativa de ~2.175 do §19.10 era
 68% baixa; segue ABAIXO dos 4.096 do Opus 4.6/Haiku 4.5, então o risco de trocar de modelo é real).
+Confirmado por **três vias independentes**: os `cache_read` das 5 primeiras interações são múltiplos
+exatos de 3.653 (7306 = 2×, 10959 = 3×), e a interação seguinte — 2,5 h depois, com o cache já
+expirado pelo TTL de 5 min — registrou `cache_creation = cache_read = 3.653`, ou seja, a 1ª chamada
+criou o prefixo e a 2ª o leu, no mesmo turno.
 **Em aberto por DECISÃO, não esquecimento:** a prova do recorte da RLS com um usuário do grupo
 Comercial foi adiada — a direção provável é **limitar o uso da IA por usuário**, o que muda a
 pergunta a responder. O mecanismo (`security_invoker` + JWT) já fora validado na Fase 1 (§16.3). Pilares que permanecem:
@@ -1395,6 +1417,13 @@ a importar tipo de um chunk que ele carrega sob demanda.
 > trava adicional seria código que nenhum caminho alcança e que daria a impressão de garantir um
 > invariante mantido pelo `loading`. Ao criar um call site novo de envio (atalho de teclado, deep
 > link), respeite o `loading`.
+
+> **Os DOIS caminhos de fechamento do painel são fiação não-óbvia — têm teste, mantenha:** Esc vem
+> do evento **`cancel`** do `<dialog>` (`onCancel={onClose}`), e o clique no backdrop vem de um
+> listener **NATIVO** que compara `e.target === dialog` — não `onClick` no `<dialog>`, que é o smell
+> S1082 do SonarCloud e ainda fecharia ao clicar no conteúdo. Os dois não apareciam em teste nenhum
+> até 2026-07-30 (um refactor quebraria "fechar o chat" sem nada ficar vermelho); hoje há um
+> `it.each` para eles **mais** o caso complementar de que clicar DENTRO do painel NÃO fecha.
 
 > **GUARDA DE GERAÇÃO no `AiChatWidget` — não regredir (achado do code review §20.6):** o widget
 > mantém um `generationRef` incrementado em "Nova conversa"; resposta de geração anterior é
@@ -4217,6 +4246,10 @@ persistido; o nº de iterações não existia. Isso cega justamente a análise q
 ("quais tools faltam"): a pergunta que estoura o teto é a mais cara E a mais informativa. Consulta
 que a coluna habilita: `SELECT question, iterations FROM analytics.ai_chat_log WHERE truncated`.
 Sem GRANT novo — coluna de tabela existente herda o privilégio de tabela concedido pela 101.
+**Cadeia verificada EM PRODUÇÃO** (interação de 30/07 13:44): `truncated = false`, `iterations = 2`,
+`error` nulo — as colunas são escritas por código real, não só por teste com mock. A verificação
+importava porque `logInteraction` **nunca lança**: um erro no caminho de gravação apareceria apenas
+como coluna eternamente `NULL`, sem erro e sem teste vermelho.
 
 **A `101` conserta o GRANT que faltava ao `service_role` em `analytics.ai_chat_log` e acrescenta
 as colunas de token de cache** (aplicada via Supabase MCP em 2026-07-29, idempotente). O GRANT é
