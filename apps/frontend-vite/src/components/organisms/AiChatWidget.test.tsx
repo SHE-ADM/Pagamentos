@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 
 // Mocka só a chamada HTTP — o resto (estado da conversa, histórico, lazy do painel) é o que
@@ -212,6 +212,39 @@ describe('AiChatWidget', () => {
     expect(screen.getByRole('button', { name: /enviar/i })).toBeDisabled();
     expect(screen.queryByRole('button', { name: 'Como estamos de contas a pagar?' })).not.toBeInTheDocument();
     expect(askAiChat).toHaveBeenCalledTimes(1);
+  });
+
+  /**
+   * Os DOIS caminhos de fechamento do painel dependem de fiação não-óbvia — um listener NATIVO de
+   * clique (para não pôr `onClick` no `<dialog>`, que é o smell S1082) e o evento `cancel` do
+   * elemento (o Esc). Nenhum dos dois aparece em outro teste, então um refactor podia quebrar
+   * "fechar o chat" sem nada ficar vermelho.
+   */
+  it.each([
+    ['Esc (evento cancel do <dialog>)', (d: HTMLDialogElement) => fireEvent(d, new Event('cancel'))],
+    ['clique no backdrop (alvo é o próprio dialog)', (d: HTMLDialogElement) => fireEvent.click(d)],
+  ])('fecha o painel: %s', async (_label, fechar) => {
+    render(<AiChatWidget />);
+    await openPanel();
+    const dialog = document.querySelector('dialog');
+    expect(dialog).not.toBeNull();
+
+    fechar(dialog as HTMLDialogElement);
+
+    await waitFor(() =>
+      expect(screen.queryByLabelText('Sua pergunta')).not.toBeInTheDocument(),
+    );
+  });
+
+  // O listener de backdrop compara `e.target === dialog`: clique DENTRO do conteúdo não fecha —
+  // senão escolher uma sugestão ou clicar no texto da conversa fecharia o assistente.
+  it('clique no conteúdo do painel NÃO fecha', async () => {
+    render(<AiChatWidget />);
+    const field = await openPanel();
+
+    await userEvent.click(field);
+
+    expect(screen.getByLabelText('Sua pergunta')).toBeInTheDocument();
   });
 
   /**

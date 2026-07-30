@@ -33,6 +33,16 @@ describe('MarkdownMessage', () => {
     expect(screen.getByRole('cell', { name: 'OBER' }).className).not.toContain('text-right');
   });
 
+  // O parser reconhece `##`, mas quem decide COMO o título aparece é este componente — e um
+  // subtítulo que renderizasse igual a um parágrafo passaria despercebido no teste do parser.
+  it('renderiza título com destaque visual distinto do parágrafo', () => {
+    const { container } = render(<MarkdownMessage text={'## Resumo\n\ntexto normal'} />);
+    const [titulo, paragrafo] = [...container.querySelectorAll('p')];
+    expect(titulo.textContent).toBe('Resumo');
+    expect(titulo.className).toContain('font-semibold');
+    expect(paragrafo.className).not.toContain('font-semibold');
+  });
+
   it('renderiza lista com marcador', () => {
     render(<MarkdownMessage text={'- alfa\n- beta'} />);
     expect(screen.getAllByRole('listitem')).toHaveLength(2);
