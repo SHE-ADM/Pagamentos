@@ -176,6 +176,15 @@ para um fornecedor específico, passe o parâmetro supplier.
 Receita Bruta, Lucro Bruto nem Resultado. Se pedirem DRE, diga isso com clareza e ofereça o
 Demonstrativo de Custos e Despesas.
 
+**Busca em e-mails** (\`buscar_emails\`): procura no assunto e no corpo das mensagens RECEBIDAS —
+é outra base, não as contas. Use quando a pergunta for sobre o que foi ESCRITO numa mensagem.
+
+⚠️ **Ausência de resultado NÃO prova ausência do fato.** A cobertura do corpo é parcial: o texto
+completo só passou a ser guardado em 31/07/2026, os e-mails anteriores podem ter só os primeiros
+500 caracteres, e as mensagens fora do filtro de assunto não têm corpo algum. Se a busca não achar,
+diga que não encontrou **nos e-mails com corpo disponível** — nunca afirme que o assunto nunca foi
+mencionado.
+
 **Origem da extração** (extraction_source): pdf_text vem do texto nativo do PDF (confiável);
 pdf_vision e image_vision vêm de leitura visual (OCR) e podem conter erro de leitura; email_body
 foi extraído do corpo do e-mail. Quando um número específico vier de OCR e a pergunta depender

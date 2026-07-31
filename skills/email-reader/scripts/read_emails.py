@@ -266,6 +266,31 @@ LOG_COLUMNS = [
     "attachment_saved", "pdf_extracted", "extraction_csv",
     "keyword_matched", "processed_at", "notes"
 ]
+# body_full NAO entra em LOG_COLUMNS de proposito: esse CSV e o fallback de emergencia para quando
+# o Supabase esta fora, e inflar cada linha com o corpo inteiro o tornaria pesado sem ganho — se o
+# Supabase caiu, o e-mail nao foi registrado e sera reprocessado depois (a dedup consulta o banco),
+# recapturando o corpo.
+
+# Teto de sanidade do corpo completo (migration 105 / Onda 2).
+#
+# ALTO de proposito: o maior corpo ja gravado tem ~11 KB, entao 100 KB nao corta e-mail real —
+# serve so para um e-mail patologico (HTML de megabytes) nao inflar a tabela.
+#
+# E o corte e DECLARADO no proprio texto, nunca silencioso: corte silencioso e EXATAMENTE o defeito
+# que esta onda corrige (o `[:500]` cortava 53% dos corpos sem deixar sinal, e so se descobriu
+# contando quantos batiam no teto). Com a marca, quem le sabe que ha mais texto e onde faltou.
+BODY_FULL_MAX_CHARS = 100_000
+_BODY_TRUNCATED_MARK = "\n\n[CORPO TRUNCADO — excedeu {limite} caracteres]"
+
+
+def _body_full_for_storage(body_text: str | None) -> str | None:
+    """Corpo completo para gravar, com teto declarado. None/vazio -> None (a coluna aceita NULL,
+    e NULL significa 'ainda nao temos o corpo' — distinto de 'o corpo e vazio')."""
+    if not body_text:
+        return None
+    if len(body_text) <= BODY_FULL_MAX_CHARS:
+        return body_text
+    return body_text[:BODY_FULL_MAX_CHARS] + _BODY_TRUNCATED_MARK.format(limite=BODY_FULL_MAX_CHARS)
 
 # Situacao (financial_account_control) — a FONTE UNICA e status_id (FK -> dimensao
 # `status`). O pipeline ainda rotula internamente por TEXTO ('pendente'/'falha'); a
@@ -374,6 +399,9 @@ class SupabaseControl:
             "sender_email":     rec.get("sender_email"),
             "subject":          rec.get("subject"),
             "body_preview":     (rec.get("body_preview") or "")[:500],
+            # Corpo completo (migration 105). Enviado como None quando ausente — a coluna aceita
+            # NULL, e NULL diz "ainda nao temos o corpo", diferente de string vazia.
+            "body_full":        rec.get("body_full") or None,
             "keyword_matched":  rec.get("keyword_matched"),
             # has_attachment fica NULL quando desconhecido (e-mails 'ignorado', que
             # não são baixados) — assim não poluem o KPI "Sem anexo PDF" (eq.false).
@@ -5067,7 +5095,11 @@ def process_message(mail, uid: bytes, keywords: list,
             "sender_name":    sender_name,
             "sender_email":   sender_email,
             "subject":        subject,
+            # body_preview segue truncado — e o preview que a tela /emails mostra.
+            # body_full guarda o texto INTEIRO (migration 105): ate a Onda 2, 53% dos corpos eram
+            # perdidos aqui, e o texto so existia no IMAP.
             "body_preview":   body_text[:500].replace("\n", " "),
+            "body_full":      _body_full_for_storage(body_text),
             "keyword_matched": keyword_hit,
         })
 

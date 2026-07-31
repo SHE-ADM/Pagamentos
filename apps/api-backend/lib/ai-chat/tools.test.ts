@@ -4,7 +4,7 @@ import { TOOL_DEFINITIONS, isToolName, parseToolInput, runTool, ANALYTICS_SCHEMA
 describe('TOOL_DEFINITIONS', () => {
   // A lista é travada de propósito: acrescentar tool muda a DEFINIÇÃO enviada ao modelo, o que
   // invalida os três níveis de prompt cache (tools + system + messages). Tem de ser deliberado.
-  it('expõe exatamente as 7 tools (6 da migration 098 + demonstrativo_despesas da 104)', () => {
+  it('expõe exatamente as 8 tools (098 · demonstrativo da 104 · buscar_emails da 106)', () => {
     expect(TOOL_DEFINITIONS.map((t) => t.name)).toEqual([
       'resumo_situacao',
       'gasto_por_periodo',
@@ -13,6 +13,7 @@ describe('TOOL_DEFINITIONS', () => {
       'demonstrativo_despesas',
       'aging_vencidos',
       'listar_contas',
+      'buscar_emails',
     ]);
   });
 
@@ -132,6 +133,30 @@ describe('parseToolInput', () => {
       sk_company: 2,
     });
     expect(r.ok && r.params.p_sk_company).toBe(2);
+  });
+
+  // ---- Onda 2 (migration 106): busca textual nos e-mails ----
+
+  it('buscar_emails exige o termo e rejeita termo curto demais', () => {
+    expect(parseToolInput('buscar_emails', {}).ok).toBe(false);
+    expect(parseToolInput('buscar_emails', { termo: 'a' }).ok).toBe(false);
+    expect(parseToolInput('buscar_emails', { termo: 'reajuste' }).ok).toBe(true);
+  });
+
+  // Os status de e-mail são um domínio DIFERENTE do de contas. Aceitar aqui um nome de status de
+  // conta faria o modelo filtrar por valor inexistente na tabela e concluir "não há e-mails".
+  it('buscar_emails usa o domínio de status de E-MAIL, não o de contas', () => {
+    const base = { termo: 'contrato' };
+    expect(parseToolInput('buscar_emails', { ...base, status: ['ignorado'] }).ok).toBe(true);
+    expect(parseToolInput('buscar_emails', { ...base, status: ['duplicidade'] }).ok).toBe(true);
+    // 'a vencer' e 'protestado' existem em contas, nunca em email_control
+    expect(parseToolInput('buscar_emails', { ...base, status: ['a vencer'] }).ok).toBe(false);
+    expect(parseToolInput('buscar_emails', { ...base, status: ['protestado'] }).ok).toBe(false);
+  });
+
+  it('buscar_emails tem teto de 50 (a tool devolve trecho de PII, não conta agregada)', () => {
+    expect(parseToolInput('buscar_emails', { termo: 'nota', limit: 50 }).ok).toBe(true);
+    expect(parseToolInput('buscar_emails', { termo: 'nota', limit: 100 }).ok).toBe(false);
   });
 
   it('rejeita status inventado, mas aceita os nomes reais da dimensão', () => {

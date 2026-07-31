@@ -92,6 +92,13 @@ const SUGGESTION_GROUPS: ReadonlyArray<{ theme: string; questions: readonly stri
       'Compare os gastos entre OTIMOTEX TECIDOS, LEBIANCO e OTIMOTEX FARDOS',
     ],
   },
+  {
+    // Onda 2: a busca alcança os e-mails recebidos, não as contas. A cobertura do corpo é parcial
+    // (completo só a partir de 31/07/2026), e o system prompt instrui o modelo a dizer isso em vez
+    // de afirmar que o assunto nunca foi mencionado.
+    theme: 'E-mails recebidos',
+    questions: ['Em quais e-mails falaram sobre reajuste?'],
+  },
 ];
 
 export default function AiChatPanel({

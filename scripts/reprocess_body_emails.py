@@ -49,6 +49,34 @@ def set_email_status(ctrl, ec_id: int, status: str, notes: str) -> None:
     urllib.request.urlopen(req, timeout=15)
 
 
+def save_body_full(ctrl, ec_id: int, body_text: str) -> None:
+    """Persiste o corpo COMPLETO rebuscado do IMAP (migration 105 / Onda 2).
+
+    POR QUE ISTO EXISTE: este script ja baixava o corpo inteiro do IMAP para reprocessar e o
+    DESCARTAVA — gravava so os 500 chars do preview. Era a mesma perda que a Onda 2 corrigiu no
+    reader, sobrevivendo por outro caminho, e logo nos e-mails em 'falha', que sao os que mais
+    precisam de analise.
+
+    Chamada ANTES de decidir o desfecho, de proposito: o corpo interessa em TODOS os casos
+    (resolvido, duplicado, ignorado ou 'sem conta'), e amarra-la a um ramo especifico deixaria os
+    demais sem corpo.
+
+    Best-effort — o reprocessamento nao pode falhar por causa disto. Reusa `_body_full_for_storage`
+    do reader para aplicar o MESMO teto, em vez de duplicar a regra.
+    """
+    corpo = R._body_full_for_storage(body_text)
+    if not corpo:
+        return
+    try:
+        body = json.dumps({"body_full": corpo}).encode()
+        req = urllib.request.Request(ctrl.base + f"/rest/v1/email_control?id=eq.{ec_id}",
+                                     data=body, method="PATCH",
+                                     headers={**ctrl.headers, "Prefer": "return=minimal"})
+        urllib.request.urlopen(req, timeout=15)
+    except Exception:
+        log.exception(f"    (nao foi possivel gravar body_full do e-mail {ec_id})")
+
+
 def fetch_body_from_imap(mail, mid: str) -> "str | None":
     """Rebusca o corpo (texto) do e-mail no IMAP pelo Message-ID. None se ausente."""
     _, data = mail.uid("search", None, "HEADER", "Message-ID", mid)
@@ -101,6 +129,9 @@ def inspect_one(ctrl, ec: dict, body_text: str) -> str:
 
 def process_one(ctrl, ec: dict, body_text: str) -> str:
     """Modo real: extrai do corpo e grava/classifica. Retorna a chave do tally."""
+    # O corpo veio inteiro do IMAP — persiste ANTES de qualquer desfecho, para que ele seja
+    # guardado mesmo quando o reprocessamento nao gera conta (o caso 'sem_conta' abaixo).
+    save_body_full(ctrl, ec["id"], body_text)
     rec = _make_rec(ec, body_text)
     outcome = R.try_extract_from_body(
         rec, body_text or "", ec["received_at"], ec["message_id"], ctrl,
