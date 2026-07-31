@@ -102,16 +102,33 @@ Estas regras se aplicam a **todo** código novo ou alterado neste projeto, sem e
 
 - **Todo componente novo ou alterado de forma relevante deve ter ao menos um teste**
   cobrindo renderização e a interação principal (ex.: submit, expand/collapse, validação).
+- 🔴 **Teste que promete uma garantia tem de entregá-la** *(lição O9–O11 da Onda 2 — três testes
+  verdes que não travavam o que o nome dizia)*. Se o nome ou o comentário afirma "**ANTES** de",
+  "**alinhado com** X" ou "**cabe no limite** de Y", a asserção precisa **observar aquilo** — não
+  um número mágico, não uma chamada isolada, não uma contagem do próprio array. Casos reais:
+  `test_grava_o_corpo_ANTES_…` só via que a função fora chamada; a bateria de regressão dizia estar
+  "alinhada com o painel" contando o array local; e o teto do corpo era checado contra `200_000` em
+  vez de contra o teto do SQL. **As três ferramentas:**
+  1. **Guarda cross-layer** — ler o outro arquivo e comparar, em vez de afirmar coerência. Exemplos
+     no projeto: `log.test.ts` × migrations · `regression.test.ts` × `AiChatPanel.tsx` ·
+     `test_body_full.py` × migration do `body_search` · `test_doc_type_domain_consistency.py`.
+  2. **Sanidade do parser** em toda guarda que faz parsing — um regex que para de casar transforma
+     o teste em `0 === 0`, verde para sempre.
+  3. **Validação por mutante** — introduzir o defeito de propósito e conferir que o teste fica
+     VERMELHO. Teste que não falha quando o defeito existe não é teste, é decoração.
+  Vale mais para defeito de **verificação** que para defeito de código: teste verde é justamente o
+  que faz parar de olhar. A pergunta que encontra os três: *"o que aconteceria se eu quebrasse isto
+  de propósito?"* — se a resposta for "nada falharia", o teste está incompleto.
 - **Suíte configurada (Vitest):** `apps/frontend-vite` (jsdom + Testing Library) e
   `apps/api-backend` (env node). Rode `npm test` na raiz (roda todos os workspaces) ou
   `npm run test --workspace=apps/<app>`. No `api-backend`, o `vitest.config.ts` resolve o
   alias `@` (espelhando `@/*`→`./*` do tsconfig) e coleta testes em `lib/**` **e** `app/**`
   (`*.test.ts`) — rotas têm teste co-locado (ex.: `app/api/emails/read/route.test.ts`
   cobre 422/200/502 mockando `triggerReader`).
-- **Suíte Python (pytest):** `py -3 -m pytest tests/` — **776 testes** (ex.:
+- **Suíte Python (pytest):** `py -3 -m pytest tests/` — **791 testes** (ex.:
   `test_link_extraction.py`, `test_email_body_extraction.py`, `test_body_amount.py`,
   `test_body_invoice_table.py`, `test_body_platform_invoice.py`,
-  `test_body_resolvers.py`, `test_extract_pdf.py`). Cobre o
+  `test_body_resolvers.py`, `test_extract_pdf.py`, `test_body_full.py`). Cobre o
   pipeline de extração; rodar após mexer em `read_emails.py`/`extract_pdf.py` ou nos
   scripts de reprocessamento. Não é incluída no `npm test`.
 - Referência de granularidade: `frontend-vite/src/components/StatusBadge.test.tsx`,
@@ -1729,6 +1746,12 @@ verificação por oráculo diferencial → fechamento). Migrations reservadas: *
 - 🔴 **`COALESCE(subject, '')` na concatenação do `ts_headline` não é redundante.** Em SQL,
   `NULL || texto` devolve **NULL** — um e-mail sem `Subject` faria o `trecho` sair nulo, entregando
   ao modelo uma linha sem contexto. Hoje há 0 e-mails assim, mas mensagem sem Subject é comum.
+- 🔴 **O teto do corpo é COERENTE entre as duas camadas, e há teste travando isso.** Python
+  (`BODY_FULL_MAX_CHARS`) diz quanto **guardar**; o `left(…, N)` da expressão gerada diz quanto
+  **indexar**. Se o do Python ficar maior, o excedente é gravado e **fica fora do índice** — a busca
+  responde "não encontrado" para texto que está no banco, sem erro e sem sinal. O teste
+  `test_teto_do_python_nao_excede_o_teto_do_SQL` lê a migration (localizada pelo **conteúdo**, não
+  pelo nome) e compara.
 - **São DOIS os caminhos que gravam o corpo** — o reader (`process_message`) e
   **`scripts/reprocess_body_emails.py`**, que rebusca o corpo no IMAP para reprocessar e-mails em
   `falha`. O segundo descartava o texto inteiro e gravava só `[:500]`; hoje persiste via
