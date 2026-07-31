@@ -165,7 +165,7 @@ describe('AiChatWidget', () => {
     render(<AiChatWidget />);
     await openPanel();
 
-    for (const tema of ['Panorama', 'Despesas e custos', 'Compliance', 'Evolução']) {
+    for (const tema of ['Panorama', 'Despesas e custos', 'Compliance', 'Evolução', 'E-mails recebidos']) {
       expect(screen.getByRole('heading', { name: tema, level: 3 })).toBeInTheDocument();
     }
   });

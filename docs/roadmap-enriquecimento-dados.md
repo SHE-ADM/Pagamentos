@@ -285,16 +285,31 @@ Consequência: a Onda 2, sozinha, melhora apenas os e-mails que **passam pelo fi
 Os **545 ignorados** (48% da caixa) continuariam sem texto pesquisável — inclusive os **259** da
 categoria "outros", que é justamente onde mora o conteúdo que ninguém classificou.
 
-**Decisão a tomar no início da onda (item 2.3):**
+**Decisão do item 2.3 — RESOLVIDA em 2026-07-31: opção A (só remover o truncamento).**
 
-| Opção | Efeito |
-|---|---|
-| **A — manter como está** | Busca textual cobre só e-mail com keyword. Mais barato, mantém o fluxo atual intacto |
-| **B — passar a baixar o corpo também do ignorado** | Busca cobre a caixa inteira. Custo: baixar o corpo (texto, **não** anexo) de todo e-mail; muda o fluxo de `_register_ignored` |
+> ⚠️ **A recomendação original desta seção era "B", e estava errada** — baseada na premissa de que
+> o corpo já viria barato ("texto puro"). Medido no código antes de implementar, o mecanismo real é
+> outro: no loop o reader faz `BODY.PEEK[HEADER.FIELDS (...)]` (4 headers, leve) e só
+> `process_message` faz `(INTERNALDATE RFC822)` — **a mensagem inteira, com anexos**. Trazer o corpo
+> do e-mail sem keyword exigiria um FETCH completo por mensagem, baixando anexo junto (224 dos
+> ignorados têm anexo).
 
-Recomendação: **B**, porque o corpo é texto puro (barato — o custo alto é o anexo, que permanece
-não sendo baixado) e é exatamente o material que a Onda 4 tentaria recuperar depois via IMAP. Fazer
-agora evita reprocessar mais tarde.
+E os números também estavam mal atribuídos. O quadro real:
+
+| Caminho | E-mails | Com corpo | **Truncados** |
+|---|---|---|---|
+| **B — processado** (passou pela keyword) | 884 | 823 | **440** |
+| **A — sem keyword** (`_register_ignored`) | **251** | **0** | 0 |
+
+Os **440 truncados estão TODOS no caminho processado** — remover o teto de 500 chars resolve
+**100% da perda medida**, com custo zero de IMAP. Os 251 sem corpo são e-mails que não casaram
+nenhuma keyword, ou seja, **não-financeiros por definição**: cobri-los custaria um FETCH completo
+por mensagem e traria PII de comunicação interna/pessoal, em troca de busca textual sobre material
+fora do domínio do produto.
+
+*(Nota: os "545 ignorados sem corpo" citados na seção 2.3 do diagnóstico misturavam dois grupos —
+545 é o total de `status='ignorado'`, que inclui os ignorados **por regra de negócio**, e esses têm
+corpo porque passaram por `process_message`.)*
 
 **Truncamento em dois lugares** — ambos precisam mudar: `SupabaseControl.register`
 (`(rec.get("body_preview") or "")[:500]`) e `process_message` (`body_text[:500]`).
@@ -710,7 +725,7 @@ banco real**. O documento foi escrito olhando as 42 colunas da tabela; o chat v�
 | Onda | Status | Migrations aplicadas | Data | Observações |
 |---|---|---|---|---|
 | 1 — Destravar colunas existentes | ✅ **concluída** | **103, 104** | 2026-07-31 | 7 itens; 3 achados na execução (abaixo) |
-| 2 — Corpo de e-mail | ⬜ não iniciada | — | — | — |
+| 2 — Corpo de e-mail | ✅ **concluída** | **105, 106** | 2026-07-31 | escopo A; 8ª tool; **deploy do reader APLICADO e verificado em prod** |
 | 3 — Fiscais camada 1 (chave: CT-e/NF-e/CF-e) | ⬜ não iniciada | — | — | — |
 | **4 — Varredura histórica (passada única)** | ⬜ não iniciada | — | — | requer Ondas 2 e 3 |
 | 5 — Fiscais camada 2 (itens de NF-e via LLM) | ⬜ não iniciada | — | — | requer Onda 3 |
@@ -771,6 +786,73 @@ quando ele chegar neles: LEBIANCO (R$ 38.448) e CONFECCOES OTIMOTEX (R$ 1.836) s
 próprio grupo lançadas como fornecedor; **CDI** (R$ 2.699) tem a OTIMOTEX como `legal_name` (filial
 mal cadastrada, já registrado no `CLAUDE.md`); e `resposta-automatica-sac@oficial.nike.com.br`
 (R$ 6.310) é fornecedor criado a partir de um endereço de e-mail.
+
+---
+
+### 7.2 Onda 2 — o que a execução ensinou (2026-07-31)
+
+**Baseline:** 776 pytest · 1.203 Node. **Depois:** **783 pytest** (+7) · **1.206 Node** (+3) ·
+lint/typecheck/prune limpos.
+
+> ⚠️ **O baseline falhou 1 teste na PRIMEIRA execução e passou na segunda.** Não era regressão:
+> é o esgotamento de recursos já documentado em `vitest-worker-crash-sandbox` (os 3 workspaces em
+> sequência). A regra que se confirma: **falha espalhada e não-reprodutível = recursos; falha no
+> mesmo teste = bug.** Rodar isolado (`api-backend` 496/496, `frontend-vite` 705/705) foi o que
+> distinguiu os dois casos.
+
+**Entregue:** migrations 105 e 106 · `body_full` + `body_search` (tsvector) + índice GIN · backfill
+de 383 corpos · reader gravando o corpo completo · **8ª tool `buscar_emails`** · 16ª sugestão e
+5º tema no painel.
+
+**Dois achados durante a execução:**
+
+| # | Achado | Como foi pego |
+|---|---|---|
+| ⚠️ **O4** | **`COALESCE`/`LEAST`/`GREATEST` não aceitam qualificação `pg_catalog.`** — são construtos da linguagem, não funções. A migration falhou na aplicação com `42883`. E a qualificação nem era necessária: com `search_path = ''` o `pg_catalog` é pesquisado implicitamente, como a 098 já documentava | Erro na aplicação da migration |
+| ⚠️ **O5** | **O `ts_headline` recebia só o corpo, enquanto o tsvector indexa assunto + corpo.** Resultado: para o termo "boleto", **104 de 255 e-mails (41%)** vinham sem destaque — **50 deles não têm corpo algum** e casaram apenas pelo assunto, devolvendo trecho vazio. O modelo receberia linhas sem contexto, sem saber por que vieram | Oráculo diferencial: 50 linhas devolvidas, só 30 com destaque |
+
+**Mais três, achados no code review posterior — dois deles nas PRÓPRIAS correções acima:**
+
+| # | Achado | Por que passou |
+|---|---|---|
+| 🔴 **O6** | **`NULL \|\| texto` devolve NULL em SQL** — no `ts_headline` eu concatenei `e.subject` sem `COALESCE`, então um e-mail **sem `Subject`** produziria `trecho` NULL. Hoje são 0 e-mails, mas mensagem sem Subject é comum | O `COALESCE` do corpo já estava lá; faltou no assunto. Só apareceu ao perguntar ao próprio SQL "e se for nulo?" |
+| 🔴 **O7** | **O teto do tsvector existia só no cliente.** `tsvector` estoura em **1 MB** e estourar **quebra o INSERT** (coluna gerada). O teto de 100 KB estava só no reader — mas a varredura da Onda 4, backfills e correção manual gravam `body_full` direto por `service_role`. Movido para dentro da expressão gerada (`left(…, 100000)`) | *"Teto só no cliente protege apenas o cliente que se lembrou dele."* Surgiu ao perguntar **quem mais escreve nesta coluna** |
+| 🔴 **O8** | **`scripts/reprocess_body_emails.py` rebuscava o corpo INTEIRO do IMAP e o descartava**, gravando só `[:500]`. A mesma perda que a onda corrigiu no reader, sobrevivendo por outro caminho — e logo nos e-mails em `falha`, os que mais precisam de análise | Revisão de ESTRUTURA: mapear todos os caminhos de escrita de `email_control`, não só o do reader |
+
+> **O8 é o achado mais instrutivo da onda:** corrigir o produtor principal não basta quando há
+> produtores secundários. Ao remover um truncamento (ou qualquer perda de dado), mapear **todos**
+> os caminhos que escrevem aquela coluna. Aqui foram dois: o reader e um script de reprocessamento.
+
+> **O5 generaliza:** quando a busca casa por um texto e o resultado mostra OUTRO, o usuário vê
+> ruído sem explicação. **O trecho exibido tem de vir do mesmo texto que o índice casou.**
+
+#### Decisão de escopo (item 2.3) e o que ficou de fora
+
+Adotada a **opção A** — só remover o truncamento. Os **440 corpos truncados** eram 100% da perda
+medida e estão todos no caminho processado. Os **251 e-mails sem keyword** seguem sem corpo: são
+não-financeiros por definição, e cobri-los exigiria um `FETCH RFC822` completo por mensagem
+(baixando anexos junto), além de trazer PII de comunicação interna para o banco.
+
+Os 440 truncados **continuam NULL** — só o IMAP tem aquele texto. É a **Onda 4** que os recupera.
+
+#### Deploy do reader — APLICADO e verificado em produção (2026-07-31)
+
+Primeira onda que toca `skills/`. `read_emails.py` copiado e confirmado em
+`C:\Sheild\API\Pagamentos`: `True 100000` (helper + teto) e as duas gravações presentes no código
+carregado (`process_message` e `SupabaseControl.register`).
+
+**Lição de verificação de deploy (vale para as próximas ondas):** conferir a existência de uma
+constante prova apenas que **o arquivo mudou**; não prova que a **alteração de comportamento** está
+lá. Quando o horário da cópia é incerto — foi o caso aqui —, o que fecha a dúvida é inspecionar o
+código carregado:
+
+```powershell
+py -3 -c "import sys, inspect; sys.path.insert(0,'skills/email-reader/scripts'); import read_emails as R; print('grava:', 'body_full' in inspect.getsource(R.process_message)); print('envia:', 'body_full' in inspect.getsource(R.SupabaseControl.register))"
+```
+
+Um e-mail processado **minutos antes** da cópia fica sem `body_full` e **a dedup não o reprocessa**
+(ocorreu com o `email_control` 1192, das 11:40). Esperado, não defeito: os corpos anteriores ao
+deploy são alvo da **Onda 4**.
 
 ---
 

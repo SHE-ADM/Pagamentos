@@ -114,6 +114,13 @@ const PERGUNTAS: ReadonlyArray<{ pergunta: string; tool: ToolName; params: Recor
     tool: 'gasto_por_periodo',
     params: { date_from: '2026-07-01', date_to: '2026-07-31', sk_company: 2 },
   },
+
+  // ---- E-mails (Onda 2) ----
+  {
+    pergunta: 'Em quais e-mails falaram sobre reajuste?',
+    tool: 'buscar_emails',
+    params: { termo: 'reajuste' },
+  },
 ];
 
 describe('bateria de regressão — perguntas sugeridas no painel', () => {
@@ -146,9 +153,13 @@ describe('bateria de regressão — perguntas sugeridas no painel', () => {
     expect(compliance, 'nenhuma pergunta exercita boleto sem NF').toBe(true);
   });
 
-  // O painel oferece 15 perguntas; se alguém acrescentar uma lá sem cobrir aqui, o número diverge.
+  // O painel oferece 16 perguntas; se alguém acrescentar uma lá sem cobrir aqui, o número diverge.
   // É um lembrete mecânico de que sugestão e teste são o MESMO artefato.
-  it('mantém a lista alinhada com o painel (15 perguntas em 4 temas)', () => {
-    expect(PERGUNTAS).toHaveLength(15);
+  it('mantém a lista alinhada com o painel (16 perguntas em 5 temas)', () => {
+    expect(PERGUNTAS).toHaveLength(16);
+  });
+
+  it('cobre a busca em e-mails (capacidade nova da Onda 2)', () => {
+    expect(PERGUNTAS.map((p) => p.tool)).toContain('buscar_emails');
   });
 });

@@ -1350,7 +1350,12 @@ de implementar qualquer parte (§18 = Fase 2 · §19 = code review · §20 = Fas
 
 **Status: Fases 0–3 aplicadas (2026-07-28 → 07-30).** A **migration 098** criou o schema
 **`analytics`**: 2 views (`vw_payables`, `vw_aging_vencidos`), as **6 funções** de tool calling,
-`ai_chat_log` com RLS e os GRANT/REVOKE. A **Fase 2** entregou o gateway —
+`ai_chat_log` com RLS e os GRANT/REVOKE.
+
+> ⚠️ **Hoje são 8 tools, não 6** — as 6 desta fase mais `demonstrativo_despesas` (migration 104,
+> Onda 1) e `buscar_emails` (migration 106, Onda 2). Toda menção a "6 funções/tools" neste
+> documento descreve o estado da **Fase 1** e permanece correta como histórico; a lista viva está
+> em `apps/api-backend/lib/ai-chat/tools.ts`, travada por teste. Ver "Roadmap de enriquecimento". A **Fase 2** entregou o gateway —
 `apps/api-backend/lib/ai-chat/` (`tools.ts` · `errors.ts` · `gateway.ts` · `log.ts`) +
 `app/api/ai-chat/route.ts`, com `@anthropic-ai/sdk` e **73 testes**. A **Fase 3** entregou a **UI**
 (widget flutuante global — ver "Widget do assistente" abaixo) e a configuração da chave em
@@ -1642,7 +1647,7 @@ invariante está travado em `apps/api-backend/lib/auth.concurrency.test.ts`, em 
 `auth.test.ts` (que mocka o SDK inteiro e portanto **não** cobre isto). O teste foi validado contra
 o mutante das duas camadas sabotadas: ele falha quando o defeito existe.
 
-## Roadmap de enriquecimento de dados — 9 ONDAS (Onda 1 CONCLUÍDA em 2026-07-31)
+## Roadmap de enriquecimento de dados — 9 ONDAS (Ondas 1 e 2 CONCLUÍDAS em 2026-07-31)
 
 Plano completo em **[docs/roadmap-enriquecimento-dados.md](docs/roadmap-enriquecimento-dados.md)** —
 **ler antes de mexer em qualquer item abaixo.** Objetivo: ampliar a acurácia e a gama de perguntas
@@ -1653,7 +1658,7 @@ verificação por oráculo diferencial → fechamento). Migrations reservadas: *
 | # | Onda | Entrega |
 |---|---|---|
 | 1 | ✅ **CONCLUÍDA** (migrations **103/104**) | 9 colunas na `vw_payables` · filtros de compliance · eixo `tipo` · **7ª tool `demonstrativo_despesas`** · somas de juros/descontos · **rate limit** · 15 sugestões em 4 temas · bateria de regressão |
-| 2 | Corpo de e-mail | `body_full` + full-text (hoje **39% dos corpos são truncados** em 500 chars) |
+| 2 | ✅ **CONCLUÍDA** (migrations **105/106**) | `body_full` + `body_search` (tsvector) + GIN · backfill de 383 corpos · reader grava o corpo completo · **8ª tool `buscar_emails`** — deploy do `read_emails.py` **APLICADO e verificado em prod** |
 | 3 | Fiscais camada 1 | `fiscal_document` pela **chave de acesso** (CT-e 57 · NF-e 55 · CF-e 59 · NFC-e 65), sem LLM |
 | 4 | Varredura histórica | passada **única** e **estritamente aditiva** na caixa postal |
 | 5 | Fiscais camada 2 | itens de NF-e / peso-rota-frete do CT-e (via LLM) |
@@ -1704,6 +1709,44 @@ verificação por oráculo diferencial → fechamento). Migrations reservadas: *
 - **Sugestão do painel é CONTRATO**: só entra pergunta coberta por tool e travada na bateria
   `regression.test.ts`. DPO, auditoria de autor e taxa de extração ficaram **fora** por não terem
   dado que as sustente (voltam nas Ondas 9, 7 e 2).
+
+**O que a Onda 2 entregou (não regredir):**
+
+- **`email_control.body_full`** guarda o corpo INTEIRO; **`body_preview` continua truncado em 500**
+  e é o que a tela `/emails` mostra. Não "unificar" os dois: são preview e conteúdo.
+- **`body_search`** é `tsvector` GERADO de **assunto + corpo**, com `to_tsvector('portuguese'::regconfig, …)`
+  — a versão de **1 argumento é STABLE** e o PostgreSQL recusaria em coluna gerada (mesma família da
+  lição do `competence_month`).
+- **Teto de 100 KB no corpo, com o corte DECLARADO no texto** (`[CORPO TRUNCADO — …]`). Corte
+  silencioso é o defeito que esta onda corrigiu: o `[:500]` cortava 53% dos corpos sem deixar
+  sinal, e só se descobriu contando quantos batiam exatamente no teto.
+- 🔴 **O teto vive TAMBÉM na expressão gerada** (`left(…, 100000)` na migration 105), não só no
+  reader. `tsvector` estoura em **1 MB**, e estourar **quebra o INSERT** — numa coluna gerada, isso
+  derruba a gravação do e-mail inteiro. O reader **não é o único caminho de escrita**: a varredura
+  da Onda 4, scripts de backfill e correção manual gravam `body_full` direto por `service_role`.
+  Teto só no cliente protege apenas o cliente que se lembrou dele. Medido no pior caso (lexemas
+  todos únicos): 100 KB de texto → tsvector de ~128 KB = **12% do limite**.
+- 🔴 **`COALESCE(subject, '')` na concatenação do `ts_headline` não é redundante.** Em SQL,
+  `NULL || texto` devolve **NULL** — um e-mail sem `Subject` faria o `trecho` sair nulo, entregando
+  ao modelo uma linha sem contexto. Hoje há 0 e-mails assim, mas mensagem sem Subject é comum.
+- **São DOIS os caminhos que gravam o corpo** — o reader (`process_message`) e
+  **`scripts/reprocess_body_emails.py`**, que rebusca o corpo no IMAP para reprocessar e-mails em
+  `falha`. O segundo descartava o texto inteiro e gravava só `[:500]`; hoje persiste via
+  `save_body_full`, reusando o `_body_full_for_storage` do reader (mesmo teto, uma fonte de
+  verdade). **Ao mexer no corpo, mexer nos dois** — corrigir só o produtor principal deixa a perda
+  viva pelo outro caminho.
+- **`NULL` ≠ string vazia** em `body_full`: NULL significa *"ainda não temos o corpo"* (e-mail
+  antigo ou sem keyword), string vazia significaria *"o corpo é vazio"*. A busca depende dessa
+  distinção.
+- 🔴 **No `ts_headline`, passar o MESMO texto que o tsvector indexa.** Passar só o corpo deixava
+  **41% dos resultados sem destaque** (50 e-mails casam apenas pelo assunto e não têm corpo algum)
+  — o modelo recebia linha sem contexto, sem saber por que ela veio.
+- **Cobertura da busca é PARCIAL e o prompt diz isso**: corpo completo só a partir de 31/07/2026,
+  440 corpos antigos seguem truncados (recuperáveis na Onda 4) e os **251 sem keyword** não têm
+  corpo. O modelo é instruído a responder *"não encontrei nos e-mails com corpo disponível"* —
+  **nunca** *"nunca foi mencionado"*.
+- **Decisão de escopo (item 2.3): opção A.** Não guardar o corpo do e-mail sem keyword — exigiria
+  `FETCH RFC822` completo por mensagem (com anexos) para material não-financeiro, com PII.
 
 **Dois invariantes que a auditoria do plano descobriu (não regredir):**
 
@@ -4743,7 +4786,7 @@ internet` ao CHECK de `document_type` e faz backfill — ver "Normalização de 
 
 | Tabela | Propósito |
 |---|---|
-| `email_control` | Dedup/controle. `status` ∈ (`extraído`, `recebido`, `pendente`, `falha`, `ignorado`, `duplicidade`) — **migrations 022/031**. `extraído`=PDF extraído (CSV gerado); `recebido`=sem PDF, conta via corpo; `pendente`=PDF salvo sem CSV (substitui `baixado`); `falha`=casou keyword mas sem PDF e sem conta no corpo; `ignorado`=não-financeiro (sem keyword) **ou NF-e pura sem conta a pagar** (`subject_is_pure_nfe`); `duplicidade`=pagável do corpo duplica conta já registrada por outro e-mail (**migration 031**; card/filtro próprios em `/emails`). O status é calculado em `process_message` pelo resultado real (conta/CSV/corpo/duplicata), não por `pdf_extracted`. **Visibilidade por REMETENTE (migration 078):** a policy SELECT (`authenticated`) filtra por `lower(sender_email)=lower(auth.email())` quando o grupo do usuário tem `sees_only_own_accounts` (Comercial) — `/emails` mostra só os e-mails de que o usuário é remetente; demais grupos veem tudo; `service_role` com bypass |
+| `email_control` | Dedup/controle. `status` ∈ (`extraído`, `recebido`, `pendente`, `falha`, `ignorado`, `duplicidade`) — **migrations 022/031**. `extraído`=PDF extraído (CSV gerado); `recebido`=sem PDF, conta via corpo; `pendente`=PDF salvo sem CSV (substitui `baixado`); `falha`=casou keyword mas sem PDF e sem conta no corpo; `ignorado`=não-financeiro (sem keyword) **ou NF-e pura sem conta a pagar** (`subject_is_pure_nfe`); `duplicidade`=pagável do corpo duplica conta já registrada por outro e-mail (**migration 031**; card/filtro próprios em `/emails`). O status é calculado em `process_message` pelo resultado real (conta/CSV/corpo/duplicata), não por `pdf_extracted`. **Visibilidade por REMETENTE (migration 078):** a policy SELECT (`authenticated`) filtra por `lower(sender_email)=lower(auth.email())` quando o grupo do usuário tem `sees_only_own_accounts` (Comercial) — `/emails` mostra só os e-mails de que o usuário é remetente; demais grupos veem tudo; `service_role` com bypass. **Corpo (migrations 105/106 — Onda 2):** `body_preview` segue TRUNCADO em 500 chars (é o preview da tela) e **`body_full`** guarda o corpo INTEIRO — não unificar os dois. **`body_search`** é `tsvector` GERADO de assunto+corpo (`to_tsvector('portuguese'::regconfig, left(…, 100000))` — regconfig explícito porque a versão de 1 argumento é STABLE; o `left` é teto contra o limite de 1 MB do tsvector, que **quebraria o INSERT**), com índice GIN e a tool `analytics.buscar_emails`. `body_full` **NULL significa "ainda não temos o corpo"** (e-mail antigo com preview truncado, ou sem keyword — que nem tem o corpo baixado), distinto de string vazia; **440 corpos antigos seguem NULL** até a varredura da Onda 4. `authenticated` NÃO grava nessas colunas (o UPDATE dele é restrito a `reviewed_at`) |
 | `financial_account_control` | Tabela principal de contas a pagar — uma linha por documento; alimentada pelo pipeline de e-mail **e** por CRUD manual (baixas, consolidações, dashboards). Substitui a antiga `financial_emails` (dropada na migration 020). O fornecedor é referenciado **só pela FK `sk_supplier`** (surrogate key snowflake, NOT NULL — **migration 042**, antes era `supplier_id`) — nome/CNPJ vêm do JOIN com `supplier` (colunas denormalizadas dropadas na **migration 041**). Tem `sender_email` (migration 023; backfill em 025) usado na resolução p/ alinhar `supplier.email`, e `subject` (migration 025) — exibidos/buscados em `/consulta`. **Classificação contábil** (migrations 047/048): `cost_center_id`/`chart_account_id` SMALLINT, NOT NULL DEFAULT 0 (FKs para os cadastros; id 0 = "não informado") — preenchidos no CRUD manual (cascata centro→plano). **Autoria** (migrations 076/077): `created_by` (DONO — base da visibilidade por dono), `updated_by`, `status_changed_by`, `status_changed_at` — UUID → `auth.users`, NOT NULL DEFAULT sentinela `teste@otimotex.com.br`, carimbados pelo servidor/trigger `trg_fac_authorship` (ver "Visibilidade de contas por dono" / "Auditoria de autor"). **`payment_date`** (DATE, migration 096): **a data de pagamento da conta** — carimbada pela trigger `trg_fac_payment_date` ao entrar em `status_id = 8` e limpa ao sair; escrita SÓ pela trigger (fora do grant de coluna de `authenticated` e do schema Zod de escrita). Usar como data de pagamento sem ressalva; a auditoria estrutural e o limite do histórico (backfill da 096 = vencimento) estão no bloco da 096 acima. 🔴 **`competence_date` é TEXT no formato `YYYY-MM` (mês de competência) e NUNCA deve ser convertida para DATE** — `'2026-06'::date` é erro de sintaxe, e o formato é contrato de 3 camadas (prompt do Claude em `extract_pdf.py`, template do CSV, schema Zod); converter faria **todo INSERT do reader falhar**. A coluna derivada `competence_month` está planejada na Onda 6 do roadmap de enriquecimento, com `to_date` blindado por regex |
 | `financial_cost_center` / `financial_chart_of_account` | **Cadastros de classificação contábil** (pré-existentes, **preservados em limpezas**) usados como lookup no modal de contas. `financial_cost_center` é **gerenciado pelo CRUD de centros de custo** (`/tabelas/centros-de-custo` — PK `cost_center_id` SMALLINT IDENTITY ALWAYS; id 0 = sentinela "não informado", fora do CRUD; ver "CRUD de centros de custo"). `financial_chart_of_account` (também gerenciado pelo **CRUD de Plano de contas** — `/tabelas/plano-de-contas`) tem `cost_center_id` (relaciona o plano ao centro — base da CASCATA), `chart_account_subgroup_id` (FK → subgrupo) e `is_postable` (só os postáveis são lançáveis). Os cadastros `financial_bank`, `financial_account`, `financial_chart_of_account_group` e `financial_chart_of_account_subgroup` também ganharam CRUD próprio (grupo Tabelas — ver "CRUDs dos demais cadastros contábeis"). Lidos via `lib/lookups.ts` (service_role) **e** pelo frontend via embed REST (papel `authenticated`); RLS habilitado com policy de SELECT `TO authenticated` (migration 049 — sem ela o embed voltava null e a UI mostrava `#id`) |
 | `email_processing_errors` | Log de falhas com `raw_payload` JSON. **Visibilidade por REMETENTE (migration 078):** policy SELECT (`authenticated`) filtra por `lower(sender_email)=lower(auth.email())` para grupo com `sees_only_own_accounts` (Comercial) — `/erros` mostra só os erros de que o usuário é remetente; demais veem tudo; `service_role` com bypass |
@@ -5659,6 +5702,32 @@ lê os arquivos do disco.
 > `pdf_text`, cujos barcodes passam 228/228 no DV. Deltas são cumulativos: esta cópia carrega
 > todas as pendências anteriores. Validação (esperado `dinheiro True None True`):
 > `py -3 -c "import sys; sys.path.insert(0,'skills/email-reader/scripts'); sys.path.insert(0,'skills/pdf-contas-pagar/scripts'); import read_emails as R, extract_pdf as E; print(R._classify_body_payment_method('Pago em dinheiro. Esta cobranca foi gerada pela Efi. cartao de credito'), len(R._ns_keep_len('AÇÃO Àé'))==len('AÇÃO Àé'), E.normalize_barcode('1'*48), E.normalize_barcode_allow_misread('34191125902026142931864598900021503000324000') is not None)"`
+
+> **DEPLOY 2026-07-31 — corpo COMPLETO do e-mail (Onda 2 — ✅ APLICADO em prod):** o reader passa a gravar
+> `email_control.body_full` (o corpo inteiro, sem o corte de 500 chars) além do `body_preview`, que
+> continua truncado para a tela. Deploy = copiar **só** `read_emails.py` (o `extract_pdf.py` NÃO
+> muda). **Sem `.env`, sem dependência nova.** As **migrations 105 e 106** já rodaram na Supabase
+> compartilhada → **nenhum passo de banco** em produção.
+> **Degrada com segurança nos dois sentidos:** com o reader ANTIGO e a migration nova, `body_full`
+> simplesmente fica NULL (nada quebra — mas a perda de corpo continua a cada e-mail novo, e é por
+> isso que a cópia importa); com o reader NOVO, a coluna já existe.
+> **`scripts/reprocess_body_emails.py` também mudou nesta onda** (passou a persistir o corpo que já
+> rebuscava do IMAP), mas **NÃO precisa ser copiado**: é script manual, rodado da máquina de
+> desenvolvimento, e por isso está fora do `deploy-manifest.json` (26 arquivos). Validação (esperado
+> `True 100000`):
+> `py -3 -c "import sys; sys.path.insert(0,'skills/email-reader/scripts'); import read_emails as R; print(hasattr(R,'_body_full_for_storage'), R.BODY_FULL_MAX_CHARS)"`
+>
+> **Verificado em produção (2026-07-31):** `True 100000`, e as duas gravações confirmadas no código
+> carregado — `grava no process_message: True` · `envia no register: True`. **Este segundo comando é
+> o que fecha a dúvida quando o horário da cópia é incerto**, e vale para qualquer deploy futuro do
+> reader: a presença de uma constante prova só que o arquivo mudou; `inspect.getsource` prova que a
+> ALTERAÇÃO está lá.
+> `py -3 -c "import sys, inspect; sys.path.insert(0,'skills/email-reader/scripts'); import read_emails as R; print('grava:', 'body_full' in inspect.getsource(R.process_message)); print('envia:', 'body_full' in inspect.getsource(R.SupabaseControl.register))"`
+>
+> ⚠️ **Um e-mail processado logo ANTES da cópia fica sem `body_full` e a dedup NÃO o reprocessa**
+> (foi o caso do `email_control` 1192, processado às 11:40 com o código antigo). Isso é esperado e
+> não é defeito: os corpos anteriores ao deploy são alvo da **Onda 4** (varredura histórica), que
+> ignora a dedup de propósito.
 
 > **DEPLOY 2026-07-28 — ignorar "Recebemos o seu pagamento" (APLICADO em prod — 2026-07-29):**
 > `subject_is_payment_confirmation` passou a cobrir o aviso do credor de que recebeu, com a

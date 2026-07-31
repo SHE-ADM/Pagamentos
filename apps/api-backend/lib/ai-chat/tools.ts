@@ -1,6 +1,6 @@
 // lib/ai-chat/tools.ts
-// As 7 tools do chat de IA: definição enviada ao modelo + execução via RPC no schema `analytics`.
-// (6 da migration 098 + demonstrativo_despesas, da 104 — Onda 1 do roadmap de enriquecimento.)
+// As 8 tools do chat de IA: definição enviada ao modelo + execução via RPC no schema `analytics`.
+// (6 da migration 098 · demonstrativo_despesas da 104 — Onda 1 · buscar_emails da 106 — Onda 2.)
 //
 // POR QUE JSON SCHEMA CRU E NÃO ZOD (§17.7 do doc de arquitetura)
 // O §6 do documento já especifica os contratos em JSON Schema, que é exatamente o formato que a
@@ -33,6 +33,12 @@ const DETAIL_LIMIT = 50;
 const STATUS_NAMES = [
   'pendente', 'vencido', 'a vencer', 'prorrogado', 'baixado',
   'protestado', 'cartório', 'pago', 'cancelado', 'falha',
+] as const;
+// Status de `email_control` (migrations 022/031) — domínio DIFERENTE do de contas acima. São a
+// caixa de entrada, não o ciclo de vida do título; misturar os dois faria o modelo filtrar por um
+// valor que não existe naquela tabela e receber lista vazia, concluindo "não há e-mails".
+const EMAIL_STATUS_NAMES = [
+  'extraído', 'recebido', 'pendente', 'falha', 'ignorado', 'duplicidade',
 ] as const;
 const DATE_FIELDS = ['vencimento', 'pagamento', 'emissao'] as const;
 const GRANULARITIES = ['dia', 'semana', 'mes', 'trimestre'] as const;
@@ -117,6 +123,16 @@ const schemas = {
     limit: z.number().int().min(1).max(100).optional(),
     has_invoice: z.boolean().optional(),
     has_bank_slip: z.boolean().optional(),
+  }),
+  buscar_emails: z.object({
+    // O termo é o único obrigatório: buscar "tudo" na caixa não é caso de uso e traria PII sem
+    // propósito. `.min(2)` evita que uma letra solta varra a base inteira.
+    termo: z.string().trim().min(2, 'Termo de busca muito curto'),
+    date_from: isoDate.optional(),
+    date_to: isoDate.optional(),
+    sender: z.string().optional(),
+    status: z.array(z.enum(EMAIL_STATUS_NAMES)).optional(),
+    limit: z.number().int().min(1).max(50).optional(),
   }),
 } as const;
 
@@ -309,6 +325,34 @@ export const TOOL_DEFINITIONS: readonly ToolDefinition[] = [
         has_bank_slip: hasBankSlip,
       },
       required: ['date_from', 'date_to'],
+    },
+  },
+  {
+    name: 'buscar_emails',
+    description:
+      'Busca textual nos E-MAILS RECEBIDOS (assunto + corpo), não nas contas. Use quando a '
+      + 'pergunta for sobre o que foi ESCRITO numa mensagem — "em qual e-mail falaram em '
+      + 'reajuste?", "algum fornecedor avisou de mudança de conta bancária?". Devolve um trecho '
+      + 'com o termo destacado entre << >>, não o e-mail inteiro. '
+      + 'ATENÇÃO: e-mails antigos podem ter o corpo incompleto (só foi guardado por inteiro a '
+      + 'partir de 31/07/2026) e e-mails fora do filtro de assunto não têm corpo algum — se a '
+      + 'busca não achar, isso não prova que o assunto nunca foi mencionado.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        termo: { type: 'string', description: 'Palavra ou expressão a procurar.' },
+        date_from: { type: 'string', format: 'date' },
+        date_to: { type: 'string', format: 'date' },
+        sender: { type: 'string', description: 'Parte do e-mail do remetente.' },
+        status: {
+          type: 'array',
+          items: { type: 'string', enum: EMAIL_STATUS_NAMES },
+          description: 'Situação do E-MAIL (não da conta): extraído, recebido, pendente, falha, '
+            + 'ignorado, duplicidade.',
+        },
+        limit: { type: 'integer', maximum: 50, default: DEFAULT_LIMIT },
+      },
+      required: ['termo'],
     },
   },
 ] as const;
