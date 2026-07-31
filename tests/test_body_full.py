@@ -81,7 +81,7 @@ class RegisterPayloadTest(unittest.TestCase):
         ctrl.headers = {"apikey": "x"}
         capturado = {}
 
-        def _fake_urlopen(req, *args, **kwargs):
+        def _fake_urlopen(req, *_args, **_kwargs):
             capturado["payload"] = json.loads(req.data.decode())
             return unittest.mock.MagicMock()
 
@@ -104,6 +104,122 @@ class RegisterPayloadTest(unittest.TestCase):
         e NULL e o que a busca textual precisa distinguir de 'corpo vazio'."""
         payload = self._payload({"message_id": "<a@b>", "subject": "Newsletter"})
         self.assertIsNone(payload["body_full"])
+
+
+class ReprocessSaveBodyFullTest(unittest.TestCase):
+    """`scripts/reprocess_body_emails.py` — o SEGUNDO caminho que grava o corpo.
+
+    Ele rebusca o corpo inteiro do IMAP para reprocessar e-mails em 'falha' e, ate a Onda 2,
+    DESCARTAVA esse texto (gravava so os 500 chars do preview). Era a mesma perda que a onda
+    corrigiu no reader, sobrevivendo por outro caminho.
+    """
+
+    @staticmethod
+    def _modulo():
+        """Importa o script com nome de modulo UNICO.
+
+        `import reprocess_body_emails` via sys.path colidiria em sys.modules com outros scripts de
+        mesmo nome-base — foi o que ja poluiu a suite quando varias skills tinham `run.py`.
+        """
+        import importlib.util
+        caminho = Path(__file__).resolve().parents[1] / "scripts" / "reprocess_body_emails.py"
+        spec = importlib.util.spec_from_file_location("reprocess_body_emails_mod", caminho)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        return mod
+
+    def _ctrl(self):
+        ctrl = R.SupabaseControl.__new__(R.SupabaseControl)
+        ctrl._available = True
+        ctrl.base = "https://fake.supabase.co"
+        ctrl.headers = {"apikey": "x"}
+        return ctrl
+
+    def test_persiste_o_corpo_rebuscado_do_imap(self):
+        mod = self._modulo()
+        capturado = {}
+
+        def _fake_urlopen(req, *_a, **_k):
+            capturado["url"] = req.full_url
+            capturado["metodo"] = req.get_method()
+            capturado["payload"] = json.loads(req.data.decode())
+            return unittest.mock.MagicMock()
+
+        with unittest.mock.patch.object(mod.urllib.request, "urlopen", _fake_urlopen):
+            mod.save_body_full(self._ctrl(), 42, "corpo inteiro rebuscado do IMAP")
+
+        self.assertEqual(capturado["metodo"], "PATCH")
+        self.assertIn("id=eq.42", capturado["url"])
+        self.assertEqual(capturado["payload"], {"body_full": "corpo inteiro rebuscado do IMAP"})
+
+    def test_corpo_vazio_nao_gera_requisicao(self):
+        """Sem corpo nao ha o que gravar — e um PATCH com None sobrescreveria com NULL um corpo
+        que outro caminho ja tivesse capturado."""
+        mod = self._modulo()
+        chamou = []
+
+        with unittest.mock.patch.object(
+            mod.urllib.request, "urlopen", lambda *_a, **_k: chamou.append(1)
+        ):
+            mod.save_body_full(self._ctrl(), 42, "")
+            mod.save_body_full(self._ctrl(), 42, None)
+
+        self.assertEqual(chamou, [])
+
+    def test_falha_de_rede_nao_derruba_o_reprocessamento(self):
+        """Best-effort: gravar o corpo e um bonus, nao o proposito do script. Se o PATCH falhar, o
+        reprocessamento (que extrai a conta) tem de seguir."""
+        mod = self._modulo()
+
+        def _explode(*_a, **_k):
+            raise OSError("conexao recusada")
+
+        with unittest.mock.patch.object(mod.urllib.request, "urlopen", _explode), \
+             unittest.mock.patch.object(mod.log, "exception") as log_exc:
+            mod.save_body_full(self._ctrl(), 42, "corpo")   # nao pode levantar
+
+        log_exc.assert_called_once()   # mas a falha fica RASTREAVEL, nunca silenciosa
+
+    def test_grava_o_corpo_ANTES_de_decidir_o_desfecho(self):
+        """O corpo interessa em TODOS os desfechos — inclusive quando o reprocessamento NAO gera
+        conta (BODY_NONE, que mantem o e-mail em 'falha').
+
+        Amarrar a gravacao a um ramo especifico deixaria justamente os e-mails problematicos sem
+        corpo — e sao eles que mais precisam de analise. Este teste percorre os 4 desfechos.
+        """
+        mod = self._modulo()
+        ec = {"id": 99, "message_id": "<x@y>", "received_at": "2026-07-31T10:00:00Z",
+              "sender_email": "a@b.com", "sender_name": "A", "subject": "Boleto"}
+
+        for desfecho in (R.BODY_CREATED, R.BODY_DUPLICATE, R.BODY_IGNORED, R.BODY_NONE):
+            with self.subTest(desfecho=desfecho):
+                gravou = []
+                with unittest.mock.patch.object(mod, "save_body_full",
+                                                lambda _c, _i, b: gravou.append(b)), \
+                     unittest.mock.patch.object(mod.R, "try_extract_from_body",
+                                                lambda *_a, **_k: desfecho), \
+                     unittest.mock.patch.object(mod, "set_email_status", lambda *_a, **_k: None), \
+                     unittest.mock.patch.object(mod.R.SupabaseControl, "register_error",
+                                                lambda *_a, **_k: True):
+                    mod.process_one(self._ctrl(), ec, "corpo do e-mail")
+
+                self.assertEqual(gravou, ["corpo do e-mail"],
+                                 f"o corpo nao foi gravado no desfecho {desfecho}")
+
+    def test_aplica_o_MESMO_teto_do_reader(self):
+        """Reusa `_body_full_for_storage` em vez de duplicar a regra: dois tetos divergiriam."""
+        mod = self._modulo()
+        capturado = {}
+
+        def _fake_urlopen(req, *_a, **_k):
+            capturado["payload"] = json.loads(req.data.decode())
+            return unittest.mock.MagicMock()
+
+        gigante = "z" * (R.BODY_FULL_MAX_CHARS + 1000)
+        with unittest.mock.patch.object(mod.urllib.request, "urlopen", _fake_urlopen):
+            mod.save_body_full(self._ctrl(), 7, gigante)
+
+        self.assertIn("CORPO TRUNCADO", capturado["payload"]["body_full"])
 
 
 if __name__ == "__main__":
