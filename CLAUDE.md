@@ -1642,6 +1642,68 @@ invariante está travado em `apps/api-backend/lib/auth.concurrency.test.ts`, em 
 `auth.test.ts` (que mocka o SDK inteiro e portanto **não** cobre isto). O teste foi validado contra
 o mutante das duas camadas sabotadas: ele falha quando o defeito existe.
 
+## Roadmap de enriquecimento de dados — 9 ONDAS (planejado 2026-07-31, nenhuma iniciada)
+
+Plano completo em **[docs/roadmap-enriquecimento-dados.md](docs/roadmap-enriquecimento-dados.md)** —
+**ler antes de mexer em qualquer item abaixo.** Objetivo: ampliar a acurácia e a gama de perguntas
+do chat **sem quebrar o pipeline de extração**. Execução **uma onda por vez**, cada uma cumprindo o
+protocolo de 5 passos da §3 do plano (baseline → migration idempotente → não regredir o pipeline →
+verificação por oráculo diferencial → fechamento). Migrations reservadas: **103–118**.
+
+| # | Onda | Entrega |
+|---|---|---|
+| 1 | Destravar colunas existentes | 7 colunas na `vw_payables` + filtros nas tools + 18 sugestões + rate limit + eixo `tipo` + `demonstrativo_despesas` |
+| 2 | Corpo de e-mail | `body_full` + full-text (hoje **39% dos corpos são truncados** em 500 chars) |
+| 3 | Fiscais camada 1 | `fiscal_document` pela **chave de acesso** (CT-e 57 · NF-e 55 · CF-e 59 · NFC-e 65), sem LLM |
+| 4 | Varredura histórica | passada **única** e **estritamente aditiva** na caixa postal |
+| 5 | Fiscais camada 2 | itens de NF-e / peso-rota-frete do CT-e (via LLM) |
+| 6 | Campos derivados | `competence_month`, `dim_date`, parcelamento, `days_late`, recorrência |
+| 7 | Governança | popular `audit_log` (existe com **0 linhas**) |
+| 8 | Hardening do chat | few-shot + **gate de uso por usuário (último item de todos)** |
+| 9 | Condicional | receitas p/ DRE · NFS-e · CF-e · DPO · agregados |
+
+**Decisões que NÃO devem ser reabertas sem evidência nova** (todas medidas em 2026-07-31):
+
+- **SEM tabelas agregadas / materialized view.** As 6 tools respondem em **3–25 ms** (fato: 609
+  linhas, 2,4 MB), contra **8–30 s** de latência real do chat: o SQL é **0,04–0,3%** do tempo, o
+  resto é a Claude API. Zerar o banco não mudaria a latência percebida. Gatilho para reabrir:
+  alguma tool passar de **~500 ms** warm.
+- **SEM tabela de dados de boleto** — já estão na fato (`barcode`, `nosso_numero`, juros,
+  descontos, `amount_charged`); duplicar criaria 2ª fonte de verdade.
+- **DRE completo DESCARTADO** (decisão do usuário — opção B): o sistema tem **0 receitas**, é
+  contas a **pagar**. No lugar, a tool **`demonstrativo_despesas`** (Onda 1), com esse nome — não
+  "DRE". Reabrir só via integração de receitas do Firebird (Onda 9).
+- **DPO / pontualidade ADIADO** — **450 de 463 contas pagas (97%)** têm `payment_date = due_date`
+  por artefato do backfill da migration 096; só há **2 dias** de histórico real (29–30/07).
+  Calcular DPO hoje devolveria "atraso médio zero", confiantemente falso.
+- **Cupom fiscal NÃO eletrônico fora** — sem chave, sem estrutura, **0 ocorrências**.
+- **`amount_paid` e `approved_by` automáticos fora** — trigger inventaria dado.
+- **`is_overdue` / aging como COLUNA fora** — muda com o tempo sem UPDATE (o bug da 095).
+
+**Dois invariantes que a auditoria do plano descobriu (não regredir):**
+
+1. 🔴 **`competence_date` NUNCA pode virar DATE.** Contém **`YYYY-MM`** (mês), não data —
+   `'2026-06'::date` é erro de sintaxe. O formato é contrato de **3 camadas**: prompt do Claude
+   (`extract_pdf.py`), template do CSV e schema Zod. Converter faria **todo INSERT do reader
+   falhar**. A Onda 6 acrescenta a coluna derivada `competence_month`, com o `to_date`
+   **blindado por regex** (`CASE WHEN competence_date ~ '^\d{4}-(0[1-9]|1[0-2])$'`) — sem a
+   guarda, um `'2026-13'` vindo do LLM lança `22008` e para a extração.
+2. 🔴 **A Onda 3 exige atualizar `scripts/purge_orphan_attachments.py` no MESMO passo.** Ele
+   considera órfão todo objeto não referenciado por `financial_account_attachment.storage_key` ou
+   `financial_account_control.source_file` — **não conhece `fiscal_document`** e apagaria os PDFs
+   fiscais recém-registrados, de forma irreversível e sem sinal de erro. **A purga já levou 67%
+   dos PDFs de CT-e** (só 57 dos 172 sobrevivem no bucket).
+
+**Fatos medidos que justificam as ondas 2–4:** **48%** dos e-mails (545 de 1.133) são `ignorado` e
+não geram nenhum dado estruturado; **180** deles são CT-e (172 com anexo); **39%** dos corpos estão
+truncados; e **não há um único XML** — CT-e/NF-e chegam só como PDF.
+
+> **O reader passa a gravar em outras tabelas** (Ondas 2, 3 e 5) para o e-mail que **não** vira
+> conta. O gancho fiscal fica no **Passo 1 de `extract_and_store_accounts`** (um único ponto, grava
+> sempre que houver chave de acesso válida) — **não** nos 7 pontos de `skipped_nonpayable`. Em
+> nenhuma onda o reader passa a criar conta onde hoje não cria: a regra de
+> `financial_account_control` fica intacta.
+
 ## Comandos
 
 > **Specs/templates de prompts (`docs/prompts/`)** — fonte dos prompts copy-paste para o
@@ -4651,7 +4713,7 @@ internet` ao CHECK de `document_type` e faz backfill — ver "Normalização de 
 | Tabela | Propósito |
 |---|---|
 | `email_control` | Dedup/controle. `status` ∈ (`extraído`, `recebido`, `pendente`, `falha`, `ignorado`, `duplicidade`) — **migrations 022/031**. `extraído`=PDF extraído (CSV gerado); `recebido`=sem PDF, conta via corpo; `pendente`=PDF salvo sem CSV (substitui `baixado`); `falha`=casou keyword mas sem PDF e sem conta no corpo; `ignorado`=não-financeiro (sem keyword) **ou NF-e pura sem conta a pagar** (`subject_is_pure_nfe`); `duplicidade`=pagável do corpo duplica conta já registrada por outro e-mail (**migration 031**; card/filtro próprios em `/emails`). O status é calculado em `process_message` pelo resultado real (conta/CSV/corpo/duplicata), não por `pdf_extracted`. **Visibilidade por REMETENTE (migration 078):** a policy SELECT (`authenticated`) filtra por `lower(sender_email)=lower(auth.email())` quando o grupo do usuário tem `sees_only_own_accounts` (Comercial) — `/emails` mostra só os e-mails de que o usuário é remetente; demais grupos veem tudo; `service_role` com bypass |
-| `financial_account_control` | Tabela principal de contas a pagar — uma linha por documento; alimentada pelo pipeline de e-mail **e** por CRUD manual (baixas, consolidações, dashboards). Substitui a antiga `financial_emails` (dropada na migration 020). O fornecedor é referenciado **só pela FK `sk_supplier`** (surrogate key snowflake, NOT NULL — **migration 042**, antes era `supplier_id`) — nome/CNPJ vêm do JOIN com `supplier` (colunas denormalizadas dropadas na **migration 041**). Tem `sender_email` (migration 023; backfill em 025) usado na resolução p/ alinhar `supplier.email`, e `subject` (migration 025) — exibidos/buscados em `/consulta`. **Classificação contábil** (migrations 047/048): `cost_center_id`/`chart_account_id` SMALLINT, NOT NULL DEFAULT 0 (FKs para os cadastros; id 0 = "não informado") — preenchidos no CRUD manual (cascata centro→plano). **Autoria** (migrations 076/077): `created_by` (DONO — base da visibilidade por dono), `updated_by`, `status_changed_by`, `status_changed_at` — UUID → `auth.users`, NOT NULL DEFAULT sentinela `teste@otimotex.com.br`, carimbados pelo servidor/trigger `trg_fac_authorship` (ver "Visibilidade de contas por dono" / "Auditoria de autor"). **`payment_date`** (DATE, migration 096): **a data de pagamento da conta** — carimbada pela trigger `trg_fac_payment_date` ao entrar em `status_id = 8` e limpa ao sair; escrita SÓ pela trigger (fora do grant de coluna de `authenticated` e do schema Zod de escrita). Usar como data de pagamento sem ressalva; a auditoria estrutural e o limite do histórico (backfill da 096 = vencimento) estão no bloco da 096 acima |
+| `financial_account_control` | Tabela principal de contas a pagar — uma linha por documento; alimentada pelo pipeline de e-mail **e** por CRUD manual (baixas, consolidações, dashboards). Substitui a antiga `financial_emails` (dropada na migration 020). O fornecedor é referenciado **só pela FK `sk_supplier`** (surrogate key snowflake, NOT NULL — **migration 042**, antes era `supplier_id`) — nome/CNPJ vêm do JOIN com `supplier` (colunas denormalizadas dropadas na **migration 041**). Tem `sender_email` (migration 023; backfill em 025) usado na resolução p/ alinhar `supplier.email`, e `subject` (migration 025) — exibidos/buscados em `/consulta`. **Classificação contábil** (migrations 047/048): `cost_center_id`/`chart_account_id` SMALLINT, NOT NULL DEFAULT 0 (FKs para os cadastros; id 0 = "não informado") — preenchidos no CRUD manual (cascata centro→plano). **Autoria** (migrations 076/077): `created_by` (DONO — base da visibilidade por dono), `updated_by`, `status_changed_by`, `status_changed_at` — UUID → `auth.users`, NOT NULL DEFAULT sentinela `teste@otimotex.com.br`, carimbados pelo servidor/trigger `trg_fac_authorship` (ver "Visibilidade de contas por dono" / "Auditoria de autor"). **`payment_date`** (DATE, migration 096): **a data de pagamento da conta** — carimbada pela trigger `trg_fac_payment_date` ao entrar em `status_id = 8` e limpa ao sair; escrita SÓ pela trigger (fora do grant de coluna de `authenticated` e do schema Zod de escrita). Usar como data de pagamento sem ressalva; a auditoria estrutural e o limite do histórico (backfill da 096 = vencimento) estão no bloco da 096 acima. 🔴 **`competence_date` é TEXT no formato `YYYY-MM` (mês de competência) e NUNCA deve ser convertida para DATE** — `'2026-06'::date` é erro de sintaxe, e o formato é contrato de 3 camadas (prompt do Claude em `extract_pdf.py`, template do CSV, schema Zod); converter faria **todo INSERT do reader falhar**. A coluna derivada `competence_month` está planejada na Onda 6 do roadmap de enriquecimento, com `to_date` blindado por regex |
 | `financial_cost_center` / `financial_chart_of_account` | **Cadastros de classificação contábil** (pré-existentes, **preservados em limpezas**) usados como lookup no modal de contas. `financial_cost_center` é **gerenciado pelo CRUD de centros de custo** (`/tabelas/centros-de-custo` — PK `cost_center_id` SMALLINT IDENTITY ALWAYS; id 0 = sentinela "não informado", fora do CRUD; ver "CRUD de centros de custo"). `financial_chart_of_account` (também gerenciado pelo **CRUD de Plano de contas** — `/tabelas/plano-de-contas`) tem `cost_center_id` (relaciona o plano ao centro — base da CASCATA), `chart_account_subgroup_id` (FK → subgrupo) e `is_postable` (só os postáveis são lançáveis). Os cadastros `financial_bank`, `financial_account`, `financial_chart_of_account_group` e `financial_chart_of_account_subgroup` também ganharam CRUD próprio (grupo Tabelas — ver "CRUDs dos demais cadastros contábeis"). Lidos via `lib/lookups.ts` (service_role) **e** pelo frontend via embed REST (papel `authenticated`); RLS habilitado com policy de SELECT `TO authenticated` (migration 049 — sem ela o embed voltava null e a UI mostrava `#id`) |
 | `email_processing_errors` | Log de falhas com `raw_payload` JSON. **Visibilidade por REMETENTE (migration 078):** policy SELECT (`authenticated`) filtra por `lower(sender_email)=lower(auth.email())` para grupo com `sees_only_own_accounts` (Comercial) — `/erros` mostra só os erros de que o usuário é remetente; demais veem tudo; `service_role` com bypass |
 | `financial_account_attachment` | **Anexos (N) de uma conta** (migration 079) — PADRÃO ÚNICO das duas origens: `origin='pipeline'` (documento do e-mail; espelha `financial_account_control.source_file`, gravado pelo reader) e `origin='manual'` (upload do usuário no cadastro/edição). `storage_key` = chave CRUA do objeto no bucket `attachments` (pipeline: nome flat; manual: `manual/{conta}/…`). **Soft delete** (`deleted_at`/`deleted_by`) — o objeto FICA no bucket; anexo `pipeline` é irremovível (auditoria → 403). UNIQUE `(account_id, storage_key)`; **não** UNIQUE global (um PDF com N boletos gera N contas que COMPARTILHAM o objeto). RLS SELECT herda a visibilidade da conta pai (076) via `EXISTS`; escrita só `service_role`. Ver "Anexos de conta" |
