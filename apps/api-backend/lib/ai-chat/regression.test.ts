@@ -17,6 +17,8 @@
 // a cada 5 min e o batch de vencidos 1×/dia, então qualquer literal de contagem ou valor reprovaria
 // no dia seguinte sem defeito nenhum — e o ruído treinaria a equipe a ignorar a bateria.
 
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { describe, it, expect } from 'vitest';
 import { TOOL_DEFINITIONS, parseToolInput, type ToolName } from './tools';
 
@@ -153,10 +155,37 @@ describe('bateria de regressão — perguntas sugeridas no painel', () => {
     expect(compliance, 'nenhuma pergunta exercita boleto sem NF').toBe(true);
   });
 
-  // O painel oferece 16 perguntas; se alguém acrescentar uma lá sem cobrir aqui, o número diverge.
-  // É um lembrete mecânico de que sugestão e teste são o MESMO artefato.
-  it('mantém a lista alinhada com o painel (16 perguntas em 5 temas)', () => {
-    expect(PERGUNTAS).toHaveLength(16);
+  // GUARDA CROSS-LAYER — lê o componente REAL do outro app e compara.
+  //
+  // A versão anterior deste teste só fazia `expect(PERGUNTAS).toHaveLength(16)` e o comentário
+  // afirmava que "se alguém acrescentar uma no painel sem cobrir aqui, o número diverge". Era
+  // FALSO: contar o array local não observa o painel em nada, e uma sugestão nova entraria sem
+  // teste — quebrando em silêncio o invariante de que **sugestão é contrato**.
+  //
+  // Ler o arquivo (em vez de importar) é deliberado: `api-backend` e `frontend-vite` são apps
+  // distintos, sem dependência entre si, e criar um pacote compartilhado para 16 strings acoplaria
+  // as duas camadas. O mesmo padrão do `log.test.ts`, que confere o payload contra as migrations.
+  // Ancorado em `import.meta.dirname` porque `process.cwd()` muda conforme o vitest é invocado.
+  it('cobre TODAS as perguntas oferecidas no painel (sugestão é contrato)', () => {
+    const painel = readFileSync(
+      resolve(import.meta.dirname, '../../../frontend-vite/src/components/organisms/AiChatPanel.tsx'),
+      'utf8',
+    );
+
+    // Extrai o bloco de SUGGESTION_GROUPS e, dentro dele, as strings de cada `questions: [...]`.
+    const bloco = /const SUGGESTION_GROUPS[\s\S]*?\n\];/.exec(painel)?.[0];
+    expect(bloco, 'SUGGESTION_GROUPS não encontrado — o painel foi reestruturado?').toBeTruthy();
+
+    const doPainel = [...bloco!.matchAll(/questions:\s*\[([\s\S]*?)\]/g)]
+      .flatMap((m) => [...m[1].matchAll(/'((?:[^'\\]|\\.)*)'/g)].map((s) => s[1]));
+
+    // Sanidade do parser: se ele parar de casar, o teste viraria "0 === 0" e passaria sempre.
+    expect(doPainel.length).toBeGreaterThan(10);
+
+    const cobertas = new Set(PERGUNTAS.map((p) => p.pergunta));
+    const semCobertura = doPainel.filter((q) => !cobertas.has(q));
+    expect(semCobertura, 'perguntas no painel sem cobertura na bateria').toEqual([]);
+    expect(PERGUNTAS).toHaveLength(doPainel.length);
   });
 
   it('cobre a busca em e-mails (capacidade nova da Onda 2)', () => {

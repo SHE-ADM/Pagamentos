@@ -823,6 +823,23 @@ de 383 corpos · reader gravando o corpo completo · **8ª tool `buscar_emails`*
 > produtores secundários. Ao remover um truncamento (ou qualquer perda de dado), mapear **todos**
 > os caminhos que escrevem aquela coluna. Aqui foram dois: o reader e um script de reprocessamento.
 
+**E mais três, num review focado na QUALIDADE DA VERIFICAÇÃO — todos "testes que mentem":**
+
+| # | Achado | Correção |
+|---|---|---|
+| 🔴 **O9** | `test_grava_o_corpo_ANTES_de_decidir_o_desfecho` **não verificava a ordem** — só que a função era chamada nos 4 desfechos. E a ordem importa: se a gravação ficasse depois de `try_extract_from_body`, uma exceção na extração levaria junto o corpo já baixado do IMAP — e o script roda justamente sobre e-mails em `falha`, os que mais quebram a extração | Renomeado para o que de fato verifica + teste novo que prova a ordem **pelo comportamento** (a extração lança, o corpo tem de sobreviver) |
+| 🔴 **O10** | A bateria de regressão afirmava *"se alguém acrescentar uma pergunta no painel sem cobrir aqui, o número diverge"*. **Falso** — `toHaveLength(16)` conta o array local e não observa o painel. Uma sugestão nova entraria **sem teste**, quebrando em silêncio o invariante "sugestão é contrato" | Guarda **cross-layer** que lê o `AiChatPanel.tsx` e compara (mesmo padrão do `log.test.ts` × migrations), com sanidade do parser |
+| 🔴 **O11** | O teto do corpo vive em **duas camadas** — Python (`BODY_FULL_MAX_CHARS`, quanto GUARDAR) e SQL (`left(…, N)`, quanto INDEXAR) — e nada garantia coerência. Subir o do Python para 150 KB deixaria 50 KB gravados e **fora do índice**, com a busca respondendo "não encontrado" para texto que está no banco. O teste checava `<= 200_000`, número mágico que não observa o SQL | Guarda cross-layer que lê a migration (localizada pelo **conteúdo**, não pelo nome) e exige `teto_python <= teto_sql` |
+
+> **As três correções foram validadas contra MUTANTE** — introduzi o defeito de propósito e conferi
+> que o teste falha. Um teste que não fica vermelho quando o defeito existe não é teste, é
+> decoração; e os três estavam nessa condição.
+>
+> **O padrão que O9–O11 revelam é distinto dos anteriores.** O1–O8 eram defeitos de **código**;
+> estes são de **verificação**, e mais perigosos, porque teste verde é justamente o que faz parar de
+> olhar. Todos apareceram com a mesma pergunta: *"o que aconteceria se eu quebrasse isto de
+> propósito?"* — e a resposta, nos três, era **"nada falharia"**.
+
 > **O5 generaliza:** quando a busca casa por um texto e o resultado mostra OUTRO, o usuário vê
 > ruído sem explicação. **O trecho exibido tem de vir do mesmo texto que o índice casou.**
 
@@ -866,6 +883,13 @@ deploy são alvo da **Onda 4**.
 3. **Tabela nova** → RLS + `REVOKE` de escrita de `authenticated`; o default do Supabase é
    permissivo *(lição 056/057/079/081)*.
 4. **Teste nunca assere número absoluto** — oráculo diferencial ou janela histórica fechada.
+4b. **Teste que promete garantia tem de entregá-la** *(lição O9–O11 da Onda 2)*. Se o nome ou o
+   comentário diz "ANTES de", "alinhado com X" ou "cabe no limite de Y", a asserção precisa
+   **observar** aquilo — não um número mágico nem uma chamada isolada. Duas ferramentas:
+   **guarda cross-layer** (ler o outro arquivo e comparar, como `log.test.ts` faz com as
+   migrations) e **validação por mutante** (introduzir o defeito e conferir que fica vermelho).
+   Toda guarda que faz parsing leva **sanidade do parser** — um regex que para de casar
+   transforma o teste em `0 === 0`, verde para sempre.
 5. **Deploy Python** → `check_deploy_parity.py --update` no mesmo commit; cópia em produção é
    manual, feita pelo usuário.
 6. **Nada chega ao usuário sem tool.**

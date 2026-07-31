@@ -12,6 +12,7 @@ O que estes testes travam:
 """
 
 import json
+import re
 import sys
 import unittest
 import unittest.mock
@@ -59,10 +60,44 @@ class BodyFullForStorageTest(unittest.TestCase):
 
         Medido no banco no pior caso (lexemas todos unicos): 100 KB de texto -> tsvector de ~128 KB,
         12% do limite. Este teste trava o teto abaixo de 200 KB para que um aumento futuro nao
-        chegue perto da borda sem alguem reparar. A defesa real esta na propria expressao gerada
-        (`left(..., 100000)` na migration 105), porque o reader nao e o unico caminho de escrita.
+        chegue perto da borda sem alguem reparar.
         """
         self.assertLessEqual(R.BODY_FULL_MAX_CHARS, 200_000)
+
+    def test_teto_do_python_nao_excede_o_teto_do_SQL(self):
+        """GUARDA CROSS-LAYER — o teto vive em DUAS camadas e nada mais garante que sejam coerentes.
+
+        - Python (`BODY_FULL_MAX_CHARS`): quanto do corpo GUARDAR.
+        - SQL (`left(..., N)` na expressao gerada de `body_search`): quanto INDEXAR.
+
+        Se o teto do Python ficar MAIOR que o do SQL, o excedente e gravado mas **nao entra no
+        indice** — e a busca passa a responder "nao encontrado" para um termo que esta no banco,
+        sem erro e sem sinal. O contrario e inofensivo (guarda-se menos do que se indexaria).
+
+        O teste anterior checava so `<= 200_000`, um numero magico que nao observa o SQL: subir o
+        teto do Python para 150 KB o manteria verde enquanto 50 KB deixariam de ser pesquisaveis.
+
+        Localiza a migration pelo CONTEUDO (a que cria `body_search`), nao pelo nome, para
+        sobreviver a um rename do arquivo.
+        """
+        migracoes = Path(__file__).resolve().parents[1] / "supabase" / "migrations"
+        alvos = [p for p in migracoes.glob("*.sql")
+                 if "GENERATED ALWAYS AS" in p.read_text(encoding="utf-8")
+                 and "body_search" in p.read_text(encoding="utf-8")]
+        self.assertEqual(len(alvos), 1, "esperava exatamente 1 migration definindo body_search")
+
+        sql = alvos[0].read_text(encoding="utf-8")
+        achados = re.findall(r"left\(COALESCE\(subject.*?,\s*(\d+)\s*\)", sql, re.DOTALL)
+        # Sanidade do parser: sem isto, um regex que parasse de casar deixaria o teste vazio e
+        # sempre verde — exatamente o modo de falha que esta bateria existe para evitar.
+        self.assertTrue(achados, "nao achei o teto do left(...) na expressao gerada")
+
+        teto_sql = int(achados[0])
+        self.assertLessEqual(
+            R.BODY_FULL_MAX_CHARS, teto_sql,
+            f"o reader guarda ate {R.BODY_FULL_MAX_CHARS} chars, mas o indice so cobre {teto_sql} — "
+            "o excedente ficaria gravado e invisivel para a busca",
+        )
 
 
 class RegisterPayloadTest(unittest.TestCase):
@@ -180,12 +215,15 @@ class ReprocessSaveBodyFullTest(unittest.TestCase):
 
         log_exc.assert_called_once()   # mas a falha fica RASTREAVEL, nunca silenciosa
 
-    def test_grava_o_corpo_ANTES_de_decidir_o_desfecho(self):
+    def test_grava_o_corpo_em_TODOS_os_desfechos(self):
         """O corpo interessa em TODOS os desfechos — inclusive quando o reprocessamento NAO gera
         conta (BODY_NONE, que mantem o e-mail em 'falha').
 
         Amarrar a gravacao a um ramo especifico deixaria justamente os e-mails problematicos sem
         corpo — e sao eles que mais precisam de analise. Este teste percorre os 4 desfechos.
+
+        (O nome diz o que este teste de fato verifica. Ele NAO prova a ordem em relacao ao
+        try_extract_from_body — isso e o teste seguinte, e por um motivo concreto.)
         """
         mod = self._modulo()
         ec = {"id": 99, "message_id": "<x@y>", "received_at": "2026-07-31T10:00:00Z",
@@ -205,6 +243,34 @@ class ReprocessSaveBodyFullTest(unittest.TestCase):
 
                 self.assertEqual(gravou, ["corpo do e-mail"],
                                  f"o corpo nao foi gravado no desfecho {desfecho}")
+
+    def test_corpo_sobrevive_a_excecao_na_extracao(self):
+        """Prova que a gravacao acontece ANTES do `try_extract_from_body` — pelo COMPORTAMENTO,
+        nao inspecionando a ordem das chamadas.
+
+        POR QUE A ORDEM IMPORTA (nao e preferencia estetica): se a gravacao ficasse depois, uma
+        excecao na extracao levaria junto o corpo que ja tinha sido baixado do IMAP — e seria
+        preciso rebusca-lo. Como o script roda sobre e-mails em 'falha', que sao os que mais
+        quebram a extracao, esse e justamente o caso mais provavel.
+
+        O teste falha se alguem mover a chamada para depois da extracao.
+        """
+        mod = self._modulo()
+        ec = {"id": 99, "message_id": "<x@y>", "received_at": "2026-07-31T10:00:00Z",
+              "sender_email": "a@b.com", "sender_name": "A", "subject": "Boleto"}
+        gravou = []
+
+        def _explode_na_extracao(*_a, **_k):
+            raise RuntimeError("extracao quebrou no meio")
+
+        with unittest.mock.patch.object(mod, "save_body_full",
+                                        lambda _c, _i, b: gravou.append(b)), \
+             unittest.mock.patch.object(mod.R, "try_extract_from_body", _explode_na_extracao):
+            with self.assertRaises(RuntimeError):
+                mod.process_one(self._ctrl(), ec, "corpo que nao pode se perder")
+
+        self.assertEqual(gravou, ["corpo que nao pode se perder"],
+                         "o corpo foi perdido — a gravacao deve preceder a extracao")
 
     def test_aplica_o_MESMO_teto_do_reader(self):
         """Reusa `_body_full_for_storage` em vez de duplicar a regra: dois tetos divergiriam."""
