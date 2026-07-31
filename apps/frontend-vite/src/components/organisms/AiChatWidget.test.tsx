@@ -158,6 +158,32 @@ describe('AiChatWidget', () => {
     expect(await screen.findByText('resposta da sugestão')).toBeInTheDocument();
   });
 
+  // As sugestões passaram a ser agrupadas por tema (Onda 1). O agrupamento não é enfeite: com 15
+  // perguntas numa lista corrida o usuário não acha o que procura. Os cabeçalhos são <h3> reais
+  // para leitor de tela navegar por eles — um <p> em negrito pareceria igual e não seria.
+  it('agrupa as sugestões por tema, com cabeçalho navegável', async () => {
+    render(<AiChatWidget />);
+    await openPanel();
+
+    for (const tema of ['Panorama', 'Despesas e custos', 'Compliance', 'Evolução']) {
+      expect(screen.getByRole('heading', { name: tema, level: 3 })).toBeInTheDocument();
+    }
+  });
+
+  // As duas capacidades que a Onda 1 destravou precisam estar OFERECIDAS — o dado existir no banco
+  // não adianta se o usuário não souber que pode perguntar.
+  it('oferece o demonstrativo e o achado de compliance (boleto sem NF)', async () => {
+    render(<AiChatWidget />);
+    await openPanel();
+
+    expect(
+      screen.getByRole('button', { name: 'Mostre o demonstrativo de custos e despesas do mês' }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole('button', { name: 'Quais contas têm boleto mas não têm nota fiscal?' }),
+    ).toBeInTheDocument();
+  });
+
   it('Enter envia e Shift+Enter apenas quebra a linha', async () => {
     askAiChat.mockResolvedValue(ok('enviada'));
     render(<AiChatWidget />);

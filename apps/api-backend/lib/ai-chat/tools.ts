@@ -1,5 +1,6 @@
 // lib/ai-chat/tools.ts
-// As 6 tools do chat de IA: definição enviada ao modelo + execução via RPC no schema `analytics`.
+// As 7 tools do chat de IA: definição enviada ao modelo + execução via RPC no schema `analytics`.
+// (6 da migration 098 + demonstrativo_despesas, da 104 — Onda 1 do roadmap de enriquecimento.)
 //
 // POR QUE JSON SCHEMA CRU E NÃO ZOD (§17.7 do doc de arquitetura)
 // O §6 do documento já especifica os contratos em JSON Schema, que é exatamente o formato que a
@@ -35,7 +36,7 @@ const STATUS_NAMES = [
 ] as const;
 const DATE_FIELDS = ['vencimento', 'pagamento', 'emissao'] as const;
 const GRANULARITIES = ['dia', 'semana', 'mes', 'trimestre'] as const;
-const CLASSIFICATION_DIMS = ['centro_custo', 'plano_contas', 'grupo', 'subgrupo'] as const;
+const CLASSIFICATION_DIMS = ['centro_custo', 'plano_contas', 'grupo', 'subgrupo', 'tipo'] as const;
 const AGING_GROUPS = ['faixa', 'empresa', 'fornecedor', 'centro_custo', 'plano_contas'] as const;
 const SK_COMPANIES = [1, 2, 3] as const;
 
@@ -51,9 +52,12 @@ const skCompanyId = z
     message: `Empresa inválida — use ${SK_COMPANIES.join(', ')}`,
   });
 
-// `smallint` no banco: fora da faixa vira erro cru do Postgres no meio do loop, em vez de uma
-// mensagem que o modelo entende.
-const natureId = z.number().int().min(0).max(32_767);
+// Id do catálogo `financial_type_group`, usado por DUAS dimensões distintas: a NATUREZA do grupo
+// (nature_ids) e o TIPO do subgrupo (subgroup_type_ids). O nome é genérico de propósito — chamá-lo
+// de `natureId` e reusá-lo no tipo do subgrupo induziria justamente a confusão que o system prompt
+// adverte. `smallint` no banco: fora da faixa vira erro cru do Postgres no meio do loop, em vez de
+// uma mensagem que o modelo entende.
+const typeGroupId = z.number().int().min(0).max(32_767);
 
 // Validação dos parâmetros que o MODELO gera. Não substitui as guardas do banco (as funções
 // clampam limit e rejeitam group_by fora do domínio) — é a primeira barreira, que devolve um erro
@@ -78,15 +82,24 @@ const schemas = {
     supplier: z.string().optional(),
     sk_company: skCompanyId.optional(),
     limit: z.number().int().min(1).max(100).optional(),
+    has_invoice: z.boolean().optional(),
+    has_bank_slip: z.boolean().optional(),
   }),
   gasto_por_classificacao: z.object({
     date_from: isoDate,
     date_to: isoDate,
     group_by: z.enum(CLASSIFICATION_DIMS),
     date_field: z.enum(DATE_FIELDS).optional(),
-    nature_ids: z.array(natureId).optional(),
+    nature_ids: z.array(typeGroupId).optional(),
     sk_company: skCompanyId.optional(),
     limit: z.number().int().min(1).max(100).optional(),
+    subgroup_type_ids: z.array(typeGroupId).optional(),
+  }),
+  demonstrativo_despesas: z.object({
+    date_from: isoDate,
+    date_to: isoDate,
+    date_field: z.enum(DATE_FIELDS).optional(),
+    sk_company: skCompanyId.optional(),
   }),
   aging_vencidos: z.object({
     group_by: z.enum(AGING_GROUPS).optional(),
@@ -102,6 +115,8 @@ const schemas = {
     sk_company: skCompanyId.optional(),
     page: z.number().int().min(1).optional(),
     limit: z.number().int().min(1).max(100).optional(),
+    has_invoice: z.boolean().optional(),
+    has_bank_slip: z.boolean().optional(),
   }),
 } as const;
 
@@ -130,6 +145,18 @@ const skCompany = {
     + 'É independente do fornecedor — nunca inferir uma da outra.',
 };
 const limitProp = (def: number) => ({ type: 'integer', maximum: 100, default: def });
+
+// Curadoria (migration 033): as duas flags que o operador marca no /consulta. Tri-state — omitir
+// não filtra. "Boleto sem nota fiscal" é has_bank_slip=true + has_invoice=false, o achado de
+// compliance mais material da base.
+const hasInvoice = {
+  type: 'boolean',
+  description: 'Filtra pela flag "Tem NF". Omitir não filtra.',
+};
+const hasBankSlip = {
+  type: 'boolean',
+  description: 'Filtra pela flag "Tem Boleto". Omitir não filtra.',
+};
 
 // ts-prune-ignore-next — consumido pelo gateway por inferência.
 export const TOOL_DEFINITIONS: readonly ToolDefinition[] = [
@@ -174,7 +201,9 @@ export const TOOL_DEFINITIONS: readonly ToolDefinition[] = [
     name: 'gasto_por_fornecedor',
     description:
       'Ranking/total por fornecedor. Use para "top fornecedores", "quanto paguei para X". '
-      + 'O parâmetro supplier casa CNPJ exato ou parte do nome (sem acento/caixa).',
+      + 'O parâmetro supplier casa CNPJ exato ou parte do nome (sem acento/caixa). '
+      + 'Com has_bank_slip=true e has_invoice=false responde "quais fornecedores têm boleto '
+      + 'sem nota fiscal" (risco de compliance).',
     input_schema: {
       type: 'object',
       properties: {
@@ -184,6 +213,8 @@ export const TOOL_DEFINITIONS: readonly ToolDefinition[] = [
         supplier: { type: 'string', description: 'Nome parcial ou CNPJ.' },
         sk_company: skCompany,
         limit: limitProp(DEFAULT_LIMIT),
+        has_invoice: hasInvoice,
+        has_bank_slip: hasBankSlip,
       },
       required: ['date_from', 'date_to'],
     },
@@ -192,23 +223,55 @@ export const TOOL_DEFINITIONS: readonly ToolDefinition[] = [
     name: 'gasto_por_classificacao',
     description:
       'Agrega pela classificação contábil. Use para "gasto por centro de custo", '
-      + '"quanto em despesa fixa", "por plano de contas".',
+      + '"por plano de contas", "por grupo/subgrupo" e — com group_by="tipo" — para '
+      + '"quanto foi despesa FIXA vs VARIÁVEL".',
     input_schema: {
       type: 'object',
       properties: {
         date_from: { type: 'string', format: 'date' },
         date_to: { type: 'string', format: 'date' },
-        group_by: { type: 'string', enum: CLASSIFICATION_DIMS },
+        group_by: {
+          type: 'string',
+          enum: CLASSIFICATION_DIMS,
+          description: 'tipo = Despesas Fixas / Despesas Variáveis / Custos de Mercadorias.',
+        },
         date_field: dateField,
         nature_ids: {
           type: 'array',
           items: { type: 'integer' },
-          description: 'Natureza do grupo: 2 = Despesas, 8 = Custo (espelha /dashboard_despesas).',
+          description: 'Natureza do GRUPO: 2 = Despesas, 8 = Custo, 4 = Passivo (tributos).',
+        },
+        subgroup_type_ids: {
+          type: 'array',
+          items: { type: 'integer' },
+          description: 'Tipo do SUBGRUPO: 5 = Despesas Fixas, 6 = Despesas Variáveis, '
+            + '7 = Custos de Mercadorias. Dimensão distinta de nature_ids — não confundir.',
         },
         sk_company: skCompany,
         limit: limitProp(DEFAULT_LIMIT),
       },
       required: ['date_from', 'date_to', 'group_by'],
+    },
+  },
+  {
+    name: 'demonstrativo_despesas',
+    description:
+      'Demonstrativo de Custos e Despesas do período: uma linha para Custos de Mercadorias, '
+      + 'Despesas Fixas, Despesas Variáveis, Tributos e Não classificado, mais o Total de saídas. '
+      + 'Use para "demonstrativo", "estrutura de custos", "para onde foi o dinheiro". '
+      + 'As linhas são mutuamente exclusivas e exaustivas, então SEMPRE somam o total — NÃO '
+      + 'recalcule o total, use a linha "Total de saídas" que a tool devolve. '
+      + 'NÃO é um DRE: este sistema é contas a pagar e não tem receitas; se perguntarem por DRE, '
+      + 'explique isso e ofereça este demonstrativo.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        date_from: { type: 'string', format: 'date' },
+        date_to: { type: 'string', format: 'date' },
+        date_field: dateField,
+        sk_company: skCompany,
+      },
+      required: ['date_from', 'date_to'],
     },
   },
   {
@@ -229,7 +292,8 @@ export const TOOL_DEFINITIONS: readonly ToolDefinition[] = [
     name: 'listar_contas',
     description:
       'Drill-down: lista as contas individuais de um recorte, paginado. Use DEPOIS de um '
-      + 'agregado, quando o usuário pedir o detalhe ("quais são essas contas?").',
+      + 'agregado, quando o usuário pedir o detalhe ("quais são essas contas?"). '
+      + 'Com has_bank_slip=true e has_invoice=false lista as contas com boleto e SEM nota fiscal.',
     input_schema: {
       type: 'object',
       properties: {
@@ -241,6 +305,8 @@ export const TOOL_DEFINITIONS: readonly ToolDefinition[] = [
         sk_company: skCompany,
         page: { type: 'integer', minimum: 1, default: 1 },
         limit: limitProp(DETAIL_LIMIT),
+        has_invoice: hasInvoice,
+        has_bank_slip: hasBankSlip,
       },
       required: ['date_from', 'date_to'],
     },

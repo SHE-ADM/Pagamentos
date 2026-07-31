@@ -2,12 +2,15 @@ import { describe, it, expect, vi } from 'vitest';
 import { TOOL_DEFINITIONS, isToolName, parseToolInput, runTool, ANALYTICS_SCHEMA } from './tools';
 
 describe('TOOL_DEFINITIONS', () => {
-  it('expõe exatamente as 6 tools do §6', () => {
+  // A lista é travada de propósito: acrescentar tool muda a DEFINIÇÃO enviada ao modelo, o que
+  // invalida os três níveis de prompt cache (tools + system + messages). Tem de ser deliberado.
+  it('expõe exatamente as 7 tools (6 da migration 098 + demonstrativo_despesas da 104)', () => {
     expect(TOOL_DEFINITIONS.map((t) => t.name)).toEqual([
       'resumo_situacao',
       'gasto_por_periodo',
       'gasto_por_fornecedor',
       'gasto_por_classificacao',
+      'demonstrativo_despesas',
       'aging_vencidos',
       'listar_contas',
     ]);
@@ -69,6 +72,66 @@ describe('parseToolInput', () => {
       group_by: 'DROP TABLE',
     });
     expect(r.ok).toBe(false);
+  });
+
+  // ---- Onda 1 (migration 104): eixo `tipo`, filtros de compliance e demonstrativo ----
+
+  it('aceita group_by="tipo" (despesa fixa × variável — migration 104)', () => {
+    const r = parseToolInput('gasto_por_classificacao', {
+      date_from: '2026-07-01',
+      date_to: '2026-07-31',
+      group_by: 'tipo',
+    });
+    expect(r.ok).toBe(true);
+    expect(r.ok && r.params.p_group_by).toBe('tipo');
+  });
+
+  it('prefixa subgroup_type_ids para o parâmetro nomeado da função SQL', () => {
+    const r = parseToolInput('gasto_por_classificacao', {
+      date_from: '2026-07-01',
+      date_to: '2026-07-31',
+      group_by: 'subgrupo',
+      subgroup_type_ids: [5, 6],
+    });
+    expect(r.ok && r.params.p_subgroup_type_ids).toEqual([5, 6]);
+  });
+
+  // "Boleto sem nota fiscal" é o achado de compliance mais material da base (169 contas). O
+  // tri-state importa: `false` PRECISA chegar ao banco, e um teste que só cobrisse `true` deixaria
+  // passar um bug em que o falsy fosse descartado junto com o undefined.
+  it.each([
+    'listar_contas',
+    'gasto_por_fornecedor',
+  ] as const)('%s repassa has_invoice=false e has_bank_slip=true (tri-state)', (tool) => {
+    const r = parseToolInput(tool, {
+      date_from: '2026-07-01',
+      date_to: '2026-07-31',
+      has_invoice: false,
+      has_bank_slip: true,
+    });
+    expect(r.ok).toBe(true);
+    expect(r.ok && r.params.p_has_invoice).toBe(false);
+    expect(r.ok && r.params.p_has_bank_slip).toBe(true);
+  });
+
+  it.each([
+    'listar_contas',
+    'gasto_por_fornecedor',
+  ] as const)('%s omite as flags quando não informadas (não vira filtro implícito)', (tool) => {
+    const r = parseToolInput(tool, { date_from: '2026-07-01', date_to: '2026-07-31' });
+    expect(r.ok).toBe(true);
+    expect(r.ok && 'p_has_invoice' in r.params).toBe(false);
+    expect(r.ok && 'p_has_bank_slip' in r.params).toBe(false);
+  });
+
+  it('demonstrativo_despesas exige o período e aceita empresa', () => {
+    expect(parseToolInput('demonstrativo_despesas', { date_from: '2026-07-01' }).ok).toBe(false);
+    const r = parseToolInput('demonstrativo_despesas', {
+      date_from: '2026-07-01',
+      date_to: '2026-07-31',
+      sk_company: 2,
+    });
+    expect(r.ok && r.params.p_sk_company).toBe(2);
   });
 
   it('rejeita status inventado, mas aceita os nomes reais da dimensão', () => {
