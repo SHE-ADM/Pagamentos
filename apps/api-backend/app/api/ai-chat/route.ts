@@ -12,6 +12,7 @@ import { ok, fail, failFromError } from '@/lib/response';
 import { runChat } from '@/lib/ai-chat/gateway';
 import { logInteraction } from '@/lib/ai-chat/log';
 import { AiChatAbortedError, readPartialRun } from '@/lib/ai-chat/errors';
+import { assertWithinRateLimit } from '@/lib/ai-chat/rate-limit';
 
 /**
  * Teto de duração da function (§17.1 — não remover).
@@ -64,6 +65,12 @@ export async function POST(req: NextRequest): Promise<Response> {
   }
 
   try {
+    // Teto de uso ANTES de qualquer chamada paga ao modelo (item 1.5 da Onda 1). Fica dentro do
+    // `try` de propósito: o 429 que ele lança é um AiChatError e precisa passar pelo mesmo
+    // caminho de auditoria dos demais — uma tentativa barrada também é sinal de uso, e some do
+    // `ai_chat_log` se escapar do catch.
+    await assertWithinRateLimit(user.id);
+
     // `req.signal` aborta quando o cliente desconecta (usuário clicou em "Parar", fechou a aba,
     // caiu a rede). Repassá-lo é o que faz o loop parar de gastar tokens numa resposta que ninguém
     // vai receber — ver `throwIfAborted` no gateway.

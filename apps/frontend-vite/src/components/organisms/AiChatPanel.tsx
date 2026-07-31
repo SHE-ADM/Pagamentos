@@ -40,11 +40,58 @@ interface AiChatPanelProps {
   onClose: () => void;
 }
 
-/** Perguntas de partida — encurtam o primeiro uso e exercitam três tools diferentes. */
-const SUGGESTIONS = [
-  'Como estamos de contas a pagar?',
-  'Quais os 5 maiores fornecedores com contas vencidas?',
-  'Quanto vence nos próximos 7 dias?',
+/**
+ * Perguntas de partida, agrupadas por tema (Onda 1 — docs/roadmap-enriquecimento-dados.md §6).
+ *
+ * SUGESTÃO É UM CONTRATO: o usuário clica confiando que aquilo responde. Por isso a lista contém
+ * SÓ perguntas cobertas por alguma tool e verificadas contra o banco — as do documento de auditoria
+ * que dependiam de dado inexistente ficaram de fora, não foram "adaptadas":
+ *
+ *   - DPO / pontualidade → 97% das contas pagas têm payment_date vindo do backfill da migration
+ *     096 (só 2 dias de histórico real). Responderia "atraso médio zero", que é falso.
+ *   - Auditoria de quem alterou o quê → só o ÚLTIMO editor é guardado e `audit_log` está vazio.
+ *   - Taxa de sucesso da extração → as falhas nem viram linha em financial_account_control; vivem
+ *     em email_control, que nenhuma tool alcança (Onda 2).
+ *
+ * Cada uma destas está coberta pela bateria de regressão (ai-chat-regression), que é o mesmo
+ * artefato: pergunta sugerida é pergunta testada.
+ */
+const SUGGESTION_GROUPS: ReadonlyArray<{ theme: string; questions: readonly string[] }> = [
+  {
+    theme: 'Panorama',
+    questions: [
+      'Como estamos de contas a pagar?',
+      'Quanto vence nos próximos 7 dias?',
+      'Qual a distribuição das contas vencidas por faixa de atraso?',
+      'Quais os 5 maiores fornecedores com contas vencidas?',
+    ],
+  },
+  {
+    theme: 'Despesas e custos',
+    questions: [
+      'Mostre o demonstrativo de custos e despesas do mês',
+      'Quanto foi despesa fixa e quanto foi variável neste mês?',
+      'Quanto gastamos por centro de custo neste mês?',
+      'Quanto pagamos de tributos no período?',
+    ],
+  },
+  {
+    theme: 'Compliance',
+    questions: [
+      'Quais contas têm boleto mas não têm nota fiscal?',
+      'Quanto pagamos de juros e multa, e por qual fornecedor?',
+      'Quanto capturamos em descontos por antecipação?',
+      'Quais contas estão sem centro de custo ou plano de contas definido?',
+    ],
+  },
+  {
+    theme: 'Evolução',
+    questions: [
+      'Como evoluíram os pagamentos mês a mês neste ano?',
+      'Qual a diferença entre o que vence e o que saiu de caixa neste mês?',
+      'Compare os gastos entre OTIMOTEX TECIDOS, LEBIANCO e OTIMOTEX FARDOS',
+    ],
+  },
 ];
 
 export default function AiChatPanel({
@@ -165,19 +212,26 @@ export default function AiChatPanel({
         className="flex-1 space-y-3 overflow-y-auto bg-gray-50 px-4 py-4"
       >
         {entries.length === 0 && !loading && (
-          <div className="space-y-2">
+          <div className="space-y-4">
             <p className="text-sm text-slate-600">
               Pergunte em português. Alguns exemplos:
             </p>
-            {SUGGESTIONS.map((s) => (
-              <button
-                key={s}
-                type="button"
-                onClick={() => submit(s)}
-                className="block w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-left text-sm text-slate-700 transition-colors hover:border-brand hover:bg-slate-50"
-              >
-                {s}
-              </button>
+            {SUGGESTION_GROUPS.map((group) => (
+              <div key={group.theme} className="space-y-2">
+                <h3 className="text-xs font-semibold uppercase tracking-wide text-slate-500">
+                  {group.theme}
+                </h3>
+                {group.questions.map((s) => (
+                  <button
+                    key={s}
+                    type="button"
+                    onClick={() => submit(s)}
+                    className="block w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-left text-sm text-slate-700 transition-colors hover:border-brand hover:bg-slate-50"
+                  >
+                    {s}
+                  </button>
+                ))}
+              </div>
             ))}
           </div>
         )}

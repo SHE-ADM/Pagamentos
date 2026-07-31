@@ -709,7 +709,7 @@ banco real**. O documento foi escrito olhando as 42 colunas da tabela; o chat v�
 
 | Onda | Status | Migrations aplicadas | Data | Observações |
 |---|---|---|---|---|
-| 1 — Destravar colunas existentes | ⬜ não iniciada | — | — | — |
+| 1 — Destravar colunas existentes | ✅ **concluída** | **103, 104** | 2026-07-31 | 7 itens; 3 achados na execução (abaixo) |
 | 2 — Corpo de e-mail | ⬜ não iniciada | — | — | — |
 | 3 — Fiscais camada 1 (chave: CT-e/NF-e/CF-e) | ⬜ não iniciada | — | — | — |
 | **4 — Varredura histórica (passada única)** | ⬜ não iniciada | — | — | requer Ondas 2 e 3 |
@@ -721,11 +721,66 @@ banco real**. O documento foi escrito olhando as 42 colunas da tabela; o chat v�
 
 ---
 
+### 7.1 Onda 1 — o que a execução ensinou (2026-07-31)
+
+**Baseline antes:** 776 pytest · 1.165 Node · lint/typecheck/prune limpos.
+**Depois:** 776 pytest · **1.199 Node** (+34) · lint/typecheck/prune limpos.
+**Prova de não-regressão do pipeline:** o fato foi de **609 → 610 contas** durante a onda — a
+extração seguiu rodando normalmente enquanto as migrations eram aplicadas.
+
+**Três achados que não estavam previstos no plano:**
+
+| # | Achado | Como foi pego |
+|---|---|---|
+| 🔴 **O1** | **As 4 funções recriadas nasceram executáveis por `anon`** — chamáveis com a anon key pública, sem login. Causa: o PostgreSQL concede `EXECUTE` a PUBLIC por default e o `ALTER DEFAULT PRIVILEGES` da migration 098 **não deixou registro persistente** (`pg_default_acl` vazio para funções do schema). As 3 funções antigas só estavam protegidas pelo `REVOKE` explícito da 098 | Verificação de grants logo após aplicar a 104 |
+| ⚠️ **O2** | **Expor coluna na view NÃO torna a pergunta respondível.** `fine_interest`/`discount` estavam na view, mas nenhuma tool as agregava — "quanto pagamos de juros" não teria resposta. Foi preciso acrescentá-las ao **RETORNO** de `gasto_por_fornecedor` | Conferência das sugestões contra o que as tools devolvem, antes de publicá-las |
+| ⚠️ **O3** | **Somar um ranking truncado dá número errado.** `gasto_por_fornecedor` devolve no máximo 100 de **165** fornecedores; somar suas linhas subestima o total silenciosamente (os 2 fornecedores com desconto ficam fora do top 100 por serem de valor baixo). Registrado no SYSTEM_PROMPT como proibição explícita | Um oráculo diferencial "falhou" — e a investigação mostrou que o **oráculo** é que estava errado, não a tool |
+
+> **O1 vira guardrail permanente** (seção 8, item 2 reforçado): **toda função nova ou recriada em
+> `analytics` leva `GRANT` explícito para `authenticated` E `REVOKE` explícito de PUBLIC/anon.**
+> Não confiar no `ALTER DEFAULT PRIVILEGES` — foi medido que ele não persiste aqui.
+
+**Três perguntas do documento de auditoria ficaram DE FORA das sugestões**, por não terem dado que
+as sustente — e isso é cumprimento da regra "sugestão é um contrato", não omissão:
+
+| Pergunta | Por que ficou fora | Volta em |
+|---|---|---|
+| DPO / pontualidade | 97% das contas pagas têm `payment_date` de backfill | Onda 9 |
+| Quem alterou campos sensíveis | só o último editor é guardado; `audit_log` vazio | Onda 7 |
+| Taxa de sucesso da extração | as falhas vivem em `email_control`, fora do alcance das tools | Onda 2 |
+
+**Entregue:** migrations 103 e 104 · 7ª tool (`demonstrativo_despesas`) · eixo `tipo` · filtros de
+compliance · somas de juros/descontos · rate limit (30/h, 150/dia, fail-open) · 15 sugestões em 4
+temas · bateria de regressão que cobre as 15.
+
+#### A linha "Não classificado" é curadoria do usuário — NÃO automatizar
+
+Decisão do Ricardo em 2026-07-31: as contas sem plano de contas (**64 contas · R$ 416.379,38** na
+data) serão corrigidas **manualmente, ao longo do tempo**. **Não propor nem executar backfill
+automático** (herança do cadastro do fornecedor ou classificação em bloco) — várias exigem
+julgamento de negócio, e um script sobrescreveria decisões que só ele pode tomar.
+
+Nada a fazer no código: o `demonstrativo_despesas` lê a classificação **em tempo de consulta**, então
+a linha encolhe sozinha conforme a curadoria avança. Prova disso no mesmo dia — ao classificar o
+subgrupo **77.1 Publicidade e Propaganda** como *Despesas Variáveis*, as duas contas migraram de
+"Não classificado" para a linha certa sem ninguém tocar nelas, e o total seguiu fechando
+(R$ 8.863.267,26 dos dois lados).
+
+Os três casos que parecem **cadastro sujo**, e não falta de classificação, ficam anotados para
+quando ele chegar neles: LEBIANCO (R$ 38.448) e CONFECCOES OTIMOTEX (R$ 1.836) são empresas do
+próprio grupo lançadas como fornecedor; **CDI** (R$ 2.699) tem a OTIMOTEX como `legal_name` (filial
+mal cadastrada, já registrado no `CLAUDE.md`); e `resposta-automatica-sac@oficial.nike.com.br`
+(R$ 6.310) é fornecedor criado a partir de um endereço de e-mail.
+
+---
+
 ## 8. Guardrails (valem em toda onda)
 
 1. **Coluna que depende do tempo não vira coluna** — vira view/função *(lição da migration 095: 123
    de 126 contas vencidas ficaram presas em "a vencer" por meses, em silêncio)*.
-2. **Objeto novo em `analytics`** → `REVOKE EXECUTE ... FROM PUBLIC` explícito *(lição 097/099)*.
+2. **Objeto novo em `analytics`** → `GRANT` explícito para `authenticated` **E** `REVOKE EXECUTE
+   ... FROM PUBLIC, anon` explícito *(lição 097/099, **confirmada na Onda 1**: sem o REVOKE as
+   funções nasceram chamáveis com a anon key; o `ALTER DEFAULT PRIVILEGES` da 098 não persiste)*.
 3. **Tabela nova** → RLS + `REVOKE` de escrita de `authenticated`; o default do Supabase é
    permissivo *(lição 056/057/079/081)*.
 4. **Teste nunca assere número absoluto** — oráculo diferencial ou janela histórica fechada.

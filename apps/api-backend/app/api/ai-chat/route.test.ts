@@ -8,17 +8,22 @@ vi.mock('@/lib/auth', () => ({
 }));
 vi.mock('@/lib/ai-chat/gateway', () => ({ runChat: vi.fn() }));
 vi.mock('@/lib/ai-chat/log', () => ({ logInteraction: vi.fn(async () => undefined) }));
+// O rate limit tem suíte própria (rate-limit.test.ts) e fala com o banco via service_role; aqui
+// ele é mockado para a rota ser testada isoladamente. O caso "barrado" abaixo usa este mock.
+vi.mock('@/lib/ai-chat/rate-limit', () => ({ assertWithinRateLimit: vi.fn(async () => undefined) }));
 
 import { POST } from './route';
 import { getAuthenticatedUser, getBearerToken } from '@/lib/auth';
 import { runChat } from '@/lib/ai-chat/gateway';
 import { logInteraction } from '@/lib/ai-chat/log';
+import { assertWithinRateLimit } from '@/lib/ai-chat/rate-limit';
 import { AiChatAbortedError, AiChatError, attachPartialRun } from '@/lib/ai-chat/errors';
 
 const getUser = vi.mocked(getAuthenticatedUser);
 const getToken = vi.mocked(getBearerToken);
 const chat = vi.mocked(runChat);
 const log = vi.mocked(logInteraction);
+const rateLimit = vi.mocked(assertWithinRateLimit);
 
 const USER = { id: '11111111-1111-1111-1111-111111111111' };
 /**
@@ -43,6 +48,7 @@ const okResult = {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  rateLimit.mockResolvedValue(undefined);
   getUser.mockResolvedValue(USER as never);
   getToken.mockReturnValue('jwt-do-usuario');
 });
@@ -297,5 +303,23 @@ describe('POST /api/ai-chat — auditoria (§17.3)', () => {
     expect(res.status).toBe(500);
     expect(body.error).toBe('Erro interno ao processar a solicitação');
     expect(JSON.stringify(body)).not.toContain('sk-ant');
+  });
+
+  // O ponto do rate limit é economizar dinheiro: barrar DEPOIS de chamar o modelo não protegeria
+  // nada. Este teste trava a ordem — se alguém mover a checagem para baixo do runChat, ele falha.
+  it('rate limit barra ANTES de chamar o modelo, e a tentativa é auditada', async () => {
+    rateLimit.mockRejectedValue(new AiChatError('Você atingiu o limite de 30 perguntas por hora.', 429));
+
+    const res = await POST(req({ question: 'pergunta válida' }));
+    const body = await res.json();
+
+    expect(res.status).toBe(429);
+    expect(body.error).toContain('limite');
+    // O gasto que o limite existe para evitar: nenhuma chamada ao gateway.
+    expect(chat).not.toHaveBeenCalled();
+    // Mas a tentativa barrada continua sendo sinal de uso — some da trilha se escapar do catch.
+    expect(log).toHaveBeenCalledWith(
+      expect.objectContaining({ userId: USER.id, inputTokens: 0, outputTokens: 0 }),
+    );
   });
 });

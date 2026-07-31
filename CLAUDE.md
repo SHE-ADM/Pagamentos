@@ -1642,7 +1642,7 @@ invariante está travado em `apps/api-backend/lib/auth.concurrency.test.ts`, em 
 `auth.test.ts` (que mocka o SDK inteiro e portanto **não** cobre isto). O teste foi validado contra
 o mutante das duas camadas sabotadas: ele falha quando o defeito existe.
 
-## Roadmap de enriquecimento de dados — 9 ONDAS (planejado 2026-07-31, nenhuma iniciada)
+## Roadmap de enriquecimento de dados — 9 ONDAS (Onda 1 CONCLUÍDA em 2026-07-31)
 
 Plano completo em **[docs/roadmap-enriquecimento-dados.md](docs/roadmap-enriquecimento-dados.md)** —
 **ler antes de mexer em qualquer item abaixo.** Objetivo: ampliar a acurácia e a gama de perguntas
@@ -1652,7 +1652,7 @@ verificação por oráculo diferencial → fechamento). Migrations reservadas: *
 
 | # | Onda | Entrega |
 |---|---|---|
-| 1 | Destravar colunas existentes | 7 colunas na `vw_payables` + filtros nas tools + 18 sugestões + rate limit + eixo `tipo` + `demonstrativo_despesas` |
+| 1 | ✅ **CONCLUÍDA** (migrations **103/104**) | 9 colunas na `vw_payables` · filtros de compliance · eixo `tipo` · **7ª tool `demonstrativo_despesas`** · somas de juros/descontos · **rate limit** · 15 sugestões em 4 temas · bateria de regressão |
 | 2 | Corpo de e-mail | `body_full` + full-text (hoje **39% dos corpos são truncados** em 500 chars) |
 | 3 | Fiscais camada 1 | `fiscal_document` pela **chave de acesso** (CT-e 57 · NF-e 55 · CF-e 59 · NFC-e 65), sem LLM |
 | 4 | Varredura histórica | passada **única** e **estritamente aditiva** na caixa postal |
@@ -1680,6 +1680,31 @@ verificação por oráculo diferencial → fechamento). Migrations reservadas: *
 - **`amount_paid` e `approved_by` automáticos fora** — trigger inventaria dado.
 - **`is_overdue` / aging como COLUNA fora** — muda com o tempo sem UPDATE (o bug da 095).
 
+**O que a Onda 1 entregou e os invariantes que ela criou (não regredir):**
+
+- **7 tools** (as 6 da 098 + `demonstrativo_despesas`). A lista é travada em `tools.test.ts`:
+  acrescentar tool invalida os 3 níveis de prompt cache, então tem de ser deliberado.
+- **`demonstrativo_despesas` SEMPRE FECHA** — as linhas (Custos de Mercadorias · Despesas Fixas ·
+  Despesas Variáveis · Tributos · Não classificado) são mutuamente exclusivas e exaustivas, e a
+  função devolve a própria linha "Total de saídas" para o modelo **não somar**. Verificado contra
+  a tabela base: R$ 8.854.971,36 dos dois lados. **`Não classificado` é LINHA, não filtro** — um
+  demonstrativo que omite o que não classificou não fecha, e número que não fecha destrói a
+  confiança em todos os outros. **NÃO é um DRE** (0 receitas) e o nome é deliberado.
+- **A linha "Tributos" sai da NATUREZA do grupo (`= 4`)**, nunca de ids de subgrupo hardcoded.
+- 🔴 **`gasto_por_fornecedor` é um RANKING TRUNCADO** (máx. 100 de 165 fornecedores): **somar suas
+  linhas NÃO dá o total do período** — subestima em silêncio. Está proibido explicitamente no
+  SYSTEM_PROMPT; para totais, `gasto_por_periodo` ou `demonstrativo_despesas`.
+- **Expor coluna na view não basta** — `fine_interest`/`discount` só viraram resposta quando foram
+  ao **RETORNO** de `gasto_por_fornecedor`. Ao destravar dado novo, verificar se alguma tool o
+  **agrega**, não só se a view o expõe.
+- **Rate limit** (`lib/ai-chat/rate-limit.ts`): 30/hora e 150/dia por usuário, contados no próprio
+  `analytics.ai_chat_log` (serverless — contador em memória zeraria de forma imprevisível).
+  **Fail-open deliberado**: se a contagem falhar, deixa passar e loga — derrubar o chat por causa
+  do contador seria pior. Conta também as tentativas que falharam (elas gastaram tokens).
+- **Sugestão do painel é CONTRATO**: só entra pergunta coberta por tool e travada na bateria
+  `regression.test.ts`. DPO, auditoria de autor e taxa de extração ficaram **fora** por não terem
+  dado que as sustente (voltam nas Ondas 9, 7 e 2).
+
 **Dois invariantes que a auditoria do plano descobriu (não regredir):**
 
 1. 🔴 **`competence_date` NUNCA pode virar DATE.** Contém **`YYYY-MM`** (mês), não data —
@@ -1688,7 +1713,13 @@ verificação por oráculo diferencial → fechamento). Migrations reservadas: *
    falhar**. A Onda 6 acrescenta a coluna derivada `competence_month`, com o `to_date`
    **blindado por regex** (`CASE WHEN competence_date ~ '^\d{4}-(0[1-9]|1[0-2])$'`) — sem a
    guarda, um `'2026-13'` vindo do LLM lança `22008` e para a extração.
-2. 🔴 **A Onda 3 exige atualizar `scripts/purge_orphan_attachments.py` no MESMO passo.** Ele
+2. 🔴 **Função nova/recriada em `analytics` exige `GRANT` para `authenticated` E `REVOKE EXECUTE
+   FROM PUBLIC, anon` — os DOIS, explícitos.** Medido na Onda 1: as 4 funções recriadas pela
+   migration 104 nasceram **executáveis por `anon`** (chamáveis com a anon key pública, sem login),
+   porque o PostgreSQL concede EXECUTE a PUBLIC por default e o `ALTER DEFAULT PRIVILEGES` da
+   migration 098 **não deixou registro persistente** (`pg_default_acl` vazio). As funções antigas só
+   estavam protegidas pelo REVOKE explícito da 098. **Não confiar no default privilege.**
+3. 🔴 **A Onda 3 exige atualizar `scripts/purge_orphan_attachments.py` no MESMO passo.** Ele
    considera órfão todo objeto não referenciado por `financial_account_attachment.storage_key` ou
    `financial_account_control.source_file` — **não conhece `fiscal_document`** e apagaria os PDFs
    fiscais recém-registrados, de forma irreversível e sem sinal de erro. **A purga já levou 67%
