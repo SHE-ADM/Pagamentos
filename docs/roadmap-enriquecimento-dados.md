@@ -339,7 +339,7 @@ o CT-e estiver implementado — muda apenas a leitura de 2 dígitos.
 | 3.4 | 🔴 **Atualizar `scripts/purge_orphan_attachments.py`** para preservar objeto referenciado por `fiscal_document` | — |
 | 3.5 | Backfill dos documentos cujo PDF ainda existe no bucket | — |
 | 3.6 | Tool `documentos_fiscais(...)` | 108 |
-| 3.7 | 📦 **Deploy em produção** — `read_emails.py` + `purge_orphan_attachments.py` + `check_deploy_parity.py --update` no mesmo commit | — |
+| 3.7 | ✅ **Deploy em produção (01/08, verificado 27/27)** — `fiscal_key.py` (novo) + `extract_pdf.py` + `read_emails.py`, os **três juntos**, **mais o `deploy-manifest.json`**; `--update` no mesmo commit | — |
 
 #### ⚠️ 3.4 é BLOQUEADOR — sem ele a purga destrói o trabalho desta onda
 
@@ -349,8 +349,16 @@ Ele **não conhece** `fiscal_document`. Rodado após esta onda, apagaria exatame
 NF-e recém-registrados — de forma **irreversível**, reportando "órfãos removidos" com naturalidade,
 sem nenhum sinal de erro.
 
-O item 3.4 **precisa entrar junto da 3.1**, não depois. É arquivo de deploy (`scripts/`), portanto
-exige `check_deploy_parity.py --update` no mesmo commit.
+O item 3.4 **precisa entrar junto da 3.1**, não depois.
+
+> ✏️ **Corrigido em 2026-08-01 (execução, achado O9):** este parágrafo dizia que o 3.4 "é arquivo de
+> deploy (`scripts/`), portanto exige `--update`". **Não é** — `DEPLOY_GLOBS` cobre
+> `skills/*/scripts/*.py` e `scheduler/*.ps1`; `scripts/` fica de fora, e a purga roda da máquina de
+> desenvolvimento. Quem exigiu `--update` foi o **`fiscal_key.py`** (arquivo NOVO em `skills/`), e
+> com ele entraram no manifesto também o `extract_pdf.py` (reexport) e o `read_emails.py` — os
+> **três** do item 3.7. Ver o bloco DEPLOY 2026-08-01 do `CLAUDE.md`: copiar o `extract_pdf.py` sem
+> o `fiscal_key.py` derruba **toda** a extração de PDF (`ModuleNotFoundError`, verificado por
+> mutante).
 
 #### ⚠️ O backfill alcança bem menos do que os 172 CT-e
 
@@ -726,7 +734,7 @@ banco real**. O documento foi escrito olhando as 42 colunas da tabela; o chat v�
 |---|---|---|---|---|
 | 1 — Destravar colunas existentes | ✅ **concluída** | **103, 104** | 2026-07-31 | 7 itens; 3 achados na execução (abaixo) |
 | 2 — Corpo de e-mail | ✅ **concluída** | **105, 106** | 2026-07-31 | escopo A; 8ª tool; **deploy do reader APLICADO e verificado em prod** |
-| 3 — Fiscais camada 1 (chave: CT-e/NF-e/CF-e) | ⬜ não iniciada | — | — | — |
+| 3 — Fiscais camada 1 (chave: CT-e/NF-e/CF-e) | ✅ **concluída** | **107, 108** | 2026-08-01 | 9ª tool; **72 PDFs fiscais salvos da próxima purga**; **deploy APLICADO e verificado em prod (27/27)** |
 | **4 — Varredura histórica (passada única)** | ⬜ não iniciada | — | — | requer Ondas 2 e 3 |
 | 5 — Fiscais camada 2 (itens de NF-e via LLM) | ⬜ não iniciada | — | — | requer Onda 3 |
 | 6 — Campos derivados | ⬜ não iniciada | — | — | — |
@@ -873,6 +881,75 @@ deploy são alvo da **Onda 4**.
 
 ---
 
+### 7.3 Onda 3 — o que a execução ensinou (2026-08-01)
+
+> ✏️ **Fechamento revisado em 2026-08-01 (code review adversarial):** os números abaixo são os do
+> fim da implementação. O review posterior encontrou **1 bloqueante confirmado** — `_rest()` sem
+> paginação, que corrompeu a proveniência de **68 dos 172** documentos (40%) e os tornava invisíveis
+> a qualquer pergunta com recorte de data — mais 3 recomendados. Todos corrigidos, os 68 registros
+> **reparados** (`--fix-provenance`) e os invariantes travados por teste: **843 pytest** (+8).
+> Detalhe completo em `docs/review/2026-08-01-Features-max.md`. **Lição que generaliza:** consulta
+> REST cujo resultado vira dado gravado precisa **paginar** — o corte do Supabase vem com HTTP 200,
+> sem erro e sem sinal, e o backfill "concluído com sucesso" não é evidência de dado correto.
+
+**Baseline:** 791 pytest · 1.208 Node. **Depois:** **835 pytest** (+44) · **1.213 Node** (+5) ·
+lint/typecheck/prune limpos · vulture sem achado no código novo.
+
+**Entregue:** migrations 107 e 108 · `fiscal_document` (append-only, RLS por remetente) ·
+`fiscal_key.py` (parser determinístico, stdlib) · gancho no Passo 1 do reader · purga preservando
+documento fiscal · backfill de **172 documentos** (92 NF-e + 80 CT-e) · **9ª tool
+`documentos_fiscais`** · 17ª sugestão e 6º tema no painel.
+
+**O número que justifica a onda:** **72 PDFs fiscais** que a próxima execução da purga teria
+apagado agora estão preservados (órfãos no bucket: 150 → 78). Não era risco teórico — a purga de
+15/07 já havia levado 67% dos CT-e.
+
+**Quatro achados durante a execução:**
+
+| # | Achado | Como foi pego |
+|---|---|---|
+| 🔴 **O6** | **O DV sozinho nunca foi suficiente.** Uma sequência de 44 dígitos dentro de um "Boleto de Aluguel" passou em UF (41), mês (09), modelo (59) e DV — e virou uma CF-e **de setembro de 1991**. Sequência aleatória fecha o módulo 11 com probabilidade ~1/11; as camadas precisam ser *independentes*. Foi acrescentada a 5ª: ano na janela [2006, corrente+1], já que nenhum documento fiscal eletrônico existe antes da NF-e (2006) | **Olhar o dado depois de gravar** — `min(issue_yearmonth)` saiu `9109` entre 172 linhas todas em 2604–2607. Nenhum teste apontaria: o parser fazia exatamente o que estava escrito |
+| ⚠️ **O7** | **`barcode_dv_refuted` (FEBRABAN) NÃO serve para chave de acesso** e o erro seria silencioso: o DV do boleto fica na posição 4 com resto→1; o da SEFAZ, na 43 com resto→0. Reusá-la devolveria veredito plausível e errado. Daí `fiscal_key.py` ser módulo próprio, e não mais uma função no `febraban.py` | Leitura do código antes de reusar — a própria docstring da função já dizia que ela devolve `False` ("não há o que refutar") para chave de acesso |
+| ⚠️ **O8** | **Idempotência que reporta "gravado" para duplicata é uma mentira operacional.** `ignore-duplicates` sem `return=representation` devolve 201 mesmo sem inserir, então o log de produção — a via pela qual se confere se a onda funciona — diria "registrado" no reprocessamento inteiro | Rodar a MESMA verificação duas vezes e conferir se o número mudava |
+| 🟡 **O9** | O item 3.4 do plano dizia que `purge_orphan_attachments.py` "é arquivo de deploy e exige `--update`". **Não é** — `DEPLOY_GLOBS` cobre `skills/*/scripts/*.py` e `scheduler/*.ps1`, não `scripts/`. Quem exigiu `--update` foi o `fiscal_key.py` (arquivo NOVO em `skills/`), exatamente a lição do `febraban.py` | Ler o `DEPLOY_GLOBS` em vez de confiar no plano |
+
+**Validação por oráculo EXTERNO (o que deu confiança no parser):** os campos decompostos batem
+com o nome do arquivo original, que foi escrito pelo emissor e não pelo nosso código —
+`Envio_Nf-e_No19016` → `doc_number` 19016; `CT-e_Autorizado_614177` → 614177;
+`CT-e - Numero 1898003 serie 0` → número 1898003, série 0. Três emissores diferentes.
+
+**Ganho não previsto:** o DACTE referencia a **NF-e da mercadoria transportada**, então a varredura
+capturou 92 NF-e além dos 80 CT-e — inclusive NF-e emitidas pela própria OTIMOTEX
+(CNPJ 47273917000123), que documentam o que saiu. Nada disso existia em nenhuma tabela.
+
+**Duas consequências a registrar (não são defeitos):**
+
+- **Grupo restrito vê ZERO documentos fiscais.** A policy da 107 reusa o recorte da 078 (por
+  remetente), e quem envia CT-e é a transportadora — nenhum usuário do Comercial é remetente.
+  Verificado com o papel real: ester **0**, barbara **172**. Mudar isso é decisão de política de
+  acesso, não ajuste técnico.
+- **PDF cifrado não entrega chave.** `_pdf_text` roda ANTES do `run_extraction`, que é quem
+  descriptografa (boletos OBER/Amil). Não é regressão — antes não se capturava nada —, mas é o
+  caso que a Onda 5 ou uma passada dedicada pode recuperar.
+
+**Lição do DEPLOY (vale para toda onda com arquivo Python novo):** a lista de cópia não são "os
+arquivos que a feature precisa" — são **os que MUDARAM**, e o `deploy-manifest.json` **vai junto**.
+Ele é a régua, e o `check_deploy_parity.py` lê a régua **do diretório dele em produção**, não a do
+repositório. Copiando só os `.py`, o veredito fica **enganoso ao contrário**: os arquivos novos
+aparecem como `DIVERGENTE` (não batem o hash antigo) e o arquivo novo vira `EXTRA` — a saída acusa
+"PRODUÇÃO DESATUALIZADA" com os arquivos **já corretos**. Foi o que aconteceu: `24/26 conferem`
+enquanto o `read_emails.py` respondia `True True 4`. **Sintoma diagnóstico:** produção não cria
+arquivo, então `EXTRA` casando `DEPLOY_GLOBS` **significa manifesto obsoleto**. Conferir o
+SHA-256 do manifesto copiado antes de rodar o verificador separa "arquivo errado" de "problema
+noutro lugar". Fechamento: **27/27, `exit=0`**.
+
+**Custo assumido:** `_pdf_text` passou a ler o texto de TODO anexo (antes a leitura era pulada
+quando remetente/assunto já haviam decidido a regra LEBIANCO). É uma segunda passada de pdfplumber
+por PDF, na casa de centenas de ms — irrelevante perto do IMAP e da Claude API, e é o preço de a
+chave fiscal não depender da regra de outra feature.
+
+---
+
 ## 8. Guardrails (valem em toda onda)
 
 1. **Coluna que depende do tempo não vira coluna** — vira view/função *(lição da migration 095: 123
@@ -882,6 +959,10 @@ deploy são alvo da **Onda 4**.
    funções nasceram chamáveis com a anon key; o `ALTER DEFAULT PRIVILEGES` da 098 não persiste)*.
 3. **Tabela nova** → RLS + `REVOKE` de escrita de `authenticated`; o default do Supabase é
    permissivo *(lição 056/057/079/081)*.
+3b. **Validação de identificador precisa de camadas INDEPENDENTES, e o DV não é uma delas
+   sozinho** *(lição O6 da Onda 3)*: sequência aleatória fecha módulo 11 em ~1/11 dos casos. Some
+   domínio (modelo/UF) + plausibilidade temporal. E **olhe o dado depois de gravar** — o falso
+   positivo apareceu num `min()`/`max()` trivial, não em teste.
 4. **Teste nunca assere número absoluto** — oráculo diferencial ou janela histórica fechada.
 4b. **Teste que promete garantia tem de entregá-la** *(lição O9–O11 da Onda 2)*. Se o nome ou o
    comentário diz "ANTES de", "alinhado com X" ou "cabe no limite de Y", a asserção precisa
