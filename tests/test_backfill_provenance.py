@@ -293,7 +293,12 @@ class MainDoBackfillTest(unittest.TestCase):
             gravados.append((doc["access_key"], storage_key, email.get("message_id")))
             return True
 
-        with patch.object(BF, "_storage_list", lambda: objetos), \
+        # BASE/KEY vêm do `.env` no import — que NAO existe no CI, e ali `main()` sai com 1 antes
+        # de qualquer coisa. Fixa-los aqui e o que torna o teste independente do ambiente; sem
+        # isso ele passa na maquina de quem tem `.env` e falha no runner, que foi o que ocorreu.
+        with patch.object(BF, "BASE", "http://fake"), \
+             patch.object(BF, "KEY", "chave-de-teste"), \
+             patch.object(BF, "_storage_list", lambda: objetos), \
              patch.object(BF, "_storage_get", lambda n: b"%PDF"), \
              patch.object(BF, "_pdf_text", lambda _d: textos.pop(0) if textos else ""), \
              patch.object(BF, "_rest", fake_rest), \
@@ -341,11 +346,18 @@ class MainDoBackfillTest(unittest.TestCase):
         def cai(nome):
             raise OSError("bucket fora do ar")
 
-        with patch.object(BF, "_storage_list", lambda: ["a.pdf"]), \
+        with patch.object(BF, "BASE", "http://fake"), \
+             patch.object(BF, "KEY", "chave-de-teste"), \
+             patch.object(BF, "_storage_list", lambda: ["a.pdf"]), \
              patch.object(BF, "_storage_get", cai), \
              patch.object(BF, "_rest", lambda p, order="id": []), \
              patch.object(sys, "argv", ["prog"]):
             self.assertEqual(BF.main(), 0)
+
+    def test_sem_credencial_o_run_termina_em_ERRO(self):
+        """O guard que causou a falha no CI — agora é asserção, não acidente."""
+        with patch.object(BF, "BASE", None), patch.object(sys, "argv", ["prog"]):
+            self.assertEqual(BF.main(), 1)
 
 
 class SupabaseRestPortasTest(unittest.TestCase):
