@@ -148,10 +148,20 @@ def _emissao_plausivel(email: dict, doc: dict) -> bool:
 def _match_email(name: str, idx: dict, doc: "dict | None" = None) -> dict:
     """E-mail de origem do objeto `name`, ou `{}`.
 
-    Com `doc`, a plausibilidade (`_emissao_plausivel`) DESEMPATA prefixo ambiguo e rejeita
-    candidato incoerente — sem `doc`, mantem o comportamento historico de pegar o primeiro.
-    Devolver `{}` e melhor que devolver um palpite: proveniencia errada e pior que ausente,
-    porque parece correta.
+    Com `doc`, a plausibilidade (`_emissao_plausivel`) REJEITA casamento incoerente. Sem `doc`,
+    mantem o comportamento historico de pegar o primeiro. Devolver `{}` e melhor que devolver um
+    palpite: proveniencia errada e pior que ausente, porque parece correta.
+
+    ⚠️ O ORACULO REJEITA, NAO DESEMPATA — e a distincao nao e teorica (achado do teste
+    comportamental, 2026-08-01). Candidatos do MESMO prefixo tem sempre a MESMA DATA, porque o
+    prefixo termina em `YYYYMMDD`; e `_emissao_plausivel` julga em granularidade de MES. Logo, ou
+    todos os candidatos de uma colisao sao plausiveis, ou nenhum e — nunca "um sim e outro nao".
+    Entre plausiveis empatados fica o mais antigo, que e o comportamento historico.
+
+    O que o oraculo ENTREGA, entao: impede atribuir a um documento de julho o e-mail de um lote
+    de janeiro so porque o nome do objeto casou o prefixo. O que ele NAO resolve: escolher entre
+    dois e-mails do mesmo dia, mesmo remetente e assunto truncado igual — para isso seria preciso
+    um discriminador que o nome flat do objeto nao carrega.
     """
     for prefix, candidatos in idx.items():
         if not name.startswith(prefix):
@@ -159,12 +169,8 @@ def _match_email(name: str, idx: dict, doc: "dict | None" = None) -> dict:
         if doc is None:
             return candidatos[0]
         plausiveis = [e for e in candidatos if _emissao_plausivel(e, doc)]
-        if len(plausiveis) == 1:
-            return plausiveis[0]
         if not plausiveis:
             return {}                      # todos incoerentes: nao atribui
-        # Ainda ambiguo (varios plausiveis): o mais proximo da emissao e o melhor palpite, e
-        # todos sao do mesmo dia por construcao do prefixo.
         return min(plausiveis, key=lambda e: e.get("received_at") or "")
     return {}
 
