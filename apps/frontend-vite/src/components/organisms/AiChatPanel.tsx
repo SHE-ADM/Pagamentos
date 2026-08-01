@@ -99,6 +99,12 @@ const SUGGESTION_GROUPS: ReadonlyArray<{ theme: string; questions: readonly stri
     theme: 'E-mails recebidos',
     questions: ['Em quais e-mails falaram sobre reajuste?'],
   },
+  {
+    // Onda 3: documento fiscal (CT-e/NF-e) NÃO é conta a pagar e não tem valor — o frete já entra
+    // como boleto. A pergunta é sobre o que foi EMITIDO/recebido, nunca sobre quanto se gastou.
+    theme: 'Documentos fiscais',
+    questions: ['Quantos CT-e recebemos neste mês, e de quais transportadoras?'],
+  },
 ];
 
 export default function AiChatPanel({

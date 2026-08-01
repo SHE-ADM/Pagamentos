@@ -83,6 +83,12 @@ _FEBRABAN = None
 # Aviso unico por processo quando a canonica de barcode nao esta disponivel.
 _CANONICAL_BARCODE_WARNED = False
 
+# Idem para o parser de chave de acesso fiscal (Onda 3). Mesmo mecanismo, MESMO motivo:
+# `fiscal_key` e um arquivo NOVO, entao um deploy que copie so o read_emails.py o deixa para
+# tras — e a degradacao (nenhum documento fiscal registrado) seria silenciosa sem o aviso.
+_FISCAL_KEY = None
+_FISCAL_KEY_WARNED = False
+
 
 def _febraban():
     """Modulo `febraban` (codigo de barras / linha digitavel) — fonte UNICA das regras.
@@ -100,6 +106,29 @@ def _febraban():
         except Exception:
             _FEBRABAN = False
     return _FEBRABAN or None
+
+
+def _fiscal_key():
+    """Modulo `fiscal_key` (chave de acesso SEFAZ), ou None AVISANDO UMA VEZ.
+
+    Sem fallback local de proposito, ao contrario do `_body_barcode`: validar chave de acesso
+    exige o DV, e um fallback "so pelo comprimento" registraria lixo como documento fiscal —
+    medido no banco, 7 de 8 codigos de 44 digitos que nao sao boleto NAO sao chave. Melhor
+    nao registrar nada e dizer isso no log."""
+    global _FISCAL_KEY, _FISCAL_KEY_WARNED  # noqa: PLW0603 — cache/aviso por processo
+    if _FISCAL_KEY is None:
+        try:
+            if str(EXTRACT_SCRIPT.parent) not in sys.path:
+                sys.path.insert(0, str(EXTRACT_SCRIPT.parent))
+            import fiscal_key
+            _FISCAL_KEY = fiscal_key
+        except Exception:
+            _FISCAL_KEY = False
+    if not _FISCAL_KEY and not _FISCAL_KEY_WARNED:
+        _FISCAL_KEY_WARNED = True
+        log.warning("  [FISCAL] modulo 'fiscal_key' indisponivel — documento fiscal NAO sera "
+                    "registrado. Deploy parcial (falta fiscal_key.py)?")
+    return _FISCAL_KEY or None
 
 
 def _febraban_fn(name: str):
@@ -642,6 +671,65 @@ class SupabaseControl:
             return False
         except Exception as e:
             log.warning(f"Falha ao registrar anexo {file_name}: {e}")
+            return False
+
+    def register_fiscal_document(self, doc: dict, storage_key: str | None = None,
+                                 ctx: dict | None = None) -> bool:
+        """Registra um documento fiscal identificado pela chave de acesso (migration 107).
+
+        `doc` e o dict devolvido por `fiscal_key.parse_access_key` — ja validado (UF, mes,
+        modelo e DV). Aqui nao se valida de novo: duplicar a regra criaria duas fontes de
+        verdade que divergem no primeiro modelo novo.
+
+        Idempotente por `on_conflict=access_key` + `ignore-duplicates`: a mesma chave chegando
+        de novo (reenvio, encaminhamento, reprocessamento) e o MESMO documento.
+
+        Devolve True SO quando a linha foi de fato INSERIDA — por isso o
+        `return=representation`, que faz a duplicata voltar como lista vazia. Sem ele o
+        metodo diria "registrado" tambem para o que ja existia, e o log em producao (a via
+        pela qual se confere se a onda esta funcionando) mentiria no reprocessamento.
+
+        NAO-FATAL, igual ao `register_attachment`: nao altera o status do e-mail, nao cria
+        conta e engole a propria falha. Documento fiscal e PROVENIENCIA — perde-lo e ruim,
+        mas derrubar a extracao financeira por causa dele seria pior.
+        """
+        if not self._available:
+            return False
+        ctx = ctx or {}
+        payload = {
+            "access_key":      doc["access_key"],
+            "model":           doc["model"],
+            "uf_code":         doc["uf_code"],
+            "issue_yearmonth": doc["issue_yearmonth"],
+            "emitter_cnpj":    doc["emitter_cnpj"],
+            "series":          doc["series"],
+            "doc_number":      doc["doc_number"],
+            "storage_key":     storage_key,
+            # Proveniencia: de qual e-mail veio. Sem FK de proposito (o registro e append-only
+            # e nao-fatal; uma FK faria limpeza de e-mail abortar por causa dele).
+            "gmail_message_id": ctx.get("message_id"),
+            "sender_email":     ctx.get("sender_email"),
+            "subject":          ctx.get("subject"),
+            "received_at":      ctx.get("received_at"),
+        }
+        try:
+            req = urllib.request.Request(
+                f"{self.base}/rest/v1/fiscal_document?on_conflict=access_key&select=id",
+                data=json.dumps(payload).encode(),
+                headers={**self.headers,
+                         "Prefer": "resolution=ignore-duplicates,return=representation"},
+                method="POST",
+            )
+            with urllib.request.urlopen(req, timeout=10) as r:
+                # Lista vazia = a chave ja existia (o INSERT virou no-op). Nao e erro.
+                return bool(json.loads(r.read() or b"[]"))
+        except urllib.error.HTTPError as e:
+            body = e.read().decode(errors="replace")
+            log.warning(f"Falha ao registrar documento fiscal {doc.get('access_key')}: "
+                        f"{e.code} {body[:150]}")
+            return False
+        except Exception as e:
+            log.warning(f"Falha ao registrar documento fiscal {doc.get('access_key')}: {e}")
             return False
 
     def find_financial_duplicate(self, payload: dict) -> dict | None:
@@ -2737,22 +2825,56 @@ def _subject_has_lebianco(subject: "str | None") -> bool:
     return LEBIANCO_TERM in norm or LEBIANCO_SUBJECT_TERM in norm
 
 
-def _pdf_mentions_lebianco(pdf_path) -> bool:
-    """True se o TEXTO do PDF anexado menciona "lebianco" — cobre o "anexo do email".
+def _pdf_text(pdf_path) -> str:
+    """Texto CRU do PDF anexado, ou "" — lido UMA vez e servido a dois consumidores.
 
-    O texto cru do PDF nao chega ao payload (o CSV so traz description/source_file), entao a
-    leitura acontece aqui. BEST-EFFORT: qualquer falha (PDF cifrado, imagem, pdfplumber
-    indisponivel) devolve False sem levantar — a regra NUNCA pode bloquear a gravacao da conta.
+    O texto do PDF nao chega ao payload (o CSV so traz description/source_file), entao quem
+    precisa dele le aqui: a regra LEBIANCO (`_has_lebianco_reference`) e o registro de
+    documento fiscal da Onda 3 (`_register_fiscal_documents`). Antes disto a leitura era
+    exclusiva da regra LEBIANCO, que abortava na primeira pagina com "lebianco" e descartava
+    o resto — a chave de acesso precisa do texto de TODO anexo, entao a leitura passou a ser
+    unica e completa.
+
+    BEST-EFFORT: qualquer falha (PDF cifrado sem senha, imagem, pdfplumber indisponivel)
+    devolve "" sem levantar — nenhuma destas regras pode bloquear a gravacao da conta.
     """
     try:
         import pdfplumber  # import lazy — so quando ha PDF a inspecionar
         with pdfplumber.open(str(pdf_path)) as pdf:
-            for page in pdf.pages:
-                if _has_lebianco_reference(page.extract_text() or ""):
-                    return True
+            return "\n".join((page.extract_text() or "") for page in pdf.pages)
     except Exception as e:  # noqa: BLE001 — best-effort por design
-        log.debug(f"Regra LEBIANCO: nao foi possivel ler o texto de {pdf_path}: {e}")
-    return False
+        log.debug(f"Nao foi possivel ler o texto de {pdf_path}: {e}")
+    return ""
+
+
+def _register_fiscal_documents(ctrl, pdf_text: str, storage_key: str,
+                               ctx: dict | None = None) -> int:
+    """Registra em `fiscal_document` toda chave de acesso valida do texto (Onda 3).
+
+    Devolve quantas foram INSERIDAS (duplicata nao conta) — usado so por log/teste; nenhum
+    caller decide nada com isso, porque este registro NAO PODE influenciar o destino da conta.
+    A regra de negocio fica intacta: CT-e/NF-e sem boleto continua sem gerar conta a pagar; o
+    que muda e que o documento deixa de ser esquecido.
+
+    NAO-FATAL por completo (o try envolve ate a varredura): um PDF fiscal mal formado nao
+    pode derrubar a extracao financeira do e-mail.
+    """
+    if not (pdf_text and storage_key):
+        return 0
+    mod = _fiscal_key()
+    if mod is None:
+        return 0
+    gravados = 0
+    try:
+        for chave in mod.extract_access_keys(pdf_text):
+            doc = mod.parse_access_key(chave)
+            if doc and ctrl.register_fiscal_document(doc, storage_key, ctx):
+                gravados += 1
+                log.info(f"    [FISCAL] {doc['model_name'].upper()} {doc['doc_number']} "
+                         f"(serie {doc['series']}) do CNPJ {doc['emitter_cnpj']} registrado")
+    except Exception as e:  # noqa: BLE001 — best-effort por design
+        log.warning(f"    [FISCAL] falha ao registrar documento de {storage_key}: {e}")
+    return gravados
 
 
 def resolve_sk_company(subject=None, body_text=None, sender_email=None, description=None,
@@ -4428,13 +4550,29 @@ def extract_and_store_accounts(saved_pdfs: list, message_id: str,
         except OSError:
             attachment_sizes[pdf_path.name] = 0
 
-        if not pdf_lebianco and _pdf_mentions_lebianco(pdf_path):
-            pdf_lebianco = True   # curto-circuito: nao varre os demais anexos
+        # Texto CRU do anexo, lido UMA vez e servido a dois consumidores independentes: a
+        # regra LEBIANCO (abaixo) e o registro de documento fiscal (Onda 3). A leitura antes
+        # era exclusiva da LEBIANCO e era PULADA quando remetente/assunto/corpo ja tinham
+        # decidido; agora e sempre feita, porque a chave de acesso precisa do texto de TODO
+        # anexo. Best-effort: "" quando o PDF e imagem, e cifrado ou o pdfplumber falha.
+        pdf_raw_text = _pdf_text(pdf_path)
+
+        if not pdf_lebianco and _has_lebianco_reference(pdf_raw_text):
+            pdf_lebianco = True   # curto-circuito da FLAG (a leitura acima ja aconteceu)
 
         # Publica o PDF no Storage SEMPRE (antes da extracao) — assim o anexo fica
         # disponivel para revisao manual mesmo quando a extracao falha por completo.
         # Nao-fatal: se o upload falhar, a extracao segue normalmente.
         ctrl.upload_attachment(pdf_path)
+
+        # ONDA 3 — documento fiscal (CT-e/NF-e/CF-e/NFC-e) pela chave de acesso.
+        # AQUI, no Passo 1, e nao nos 7 pontos de `skipped_nonpayable` do Passo 2: e um ponto
+        # UNICO, cobre o documento mesmo quando a linha VIRA conta (o boleto de transporte que
+        # traz junto a chave do CT-e, hoje perdida) e nao depende da regra de negocio, que pode
+        # mudar sem que o registro fiscal deixe de ser desejavel.
+        # ANTES do run_extraction de proposito: assim a chave e capturada mesmo quando a
+        # extracao falha por indisponibilidade da Claude API.
+        _register_fiscal_documents(ctrl, pdf_raw_text, pdf_path.name, err_ctx)
 
         csv_path, extract_err = run_extraction(pdf_path, pdf_passwords)
         if not csv_path:

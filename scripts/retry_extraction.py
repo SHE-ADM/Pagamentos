@@ -75,7 +75,10 @@ def fetch_pending(ctrl: SupabaseControl) -> list:
         req = urllib.request.Request(
             f"{ctrl.base}/rest/v1/email_control"
             "?pdf_extracted=eq.false&attachment_saved=eq.true"
-            "&select=id,message_id,subject,attachment_names",
+            # sender_email/received_at NAO sao para o log: vao no email_ctx e acabam em
+            # fiscal_document (Onda 3). Sem eles a linha nasce sem remetente (invisivel a
+            # grupo restrito) e sem data (fora de QUALQUER consulta com recorte temporal).
+            "&select=id,message_id,subject,sender_email,received_at,attachment_names",
             headers=ctrl.headers,
         )
         with urllib.request.urlopen(req, timeout=10) as r:
@@ -292,7 +295,15 @@ def main():
             skipped += 1
             continue
 
-        email_ctx = {"message_id": msg_id, "subject": subject}
+        # `subject` (acima) e cortado em 60 chars para caber no log — aqui vai o valor INTEIRO,
+        # porque este dict vira dado gravado (financial_account_control.subject e, desde a Onda
+        # 3, fiscal_document.subject), nao texto de console.
+        email_ctx = {
+            "message_id":   msg_id,
+            "subject":      rec.get("subject"),
+            "sender_email": rec.get("sender_email"),
+            "received_at":  rec.get("received_at"),
+        }
         csvs_ok, accounts_saved, _nonpayable, _att_account = extract_and_store_accounts(
             pdfs, msg_id, ctrl, email_rec=email_ctx
         )

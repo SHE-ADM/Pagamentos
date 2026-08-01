@@ -383,6 +383,15 @@ from febraban import (  # noqa: F401 — reexport intencional
     is_boleto_barcode, normalize_barcode, normalize_barcode_allow_misread,
 )
 
+# Chave de acesso SEFAZ (NF-e/CT-e/CF-e/NFC-e): mesmo padrao do `febraban` — modulo sem
+# dependencias, reexportado aqui. NAO confundir os dois DVs: o do boleto fica na posicao 4
+# (resto => 1) e o da SEFAZ na 43 (resto => 0); trocar um pelo outro devolve veredito
+# plausivel e errado, sem levantar erro.
+from fiscal_key import (  # noqa: F401 — reexport intencional
+    ACCESS_KEY_LEN, FISCAL_MODELS, access_key_dv_ok, extract_access_keys,
+    parse_access_key,
+)
+
 
 
 

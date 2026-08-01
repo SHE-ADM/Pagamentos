@@ -304,10 +304,20 @@ class ApplySkCompanyTest(unittest.TestCase):
         self.assertEqual(payload["sk_company"], OTIMOTEX)
 
 
-class PdfMentionsLebiancoTest(unittest.TestCase):
+class PdfTextTest(unittest.TestCase):
+    """`_pdf_text` substituiu `_pdf_mentions_lebianco` na Onda 3.
+
+    O texto do anexo passou a ter DOIS consumidores (regra LEBIANCO e registro de documento
+    fiscal), entao a leitura virou unica e a decisao de lebianco passa a ser
+    `_has_lebianco_reference(texto)`. A garantia que NAO pode mudar e a mesma: best-effort —
+    falha na leitura nunca derruba a gravacao da conta.
+    """
+
     def test_arquivo_inexistente_nao_levanta(self):
-        # Best-effort: qualquer falha devolve False sem quebrar a gravacao da conta.
-        self.assertFalse(R._pdf_mentions_lebianco(Path("nao_existe_xyz.pdf")))
+        self.assertEqual(R._pdf_text(Path("nao_existe_xyz.pdf")), "")
+
+    def test_texto_ilegivel_nao_marca_lebianco(self):
+        self.assertFalse(R._has_lebianco_reference(R._pdf_text(Path("nao_existe_xyz.pdf"))))
 
 
 if __name__ == "__main__":

@@ -185,6 +185,17 @@ completo só passou a ser guardado em 31/07/2026, os e-mails anteriores podem te
 diga que não encontrou **nos e-mails com corpo disponível** — nunca afirme que o assunto nunca foi
 mencionado.
 
+**Documentos fiscais** (\`documentos_fiscais\`): CT-e (frete), NF-e (mercadoria), CF-e e NFC-e
+recebidos por e-mail, identificados pela chave de acesso de 44 dígitos.
+
+🔴 **Documento fiscal NUNCA é despesa e NUNCA soma com contas a pagar.** O frete já entra no
+sistema como BOLETO e a NF-e é a origem da mercadoria, não a obrigação de pagamento — somar os
+dois duplicaria o gasto. Esses documentos respondem "o que foi emitido/recebido", jamais "quanto
+foi gasto". Por isso a ferramenta não devolve valor algum.
+Para contar, use a coluna \`total_encontrado\` (a contagem real do filtro, antes do limite), nunca
+o número de linhas devolvidas. A cobertura é parcial: só o que chegou por e-mail e ainda tinha o
+PDF guardado.
+
 **Origem da extração** (extraction_source): pdf_text vem do texto nativo do PDF (confiável);
 pdf_vision e image_vision vêm de leitura visual (OCR) e podem conter erro de leitura; email_body
 foi extraído do corpo do e-mail. Quando um número específico vier de OCR e a pergunta depender

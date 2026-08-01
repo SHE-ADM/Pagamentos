@@ -123,6 +123,13 @@ const PERGUNTAS: ReadonlyArray<{ pergunta: string; tool: ToolName; params: Recor
     tool: 'buscar_emails',
     params: { termo: 'reajuste' },
   },
+
+  // ---- Documentos fiscais (Onda 3) ----
+  {
+    pergunta: 'Quantos CT-e recebemos neste mês, e de quais transportadoras?',
+    tool: 'documentos_fiscais',
+    params: { tipo: ['cte'], date_from: '2026-07-01', date_to: '2026-07-31' },
+  },
 ];
 
 describe('bateria de regressão — perguntas sugeridas no painel', () => {
@@ -190,5 +197,9 @@ describe('bateria de regressão — perguntas sugeridas no painel', () => {
 
   it('cobre a busca em e-mails (capacidade nova da Onda 2)', () => {
     expect(PERGUNTAS.map((p) => p.tool)).toContain('buscar_emails');
+  });
+
+  it('cobre os documentos fiscais (capacidade nova da Onda 3)', () => {
+    expect(PERGUNTAS.map((p) => p.tool)).toContain('documentos_fiscais');
   });
 });
