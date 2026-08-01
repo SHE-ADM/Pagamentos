@@ -4,7 +4,7 @@ import { TOOL_DEFINITIONS, isToolName, parseToolInput, runTool, ANALYTICS_SCHEMA
 describe('TOOL_DEFINITIONS', () => {
   // A lista é travada de propósito: acrescentar tool muda a DEFINIÇÃO enviada ao modelo, o que
   // invalida os três níveis de prompt cache (tools + system + messages). Tem de ser deliberado.
-  it('expõe exatamente as 8 tools (098 · demonstrativo da 104 · buscar_emails da 106)', () => {
+  it('expõe exatamente as 9 tools (098 · 104 · 106 · documentos_fiscais da 108)', () => {
     expect(TOOL_DEFINITIONS.map((t) => t.name)).toEqual([
       'resumo_situacao',
       'gasto_por_periodo',
@@ -14,6 +14,7 @@ describe('TOOL_DEFINITIONS', () => {
       'aging_vencidos',
       'listar_contas',
       'buscar_emails',
+      'documentos_fiscais',
     ]);
   });
 
@@ -183,6 +184,25 @@ describe('parseToolInput', () => {
     const base = { date_from: '2026-07-01', date_to: '2026-07-31', group_by: 'grupo' };
     expect(parseToolInput('gasto_por_classificacao', { ...base, nature_ids: [99_999] }).ok).toBe(false);
     expect(parseToolInput('gasto_por_classificacao', { ...base, nature_ids: [2, 8] }).ok).toBe(true);
+  });
+
+  // Onda 3. O domínio de tipo fiscal vive em DUAS camadas: o CASE do SQL (que devolve -1 para
+  // valor desconhecido, resultando em conjunto VAZIO) e este Zod. Sem a barreira aqui, "danfe"
+  // devolveria zero linhas e o modelo concluiria "não recebemos nenhum" — falso e silencioso.
+  it('rejeita tipo de documento fiscal fora do domínio, mas aceita os quatro modelos', () => {
+    expect(parseToolInput('documentos_fiscais', { tipo: ['danfe'] }).ok).toBe(false);
+    expect(parseToolInput('documentos_fiscais', { tipo: ['cte', 'nfe'] }).ok).toBe(true);
+    expect(parseToolInput('documentos_fiscais', { tipo: ['cfe', 'nfce'] }).ok).toBe(true);
+  });
+
+  it('documentos_fiscais aceita chamada sem filtro nenhum', () => {
+    const r = parseToolInput('documentos_fiscais', {});
+    expect(r.ok).toBe(true);
+  });
+
+  it('documentos_fiscais recusa numero não-inteiro (a chave não é o número)', () => {
+    expect(parseToolInput('documentos_fiscais', { numero: 'AB123' }).ok).toBe(false);
+    expect(parseToolInput('documentos_fiscais', { numero: 19016 }).ok).toBe(true);
   });
 
   it('nunca lança — parâmetro do modelo é fluxo normal, não exceção', () => {

@@ -1,6 +1,7 @@
 // lib/ai-chat/tools.ts
-// As 8 tools do chat de IA: definição enviada ao modelo + execução via RPC no schema `analytics`.
-// (6 da migration 098 · demonstrativo_despesas da 104 — Onda 1 · buscar_emails da 106 — Onda 2.)
+// As 9 tools do chat de IA: definição enviada ao modelo + execução via RPC no schema `analytics`.
+// (6 da migration 098 · demonstrativo_despesas da 104 — Onda 1 · buscar_emails da 106 — Onda 2 ·
+// documentos_fiscais da 108 — Onda 3.)
 //
 // POR QUE JSON SCHEMA CRU E NÃO ZOD (§17.7 do doc de arquitetura)
 // O §6 do documento já especifica os contratos em JSON Schema, que é exatamente o formato que a
@@ -40,6 +41,10 @@ const STATUS_NAMES = [
 const EMAIL_STATUS_NAMES = [
   'extraído', 'recebido', 'pendente', 'falha', 'ignorado', 'duplicidade',
 ] as const;
+// Modelos de documento fiscal (migration 107 — Onda 3). Os nomes viajam em minúsculas e o SQL
+// os traduz para o número do modelo (55/57/59/65). Valor fora deste domínio devolve VAZIO no
+// banco, nunca "todos" — mas o Zod já o barra antes, com mensagem que o modelo consegue corrigir.
+const FISCAL_DOC_TYPES = ['nfe', 'cte', 'cfe', 'nfce'] as const;
 const DATE_FIELDS = ['vencimento', 'pagamento', 'emissao'] as const;
 const GRANULARITIES = ['dia', 'semana', 'mes', 'trimestre'] as const;
 const CLASSIFICATION_DIMS = ['centro_custo', 'plano_contas', 'grupo', 'subgrupo', 'tipo'] as const;
@@ -133,6 +138,14 @@ const schemas = {
     sender: z.string().optional(),
     status: z.array(z.enum(EMAIL_STATUS_NAMES)).optional(),
     limit: z.number().int().min(1).max(50).optional(),
+  }),
+  documentos_fiscais: z.object({
+    tipo: z.array(z.enum(FISCAL_DOC_TYPES)).optional(),
+    emitente: z.string().optional(),
+    date_from: isoDate.optional(),
+    date_to: isoDate.optional(),
+    numero: z.number().int().min(1).optional(),
+    limit: z.number().int().min(1).max(100).optional(),
   }),
 } as const;
 
@@ -353,6 +366,41 @@ export const TOOL_DEFINITIONS: readonly ToolDefinition[] = [
         limit: { type: 'integer', maximum: 50, default: DEFAULT_LIMIT },
       },
       required: ['termo'],
+    },
+  },
+  {
+    name: 'documentos_fiscais',
+    description:
+      'Documentos fiscais eletrônicos RECEBIDOS por e-mail (CT-e de frete, NF-e de mercadoria, '
+      + 'CF-e, NFC-e), identificados pela chave de acesso de 44 dígitos. Responde "quantos CT-e '
+      + 'a transportadora X emitiu?", "recebi a NF-e número 19016?", "de quais emitentes vieram '
+      + 'conhecimentos de transporte em julho?". '
+      + '🔴 NÃO é conta a pagar e NÃO tem valor: o frete já entra no sistema como BOLETO e a NF-e '
+      + 'é a origem da mercadoria, não a obrigação de pagamento. NUNCA misture estes documentos '
+      + 'com gastos nem os apresente como despesa. '
+      + 'Cada linha traz total_encontrado com a contagem REAL do filtro (antes do limite) — use '
+      + 'esse número para contar, nunca o número de linhas devolvidas. '
+      + 'COBERTURA PARCIAL: só documentos cujo PDF chegou por e-mail e ainda estava no bucket; '
+      + 'não achar um documento não prova que ele não existiu.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        tipo: {
+          type: 'array',
+          items: { type: 'string', enum: FISCAL_DOC_TYPES },
+          description: 'cte → conhecimento de transporte · nfe → nota fiscal de mercadoria · '
+            + 'cfe → cupom fiscal eletrônico · nfce → NFC-e. Omitir traz todos.',
+        },
+        emitente: {
+          type: 'string',
+          description: 'CNPJ (com ou sem máscara) OU parte do nome do emitente, quando ele já '
+            + 'estiver cadastrado como fornecedor.',
+        },
+        date_from: { type: 'string', format: 'date' },
+        date_to: { type: 'string', format: 'date' },
+        numero: { type: 'integer', description: 'Número do documento (não a chave de acesso).' },
+        limit: limitProp(DEFAULT_LIMIT),
+      },
     },
   },
 ] as const;

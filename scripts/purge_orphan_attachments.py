@@ -8,7 +8,13 @@ espaco.
 
 ORFAO = objeto do bucket que NAO e referenciado por:
   - financial_account_attachment.storage_key  (o padrao unico, migration 079), NEM
-  - financial_account_control.source_file     (o anexo do e-mail sem linha registrada)
+  - financial_account_control.source_file     (o anexo do e-mail sem linha registrada), NEM
+  - fiscal_document.storage_key               (documento fiscal, migration 107 — Onda 3)
+
+A terceira fonte NAO e detalhe: CT-e/NF-e sem boleto e, por regra de negocio, o documento que
+NUNCA vira conta — logo nenhuma das duas primeiras o alcanca. Antes da Onda 3 esses PDFs eram
+apagados como orfaos (a purga de 15/07/2026 levou 67% dos CT-e); depois dela, o registro da
+chave de acesso e o que os preserva.
 
 PRESERVA (nao apaga) o objeto que ainda representa TRABALHO EM ABERTO:
   - e-mail em `pendente`  → o PDF aguarda reprocessamento (retry_extraction);
@@ -38,9 +44,11 @@ import os
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "skills" / "email-reader" / "scripts"))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 load_dotenv(ROOT / ".env")
 
 from read_emails import safe_filename  # noqa: E402
+from supabase_rest import RestError, rest_get, storage_list  # noqa: E402
 
 logging.basicConfig(level=logging.INFO, format="%(message)s")
 log = logging.getLogger("purge")
@@ -55,28 +63,43 @@ KEEP_EMAIL_STATUSES = {"pendente", "falha"}
 DELETE_BATCH = 100   # a Storage API aceita varios prefixes por chamada
 
 
-def _rest(path: str):
-    req = urllib.request.Request(f"{BASE}/rest/v1/{path}", headers=HEADERS)
-    with urllib.request.urlopen(req, timeout=60) as r:
-        return json.loads(r.read())
+def _rest(path: str, order: str = "id"):
+    """GET no PostgREST, PAGINADO — delega a `supabase_rest.rest_get` (fonte unica).
+
+    NAO reintroduzir um `urlopen` local. O Supabase corta a resposta em "Max rows" (1000) e
+    responde HTTP 200 — sem erro, sem excecao, sem sinal nenhum. Aqui isso decide o que e
+    APAGADO do bucket, e a falha tem duas direcoes, ambas silenciosas:
+
+      - truncar `emails` PERDE protecao (e-mail em pendente/falha deixa de ser preservado);
+      - truncar `anexos`/`sources`/`fiscais` e PIOR: um objeto legitimamente referenciado vira
+        falso orfao e e apagado, num run que reporta "orfaos removidos" com naturalidade.
+
+    Medido em 2026-08-01: `email_control` ja tem 1158 linhas e devolvia 1000; as tres consultas
+    de `referenciados` estavam entre 17% e 40% do teto, crescendo a cada conta lancada.
+    """
+    return rest_get(BASE, HEADERS, path, order)
 
 
 def _storage_list() -> list[str]:
-    """Todos os objetos do bucket (a API pagina em 100 por padrao)."""
-    names, offset = [], 0
-    while True:
-        body = json.dumps({"prefix": "", "limit": 1000, "offset": offset}).encode()
-        req = urllib.request.Request(
-            f"{BASE}/storage/v1/object/list/{BUCKET}", data=body, headers=HEADERS, method="POST")
-        with urllib.request.urlopen(req, timeout=60) as r:
-            page = json.loads(r.read())
-        if not page:
-            break
-        names.extend(o["name"] for o in page if o.get("name"))
-        offset += len(page)
-        if len(page) < 1000:
-            break
-    return names
+    """Todos os objetos do bucket — delega ao modulo compartilhado."""
+    return storage_list(BASE, HEADERS, BUCKET)
+
+
+def _erro_source_files(erros: list[dict]) -> set:
+    """Nomes de objeto citados em `email_processing_errors.raw_payload`.
+
+    Le a CHAVE `source_file` em vez de procurar o nome como substring no JSON inteiro. O
+    substring casa por acidente (um nome contido em outro) e depende de o JSON nao escapar
+    caracteres — funciona so porque `safe_filename` reduz tudo a ASCII. Conferido em
+    2026-08-01: as duas formas preservam os MESMOS 12 objetos, entao a troca e exata, e esta
+    diz o que quer dizer.
+    """
+    nomes = set()
+    for e in erros:
+        rp = e.get("raw_payload")
+        if isinstance(rp, dict) and rp.get("source_file"):
+            nomes.add(rp["source_file"])
+    return nomes
 
 
 def _storage_remove(keys: list[str]) -> int:
@@ -114,15 +137,30 @@ def main() -> int:
         log.error("SUPABASE_URL / SUPABASE_SERVICE_KEY ausentes no .env")
         return 1
 
-    objetos = _storage_list()
-    anexos = {a["storage_key"] for a in _rest("financial_account_attachment?select=storage_key")}
-    sources = {f["source_file"] for f in
-               _rest("financial_account_control?select=source_file&source_file=not.is.null")}
-    emails = _rest("email_control?select=message_id,sender_email,subject,status,received_at")
-    erros = _rest("email_processing_errors?select=raw_payload")
-    erros_txt = json.dumps(erros, ensure_ascii=False)
+    # TODA a leitura acontece ANTES de qualquer apagamento, e uma falha aqui ABORTA o run: e
+    # melhor nao apagar nada do que apagar com um conjunto de "referenciados" incompleto — o
+    # erro seria irreversivel e se reportaria como sucesso.
+    try:
+        objetos = _storage_list()
+        anexos = {a["storage_key"] for a in _rest("financial_account_attachment?select=storage_key")}
+        sources = {f["source_file"] for f in
+                   _rest("financial_account_control?select=source_file&source_file=not.is.null")}
+        # ONDA 3 — o PDF de onde saiu uma chave de acesso fiscal NAO e orfao, mesmo sem conta
+        # nenhuma apontando para ele: CT-e/NF-e sem boleto e exatamente o documento que NUNCA
+        # vira conta. Sem esta terceira fonte, a purga apagaria justamente o que a migration 107
+        # registrou — irreversivelmente e reportando "orfaos removidos" com naturalidade.
+        fiscais = {f["storage_key"] for f in
+                   _rest("fiscal_document?select=storage_key&storage_key=not.is.null")}
+        emails = _rest("email_control?select=message_id,sender_email,subject,status,received_at")
+        erros = _rest("email_processing_errors?select=raw_payload")
+    except RestError as e:
+        log.error(f"Leitura incompleta — NADA foi apagado: {e}")
+        return 1
 
-    orfaos = [n for n in objetos if n not in anexos and n not in sources]
+    erros_files = _erro_source_files(erros)
+
+    referenciados = anexos | sources | fiscais
+    orfaos = [n for n in objetos if n not in referenciados]
     protegidos_pref = _protected_prefixes(emails)
 
     apagar, preservar = [], []
@@ -130,12 +168,13 @@ def main() -> int:
         motivo = None
         if any(nome.startswith(p) for p in protegidos_pref):
             motivo = "e-mail em pendente/falha (pode virar conta)"
-        elif nome in erros_txt:
+        elif nome in erros_files:
             motivo = "citado em email_processing_errors (extracao falhou)"
         (preservar.append((nome, motivo)) if motivo else apagar.append(nome))
 
     log.info(f"objetos no bucket ..... {len(objetos)}")
     log.info(f"com linha (mantidos) .. {len(objetos) - len(orfaos)}")
+    log.info(f"  dos quais fiscais ... {len(fiscais & set(objetos))} (chave de acesso registrada)")
     log.info(f"ORFAOS ................ {len(orfaos)}")
     log.info(f"  a PRESERVAR ......... {len(preservar)}")
     for nome, motivo in preservar:

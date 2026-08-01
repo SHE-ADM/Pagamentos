@@ -125,10 +125,12 @@ Estas regras se aplicam a **todo** código novo ou alterado neste projeto, sem e
   alias `@` (espelhando `@/*`→`./*` do tsconfig) e coleta testes em `lib/**` **e** `app/**`
   (`*.test.ts`) — rotas têm teste co-locado (ex.: `app/api/emails/read/route.test.ts`
   cobre 422/200/502 mockando `triggerReader`).
-- **Suíte Python (pytest):** `py -3 -m pytest tests/` — **791 testes** (ex.:
+- **Suíte Python (pytest):** `py -3 -m pytest tests/` — **851 testes** (ex.:
   `test_link_extraction.py`, `test_email_body_extraction.py`, `test_body_amount.py`,
   `test_body_invoice_table.py`, `test_body_platform_invoice.py`,
-  `test_body_resolvers.py`, `test_extract_pdf.py`, `test_body_full.py`). Cobre o
+  `test_body_resolvers.py`, `test_extract_pdf.py`, `test_body_full.py`,
+  `test_fiscal_key.py`, `test_fiscal_document_hook.py`,
+  `test_fiscal_document_consistency.py`). Cobre o
   pipeline de extração; rodar após mexer em `read_emails.py`/`extract_pdf.py` ou nos
   scripts de reprocessamento. Não é incluída no `npm test`.
 - Referência de granularidade: `frontend-vite/src/components/StatusBadge.test.tsx`,
@@ -1369,8 +1371,9 @@ de implementar qualquer parte (§18 = Fase 2 · §19 = code review · §20 = Fas
 **`analytics`**: 2 views (`vw_payables`, `vw_aging_vencidos`), as **6 funções** de tool calling,
 `ai_chat_log` com RLS e os GRANT/REVOKE.
 
-> ⚠️ **Hoje são 8 tools, não 6** — as 6 desta fase mais `demonstrativo_despesas` (migration 104,
-> Onda 1) e `buscar_emails` (migration 106, Onda 2). Toda menção a "6 funções/tools" neste
+> ⚠️ **Hoje são 9 tools, não 6** — as 6 desta fase mais `demonstrativo_despesas` (migration 104,
+> Onda 1), `buscar_emails` (migration 106, Onda 2) e `documentos_fiscais` (migration 108,
+> Onda 3). Toda menção a "6 funções/tools" neste
 > documento descreve o estado da **Fase 1** e permanece correta como histórico; a lista viva está
 > em `apps/api-backend/lib/ai-chat/tools.ts`, travada por teste. Ver "Roadmap de enriquecimento". A **Fase 2** entregou o gateway —
 `apps/api-backend/lib/ai-chat/` (`tools.ts` · `errors.ts` · `gateway.ts` · `log.ts`) +
@@ -1676,7 +1679,7 @@ verificação por oráculo diferencial → fechamento). Migrations reservadas: *
 |---|---|---|
 | 1 | ✅ **CONCLUÍDA** (migrations **103/104**) | 9 colunas na `vw_payables` · filtros de compliance · eixo `tipo` · **7ª tool `demonstrativo_despesas`** · somas de juros/descontos · **rate limit** · 15 sugestões em 4 temas · bateria de regressão |
 | 2 | ✅ **CONCLUÍDA** (migrations **105/106**) | `body_full` + `body_search` (tsvector) + GIN · backfill de 383 corpos · reader grava o corpo completo · **8ª tool `buscar_emails`** — deploy do `read_emails.py` **APLICADO e verificado em prod** |
-| 3 | Fiscais camada 1 | `fiscal_document` pela **chave de acesso** (CT-e 57 · NF-e 55 · CF-e 59 · NFC-e 65), sem LLM |
+| 3 | ✅ **CONCLUÍDA** (migrations **107/108**) | `fiscal_document` pela **chave de acesso** (CT-e 57 · NF-e 55 · CF-e 59 · NFC-e 65), sem LLM · `fiscal_key.py` · gancho no Passo 1 · purga preservando o PDF fiscal · backfill de 172 documentos · **9ª tool `documentos_fiscais`** — deploy do reader **PENDENTE** |
 | 4 | Varredura histórica | passada **única** e **estritamente aditiva** na caixa postal |
 | 5 | Fiscais camada 2 | itens de NF-e / peso-rota-frete do CT-e (via LLM) |
 | 6 | Campos derivados | `competence_month`, `dim_date`, parcelamento, `days_late`, recorrência |
@@ -1771,6 +1774,113 @@ verificação por oráculo diferencial → fechamento). Migrations reservadas: *
 - **Decisão de escopo (item 2.3): opção A.** Não guardar o corpo do e-mail sem keyword — exigiria
   `FETCH RFC822` completo por mensagem (com anexos) para material não-financeiro, com PII.
 
+**O que a Onda 3 entregou (não regredir):**
+
+- **`public.fiscal_document`** (migration 107) — documento fiscal eletrônico identificado pela
+  **chave de acesso de 44 dígitos** (NF-e 55 · CT-e 57 · CF-e 59 · NFC-e 65). Tabela de
+  **PROVENIÊNCIA, append-only**: `access_key` UNIQUE, campos derivados da própria chave
+  (UF/AAMM/CNPJ do emitente/série/número), `storage_key` e a origem do e-mail
+  (`gmail_message_id`/`sender_email`/`subject`/`received_at`).
+- 🔴 **Documento fiscal NUNCA soma em relatório financeiro.** O frete já entra como BOLETO e a
+  NF-e é a origem da mercadoria, não a obrigação de pagamento — somar duplicaria despesa. A
+  barreira é ESTRUTURAL: a tabela e a tool **não têm nenhuma coluna de valor**. O SYSTEM_PROMPT
+  declara isso; não acrescentar valor monetário aqui "por conveniência".
+- 🔴 **A purga passou a preservar o PDF fiscal** (`scripts/purge_orphan_attachments.py` consulta
+  `fiscal_document.storage_key` como TERCEIRA fonte de "referenciado"). Sem isso ela apagaria
+  exatamente o que a onda registra — CT-e sem boleto, por regra de negócio, **nunca** tem linha
+  em `financial_account_attachment` nem em `financial_account_control`. Medido: **72 PDFs**
+  estavam nessa situação (órfãos no bucket 150 → 78). Travado por guarda cross-layer em
+  `tests/test_fiscal_document_consistency.py`, validada contra mutante.
+- 🔴 **CONSULTA REST CUJO RESULTADO VIRA DADO GRAVADO — OU DECIDE APAGAR — PRECISA PAGINAR**
+  *(achado do code review de 2026-08-01; não regredir)*. O Supabase corta a resposta no **"Max
+  rows" (1.000)** e devolve **HTTP 200**: sem erro, sem exceção, sem sinal. O `_rest()` dos dois
+  scripts (`backfill_fiscal_documents.py` e `purge_orphan_attachments.py`) era um `urlopen`
+  único — e o teto **já estava ativo**: `email_control` tem **1.158** linhas e devolvia 1.000.
+  Consequência medida: **68 dos 172** documentos (**40%**) nasceram sem
+  `sender_email`/`gmail_message_id`/`subject`/`received_at`, e como a tool filtra por
+  `received_at` (`NULL >= data` é NULL) eles **sumiam de toda pergunta com recorte de data** — a
+  tool respondia 104 de 172, e 66 de 80 CT-e, sem sinal de erro. **Corrigido** (paginação por
+  `order=id&limit&offset`, determinística — sem `ORDER BY` o PostgREST não garante a mesma ordem
+  entre requisições e o offset puro pularia linhas) **e os 68 registros foram reparados** com
+  `--fix-provenance`. Guarda em `tests/test_fiscal_document_consistency.py`, validada por mutante.
+  > 🔴 **A paginação vive em `scripts/supabase_rest.py` — fonte ÚNICA (refatoração de
+  > 2026-08-01).** `purge_orphan_attachments.py` e `backfill_fiscal_documents.py` tinham CADA UM
+  > sua cópia de `_rest`/`_storage_list`, e as cópias **divergiam no que importa**: a do backfill
+  > filtrava `id` nulo (placeholder de pasta), a da purga **não** — então a entrada **`manual`**
+  > (a pasta dos anexos manuais da 079) era listada como objeto, não tinha linha em tabela
+  > nenhuma, virava órfã e **entrava na lista de APAGAR**. Um cluster que precisa da MESMA
+  > correção em dois lugares é um módulo esperando para nascer (mesmo motivo do `febraban.py`).
+  > O módulo trata falha de **rede** além de HTTP (`NETWORK_ERRORS` — `except HTTPError` sozinho
+  > deixa timeout/DNS propagarem e derrubarem o laço), tem **teto de páginas** (servidor que
+  > ignora `offset` levanta em vez de travar) e o `rest_write` **devolve `(ok, motivo)` em vez de
+  > lançar**, para que uma falha não derrube os itens seguintes do laço.
+  > **Guarda:** `PaginacaoCompartilhadaTest` + `RestGetFuncionalTest` — este último prova a
+  > paginação pelo **COMPORTAMENTO** (servidor falso, conta as linhas), porque a guarda textual
+  > deixou passar o mutante que troca `offset={pagina*PAGE_SIZE}` por `offset=0`: a palavra
+  > `offset` continua no código e a paginação quebra. Não substituir por checagem de texto.
+- ⚠️ **`_provenance_index` guarda a LISTA de e-mails por prefixo, não "o primeiro"** — e
+  `_match_email` recebe o documento para **desempatar pela plausibilidade da emissão**
+  (`_emissao_plausivel`: o `AAMM` da chave, escrito pelo emissor, contra a data do e-mail).
+  O comentário antigo dizia que prefixo repetido são "reenvios da mesma thread, proveniência
+  equivalente na prática" — **medido: falso em 27% dos casos**. Dos 1.015 prefixos, 82 colidem;
+  60 são reenvio real, mas **22 têm assunto de fornecedor DIFERENTE**, porque
+  `safe_filename(subject, 30)` trunca em 30 chars (`LE BIANCO - PAGAMENTO FORNECEDOR` ×
+  `… (DOIS M)` × `… (NYBC)`). Sem desempate, o documento seria atribuído ao e-mail errado em
+  silêncio. **A data nunca erra** — o prefixo contém `YYYYMMDD`, então todos os candidatos são
+  do mesmo dia e o filtro temporal da tool não é afetado nem no pior caso.
+  > **Na purga a falha é INVERTIDA e pior:** truncar `emails` só perde proteção, mas truncar
+  > `anexos`/`sources`/`fiscais` transforma objeto **legitimamente referenciado** em falso órfão,
+  > apagado num run que reporta "órfãos removidos" com naturalidade. Estavam a **17–40%** do teto
+  > e crescem a cada conta lançada. Dano corrente medido na época: **0 objetos** — a redundância
+  > que salvava era empírica (`email_processing_errors`), não estrutural.
+- ⚠️ **`retry_extraction.py` alimentava o gancho fiscal sem proveniência** — `email_ctx` levava só
+  `message_id` e `subject`, e o `fetch_pending` nem selecionava as outras colunas. Todo documento
+  registrado por esse caminho nascia sem remetente e sem data, ou seja, fora de qualquer consulta
+  temporal. É o **pior caso**, não um caminho raro: o modo padrão processa
+  `pdf_extracted=false AND attachment_saved=true` — exatamente os PDFs cuja extração falhou, que
+  é a população que o gancho (rodando ANTES do `run_extraction`) existe para capturar. Corrigido:
+  os 4 campos viajam, e o `subject` gravado deixou de ser a versão cortada em 60 chars do log.
+- **`skills/pdf-contas-pagar/scripts/fiscal_key.py`** — parser determinístico, **só stdlib**
+  (mesmo espírito do `febraban.py`). **NÃO reusar `barcode_dv_refuted`**: o DV do boleto fica na
+  posição 4 com resto→1 e o da SEFAZ na 43 com resto→0 — trocar um pelo outro devolve veredito
+  plausível e errado, sem levantar erro.
+- 🔴 **A validação tem CINCO camadas e nenhuma é dispensável** — UF IBGE, mês 01-12, **ano em
+  [2006, corrente+1]**, modelo no domínio e DV. Medido: dos 8 barcodes de 44 dígitos não-boleto
+  já gravados em contas, **7 são lixo**; e no backfill um "Boleto de Aluguel" passou nas quatro
+  primeiras e virou uma **CF-e de setembro de 1991** — sequência aleatória fecha módulo 11 em
+  ~1/11 dos casos. Os 7 códigos reais e o falso positivo do aluguel são fixtures em
+  `tests/test_fiscal_key.py`.
+- **O gancho fica no Passo 1 de `extract_and_store_accounts`, e ANTES do `run_extraction`** — não
+  nos 7 pontos de `skipped_nonpayable`. Ponto único, cobre o documento **mesmo quando a linha
+  vira conta** (o boleto de transporte que traz a chave do CT-e junto) e captura a chave ainda
+  que a Claude API esteja fora. A ordem é travada por teste (`test_registra_ANTES_da_extracao`),
+  validado contra mutante.
+- **Registro NÃO-FATAL e sem efeito colateral** (mesmo contrato do `register_attachment`): não
+  altera o `status` do e-mail, não cria conta, engole a própria falha. **A regra de negócio ficou
+  intacta** — CT-e/NF-e sem boleto continua sem gerar conta a pagar.
+- **`register_fiscal_document` usa `return=representation`** e só devolve `True` quando a linha
+  foi de fato INSERIDA. Com `ignore-duplicates` sozinho o PostgREST responde 201 mesmo sem
+  inserir, e o log de produção — a via pela qual se confere se a onda funciona — diria
+  "registrado" no reprocessamento inteiro.
+- **`_pdf_text` substituiu `_pdf_mentions_lebianco`**: o texto do anexo passou a ter DOIS
+  consumidores, então é lido **uma vez e por inteiro**. O curto-circuito da regra LEBIANCO segue
+  valendo para a FLAG, não para a leitura.
+- **Backfill aplicado** (`scripts/backfill_fiscal_documents.py`, dev-only): **172 documentos**
+  (92 NF-e + 80 CT-e) de 511 objetos do bucket. Ganho não previsto: o DACTE referencia a **NF-e
+  da mercadoria transportada**, então vieram 92 NF-e "de brinde" — inclusive emitidas pela
+  própria OTIMOTEX. Escopo deliberado: só o bucket; os ~115 CT-e cujo PDF a purga já levou
+  ficam para a **Onda 4** (IMAP).
+- **Grupo restrito vê ZERO documentos fiscais** — a policy reusa o recorte da 078 (por
+  remetente) e quem envia CT-e é a transportadora. Verificado com o papel real: ester
+  (Comercial) **0**, barbara (Financeiro) **172**. É consequência da regra existente, não
+  defeito; mudar exige decisão de política de acesso.
+- **Limitação conhecida: PDF cifrado não entrega chave** — `_pdf_text` roda antes do
+  `run_extraction`, que é quem descriptografa (boletos OBER/Amil). Não é regressão (antes não se
+  capturava nada).
+- **`documentos_fiscais` devolve `total_encontrado` em toda linha** (`count(*) OVER ()`, avaliado
+  antes do LIMIT) — mesma armadilha do `gasto_por_fornecedor`: deixar o modelo contar as linhas
+  truncadas produziria número errado com cara de certo.
+
 **Dois invariantes que a auditoria do plano descobriu (não regredir):**
 
 1. 🔴 **`competence_date` NUNCA pode virar DATE.** Contém **`YYYY-MM`** (mês), não data —
@@ -1785,21 +1895,23 @@ verificação por oráculo diferencial → fechamento). Migrations reservadas: *
    porque o PostgreSQL concede EXECUTE a PUBLIC por default e o `ALTER DEFAULT PRIVILEGES` da
    migration 098 **não deixou registro persistente** (`pg_default_acl` vazio). As funções antigas só
    estavam protegidas pelo REVOKE explícito da 098. **Não confiar no default privilege.**
-3. 🔴 **A Onda 3 exige atualizar `scripts/purge_orphan_attachments.py` no MESMO passo.** Ele
-   considera órfão todo objeto não referenciado por `financial_account_attachment.storage_key` ou
-   `financial_account_control.source_file` — **não conhece `fiscal_document`** e apagaria os PDFs
-   fiscais recém-registrados, de forma irreversível e sem sinal de erro. **A purga já levou 67%
-   dos PDFs de CT-e** (só 57 dos 172 sobrevivem no bucket).
+3. ✅ **RESOLVIDO na Onda 3 — `scripts/purge_orphan_attachments.py` consulta `fiscal_document`.**
+   Ele considerava órfão todo objeto não referenciado por `financial_account_attachment.storage_key`
+   ou `financial_account_control.source_file` — e CT-e sem boleto, por regra de negócio, **nunca**
+   tem nenhuma das duas. Sem a terceira fonte, apagaria os PDFs fiscais recém-registrados, de forma
+   irreversível e sem sinal de erro. **A purga de 15/07 já havia levado 67% dos PDFs de CT-e**;
+   agora **72 objetos** só sobrevivem por causa dessa consulta. Travado por guarda cross-layer
+   (`tests/test_fiscal_document_consistency.py`) — não remover.
 
 **Fatos medidos que justificam as ondas 2–4:** **48%** dos e-mails (545 de 1.133) são `ignorado` e
 não geram nenhum dado estruturado; **180** deles são CT-e (172 com anexo); **39%** dos corpos estão
 truncados; e **não há um único XML** — CT-e/NF-e chegam só como PDF.
 
-> **O reader passa a gravar em outras tabelas** (Ondas 2, 3 e 5) para o e-mail que **não** vira
-> conta. O gancho fiscal fica no **Passo 1 de `extract_and_store_accounts`** (um único ponto, grava
-> sempre que houver chave de acesso válida) — **não** nos 7 pontos de `skipped_nonpayable`. Em
-> nenhuma onda o reader passa a criar conta onde hoje não cria: a regra de
-> `financial_account_control` fica intacta.
+> **O reader grava em outras tabelas** (Ondas 2, 3 e — futuramente — 5) para o e-mail que **não**
+> vira conta. O gancho fiscal fica no **Passo 1 de `extract_and_store_accounts`** (um único ponto,
+> grava sempre que houver chave de acesso válida, **antes** do `run_extraction`) — **não** nos 7
+> pontos de `skipped_nonpayable`. ✅ Implementado na Onda 3. Em nenhuma onda o reader passa a criar
+> conta onde hoje não cria: a regra de `financial_account_control` fica intacta.
 
 ## Comandos
 
@@ -1923,6 +2035,14 @@ py -3 scripts\reprocess_beneficiario_final.py --dry-run --ids 561,562  # só est
 py -3 scripts\reprocess_beneficiario_final.py                    # aplica
 ```
 
+> 📦 **`scripts/supabase_rest.py` — acesso REST/Storage compartilhado pelos scripts de
+> manutenção** (`rest_get` paginado · `rest_write` que devolve `(ok, motivo)` · `storage_list`).
+> Nasceu em 2026-08-01 porque `purge_orphan_attachments.py` e `backfill_fiscal_documents.py`
+> tinham cópias divergentes das mesmas funções — e a divergência custou caro (ver o bloco da
+> paginação em "O que a Onda 3 entregou"). **Ao escrever script novo que fale com o Supabase,
+> use este módulo**; não copie o `_rest` de ninguém. Roda no DEV: fica em `scripts/`, fora dos
+> `DEPLOY_GLOBS`, então não entra no manifesto de deploy.
+
 Limpar do bucket os **objetos ÓRFÃOS** — os que nenhuma linha referencia. `upload_attachment`
 publica TODO PDF no Passo 1, **antes** de saber se ele vira conta; quando não vira (CT-e/NF-e
 `ignorado`, fatura cujo boleto virou a conta, confirmação de pagamento, **dedup** de cobrança
@@ -1932,6 +2052,39 @@ repetida), o objeto fica sem `financial_account_attachment.storage_key` nem
 (extração falhou — o bucket é a cópia acessível; o original só existe no IMAP). IRREVERSÍVEL — use
 `--dry-run` primeiro; o backup diário (skill `backup-supabase`) cobre o bucket.
 
+> 🔴 **Desde a Onda 3 há uma TERCEIRA fonte de "referenciado": `fiscal_document.storage_key`.**
+> CT-e/NF-e sem boleto, por regra de negócio, nunca tem linha em anexo nem em conta — sem essa
+> consulta a purga apagaria justamente o PDF fiscal recém-registrado, irreversivelmente e
+> reportando "órfãos removidos" com naturalidade. Medido em 2026-08-01: **72 objetos** só
+> sobrevivem por causa dela. Travado por guarda cross-layer em
+> `tests/test_fiscal_document_consistency.py` — não remover a consulta nem tirar `fiscais` do
+> conjunto `referenciados`.
+
+> 🔴 **O `_rest()` daqui DELEGA a `scripts/supabase_rest.py` — não reintroduzir `urlopen` local.**
+> As quatro consultas que decidem o que é apagado passam por ele, e o Supabase corta em 1.000
+> linhas com **HTTP 200**. Truncar `emails` perde proteção; truncar `anexos`/`sources`/`fiscais`
+> é **pior**: objeto referenciado vira falso órfão e é apagado. Toda a leitura roda **antes** de
+> qualquer remoção e uma falha ali **aborta o run** (`RestError` → "NADA foi apagado"): melhor não
+> apagar nada do que apagar com o conjunto de referenciados incompleto. Ver o invariante completo
+> em "O que a Onda 3 entregou". Guarda: `PaginacaoCompartilhadaTest` + `RestGetFuncionalTest`.
+
+> ⚠️ **A preservação por erro lê a CHAVE `source_file`, não faz substring no JSON**
+> (`_erro_source_files`, 2026-08-01). O `nome in erros_txt` antigo casava por acidente (um nome
+> contido em outro) e dependia de o JSON não escapar caracteres — funcionava só porque
+> `safe_filename` reduz tudo a ASCII. Medido antes da troca: as duas formas preservam os **mesmos
+> 12 objetos**, então a mudança é exata e a nova diz o que quer dizer.
+
+> ⚠️ **LIMITAÇÃO CONHECIDA — a preservação é por `storage_key`, não por "o PDF contém chave".**
+> A mesma chave de acesso costuma chegar por **dois** objetos (o PDF consolidado da transportadora
+> e o individual), e a UNIQUE de `access_key` registra só o primeiro. O segundo não consta em
+> `fiscal_document`, vira órfão e **é apagado — mesmo sendo um DACTE legítimo**. Medido em
+> 2026-08-01: dos 78 órfãos, **11 contêm chave válida** (19 documentos) e **4 seriam apagados**
+> (o pior carrega **6 DACTEs**). **Não há perda de DADO** — as chaves estão registradas; perde-se
+> o PDF, que é o que a Onda 3 existe para parar de perder. Corrigir exige decisão de escopo: ou a
+> purga abre cada órfão com pdfplumber (caro), ou `fiscal_document` deixa de ter 1 `storage_key`
+> por chave e ganha uma tabela de ocorrências (muda o modelo). **Em aberto por decisão, não por
+> esquecimento.**
+
 ```powershell
 py -3 scripts\purge_orphan_attachments.py --dry-run  # lista o que apagaria e o que preserva
 py -3 scripts\purge_orphan_attachments.py            # apaga
@@ -1940,6 +2093,39 @@ py -3 scripts\purge_orphan_attachments.py            # apaga
 > **Aplicado em 2026-07-15:** 571 → **236** objetos (335 removidos, ~41 MB). **3 preservados**
 > (boleto Amil `pendente`, boleto OBER NF 963681 e fatura Correios — `extracao_falhou`). Integridade
 > conferida: **0** anexos e **0** `source_file` ficaram sem objeto.
+
+Registrar em `fiscal_document` as **chaves de acesso** dos PDFs que já estão no bucket (Onda 3).
+Varre TODOS os objetos (o parser é determinístico e sem custo de API, então filtrar por nome só
+introduziria falso negativo), lê o texto com pdfplumber e grava — idempotente por `access_key`.
+Aplicado em 2026-08-01 (**172 documentos**: 92 NF-e + 80 CT-e). Os ~115 CT-e cujo PDF a purga já
+levou só são recuperáveis pelo IMAP, na **Onda 4**:
+
+```powershell
+py -3 scripts\backfill_fiscal_documents.py --dry-run   # relata o que gravaria
+py -3 scripts\backfill_fiscal_documents.py             # grava
+py -3 scripts\backfill_fiscal_documents.py --fix-provenance --dry-run   # so repara proveniencia
+py -3 scripts\backfill_fiscal_documents.py --fix-provenance             # aplica o reparo
+```
+
+**`--fix-provenance` — modo de REPARO, não de varredura (não confundir):** não baixa PDF nenhum;
+apenas preenche `gmail_message_id`/`sender_email`/`subject`/`received_at` das linhas gravadas **sem**
+eles, casando o `storage_key` com o prefixo de `email_control`. Existe porque **reexecutar o backfill
+não conserta esse caso**: `novo = chave not in ja_registradas` pula a chave existente e o INSERT usa
+`ignore-duplicates`, que **ignora em vez de atualizar** — a linha nasceria errada e ficaria errada
+para sempre. É a exceção que a migration 107 previu ao NÃO bloquear UPDATE por trigger ("impediria
+corrigir um backfill errado"). Conservador por construção: só toca linha com `sender_email IS NULL`
+e **nunca** os campos de identidade (`access_key`/`model`/`emitter_cnpj`/`storage_key`) — as duas
+invariantes estão travadas por teste com mutante em `tests/test_fiscal_document_consistency.py`.
+
+> **Aplicado em 2026-08-01 — 68 linhas corrigidas.** Causa: o `_rest` original **não paginava**, e o
+> teto de 1.000 do PostgREST truncou `email_control` (1.158 linhas → 1.000), então 68 dos 172
+> documentos (**40%**) nasceram sem proveniência. Como `analytics.documentos_fiscais` filtra por
+> `received_at` e `NULL >= data` é NULL, essas linhas **sumiam de qualquer pergunta com recorte de
+> data** — a tool respondia 104 de 172 (e 66 de 80 CT-e) sem sinal de erro. Depois do reparo: 172 e
+> 80. O `_rest` dos dois scripts (`backfill_fiscal_documents.py` e `purge_orphan_attachments.py`)
+> passou a paginar por `order=id&limit&offset`, com guarda de regressão nos mesmos testes.
+> **Lição:** consulta REST cujo resultado vira DADO GRAVADO precisa paginar — o corte vem com HTTP
+> 200, sem exceção e sem sinal.
 
 Preencher **contato do fornecedor** (telefone/WhatsApp/chave PIX) em `supplier` a partir do texto
 já gravado nas contas (ver "Contato do fornecedor"). Agrupa por `sk_supplier`, lógica de 2 slots,
@@ -1979,7 +2165,7 @@ py -3 skills\backup-supabase\scripts\run.py --skip-db       # só o Storage
 ```
 
 Verificar se a **máquina de produção está com os mesmos arquivos do repositório** — rodar EM
-PRODUÇÃO depois de qualquer cópia (compara o SHA-256 dos 26 arquivos de deploy; **exit 1** em
+PRODUÇÃO depois de qualquer cópia (compara o SHA-256 dos **27** arquivos de deploy; **exit 1** em
 divergência, portanto agendável). Ver "COMO SABER SE PRODUÇÃO ESTÁ ATUALIZADA" na seção de deploy:
 
 ```powershell
@@ -3602,10 +3788,12 @@ reusado da classificação de ICMS-ST), **assunto**, **corpo**, **anexo** e `des
   são da OTIMOTEX — falso positivo **comprovado** na conta **167** (assunto "COBRANÇA OTIMOTEX
   TECIDO"), que corretamente permanece em `1`.
 - **Anexo**: o texto CRU do PDF não chega ao payload (o CSV só traz `description`/`source_file`),
-  então `_pdf_mentions_lebianco(pdf_path)` o lê no **passo 1** de `extract_and_store_accounts`
-  (único ponto com o arquivo em disco), uma vez por e-mail, com curto-circuito. **Best-effort** —
-  qualquer falha (PDF cifrado, imagem, pdfplumber) devolve `False` sem levantar; a regra nunca
-  bloqueia a gravação da conta.
+  então **`_pdf_text(pdf_path)`** o lê no **passo 1** de `extract_and_store_accounts` (único ponto
+  com o arquivo em disco) e a regra avalia `_has_lebianco_reference(texto)`. **Best-effort** —
+  qualquer falha (PDF cifrado, imagem, pdfplumber) devolve `""` sem levantar; a regra nunca
+  bloqueia a gravação da conta. Desde a **Onda 3** o texto tem DOIS consumidores (esta regra e o
+  registro de documento fiscal), então é lido **uma vez e por inteiro**: o curto-circuito
+  permanece para a FLAG, não para a leitura. O antigo `_pdf_mentions_lebianco` não existe mais.
 - **Onde é aplicada** (`apply_sk_company`, respeita valor já presente — idiom de `created_by`):
   (1) `extract_and_store_accounts` passo 2 (único ponto com `body_text` + flag do anexo em
   escopo); (2) `extract_from_email_body` no payload BASE, **antes** do bloco de parcelas (os
@@ -4394,8 +4582,19 @@ local/agendada (ver flag `EMAIL_READER_ENABLED` acima e memória [[vercel-deploy
 ## Banco de dados (Supabase)
 
 Migrations em `supabase/migrations/`, aplicadas **manualmente no SQL Editor** (ou via Supabase
-MCP — ver a nota de cada uma) em ordem numérica (`001` → `102`). **Próxima migration = `103`**
+MCP — ver a nota de cada uma) em ordem numérica (`001` → `108`). **Próxima migration = `109`**
 (verificar sempre antes de criar nova).
+
+**As `107`/`108` são a Onda 3** (aplicadas via psql em 2026-08-01, idempotentes). A **107** cria
+`public.fiscal_document` — o documento fiscal eletrônico pela chave de acesso de 44 dígitos, tabela
+de proveniência **append-only** (sem valor monetário: documento fiscal NUNCA soma em relatório
+financeiro), com RLS reusando o recorte por REMETENTE da 078 e `REVOKE` de escrita do papel
+`authenticated`. A **108** entrega a **9ª tool** `analytics.documentos_fiscais`, `SECURITY INVOKER`
++ `GRANT`/`REVOKE` explícitos, devolvendo `total_encontrado` (`count(*) OVER ()`) para o modelo não
+contar linhas truncadas. Ver "O que a Onda 3 entregou".
+
+**As `103`–`106` são as Ondas 1 e 2** (colunas da `vw_payables` + `demonstrativo_despesas`;
+`body_full`/`body_search` + `buscar_emails`) — ver o roadmap de enriquecimento.
 
 **A `102` acrescenta `truncated`/`iterations` a `analytics.ai_chat_log`** (aplicada via psql em
 2026-07-30, idempotente, aditiva e sem backfill). Achado da **primeira execução real** (§20.9): uma
@@ -4814,6 +5013,7 @@ internet` ao CHECK de `document_type` e faz backfill — ver "Normalização de 
 | `financial_cost_center` / `financial_chart_of_account` | **Cadastros de classificação contábil** (pré-existentes, **preservados em limpezas**) usados como lookup no modal de contas. `financial_cost_center` é **gerenciado pelo CRUD de centros de custo** (`/tabelas/centros-de-custo` — PK `cost_center_id` SMALLINT IDENTITY ALWAYS; id 0 = sentinela "não informado", fora do CRUD; ver "CRUD de centros de custo"). `financial_chart_of_account` (também gerenciado pelo **CRUD de Plano de contas** — `/tabelas/plano-de-contas`) tem `cost_center_id` (relaciona o plano ao centro — base da CASCATA), `chart_account_subgroup_id` (FK → subgrupo) e `is_postable` (só os postáveis são lançáveis). Os cadastros `financial_bank`, `financial_account`, `financial_chart_of_account_group` e `financial_chart_of_account_subgroup` também ganharam CRUD próprio (grupo Tabelas — ver "CRUDs dos demais cadastros contábeis"). Lidos via `lib/lookups.ts` (service_role) **e** pelo frontend via embed REST (papel `authenticated`); RLS habilitado com policy de SELECT `TO authenticated` (migration 049 — sem ela o embed voltava null e a UI mostrava `#id`) |
 | `email_processing_errors` | Log de falhas com `raw_payload` JSON. **Visibilidade por REMETENTE (migration 078):** policy SELECT (`authenticated`) filtra por `lower(sender_email)=lower(auth.email())` para grupo com `sees_only_own_accounts` (Comercial) — `/erros` mostra só os erros de que o usuário é remetente; demais veem tudo; `service_role` com bypass |
 | `financial_account_attachment` | **Anexos (N) de uma conta** (migration 079) — PADRÃO ÚNICO das duas origens: `origin='pipeline'` (documento do e-mail; espelha `financial_account_control.source_file`, gravado pelo reader) e `origin='manual'` (upload do usuário no cadastro/edição). `storage_key` = chave CRUA do objeto no bucket `attachments` (pipeline: nome flat; manual: `manual/{conta}/…`). **Soft delete** (`deleted_at`/`deleted_by`) — o objeto FICA no bucket; anexo `pipeline` é irremovível (auditoria → 403). UNIQUE `(account_id, storage_key)`; **não** UNIQUE global (um PDF com N boletos gera N contas que COMPARTILHAM o objeto). RLS SELECT herda a visibilidade da conta pai (076) via `EXISTS`; escrita só `service_role`. Ver "Anexos de conta" |
+| `fiscal_document` | **Documento fiscal eletrônico** identificado pela chave de acesso de 44 dígitos (migration 107 — Onda 3): NF-e 55 · CT-e 57 · CF-e 59 · NFC-e 65. Tabela de **PROVENIÊNCIA, append-only** — `access_key` UNIQUE (dedup natural do reenvio), campos derivados da própria chave, `storage_key` (🔴 é o que faz a purga PRESERVAR o PDF) e a origem do e-mail (`gmail_message_id`/`sender_email`/`subject`/`received_at`, sem FK — o registro é não-fatal). **NÃO tem valor monetário, e isso é a barreira**: documento fiscal nunca soma em relatório financeiro (o frete já entra como boleto). RLS SELECT reusa o recorte por REMETENTE da 078; escrita só `service_role`. Ver "O que a Onda 3 entregou" |
 | `supplier` | Fornecedores. PK = `sk_supplier` (surrogate key snowflake auto-incremental — **migration 042**); `supplier_id` é **chave de negócio** (NOT NULL UNIQUE, só nesta tabela; = `sk_supplier` nos fornecedores criados pela extração, via trigger de espelho `trg_supplier_mirror_id`, podendo divergir em cargas externas). Auto-criados pelo trigger de resolução, mas **cadastro PRESERVADO** (curadoria manual de `email`/`email2`/`email3`/`email4`) — **nunca truncar** em limpezas (ver "Limpeza / reset de dados"). Reconhecimento por **e-mail** em `email`/`email2`/`email3`/`email4` (migrations 023/027/028) — ver "Auto-resolução de fornecedor". **Soft delete** via `deleted_at` (migration 045) — a baixa pelo CRUD da Next API marca `deleted_at` (nunca hard delete) e é bloqueada quando há contas vinculadas; ver "CRUD de fornecedores (Next API)". **Classificação default** `cost_center_id`/`chart_account_id` (SMALLINT NOT NULL DEFAULT 0 + FKs — migration 052): semeia o lançamento de novas contas e é atualizada pelo write-back do modal; ver "Classificação default do fornecedor — sync bidirecional". **Contatos** (migration 082): `phone_ddd1`/`phone1`/`phone_ddd2`/`phone2` (char(2)/varchar(9)), `whatsapp1`/`whatsapp2` (varchar(11)), `pix_key1`/`pix_key2` (varchar(77)) — 2 slots por tipo, preenchidos pelo form e pela extração (write-back com lógica de 2 slots); ver "Contato do fornecedor" |
 | `company` | Empresa pagadora (**cadastro**, tem campo `email`). PK = **`sk_company`** (surrogate key snowflake `GENERATED ALWAYS AS IDENTITY` — migration 083, chave única de relacionamento); `company_id` é **campo de origem** (NOT NULL UNIQUE, do sistema maior). Hoje há DUAS: OTIMOTEX (sk 1) e LEBIANCO (sk 2). A empresa da conta (`financial_account_control.sk_company`) tem DUAS origens, ambas explícitas: a **regra LEBIANCO** no pipeline e o **select "Empresa" do `ContaForm`** no CRUD manual (default OTIMOTEX) — ver "Empresa pagadora (`sk_company`) — regra LEBIANCO". O trigger `trg_fe_resolve_company()` → **`resolve_company_sk`** (`payer_cnpj`/`payer_name`) ficou como **fallback residual** (migration 084): só atuaria num INSERT que omitisse `sk_company`. O lookup do select é `GET /api/companies` (`companyService`). **Preservada em limpezas** (ver abaixo) |
 | `status` | **Dimensão** de situação (`status_id`, `status_name`, `status_short_name`, `has_opened`/`has_closed`/`has_invoiced`). 10 linhas (ids 1..10) = **domínio de `financial_account_control.status_id`** (fonte única — a coluna `status` texto foi removida na 069) + alvo da FK `fk_fac_status`. O nome de exibição da conta vem do embed `status_dim:status(...)`. **Cadastro/configuração — preservar em limpezas** |
@@ -5405,7 +5605,7 @@ instalados na máquina. Guia: `scheduler/INSTALL.md`.
 > py -3 scheduler\check_deploy_parity.py
 > ```
 >
-> Compara o SHA-256 dos **26 arquivos de deploy** (os 4 pipelines + os `.ps1` do Agendador) com
+> Compara o SHA-256 dos **27 arquivos de deploy** (os 4 pipelines + os `.ps1` do Agendador) com
 > `scheduler/deploy-manifest.json`, versionado junto do código. Reporta `FALTANDO` / `DIVERGENTE` /
 > `EXTRA` por arquivo e sai com **exit 1** quando há divergência — portanto **agendável**: uma
 > tarefa semanal acusa deriva sem ninguém precisar lembrar. Fim de linha é normalizado, então um
@@ -5414,10 +5614,37 @@ instalados na máquina. Guia: `scheduler/INSTALL.md`.
 > **No DEV, após alterar qualquer script de deploy, regrave o manifesto no mesmo commit:**
 > `py -3 scheduler\check_deploy_parity.py --update`. Se um arquivo NOVO passar a ser necessário em
 > produção, ele precisa entrar em `DEPLOY_GLOBS` — é exatamente o caso que ninguém percebe faltar
-> (aconteceu com `febraban.py`, extraído em 2026-07-28).
+> (aconteceu com `febraban.py`, extraído em 2026-07-28 — e de novo com `fiscal_key.py`, na Onda 3).
 >
-> **Estado medido em 2026-07-29: 26/26 conferem** — produção em paridade, com todos os deploys que
-> estavam pendentes aplicados. Antes disso o estado real nunca havia sido verificado.
+> **Estado: ✅ EM PARIDADE — `27/27 conferem | faltando: 0 | divergentes: 0 | extras: 0`,
+> `exit=0`, verificado em produção em 2026-08-01.** Histórico: 26/26 em 2026-07-29, Onda 2 copiada
+> em 31/07, Onda 3 (os 3 `.py` + o manifesto) em 01/08.
+>
+> ⚠️ **Se aparecer `EXTRA`, o problema é a RÉGUA, não os arquivos** — lição comprovada no deploy da
+> Onda 3. Produção não cria arquivo, então `EXTRA` casando `DEPLOY_GLOBS` = manifesto obsoleto (os
+> `.py` foram copiados, o `deploy-manifest.json` não). Nesse estado o verificador diz "PRODUÇÃO
+> DESATUALIZADA" com os arquivos **já corretos**, mandando recopiar o que não é o problema.
+> Aconteceu: `24/26 conferem` com 2 `DIVERGENTE` + 1 `EXTRA`, enquanto o `read_emails.py`
+> respondia `True True 4`. **Copie o manifesto antes de recopiar qualquer `.py`.**
+>
+> **Como conferir que o manifesto chegou íntegro** (separa "arquivo errado" de "problema noutro
+> lugar"), antes mesmo de rodar o verificador:
+> `(Get-FileHash deploy-manifest.json -Algorithm SHA256).Hash` e
+> `py -3 -c "import json;print(len(json.load(open('deploy-manifest.json'))['files']))"`.
+>
+> 🔴 **NUNCA editar o manifesto à mão em produção, nem rodar `--update` lá.** Ajustar um hash na
+> mão faz o verificador dizer "OK" sobre arquivo que não é o do repositório; `--update` em produção
+> regrava a régua a partir do que está lá, transformando qualquer desatualização em "paridade"
+> instantânea. Nos dois casos a ferramenta passa a mentir a favor — o pior estado possível para
+> ela. O `--update` roda no **DEV**, no mesmo commit da alteração.
+>
+> ⚠️ **Não conte os arquivos de deploy pelo que a feature "precisa" — conte pelo que MUDOU.** Este
+> bloco já disse "esses dois", omitindo o `extract_pdf.py` porque a alteração dele é de 3 linhas e
+> a feature funciona sem ela. Mas o manifesto guarda **hash**, não intenção: com o hash novo
+> gravado, o verificador acusaria `extract_pdf.py` **para sempre** depois de uma cópia "completa"
+> segundo a doc — e um alerta que grita sem parar é exatamente o que este documento diz, dois
+> parágrafos acima, que faz a verificação ser ignorada. Se um arquivo entra no manifesto, ele entra
+> na lista de cópia.
 >
 > **Duas exclusões DELIBERADAS em `DEPLOY_EXCLUDE` (não "completar" a lista):**
 > `scheduler/deploy-prod.ps1` roda **no dev** (copia PARA produção) e o operador não o usa; e o
@@ -5736,7 +5963,8 @@ lê os arquivos do disco.
 > isso que a cópia importa); com o reader NOVO, a coluna já existe.
 > **`scripts/reprocess_body_emails.py` também mudou nesta onda** (passou a persistir o corpo que já
 > rebuscava do IMAP), mas **NÃO precisa ser copiado**: é script manual, rodado da máquina de
-> desenvolvimento, e por isso está fora do `deploy-manifest.json` (26 arquivos). Validação (esperado
+> desenvolvimento, e por isso está fora do `deploy-manifest.json` (que só cobre `skills/*/scripts/`
+> e `scheduler/*.ps1`, não `scripts/`). Validação (esperado
 > `True 100000`):
 > `py -3 -c "import sys; sys.path.insert(0,'skills/email-reader/scripts'); import read_emails as R; print(hasattr(R,'_body_full_for_storage'), R.BODY_FULL_MAX_CHARS)"`
 >
@@ -5751,6 +5979,70 @@ lê os arquivos do disco.
 > (foi o caso do `email_control` 1192, processado às 11:40 com o código antigo). Isso é esperado e
 > não é defeito: os corpos anteriores ao deploy são alvo da **Onda 4** (varredura histórica), que
 > ignora a dedup de propósito.
+
+> **DEPLOY 2026-08-01 — documento fiscal pela chave de acesso (Onda 3 — ✅ APLICADO e verificado
+> em prod, 2026-08-01):** o reader passa a registrar CT-e/NF-e/CF-e/NFC-e em `fiscal_document`.
+> Verificado: `27/27 conferem | divergentes: 0 | extras: 0`, `exit=0`, e o comando de validação
+> respondendo `True True 4`. Deploy = copiar **TRÊS** arquivos **de uma vez**, um deles **NOVO**
+> — **mais o `deploy-manifest.json`** (ver a linha final da tabela; foi o esquecido na 1ª
+> tentativa):
+>
+> | De (dev) | Para (produção) | Estado |
+> |---|---|---|
+> | `skills\pdf-contas-pagar\scripts\fiscal_key.py` | `C:\Sheild\API\Pagamentos\skills\pdf-contas-pagar\scripts\` | **NOVO** — copiar PRIMEIRO |
+> | `skills\pdf-contas-pagar\scripts\extract_pdf.py` | `C:\Sheild\API\Pagamentos\skills\pdf-contas-pagar\scripts\` | alterado (reexport) |
+> | `skills\email-reader\scripts\read_emails.py` | `C:\Sheild\API\Pagamentos\skills\email-reader\scripts\` | alterado |
+> | **`scheduler\deploy-manifest.json`** | `C:\Sheild\API\Pagamentos\scheduler\` | **a RÉGUA — sempre por último** |
+>
+> 🔴 **O `deploy-manifest.json` VIAJA JUNTO — e é o esquecimento que mais confunde** (medido em
+> produção, 2026-08-01). O `check_deploy_parity.py` lê o manifesto **do diretório dele em
+> PRODUÇÃO** (`MANIFEST_PATH = Path(__file__).parent / "deploy-manifest.json"`), não o do
+> repositório. Copiar só os `.py` deixa a régua velha em produção, e o veredito fica
+> **enganoso ao contrário**: os arquivos NOVOS aparecem como `DIVERGENTE` (não batem o hash
+> antigo) e o arquivo novo vira `EXTRA` — a saída acusa "PRODUÇÃO DESATUALIZADA. Copie do
+> repositório os arquivos acima" quando os arquivos **já estão corretos**, mandando o operador
+> recopiar o que não é o problema. Foi exatamente o que aconteceu: `24/26 conferem` (o manifesto
+> velho tem 26 arquivos; o novo tem 27), com o `read_emails.py` respondendo `True True 4` — ou
+> seja, o código estava certo e a régua é que estava velha.
+>
+> **Como ler o sintoma:** em produção nada cria arquivo, então um **`EXTRA` que casa
+> `DEPLOY_GLOBS` significa manifesto obsoleto**, não arquivo sobrando. Se aparecer `EXTRA` junto
+> de `DIVERGENTE` nos mesmos arquivos que você acabou de copiar, copie o manifesto e rode de
+> novo antes de mexer em qualquer outra coisa. O manifesto **não pode** entrar em `DEPLOY_GLOBS`
+> (auto-referência: mudaria de hash a cada regravação), então essa verificação não existe — a
+> régua é o ponto cego do próprio verificador.
+>
+> 🔴 **A ORDEM NÃO É ESTILO — `extract_pdf.py` SEM `fiscal_key.py` DERRUBA TODA A EXTRAÇÃO DE PDF.**
+> O `extract_pdf.py` novo faz `from fiscal_key import (...)` no topo (reexport deliberado, mesmo
+> padrão do `febraban.py`), então sem o módulo o import falha com
+> `ModuleNotFoundError: No module named 'fiscal_key'` — verificado por mutante em 2026-08-01 — e
+> **nenhum PDF é extraído**, não só o fiscal. Copie o `fiscal_key.py` primeiro, ou os três juntos.
+> A assimetria é intencional: o `read_emails.py` **degrada** (avisa no log e segue), o
+> `extract_pdf.py` **estoura** — é o que faz um rename futuro aparecer alto e cedo em vez de virar
+> silêncio.
+>
+> ⚠️ **O `fiscal_key.py` é ARQUIVO NOVO** — copiar só o `read_emails.py` deixa a feature morta
+> (nenhum documento registrado). Essa degradação é silenciosa por design, mas **avisa no log**:
+> `[FISCAL] modulo 'fiscal_key' indisponivel — ... Deploy parcial?`. Mesma lição do `febraban.py`;
+> o `deploy-manifest.json` foi de 26 → **27 arquivos** no mesmo commit.
+>
+> **Por que o `extract_pdf.py` entra na lista mesmo mudando só 3 linhas** (correção de 2026-08-01 —
+> antes este bloco dizia "copiá-lo é opcional"): o hash dele está no manifesto, então deixá-lo para
+> trás faz o `check_deploy_parity.py` acusar `DIVERGENTE` indefinidamente, mesmo com a Onda 3
+> funcionando. Alarme permanente é alarme ignorado — e a paridade é justamente o mecanismo que
+> existe para impedir os 13 deploys pendentes que se acumularam até 2026-07-29.
+>
+> **Sem `.env`, sem dependência nova, sem passo de banco** (as migrations 107/108 já rodaram na
+> Supabase compartilhada dev+prod, e o backfill dos 172 documentos também). **Degrada com
+> segurança:** o código ANTIGO segue funcionando — só não registra documento fiscal, e a purga
+> nova (que é script de DEV, fora do manifesto) já preserva o que houver. Deltas de
+> `read_emails.py` são cumulativos: esta cópia carrega as pendências anteriores.
+> Validação (esperado `True True 4`):
+> `py -3 -c "import sys; sys.path.insert(0,'skills/email-reader/scripts'); import read_emails as R; print(hasattr(R,'_register_fiscal_documents'), R._fiscal_key() is not None, len(R._fiscal_key().FISCAL_MODELS))"`
+>
+> **Como confirmar que está VIVO em produção** (depois da 1ª execução agendada com um CT-e novo):
+> `SELECT count(*) FROM fiscal_document WHERE created_at > now() - interval '1 day';` — e o log do
+> scheduler traz a linha `[FISCAL] CTE <numero> ... registrado`.
 
 > **DEPLOY 2026-07-28 — ignorar "Recebemos o seu pagamento" (APLICADO em prod — 2026-07-29):**
 > `subject_is_payment_confirmation` passou a cobrir o aviso do credor de que recebeu, com a
