@@ -234,6 +234,57 @@ class CheckpointTest(unittest.TestCase):
             self.assertEqual(V._carrega_checkpoint(alvo), {})
 
 
+class EntradaExternaTest(unittest.TestCase):
+    """O checkpoint e a chave de objeto vêm de FORA e decidem escrita em disco e conteúdo de log.
+
+    O checkpoint é um arquivo local editável a mão e corrompível por queda; a chave nasce do
+    assunto e do remetente de um e-mail. Consumi-los crus significa confiar em tipo, tamanho e
+    conteúdo de algo que ninguém validou — foi o que o SonarCloud apontou como S2083 (path) e
+    S5145 (log injection) no PR #214.
+    """
+
+    def test_sem_quebra_colapsa_linha_e_trunca(self):
+        self.assertEqual(V._sem_quebra("a\r\nERRO forjado"), "a ERRO forjado")
+        self.assertEqual(V._sem_quebra("x" * 500, 10), "x" * 10 + "…")
+        self.assertEqual(V._sem_quebra(None), "None")
+
+    def test_concluidos_como_STRING_nao_vira_conjunto_de_caracteres(self):
+        """`set("12")` seria `{'1','2'}` — e a varredura pularia os UIDs 1 e 2 por acaso.
+        String também é iterável: sem o `isinstance` explícito o defeito passa silencioso."""
+        salvo = V._saneia_checkpoint({"versao": 1, "concluidos": "12345"})
+        self.assertEqual(salvo["concluidos"], [])
+
+    def test_campos_do_checkpoint_nao_forjam_linha_no_log(self):
+        salvo = V._saneia_checkpoint(
+            {"versao": 1, "mailbox": "INBOX\r\nERROR forjado", "falhados": {"1": "x\r\ny"}})
+        self.assertEqual(salvo["mailbox"], "INBOX ERROR forjado")
+        self.assertEqual(salvo["falhados"]["1"], "x y")
+
+    def test_checkpoint_de_tipo_errado_vira_vazio(self):
+        for bruto in ([], "texto", 42, None):
+            with self.subTest(bruto=bruto):
+                self.assertEqual(V._saneia_checkpoint(bruto), {})
+
+    def test_falhados_de_tipo_errado_nao_derruba_a_carga(self):
+        salvo = V._saneia_checkpoint({"versao": 1, "falhados": ["nao", "e", "dict"]})
+        self.assertEqual(salvo["falhados"], {})
+
+    def test_quarentena_RECUSA_caminho_fora_do_diretorio(self):
+        """A chave nasce do assunto/remetente de um e-mail. `safe_filename` já remove `..`, mas
+        escrever fora do diretório seria escrita arbitrária comandada por quem envia a mensagem —
+        a contenção é a mesma defesa em profundidade do `_is_within_inbox` do reader."""
+        with tempfile.TemporaryDirectory() as td:
+            raiz = Path(td) / "quarentena"
+            with mock.patch.object(V, "QUARENTENA_DIR", raiz):
+                V._quarentena("../fora.pdf", _PDF)
+                V._quarentena("sub/../../fora2.pdf", _PDF)
+                self.assertFalse((Path(td) / "fora.pdf").exists())
+                self.assertFalse((Path(td) / "fora2.pdf").exists())
+
+                V._quarentena("dentro.pdf", _PDF)      # o caminho legítimo continua funcionando
+                self.assertTrue((raiz / "dentro.pdf").exists())
+
+
 class UidsPendentesTest(unittest.TestCase):
     def test_remove_concluidos_preservando_a_ordem(self):
         self.assertEqual(V._uids_pendentes([b"1", b"2", b"3"], {"2"}), [b"1", b"3"])

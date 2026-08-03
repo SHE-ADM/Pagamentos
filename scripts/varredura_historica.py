@@ -310,13 +310,51 @@ def _fmt_bytes(n: int) -> str:
 # CHECKPOINT — estado local, gravado de forma atomica
 # =============================================================================================
 
+def _sem_quebra(texto, limite: int = 200) -> str:
+    """Texto de UMA linha, truncado — para tudo que vem de fora e vai ao log.
+
+    Sem isto, um valor com `\\r\\n` forja linhas inteiras no log (log injection): quem lesse o
+    arquivo veria um "ERRO" que ninguem emitiu. Vale para o checkpoint (arquivo local editavel) e
+    para qualquer dado derivado do e-mail.
+    """
+    limpo = " ".join(str(texto).split())
+    return limpo[:limite] + ("…" if len(limpo) > limite else "")
+
+
+def _saneia_checkpoint(bruto) -> dict:
+    """Normaliza o checkpoint LIDO DO DISCO ao formato esperado.
+
+    O arquivo e entrada EXTERNA — editavel a mao, corrompivel por queda, e seus valores decidem
+    o que a varredura pula e o que vai para o log. Consumi-lo cru significa confiar em tipo,
+    tamanho e conteudo de algo que ninguem validou: `concluidos` como string faria o `set()`
+    virar um conjunto de CARACTERES (pulando UIDs por acaso), e um campo com `\\r\\n` forja linha
+    no log.
+
+    Tudo o que sobrevive aqui e string de uma linha, truncada, ou lista/dict de strings assim.
+    """
+    if not isinstance(bruto, dict):
+        return {}
+    salvo = {campo: _sem_quebra(bruto.get(campo)) for campo in
+             ("imap_user", "mailbox", "uidvalidity", "criterio") if bruto.get(campo) is not None}
+    if isinstance(bruto.get("versao"), int):
+        salvo["versao"] = bruto["versao"]
+    concluidos = bruto.get("concluidos")
+    # `isinstance(str)` explicito: string tambem e iteravel, e `set("12")` daria {'1','2'}.
+    salvo["concluidos"] = ([_sem_quebra(u, 40) for u in concluidos]
+                           if isinstance(concluidos, (list, tuple, set)) else [])
+    falhados = bruto.get("falhados")
+    salvo["falhados"] = ({_sem_quebra(k, 40): _sem_quebra(v) for k, v in falhados.items()}
+                         if isinstance(falhados, dict) else {})
+    return salvo
+
+
 def _carrega_checkpoint(path: Path) -> dict:
     try:
-        return json.loads(path.read_text(encoding="utf-8"))
+        return _saneia_checkpoint(json.loads(path.read_text(encoding="utf-8")))
     except FileNotFoundError:
         return {}
-    except (OSError, json.JSONDecodeError) as e:
-        log.warning(f"checkpoint ilegivel ({e}) — comecando do zero")
+    except (OSError, json.JSONDecodeError, ValueError) as e:
+        log.warning(f"checkpoint ilegivel ({_sem_quebra(e)}) — comecando do zero")
         return {}
 
 
@@ -332,7 +370,7 @@ def _salva_checkpoint(path: Path, estado: dict) -> None:
         tmp.write_text(json.dumps(estado, ensure_ascii=False, indent=1), encoding="utf-8")
         os.replace(tmp, path)
     except OSError as e:
-        log.warning(f"nao foi possivel gravar o checkpoint: {e}")
+        log.warning(f"nao foi possivel gravar o checkpoint: {_sem_quebra(e)}")
 
 
 # =============================================================================================
@@ -437,7 +475,7 @@ class Caixa:
         try:
             _, linhas = self.mail.list()
         except Exception as e:  # noqa: BLE001 — inventario informativo; nao derruba o run
-            log.warning(f"nao foi possivel listar as pastas: {e}")
+            log.warning(f"nao foi possivel listar as pastas: {_sem_quebra(e)}")
             return achados
         for linha in linhas or []:
             texto = linha.decode(errors="replace") if isinstance(linha, bytes) else str(linha)
@@ -482,7 +520,7 @@ def _patch_body_full(ec_id: int, body_text: str) -> str:
         BASE, HEADERS, f"email_control?id=eq.{ec_id}&body_full=is.null",
         {"body_full": corpo}, method="PATCH", prefer="return=representation")
     if not ok:
-        log.warning(f"    body_full (id {ec_id}): {resposta}")
+        log.warning(f"    body_full (id {ec_id}): {_sem_quebra(resposta)}")
         return "erro"
     return "gravado" if resposta else "ja_tinha"
 
@@ -491,7 +529,7 @@ def _upload_object(chave: str, dados: bytes, content_type: str) -> str:
     """Sobe o anexo ao bucket SEM sobrescrever. Devolve subiu|ja_existe|erro."""
     estado, detalhe = storage_upload(BASE, HEADERS, BUCKET, chave, dados, content_type)
     if estado == "erro":
-        log.warning(f"    upload {chave}: {detalhe}")
+        log.warning(f"    upload {_sem_quebra(chave)}: {_sem_quebra(detalhe)}")
     return estado
 
 
@@ -509,7 +547,7 @@ def _registrar_fiscal(doc: dict, storage_key: str, ctx: dict) -> str:
         _fiscal_payload(doc, storage_key, ctx), method="POST",
         prefer="resolution=ignore-duplicates,return=representation")
     if not ok:
-        log.warning(f"    fiscal {doc.get('access_key')}: {resposta}")
+        log.warning(f"    fiscal {_sem_quebra(doc.get('access_key'))}: {_sem_quebra(resposta)}")
         return "erro"
     return "inserido" if resposta else "duplicado"
 
@@ -662,18 +700,35 @@ def _processar_mensagem(estado: dict, uid, raw: bytes, meta) -> bool:
     return sem_falha
 
 
+def _dentro_de(base: Path, alvo: Path) -> bool:
+    """True se `alvo` resolvido fica DENTRO de `base` — contencao contra path traversal.
+
+    Espelha o `_is_within_inbox` do reader. `safe_filename` ja remove `..` e separadores, entao
+    isto e defesa em profundidade: a chave nasce de assunto e remetente de e-mail, e escrever
+    fora do diretorio previsto seria uma escrita arbitraria comandada por quem envia a mensagem.
+    """
+    try:
+        return alvo.resolve() != base.resolve() and base.resolve() in alvo.resolve().parents
+    except OSError:
+        return False
+
+
 def _quarentena(chave: str, dados: bytes) -> None:
     """Guarda em disco o PDF cujo upload falhou.
 
     Sem isto, uma falha de rede perderia DE VEZ um arquivo que so existia no IMAP — e a proxima
     execucao talvez nem passe por ele. Fica fora de `data/pdfs_inbox` de proposito.
     """
+    destino = QUARENTENA_DIR / chave
+    if not _dentro_de(QUARENTENA_DIR, destino):
+        log.error(f"    quarentena RECUSADA (caminho fora do diretorio): {_sem_quebra(chave)}")
+        return
     try:
         QUARENTENA_DIR.mkdir(parents=True, exist_ok=True)
-        (QUARENTENA_DIR / chave).write_bytes(dados)
-        log.warning(f"    quarentena: {chave}")
+        destino.write_bytes(dados)
+        log.warning(f"    quarentena: {_sem_quebra(chave)}")
     except OSError as e:
-        log.error(f"    quarentena falhou ({chave}): {e}")
+        log.error(f"    quarentena falhou ({_sem_quebra(chave)}): {_sem_quebra(e)}")
 
 
 # =============================================================================================
@@ -869,7 +924,7 @@ def main(argv=None) -> int:
         salvo = {} if args.reset_checkpoint else _carrega_checkpoint(CHECKPOINT_PATH)
         incompativel = _checkpoint_compativel(salvo, identidade)
         if incompativel:
-            log.error(f"Checkpoint INCOMPATIVEL ({incompativel}).\n"
+            log.error(f"Checkpoint INCOMPATIVEL ({_sem_quebra(incompativel)}).\n"
                       "Os UIDs salvos designam outras mensagens agora. Use --reset-checkpoint "
                       "para comecar do zero.")
             return 1
@@ -927,8 +982,8 @@ def main(argv=None) -> int:
                 raise
             except Exception as e:  # noqa: BLE001 — uma mensagem ruim nao derruba a varredura
                 estado["tally"]["erros_mensagem"] += 1
-                falhados[us] = str(e)[:200]
-                log.exception(f"  [{i}] uid {us}: {e}")
+                falhados[us] = _sem_quebra(e)
+                log.exception(f"  [{i}] uid {us}: {_sem_quebra(e)}")
 
             if i % 25 == 0:
                 log.info(f"  ... {i}/{len(pendentes)}")
