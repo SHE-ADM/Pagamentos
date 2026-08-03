@@ -23,6 +23,14 @@ PRESERVA (nao apaga) o objeto que ainda representa TRABALHO EM ABERTO:
     extracao falhou e que ainda pode virar conta a mao.
 Para esses, o bucket e a copia acessivel — o original so existe no IMAP.
 
+PRESERVA TAMBEM, pelo CONTEUDO: o orfao cujo PDF contem uma chave de acesso fiscal VALIDA.
+  A preservacao por `fiscal_document.storage_key` cobre o PRIMEIRO objeto de cada chave — e
+  `access_key` e UNIQUE. Quando a MESMA chave chega por dois objetos (o PDF consolidado da
+  transportadora e o individual), o segundo nao consta em lugar nenhum, vira orfao e era apagado
+  **mesmo sendo um DACTE legitimo**. Medido: 4 objetos nessa situacao em 2026-08-01 e **10** em
+  2026-08-03 — a lacuna CRESCE a cada CT-e reenviado. Como a decisao aqui e irreversivel, a purga
+  abre cada candidato e so apaga o que comprovadamente nao carrega documento fiscal.
+
 IRREVERSIVEL. Use --dry-run primeiro (padrao do projeto). O backup diario (skill
 `backup-supabase`, 02:00) inclui o bucket, entao ha rede de seguranca.
 
@@ -35,7 +43,9 @@ import argparse
 import json
 import logging
 import sys
+import tempfile
 import urllib.error
+import urllib.parse
 import urllib.request
 from pathlib import Path
 
@@ -44,10 +54,12 @@ import os
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "skills" / "email-reader" / "scripts"))
+sys.path.insert(0, str(ROOT / "skills" / "pdf-contas-pagar" / "scripts"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 load_dotenv(ROOT / ".env")
 
-from read_emails import safe_filename  # noqa: E402
+import fiscal_key  # noqa: E402
+from read_emails import _pdf_text, safe_filename  # noqa: E402
 from supabase_rest import RestError, rest_get, storage_list  # noqa: E402
 
 logging.basicConfig(level=logging.INFO, format="%(message)s")
@@ -100,6 +112,51 @@ def _erro_source_files(erros: list[dict]) -> set:
         if isinstance(rp, dict) and rp.get("source_file"):
             nomes.add(rp["source_file"])
     return nomes
+
+
+def _baixar(nome: str) -> "bytes | None":
+    """Bytes do objeto, ou None se nao der para baixar. NUNCA levanta.
+
+    Quem chama decide o que fazer com o None — e a decisao correta aqui e PRESERVAR: nao
+    conseguir ler o arquivo nao e prova de que ele e descartavel.
+    """
+    url = f"{BASE}/storage/v1/object/{BUCKET}/{urllib.parse.quote(nome, safe='')}"
+    try:
+        with urllib.request.urlopen(urllib.request.Request(url, headers=HEADERS), timeout=60) as r:
+            return r.read()
+    except (urllib.error.URLError, OSError, TimeoutError) as e:
+        log.warning(f"  nao foi possivel baixar {nome}: {e}")
+        return None
+
+
+def _tem_chave_fiscal(nome: str) -> bool:
+    """True se o PDF orfao carrega uma chave de acesso fiscal VALIDA.
+
+    Fecha a lacuna estrutural da preservacao por `storage_key`: `fiscal_document.access_key` e
+    UNIQUE, entao o SEGUNDO objeto que traz a mesma chave nao tem linha e cairia como orfao.
+
+    Tres decisoes, todas na direcao de NAO apagar:
+      - so PDF e inspecionado (imagem nao tem chave em texto; abri-la seria custo sem resposta);
+      - falha ao baixar ou ao ler o texto → devolve True (preserva). O objetivo desta funcao e
+        autorizar uma remocao IRREVERSIVEL: na duvida, ela nao autoriza;
+      - a validacao e a canonica (`fiscal_key.extract_access_keys`, com as cinco camadas —
+        UF, mes, ano, modelo e DV), nao um "44 digitos" ganancioso que preservaria qualquer
+        boleto por acidente.
+    """
+    if not nome.lower().endswith(".pdf"):
+        return False
+    dados = _baixar(nome)
+    if dados is None:
+        return True
+    try:
+        with tempfile.TemporaryDirectory(prefix="purge_") as td:
+            caminho = Path(td) / "orfao.pdf"
+            caminho.write_bytes(dados)
+            texto = _pdf_text(caminho)
+    except OSError as e:
+        log.warning(f"  nao foi possivel inspecionar {nome}: {e}")
+        return True
+    return bool(fiscal_key.extract_access_keys(texto))
 
 
 def _storage_remove(keys: list[str]) -> int:
@@ -171,6 +228,19 @@ def main() -> int:
         elif nome in erros_files:
             motivo = "citado em email_processing_errors (extracao falhou)"
         (preservar.append((nome, motivo)) if motivo else apagar.append(nome))
+
+    # Ultima barreira, e a unica que olha o CONTEUDO: entre os candidatos a remocao ainda ha
+    # documento fiscal legitimo — o 2o objeto de uma chave ja registrada (a UNIQUE de
+    # `access_key` guarda so o primeiro). Roda por ultimo, sobre o conjunto ja reduzido, porque
+    # baixa e abre cada PDF; e sempre, inclusive no --dry-run, senao o relatorio prometeria
+    # apagar o que a execucao real preservaria.
+    if apagar:
+        log.info(f"  inspecionando o conteudo de {len(apagar)} candidato(s)...")
+        restantes = []
+        for nome in apagar:
+            (preservar.append((nome, "contem chave de acesso fiscal (documento fiscal)"))
+             if _tem_chave_fiscal(nome) else restantes.append(nome))
+        apagar = restantes
 
     log.info(f"objetos no bucket ..... {len(objetos)}")
     log.info(f"com linha (mantidos) .. {len(objetos) - len(orfaos)}")
