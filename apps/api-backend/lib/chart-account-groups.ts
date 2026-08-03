@@ -13,7 +13,7 @@ import {
 } from '@sheild/shared/schemas';
 import type { ZodError } from 'zod';
 import { getSupabaseAdmin } from './supabase-admin';
-import { resolveSort, type SortOrder } from './sort';
+import { applyOrder, resolveSort, type SortOrder } from './sort';
 import { resolveMatchingIds } from './search';
 import { validateTypeGroupScope } from './lookups';
 import { ApiServiceError } from './api-error';
@@ -99,12 +99,11 @@ const repository = {
       }
     }
 
+    // applyOrder desempata pela PK — obrigatório com paginação por range (ver lib/sort.ts).
     const sorted = resolveSort(params.sort, params.order, SORTABLE_COLUMNS);
-    const ordered = sorted
-      ? query.order(sorted.column, { ascending: sorted.ascending, nullsFirst: false })
-      : query.order('group_code', { ascending: true, nullsFirst: false });
+    const fallback = { column: 'group_code', ascending: true, nullsFirst: false };
 
-    return ordered.range(params.from, params.to);
+    return applyOrder(query, sorted, fallback, 'chart_account_group_id').range(params.from, params.to);
   },
 
   findById(id: number) {

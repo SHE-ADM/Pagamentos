@@ -3,6 +3,7 @@
 // das falhas (via backend Flask, exposto pelo proxy /api).
 
 import type { CobrancaEnvioLog, CobrancaErroLog, PaginatedResult } from '../types/cobranca';
+import { stableOrder } from '../lib/stableOrder';
 
 const SUPABASE_URL  = import.meta.env.VITE_SUPABASE_URL;
 const SUPABASE_ANON = import.meta.env.VITE_SUPABASE_ANON_KEY;
@@ -61,7 +62,8 @@ interface EnviosFilter {
 export async function fetchEnviosLog(filter: EnviosFilter): Promise<PaginatedResult<CobrancaEnvioLog>> {
   const { token, page = 1, search, sentFrom, sentTo, dueFrom, dueTo, sortCol, sortDir } = filter;
   // Ordenação padrão = vencimento (due_date) descendente; sort explícito sobrescreve.
-  const order = sortCol && sortDir ? `${sortCol}.${sortDir}` : 'due_date.desc';
+  // Desempate por `id` obrigatório — paginação por offset (ver lib/stableOrder.ts).
+  const order = stableOrder({ column: sortCol, dir: sortDir, fallback: 'due_date.desc', tiebreak: 'id' });
   const params: Record<string, string> = {
     select: 'id,document_id,customer_name,primary_email,cc_email,due_date,bill_amount,email_subject,sent_at',
     order, limit: String(PAGE_SIZE), offset: String((page - 1) * PAGE_SIZE),
@@ -86,7 +88,9 @@ export async function fetchErrosLog(filter: ErrosFilter): Promise<PaginatedResul
   const { token, page = 1, errorType, search, dateFrom, dateTo } = filter;
   const params: Record<string, string> = {
     select: 'id,document_id,customer_name,primary_email,cc_email,due_date,bill_amount,error_type,error_message,error_detail,occurred_at',
-    order: 'occurred_at.desc', limit: String(PAGE_SIZE), offset: String((page - 1) * PAGE_SIZE),
+    // Desempate por `id` obrigatório — paginação por offset (ver lib/stableOrder.ts).
+    order: stableOrder({ fallback: 'occurred_at.desc', tiebreak: 'id' }),
+    limit: String(PAGE_SIZE), offset: String((page - 1) * PAGE_SIZE),
   };
   if (errorType?.trim()) params['error_type'] = `eq.${errorType.trim()}`;
   if (search?.trim()) params['or'] = `(customer_name.ilike.*${search.trim()}*,document_id.ilike.*${search.trim()}*)`;

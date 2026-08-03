@@ -28,6 +28,56 @@ export function resolveSort(
   return { column: sort, ascending: order !== 'desc' };
 }
 
+/** Ordem default do recurso, aplicada quando o cliente não pede coluna válida. */
+interface DefaultOrder {
+  column: string;
+  ascending: boolean;
+  nullsFirst?: boolean;
+}
+
+/** Subconjunto do query builder do supabase-js que este helper precisa. */
+interface Orderable {
+  order(column: string, options: { ascending: boolean; nullsFirst?: boolean }): this;
+}
+
+/**
+ * Aplica a ordenação do recurso SEMPRE seguida de um desempate único (a PK).
+ *
+ * Por que o desempate é obrigatório (não regredir): `ORDER BY coluna` não define ordem
+ * total quando há empates, e a ordem efetiva muda com o plano de execução. Como a
+ * paginação é por `range()` (offset), cada página é uma consulta nova — uma linha
+ * empatada pode repetir entre páginas e outra pode ser PULADA, sumindo da tela sem
+ * erro nenhum. Medido nesta base: a mesma página por `due_date desc` devolveu conjuntos
+ * diferentes conforme o plano (1 linha entrou, 1 saiu).
+ *
+ * Centralizado aqui de propósito: cada service chamando `.order()` na mão é exatamente
+ * como o desempate foi esquecido nos 8 recursos paginados.
+ *
+ * @param query Query do supabase-js já filtrada.
+ * @param sorted Resultado de `resolveSort` (null → usa `fallback`).
+ * @param fallback Ordem default do recurso.
+ * @param tiebreak Coluna ÚNICA de desempate — a PK da tabela.
+ */
+export function applyOrder<Q extends Orderable>(
+  query: Q,
+  sorted: ResolvedSort | null,
+  fallback: DefaultOrder,
+  tiebreak: string,
+): Q {
+  const primary: DefaultOrder = sorted
+    ? { column: sorted.column, ascending: sorted.ascending, nullsFirst: false }
+    : fallback;
+  const ordered = query.order(primary.column, {
+    ascending: primary.ascending,
+    ...(primary.nullsFirst === undefined ? {} : { nullsFirst: primary.nullsFirst }),
+  });
+  // Já ordenado pela própria PK → a ordem já é total.
+  if (primary.column === tiebreak) return ordered;
+  // O desempate acompanha a direção principal (dentro do empate, `desc` = mais recentes
+  // primeiro). O que importa é ser determinístico e IGUAL em todas as páginas.
+  return ordered.order(tiebreak, { ascending: primary.ascending });
+}
+
 /** Extrai `sort`/`order` dos query params da rota (order restrito a asc|desc). */
 export function parseSortParams(sp: URLSearchParams): { sort?: string; order?: SortOrder } {
   const sort = sp.get('sort') ?? undefined;

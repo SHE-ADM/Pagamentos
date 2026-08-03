@@ -14,7 +14,7 @@ import {
 } from '@sheild/shared/schemas';
 import type { ZodError } from 'zod';
 import { getSupabaseAdmin } from './supabase-admin';
-import { resolveSort, type SortOrder } from './sort';
+import { applyOrder, resolveSort, type SortOrder } from './sort';
 import { ApiServiceError } from './api-error';
 
 const TABLE = 'financial_bank';
@@ -68,12 +68,11 @@ const repository = {
       query = query.or(`bank_code.ilike.%${term}%,bank_name.ilike.%${term}%`);
     }
 
+    // applyOrder desempata pela PK — obrigatório com paginação por range (ver lib/sort.ts).
     const sorted = resolveSort(params.sort, params.order, SORTABLE_COLUMNS);
-    const ordered = sorted
-      ? query.order(sorted.column, { ascending: sorted.ascending, nullsFirst: false })
-      : query.order('bank_code', { ascending: true, nullsFirst: false });
+    const fallback = { column: 'bank_code', ascending: true, nullsFirst: false };
 
-    return ordered.range(params.from, params.to);
+    return applyOrder(query, sorted, fallback, 'bank_id').range(params.from, params.to);
   },
 
   findById(id: number) {

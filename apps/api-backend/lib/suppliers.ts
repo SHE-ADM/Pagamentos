@@ -17,7 +17,7 @@ import {
 } from '@sheild/shared/schemas';
 import type { ZodError } from 'zod';
 import { getSupabaseAdmin } from './supabase-admin';
-import { resolveSort, type SortOrder } from './sort';
+import { applyOrder, resolveSort, type SortOrder } from './sort';
 import { checkClassificationPair } from './classification';
 import { ApiServiceError } from './api-error';
 
@@ -103,17 +103,15 @@ const supplierRepository = {
     // Prioridade: (1) sort por coluna do grid (allowlist + order); (2) alias `name` =
     // alfabética por nome fantasia (lookup do modal de contas); (3) padrão = mais
     // recentes (sk_supplier desc — página /fornecedores).
+    // applyOrder acrescenta o desempate por `sk_supplier` (PK) — obrigatório com
+    // paginação por range/offset, senão fornecedores empatados repetem entre páginas e
+    // outros somem. Ver lib/sort.ts.
     const sorted = resolveSort(params.sort, params.order, SORTABLE_COLUMNS);
-    let ordered;
-    if (sorted) {
-      ordered = query.order(sorted.column, { ascending: sorted.ascending, nullsFirst: false });
-    } else if (params.sort === 'name') {
-      ordered = query.order('trade_name', { ascending: true, nullsFirst: false });
-    } else {
-      ordered = query.order('sk_supplier', { ascending: false });
-    }
+    const fallback = params.sort === 'name'
+      ? { column: 'trade_name', ascending: true, nullsFirst: false }
+      : { column: 'sk_supplier', ascending: false };
 
-    return ordered.range(params.from, params.to);
+    return applyOrder(query, sorted, fallback, 'sk_supplier').range(params.from, params.to);
   },
 
   findBySk(sk: number) {

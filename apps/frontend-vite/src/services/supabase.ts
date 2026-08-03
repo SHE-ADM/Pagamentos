@@ -23,6 +23,7 @@ import {
   TYPE_GROUP_ID_CUSTO_MERCADORIAS,
 } from '@sheild/shared';
 import { supabase } from '../lib/supabaseClient';
+import { stableOrder } from '../lib/stableOrder';
 
 // Situação é filtrada/ordenada por status_id (fonte única). Ordenar a coluna
 // "Situação" continua ALFABÉTICO pelo NOME (decisão de negócio — id ≠ ordem), via o
@@ -124,7 +125,13 @@ export async function getEmailControl({
   hasAttachment,
   pdfExtracted,
 }: EmailControlFilters = {}): Promise<EmailControl[]> {
-  const baseParams: QueryParams = { select: '*', order: 'received_at.desc', limit };
+  // Sem offset aqui, mas o desempate mantém a ordem ESTÁVEL entre recargas — senão
+  // e-mails de mesmo `received_at` trocam de lugar a cada refresh (ver lib/stableOrder.ts).
+  const baseParams: QueryParams = {
+    select: '*',
+    order: stableOrder({ fallback: 'received_at.desc', tiebreak: 'id' }),
+    limit,
+  };
   if (status) baseParams['status'] = `eq.${status}`;
   if (days) {
     const since = new Date(Date.now() - days * 86400000).toISOString();
@@ -503,8 +510,14 @@ export async function getFinancialAccountControl({
   // Ordenação padrão = criação (created_at) descendente — mais recente no topo (igual ao /emails).
   // Sort explícito do usuário sobrescreve. A coluna "Situação" ordena pelo NOME da
   // dimensão (alfabético — decisão de negócio; id ≠ ordem), via order=status_dim(status_name).
+  // O desempate por `id` (stableOrder) é OBRIGATÓRIO: sem ele, empates + paginação por
+  // offset fazem a mesma conta aparecer duas vezes no scroll infinito e OUTRA sumir da
+  // tela. Ordenar por Situação empata 682 de 682 linhas — ver lib/stableOrder.ts.
   const orderCol = sortCol === STATUS_SORT_KEY ? STATUS_DIM_ORDER : sortCol;
-  url.searchParams.set('order', orderCol ? `${orderCol}.${sortDir ?? 'asc'}` : 'created_at.desc');
+  url.searchParams.set(
+    'order',
+    stableOrder({ column: orderCol, dir: sortDir, fallback: 'created_at.desc', tiebreak: 'id' }),
+  );
   url.searchParams.set('limit', String(pageSize));
   url.searchParams.set('offset', String(offset));
   // Busca "R$ ..." é por valor → não resolve ids pelo termo. Senão, resolve fornecedor +
@@ -642,7 +655,8 @@ export async function getProcessingErrors({
   const offset = (page - 1) * pageSize;
   const url = new URL(`${BASE_URL}/rest/v1/email_processing_errors`);
   url.searchParams.set('select', '*');
-  url.searchParams.set('order', 'logged_at.desc');
+  // Desempate obrigatório — paginação por offset (ver lib/stableOrder.ts).
+  url.searchParams.set('order', stableOrder({ fallback: 'logged_at.desc', tiebreak: 'id' }));
   url.searchParams.set('limit', String(pageSize));
   url.searchParams.set('offset', String(offset));
   if (errorType) url.searchParams.set('error_type', `eq.${errorType}`);

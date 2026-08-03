@@ -16,7 +16,7 @@ import {
 } from '@sheild/shared/schemas';
 import type { ZodError } from 'zod';
 import { getSupabaseAdmin } from './supabase-admin';
-import { resolveSort, type SortOrder } from './sort';
+import { applyOrder, resolveSort, type SortOrder } from './sort';
 import { resolveMatchingIds, parseNumericTerm } from './search';
 import { ApiServiceError } from './api-error';
 
@@ -103,12 +103,12 @@ const repository = {
       if (term) query = query.or((await buildSearchClauses(term)).join(','));
     }
 
+    // applyOrder desempata pela PK — obrigatório com paginação por range (ver lib/sort.ts).
+    // O fallback já É a PK; nesse caso applyOrder não duplica a coluna.
     const sorted = resolveSort(params.sort, params.order, SORTABLE_COLUMNS);
-    const ordered = sorted
-      ? query.order(sorted.column, { ascending: sorted.ascending, nullsFirst: false })
-      : query.order('financial_account_id', { ascending: true });
+    const fallback = { column: 'financial_account_id', ascending: true };
 
-    return ordered.range(params.from, params.to);
+    return applyOrder(query, sorted, fallback, 'financial_account_id').range(params.from, params.to);
   },
 
   findById(id: number) {
