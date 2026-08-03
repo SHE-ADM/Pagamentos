@@ -76,7 +76,7 @@ de cada onda** — e o motivo de algumas ideias terem sido descartadas.
 | **NFS-e** | 10 | **4** | ❌ **municipal — não tem chave nacional** |
 | **CF-e / NFC-e / cupom fiscal** | **1** | **0** | ✅ modelos **59 / 65** (sem volume hoje) |
 | Cupom fiscal **não** eletrônico | 0 | 0 | ❌ papel térmico, sem estrutura |
-| `body_preview` — teto de 500 chars | **439 de 1.133 (39%) truncados** |
+| `body_preview` — teto de 500 chars | **439 de 1.133 (39%) truncados** — *refinado para **440** na medição por caminho da §7.2, que é a que vale* |
 | `email_body_excerpt` (só quando vira conta) | média 918, máx 11.449 chars |
 | Anexos: **XML** / PDF | **0** / 662 (de 679) |
 
@@ -314,7 +314,7 @@ corpo porque passaram por `process_message`.)*
 **Truncamento em dois lugares** — ambos precisam mudar: `SupabaseControl.register`
 (`(rec.get("body_preview") or "")[:500]`) e `process_message` (`body_text[:500]`).
 
-**Backfill:** **impossível** para os 439 truncados — o texto só existe no IMAP. Reprocessáveis
+**Backfill:** **impossível** para os 440 truncados — o texto só existe no IMAP. Reprocessáveis
 apenas os que ainda estiverem na caixa. **É o motivo de esta onda vir cedo.**
 **Atenção:** corpo integral carrega **PII**; a RLS da migration 078 já recorta `email_control` por
 remetente para grupo restrito — validar que continua valendo com a coluna nova.
@@ -457,8 +457,14 @@ caixa postal. Uma passada única em `financeiro@otimotex.com.br` resolve **duas 
 | Recupera | Origem do problema |
 |---|---|
 | ~115 CT-e sem PDF | apagados pela purga de 15/07 |
-| 439 corpos truncados em 500 chars | `body_preview` nunca guardou o texto completo |
+| 440 corpos truncados em 500 chars | `body_preview` nunca guardou o texto completo |
 | Documentos fiscais anteriores ao pipeline | e-mails nunca processados |
+
+> **440, não 439** (divergência interna corrigida em 2026-08-03): a tabela medida da §7.2 —
+> `B — processado | 884 | 823 | 440` — é a fonte, e o `CLAUDE.md` já registrava 440. Duas frases
+> desta seção diziam 439, escritas ao redor da medição. O número **exato de hoje** sai do
+> `--dry-run` (`com body_full NULO`), que consulta `body_full IS NULL AND keyword_matched IS NOT
+> NULL` — é ele que fecha a onda, não o valor histórico.
 
 **Precisa ser um script novo — `read_emails.py --all` NÃO serve.** A dedup por `message_id`
 (`known_ids`) **pula** todo e-mail já registrado, que é exatamente o conjunto a reprocessar. O
@@ -735,7 +741,7 @@ banco real**. O documento foi escrito olhando as 42 colunas da tabela; o chat v�
 | 1 — Destravar colunas existentes | ✅ **concluída** | **103, 104** | 2026-07-31 | 7 itens; 3 achados na execução (abaixo) |
 | 2 — Corpo de e-mail | ✅ **concluída** | **105, 106** | 2026-07-31 | escopo A; 8ª tool; **deploy do reader APLICADO e verificado em prod** |
 | 3 — Fiscais camada 1 (chave: CT-e/NF-e/CF-e) | ✅ **concluída** | **107, 108** | 2026-08-01 | 9ª tool; **72 PDFs fiscais salvos da próxima purga**; **deploy APLICADO e verificado em prod (27/27)** |
-| **4 — Varredura histórica (passada única)** | ⬜ não iniciada | — | — | requer Ondas 2 e 3 |
+| **4 — Varredura histórica (passada única)** | ✅ **concluída** | — (nenhuma) | 2026-08-03 | 264 mensagens · **+70 corpos · +7 chaves · +4 objetos** · 0 falhas · contas intocadas. **A premissa caiu: a INBOX tinha 264 de 1.166 e-mails — 0 CT-e recuperados** |
 | 5 — Fiscais camada 2 (itens de NF-e via LLM) | ⬜ não iniciada | — | — | requer Onda 3 |
 | 6 — Campos derivados | ⬜ não iniciada | — | — | — |
 | 7 — Auditoria | ⬜ não iniciada | — | — | — |
@@ -947,6 +953,135 @@ noutro lugar". Fechamento: **27/27, `exit=0`**.
 quando remetente/assunto já haviam decidido a regra LEBIANCO). É uma segunda passada de pdfplumber
 por PDF, na casa de centenas de ms — irrelevante perto do IMAP e da Claude API, e é o preço de a
 chave fiscal não depender da regra de outra feature.
+
+---
+
+### 7.4 Onda 4 — executada em 2026-08-03 · **a premissa caiu, e o número prova**
+
+**Resultado da passada única** (ensaio de 50 + passada completa, 264 mensagens, **0 falhas**):
+
+| Medida | Antes | Depois | Δ |
+|---|---|---|---|
+| `financial_account_control` (count) | 673 | 673 | **+0** ✅ |
+| `financial_account_control` `max(id)` | 822 | 822 | **+0** ✅ |
+| `email_control` (count) | 1.166 | 1.166 | **+0** ✅ (nenhuma linha criada) |
+| corpos pendentes (`body_full` nulo + keyword) | 506 | 436 | **−70** |
+| `fiscal_document` | 172 | 179 | **+7** |
+| objetos no bucket | 520 | 524 | **+4** |
+
+O invariante nº 1 — *nunca gravar conta a pagar* — foi verificado **no banco**, não só por teste:
+contagem e `max(id)` idênticos antes e depois. Quarentena vazia (nenhum upload falhou). Reexecutar
+imediatamente devolve `a processar: 0 de 264` — idempotência provada em produção, não inferida.
+
+#### 🔴 O achado que vale mais que o resultado: a janela já tinha fechado
+
+O plano projetava recuperar **~115 PDFs de CT-e** e **440 corpos**. A caixa entregou outra coisa:
+
+| | |
+|---|---|
+| Mensagens na **INBOX** | **264** |
+| Linhas em `email_control` | **1.166** |
+| **E-mails já processados que não estão mais na caixa** | **~900 (77%)** |
+| CT-e recuperados | **0** |
+| Corpos recuperados | 70 de 506 candidatos (**14%**) |
+
+A premissa da onda era "o texto só existe no IMAP, então corra". O que a medição mostrou é que,
+para 77% do acervo, **ele já não existe nem lá** — os e-mails saíram da caixa depois de
+processados, e isso não tem nada a ver com a purga de 15/07, que era a causa suposta. As 7 chaves
+novas são **todas NF-e** (uma delas veio dentro de um DACTE da SSW, a NF-e da mercadoria
+transportada); nenhum CT-e.
+
+> **A lição generaliza:** quando um plano se justifica por "a fonte é volátil, corra", o **primeiro
+> passo tem de ser MEDIR a fonte** — não escrever o coletor. Um `--dry-run` de dois minutos, feito
+> na Onda 2, teria revelado que a INBOX guarda ~3 meses de mensagens e que a recuperação histórica
+> nunca foi possível na escala planejada. O código está certo e é reutilizável; a **premissa** é que
+> nunca foi verificada.
+
+#### O número documentado (440) era outro indicador
+
+O `--dry-run` mediu **506** candidatos, não 440. Não é divergência: 440 contava os **truncados**
+(perda medida em julho), e 506 conta **tudo com `body_full` nulo e keyword** — que é o conjunto que
+a varredura preenche. O valor de referência para esta onda é sempre o do `--dry-run`, nunca o
+histórico.
+
+**Sobrou o quê:** 436 corpos que permanecem nulos (os e-mails saíram da caixa — irrecuperáveis) e
+os ~115 CT-e da purga, também irrecuperáveis. Isso **fecha** a Onda 4: não há segunda passada que
+traga mais, e o script continua disponível caso a caixa volte a acumular histórico.
+
+---
+
+### 7.4.1 O script (2026-08-03)
+
+`scripts/varredura_historica.py` + `tests/test_varredura_historica.py` (**55 casos**) +
+`VarreduraHistoricaSeguraTest` (**12 guardas**) e `SemProsaTest` (5) nas guardas cross-layer.
+Suíte: **890 → 964** pytest, vulture limpo.
+**Nenhuma migration** e **nenhum deploy** — o script vive em `scripts/`, fora do
+`check_deploy_parity`, e roda da máquina de dev.
+
+**Decisões de escopo tomadas com o Ricardo antes de escrever uma linha** (as três primeiras
+mudariam materialmente o resultado):
+
+| Decisão | Escolha | Por quê |
+|---|---|---|
+| E-mail fora de `email_control` | **não cria linha** | `fiscal_document` guarda a própria proveniência e não tem FK; criar linha mudaria as contagens de `/emails` |
+| PDF de CT-e apagado pela purga | **re-sobe ao bucket, sem sobrescrever** | sem isso a onda registra a CHAVE e o PDF continua perdido |
+| Escopo | **caixa inteira (`ALL`)**, com checkpoint | o histórico anterior a 01/04/2026 não existe em outra via |
+| Corpo dos **251 sem keyword** | **não grava** (mantém a opção A do item 2.3) | o custo de FETCH deixou de valer aqui, mas o **PII** permanece: comunicação interna indexada e pesquisável pelo chat |
+| PDF **sem chave de acesso** | **não sobe** (`--upload-all` como escape) | sem linha em `fiscal_document` a próxima purga o apagaria como órfão — seria pagar banda por algo destinado a ser deletado |
+| Subpastas IMAP | **só INBOX**; o dry-run **lista** as demais com contagem | respeita a regra de nunca ler Spam/Lixo, e ainda assim mede o que há fora |
+
+**Os quatro invariantes viraram ESTRUTURA, não disciplina** — cada um validado por mutante
+(introduzir o defeito e conferir o vermelho; 15 mutantes ao todo, incluindo o caso inverso de
+"mencionar em comentário **não** pode derrubar a guarda"):
+
+| Invariante | Como é imposto |
+|---|---|
+| não marca `\Seen` | **EXAMINE** (`readonly=True`, em que o servidor não *pode* gravar flag) + `BODY.PEEK[]` em todo fetch + ausência de `STORE`/`+FLAGS` — três travas independentes |
+| não grava conta | o identificador da tabela financeira **não existe no código**, só na prosa |
+| `body_full` só quando nulo | filtro `&body_full=is.null` **na URL** — atômico no servidor, imune a corrida com o reader agendado |
+| objeto nunca sobrescrito | função de upload própria sem `x-upsert`; 409 = "já existe", não é falha |
+
+#### Três achados que só apareceram lendo o código real
+
+| # | Achado | Consequência se passasse |
+|---|---|---|
+| 🔴 **V1** | `process_message` do reader usa `(INTERNALDATE RFC822)` — **sem PEEK**. Em caixa read-write isso marca `\Seen` **pelo protocolo**, independentemente de `--mark-seen` | copiar aquela linha marcaria milhares de e-mails como lidos numa caixa operada por pessoas |
+| 🔴 **V2** | `data/pdfs_inbox` é território proibido, e o motivo não é colisão de nome: `retry_extraction.py:101,180` resolve PDFs **pelo nome** lá dentro, a partir do banco | um arquivo nosso cujo nome casasse um `source_file` pendente seria extraído por ele e **viraria conta** — furando o invariante nº 1 pela porta dos fundos |
+| ⚠️ **V3** | `_connect_and_search` faz retry **só do search inicial** — nenhum dos milhares de FETCH está protegido | a queda no meio (o modo de falha esperado numa varredura) derrubaria o run inteiro |
+
+#### O bug que a autorrevisão pegou depois de tudo verde
+
+O checkpoint gravava `caixa.uidvalidity` **corrente**. Quando a reconexão aborta por UIDVALIDITY
+diferente, esse atributo **já foi atualizado para o valor novo** — então o checkpoint sairia com a
+identidade NOVA ao lado dos UIDs do inventário ANTIGO, ficaria "compatível" na execução seguinte, e
+ela retomaria **pulando as mensagens erradas, em silêncio**: exatamente o desastre que a checagem
+existe para impedir. Corrigido gravando a identidade capturada **na abertura**.
+
+> **E o primeiro teste que escrevi para esse bug passava com o defeito reintroduzido.** A falha
+> injetada era consumida pelo fetch de `RFC822.SIZE` (que não tem reconexão) e o caminho da
+> reconexão nunca era exercido — `0 == 0` com cara de garantia. Só o mutante revelou isso. É a
+> lição O9–O11 aparecendo de novo: **um teste de código defensivo só vale depois de ver o vermelho.**
+
+**Verificação operacional — EXECUTADA em 2026-08-03**, nesta ordem: `--dry-run` (dimensionou a
+caixa: 264 mensagens, e foi ele que derrubou a premissa) → `--dry-run --deep` (195 anexos, 79 com
+chave, 7 novas) → `--limit 50` real conferindo `count(*)`/`max(id)` de
+`financial_account_control` antes e depois → passada completa → reexecução provando idempotência
+(`a processar: 0 de 264`). Resultado na §7.4.
+
+> ⚠️ **A varredura expôs um defeito ATIVO na purga — corrigido no mesmo dia.** Ao conferir a
+> afirmação "a purga está liberada", medi: dos **68 órfãos**, **10 continham chave de acesso
+> fiscal VÁLIDA** (18 chaves; um PDF com **6 DACTEs**). Os 4 objetos da varredura estavam
+> protegidos, mas a limitação da Onda 3 seguia ativa **e crescendo** — 4 em 01/08, **10** em
+> 03/08, porque `access_key` é UNIQUE e cada CT-e reenviado cria um objeto cuja chave já está
+> registrada pelo primeiro.
+>
+> A `purge_orphan_attachments` passou a **decidir pelo conteúdo**: baixa cada candidato, lê o
+> texto e preserva o que carrega chave válida. Resultado: **68 → 58 a apagar**. Detalhe em
+> `CLAUDE.md` → "a purga decide pelo CONTEÚDO".
+>
+> **A lição vale além da purga:** a afirmação "está liberada" era uma **inferência** — os objetos
+> novos estavam protegidos, logo o resto também estaria. Medir custou dois minutos e revelou o
+> contrário. Conclusão sobre efeito colateral de rotina destrutiva se **mede**, não se deduz.
 
 ---
 
