@@ -36,6 +36,12 @@ data/csv_output/
 logs/
 backups/
 
+# Varredura histórica (Onda 4) — estado local de uma passada única:
+# o checkpoint traz os UIDs da caixa postal e a quarentena guarda PDFs de e-mails reais.
+data/varredura_checkpoint.json
+data/varredura_checkpoint.tmp
+data/varredura_pdfs/
+
 # Logs
 *.log
 dev-server.log
