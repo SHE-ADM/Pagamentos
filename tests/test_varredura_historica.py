@@ -292,6 +292,18 @@ class EscritasTest(unittest.TestCase):
     `supabase_rest`, que e por onde as escritas passam (fonte unica de transporte)."""
 
     def setUp(self):
+        # BASE/KEY vem do `.env` no import — que NAO existe no CI. Sem fixa-los, a URL sai como
+        # "None/rest/v1/..." e o urllib levanta `unknown url type` ANTES de o teste medir
+        # qualquer coisa: passa na maquina de quem tem `.env` e falha no runner. Mesmo defeito
+        # que o commit c977c81 corrigiu no backfill — e a mesma familia do checkpoint herdado
+        # do disco: teste que mede o AMBIENTE, nao o codigo.
+        for atributo, valor in (("BASE", "http://fake"), ("KEY", "chave-de-teste"),
+                                ("HEADERS", {"apikey": "chave-de-teste",
+                                             "Authorization": "Bearer chave-de-teste",
+                                             "Content-Type": "application/json"})):
+            remendo = mock.patch.object(V, atributo, valor)
+            remendo.start()
+            self.addCleanup(remendo.stop)
         self.chamadas = []
 
     def _urlopen(self, corpo=b"[]", erro=None):
@@ -670,8 +682,12 @@ class MainDryRunTest(unittest.TestCase):
         temporario = tempfile.TemporaryDirectory()
         self.addCleanup(temporario.cleanup)
         raiz = Path(temporario.name)
+        # Estado local isolado (checkpoint/quarentena) E credencial fixada: as duas coisas vinham
+        # do ambiente — o arquivo, do disco do projeto; BASE/KEY, do `.env`. No CI nao ha `.env`,
+        # e `main()` saía com 1 no guard de credencial antes de executar qualquer coisa.
         for atributo, valor in (("CHECKPOINT_PATH", raiz / "checkpoint.json"),
-                                ("QUARENTENA_DIR", raiz / "quarentena")):
+                                ("QUARENTENA_DIR", raiz / "quarentena"),
+                                ("BASE", "http://fake"), ("KEY", "chave-de-teste")):
             remendo = mock.patch.object(V, atributo, valor)
             remendo.start()
             self.addCleanup(remendo.stop)
@@ -818,6 +834,17 @@ class MainDryRunTest(unittest.TestCase):
         self.assertEqual(inicial["chaves_fiscais"], 1)
         self.assertEqual(inicial["objetos"], 1)
         self.assertEqual(inicial["sem_keyword"], 7)
+
+    def test_sem_credencial_o_run_termina_em_ERRO(self):
+        """O guard que derrubou 12 testes no CI — agora é asserção própria, não acidente.
+
+        Enquanto ele só era exercido por acaso (pelo `.env` ausente do runner), o efeito
+        aparecia longe: 12 falhas em cascata, com mensagens sobre URL malformada que não
+        apontavam para a causa.
+        """
+        with mock.patch.object(V, "BASE", None), mock.patch.object(R, "_connect_and_search") as c:
+            self.assertEqual(V.main([]), 1)
+        c.assert_not_called()
 
     def test_inventario_incompleto_aborta_sem_gravar(self):
         """Decidir o que gravar com um inventario truncado e como a purga apagar o que nao devia:
