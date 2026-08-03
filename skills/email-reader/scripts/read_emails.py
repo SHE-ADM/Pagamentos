@@ -1191,6 +1191,45 @@ def get_body_html(msg) -> str:
     return html
 
 
+# Texto plano que NAO e conteudo: apenas avisa que a mensagem esta em HTML. Quem manda
+# assim e o multipart/alternative cujo text/plain e so um aviso (ex.: a plataforma SSW,
+# que envia "O conteudo deste e-mail esta somente disponivel em HTML" — 55 chars).
+# Casa nos DOIS sentidos: o aviso tanto vem como "... disponivel em HTML" quanto como
+# "enable HTML to view this email".
+_PLACEHOLDER_BODY_RE = re.compile(
+    r"\bhtml\b[^\n]{0,40}(?:dispon|visualiz|view|habilit|enable|suporte|support|leia|read)"
+    r"|(?:dispon|visualiz|view|habilit|enable|somente|apenas|only|unicamente)[^\n]{0,40}\bhtml\b",
+    re.IGNORECASE,
+)
+# Teto de tamanho: o aviso e UMA frase curta. Sem isso, um corpo real que mencione HTML
+# (ex.: uma fatura de agencia web) seria descartado e o e-mail perderia o proprio texto.
+_PLACEHOLDER_BODY_MAX_CHARS = 200
+
+
+def _plain_body_is_placeholder(text: "str | None") -> bool:
+    """O texto plano e apenas um aviso de "conteudo em HTML"?
+
+    Serve para decidir se vale cair no HTML. NAO basta testar `if not body_text`: o aviso
+    e uma string NAO-vazia, entao o fallback antigo nunca disparava para esses e-mails —
+    e o corpo real (que traz o CEDENTE da fatura, entre outros dados) nunca era lido.
+
+    Conservador de proposito: exige o padrao do aviso E um texto curto. Corpo curto e
+    LEGITIMO e a norma neste projeto ("FORNECEDOR X / VALOR / VENCIMENTO" cabe em 90
+    chars), logo um criterio por tamanho sozinho descartaria conteudo bom.
+
+    >>> _plain_body_is_placeholder("O conteudo deste e-mail esta somente disponivel em HTML")
+    True
+    >>> _plain_body_is_placeholder("FORNECEDOR HORAS EXTRAS\\n\\nVALOR R$ 9.864,00")
+    False
+    """
+    if not text:
+        return False
+    limpo = text.strip()
+    if not limpo or len(limpo) > _PLACEHOLDER_BODY_MAX_CHARS:
+        return False
+    return bool(_PLACEHOLDER_BODY_RE.search(_ns_body(limpo)))
+
+
 def _html_to_text(html: str) -> str:
     """Converte HTML em texto plano para a extracao de corpo de e-mails SO-HTML
     (ex.: Correios), onde get_body_text() volta vazio. Remove script/style, troca
@@ -5223,8 +5262,20 @@ def process_message(mail, uid: bytes, keywords: list,
         body_text    = get_body_text(msg)
         # E-mail SO-HTML (ex.: Correios): sem texto plano, extrai do HTML para que
         # o fallback de corpo (try_extract_from_body) encontre valor/fatura/etc.
-        if not body_text:
-            body_text = _html_to_text(get_body_html(msg))
+        #
+        # O 2o caso — texto plano de PLACEHOLDER — foi descoberto em 2026-08-03: a
+        # plataforma SSW manda um text/plain de 55 chars dizendo que o conteudo esta em
+        # HTML. Como ele NAO e vazio, o fallback antigo (`if not body_text`) nunca
+        # disparava: 29 e-mails gravaram esse aviso como se fosse o corpo, a guarda do
+        # cedente (_ssw_cedente_from_body) nunca teve texto para ler e o `body_full` da
+        # Onda 2 ficou inutil para a busca do chat de IA.
+        #
+        # So substitui quando o HTML rende algo — senao um HTML vazio/ilegivel apagaria
+        # ate o pouco que havia.
+        if not body_text or _plain_body_is_placeholder(body_text):
+            html_text = _html_to_text(get_body_html(msg))
+            if html_text:
+                body_text = html_text
         keyword_hit  = match_keyword(subject, keywords)
 
         rec.update({
