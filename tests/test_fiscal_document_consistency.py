@@ -17,8 +17,11 @@ Ambas fazem parsing, entao ambas carregam SANIDADE DO PARSER: um regex que para 
 transformaria a guarda em `0 == 0`, verde para sempre (licao O9-O11 da Onda 2).
 """
 
+import ast
+import io
 import re
 import sys
+import tokenize
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -33,7 +36,49 @@ import supabase_rest as SR  # noqa: E402
 _MIGRATION = _ROOT / "supabase" / "migrations" / "107_fiscal_document.sql"
 _PURGE = _ROOT / "scripts" / "purge_orphan_attachments.py"
 _BACKFILL = _ROOT / "scripts" / "backfill_fiscal_documents.py"
+_VARREDURA = _ROOT / "scripts" / "varredura_historica.py"
 _SHARED = _ROOT / "scripts" / "supabase_rest.py"
+
+
+def _sem_prosa(codigo: str) -> str:
+    """Remove docstrings e comentarios, PRESERVANDO o resto — inclusive strings normais.
+
+    Toda guarda deste arquivo procura a AUSENCIA de algo, e os scripts EXPLICAM em prosa
+    justamente o que nao devem fazer ("nunca escreve em PDF_INBOX", "nao usar RFC822 sem PEEK").
+    Sem remover a prosa, a guarda casa a propria advertencia e fica verde para sempre.
+
+    POR QUE `ast` + `tokenize` E NAO REGEX (a versao anterior era regex, e mentia nos dois
+    sentidos):
+      - `re.sub(r"#[^\\n]*", "")` corta a partir de QUALQUER `#`, inclusive um dentro de string:
+        `q = "select # from financial_account_control"` perdia o identificador e a guarda dava
+        FALSO NEGATIVO — deixaria passar exatamente o que existe para barrar;
+      - `re.sub(r'\"\"\"[\\s\\S]*?\"\"\"', "")` casa qualquer par de aspas triplas, docstring ou
+        nao, e engole o codigo entre duas strings triplas nao relacionadas.
+    O `tokenize` sabe onde um `#` e comentario e onde e conteudo de string; o `ast` sabe quais
+    strings sao docstring de modulo/classe/funcao. Nenhum dos dois adivinha.
+    """
+    linhas = codigo.splitlines(keepends=True)
+    fora = set()
+    for no in ast.walk(ast.parse(codigo)):
+        corpo = getattr(no, "body", None)
+        if not isinstance(no, (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        if (corpo and isinstance(corpo[0], ast.Expr)
+                and isinstance(corpo[0].value, ast.Constant)
+                and isinstance(corpo[0].value.value, str)):
+            fora.update(range(corpo[0].lineno, (corpo[0].end_lineno or corpo[0].lineno) + 1))
+
+    cortes: dict = {}
+    for tok in tokenize.generate_tokens(io.StringIO(codigo).readline):
+        if tok.type == tokenize.COMMENT:
+            cortes.setdefault(tok.start[0], tok.start[1])
+
+    saida = []
+    for numero, linha in enumerate(linhas, 1):
+        if numero in fora:
+            continue
+        saida.append(linha[:cortes[numero]] + "\n" if numero in cortes else linha)
+    return "".join(saida)
 
 
 class ModelDomainTest(unittest.TestCase):
@@ -145,7 +190,7 @@ class PaginacaoCompartilhadaTest(unittest.TestCase):
 
     def test_nenhum_script_reintroduziu_a_copia(self):
         """O defeito original foi CORRIGIDO DUAS VEZES por existir em duas copias."""
-        for arquivo in (_PURGE, _BACKFILL):
+        for arquivo in (_PURGE, _BACKFILL, _VARREDURA):
             src = arquivo.read_text(encoding="utf-8")
             with self.subTest(arquivo=arquivo.name):
                 self.assertIn("from supabase_rest import", src, "parou de usar a fonte unica")
@@ -304,6 +349,153 @@ class FixProvenanceEConservadorTest(unittest.TestCase):
         for campo in ("gmail_message_id", "sender_email", "subject", "received_at"):
             with self.subTest(campo=campo):
                 self.assertIn(f'"{campo}"', self.patch_body)
+
+
+class SemProsaTest(unittest.TestCase):
+    """`_sem_prosa` e a lente por onde TODAS as guardas textuais enxergam o codigo.
+
+    Se ela remover demais, a guarda deixa de ver o defeito e fica verde para sempre — a falha
+    mais perigosa possivel aqui, porque um teste-guarda existe justamente para que ninguem mais
+    olhe. Por isso ela tem teste proprio, com os dois sentidos: o que PRECISA sumir e o que
+    NUNCA pode sumir.
+    """
+
+    def test_remove_comentario_e_docstring(self):
+        codigo = 'def f():\n    """doc de f."""\n    x = 1  # comentario\n    return x\n'
+        limpo = _sem_prosa(codigo)
+        self.assertNotIn("doc de f", limpo)
+        self.assertNotIn("comentario", limpo)
+        self.assertIn("x = 1", limpo)
+        self.assertIn("return x", limpo)
+
+    def test_preserva_identificador_em_string_que_contem_cerquilha(self):
+        """O falso negativo que motivou a troca de regex por `ast`+`tokenize`.
+
+        Com o corte por regex, o `#` DENTRO da string apagava o resto da linha e a guarda
+        "o nome da tabela financeira nao aparece no codigo" passava a ignorar justamente uma
+        linha que a menciona.
+        """
+        codigo = 'q = "select # from financial_account_control"\n'
+        self.assertIn("financial_account_control", _sem_prosa(codigo))
+
+    def test_nao_engole_codigo_entre_duas_strings_triplas(self):
+        """O regex antigo casava de uma tripla ate a SEGUINTE, levando o codigo do meio junto."""
+        codigo = 'a = """um"""\nPROIBIDO = 1\nb = """dois"""\n'
+        self.assertIn("PROIBIDO", _sem_prosa(codigo))
+
+    def test_string_tripla_que_nao_e_docstring_permanece(self):
+        codigo = 'SQL = """\nselect from financial_account_control\n"""\n'
+        self.assertIn("financial_account_control", _sem_prosa(codigo))
+
+    def test_preserva_a_numeracao_das_linhas_restantes(self):
+        """As guardas reportam trechos; se a limpeza deslocasse linhas, a mensagem apontaria
+        para o lugar errado. Comentario vira linha vazia, nao linha removida."""
+        codigo = "a = 1  # x\nb = 2\n"
+        self.assertEqual(_sem_prosa(codigo).splitlines(), ["a = 1  ", "b = 2"])
+
+
+class VarreduraHistoricaSeguraTest(unittest.TestCase):
+    """A varredura da Onda 4 e ESTRITAMENTE ADITIVA — e isso precisa ser estrutural.
+
+    Ela reprocessa e-mails que JA geraram conta, numa caixa operada por PESSOAS. Os dois piores
+    desfechos possiveis (criar contas a pagar duplicadas em massa; marcar milhares de e-mails
+    como lidos) nao dao erro nenhum quando acontecem: aparecem depois, no financeiro e na caixa
+    de quem trabalha ali. Os testes de comportamento vivem em `test_varredura_historica.py`;
+    estas guardas cobrem o que so se ve no TEXTO — a ausencia de algo.
+
+    Cada uma foi validada por mutante (introduzir o defeito e conferir o vermelho).
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.src = _VARREDURA.read_text(encoding="utf-8")
+        cls.codigo = _sem_prosa(cls.src)
+
+    def test_sanidade_do_parser(self):
+        """Sem isto, renomear uma funcao transformaria todas as guardas abaixo em `0 == 0`."""
+        self.assertTrue(_VARREDURA.exists(), "scripts/varredura_historica.py sumiu")
+        for fn in ("def _processar_mensagem(", "def storage_key_for(", "def _patch_body_full(",
+                   "def _upload_object(", "def _registrar_fiscal(", "class Caixa"):
+            self.assertIn(fn, self.src, f"{fn} nao encontrada — parser cego")
+        # A remocao de prosa nao pode ter comido o codigo junto.
+        self.assertIn("def main(", self.codigo)
+        self.assertGreater(len(self.codigo), len(self.src) // 4, "removeu codigo demais")
+
+    def test_nao_toca_a_tabela_financeira(self):
+        """O invariante numero 1: uma varredura que gravasse conta criaria duplicatas EM MASSA.
+
+        O nome da tabela nao aparece no codigo — so na prosa que explica por que nao aparece.
+        """
+        self.assertNotIn("financial_account_control", self.codigo)
+
+    def test_nao_importa_o_pipeline_de_extracao(self):
+        """Chamar qualquer uma delas gravaria conta por via indireta."""
+        for fn in ("extract_and_store_accounts", "register_financial", "try_extract_from_body",
+                   "run_extraction", "register_attachment"):
+            with self.subTest(fn=fn):
+                self.assertNotIn(fn, self.codigo)
+
+    def test_nao_escreve_no_inbox_do_reader(self):
+        """`data/pdfs_inbox` e territorio proibido: o `retry_extraction.py` resolve PDFs PELO
+        NOME la dentro, a partir do banco — um arquivo nosso cujo nome casasse um `source_file`
+        pendente seria extraido por ele e VIRARIA CONTA."""
+        self.assertNotIn("PDF_INBOX", self.codigo)
+
+    def test_a_caixa_e_aberta_em_somente_leitura(self):
+        """EXAMINE: em read-only o servidor nao PODE gravar flag permanente."""
+        self.assertIn("readonly=True", self.codigo)
+
+    def test_todo_fetch_usa_peek(self):
+        """Um `FETCH RFC822` sem PEEK marca \\Seen implicitamente pelo protocolo — e e
+        exatamente a linha que `process_message` do reader usa, facil de copiar por engano."""
+        fetches = re.findall(r'uid\(\s*"fetch"[^)]*\)', self.codigo, re.S)
+        self.assertTrue(fetches, "nenhum fetch encontrado — parser cego")
+        for f in fetches:
+            with self.subTest(fetch=f[:60]):
+                self.assertTrue("PEEK" in f or "RFC822.SIZE" in f,
+                                "fetch sem BODY.PEEK — marcaria \\Seen")
+        self.assertNotIn("INTERNALDATE RFC822)", self.codigo)
+
+    def test_nunca_marca_flag(self):
+        for proibido in ("+FLAGS", "\\\\Seen", '"store"', "mark_seen"):
+            with self.subTest(proibido=proibido):
+                self.assertNotIn(proibido, self.codigo)
+
+    def test_o_corpo_so_e_gravado_quando_nulo(self):
+        """O filtro vai NA URL — atomico no servidor, imune a corrida com o reader agendado.
+        Nenhum PATCH em `email_control` pode existir sem ele."""
+        patches = re.findall(r'"email_control\?[^"]*"', self.codigo)
+        self.assertTrue(patches, "nenhum acesso a email_control — parser cego")
+        for alvo in patches:
+            if "id=eq." in alvo:
+                with self.subTest(alvo=alvo):
+                    self.assertIn("body_full=is.null", alvo)
+
+    def test_o_documento_fiscal_so_e_inserido(self):
+        """Append-only: nenhum PATCH/DELETE apontando para `fiscal_document`."""
+        self.assertIn("fiscal_document?on_conflict=access_key", self.codigo)
+        for metodo in ('method="PATCH"', 'method="DELETE"'):
+            for chamada in re.findall(r"rest_write\([^)]*\)", self.codigo, re.S):
+                if "fiscal_document" in chamada:
+                    with self.subTest(metodo=metodo):
+                        self.assertNotIn(metodo, chamada)
+
+    def test_o_upload_nao_pede_upsert(self):
+        """`x-upsert: true` sobrescreveria o objeto que ja esta no bucket — perda irreversivel
+        num acervo que so existe la e no IMAP."""
+        corpo = re.search(r"def _upload_object\(.*?(?=\ndef )", self.codigo, re.S)
+        self.assertIsNotNone(corpo, "_upload_object nao encontrada — parser cego")
+        self.assertNotIn("upsert", corpo.group(0))
+
+    def test_o_teto_do_corpo_vem_do_reader(self):
+        """Reimplementar o corte aqui criaria uma segunda regra que pode divergir do
+        `left(...,100000)` da coluna gerada e estourar o limite de 1 MB do tsvector, derrubando
+        a gravacao da linha inteira."""
+        self.assertIn("R._body_full_for_storage", self.codigo)
+
+    def test_o_checkpoint_valida_a_identidade_da_caixa(self):
+        """UID so e estavel dentro de (mailbox, UIDVALIDITY)."""
+        self.assertIn("uidvalidity", self.codigo)
 
 
 if __name__ == "__main__":

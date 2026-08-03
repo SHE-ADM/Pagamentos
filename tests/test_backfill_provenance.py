@@ -15,6 +15,7 @@ O QUE ELAS RESOLVEM (achados A2/A3 do code review de 2026-08-01)
 """
 
 import importlib.util
+import re
 import sys
 import unittest
 from pathlib import Path
@@ -22,7 +23,9 @@ from unittest.mock import patch
 
 _ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(_ROOT / "scripts"))
+sys.path.insert(0, str(_ROOT / "skills" / "pdf-contas-pagar" / "scripts"))
 
+import fiscal_key as F  # noqa: E402
 import supabase_rest as SR  # noqa: E402
 
 
@@ -360,6 +363,69 @@ class MainDoBackfillTest(unittest.TestCase):
             self.assertEqual(BF.main(), 1)
 
 
+class PurgaPreservaPorConteudoTest(unittest.TestCase):
+    """A ultima barreira antes de uma remocao IRREVERSIVEL.
+
+    A preservacao por `fiscal_document.storage_key` cobre so o PRIMEIRO objeto de cada chave —
+    `access_key` e UNIQUE. Quando o mesmo CT-e chega por dois objetos (o PDF consolidado da
+    transportadora e o individual), o segundo nao tem linha, vira orfao e era apagado **sendo um
+    DACTE legitimo**. Medido: 4 objetos assim em 2026-08-01 e **10** em 2026-08-03 — a lacuna
+    cresce a cada reenvio, e cada execucao da purga cobrava esse preco em silencio.
+    """
+
+    # Chave SINTETICA com DV calculado (nao e dado real): UF 35, AAMM 2607, modelo 55 (NF-e).
+    # O `test_pdf_com_chave_valida_e_preservado` confere que ela passa nas 5 camadas — sem isso,
+    # uma fixture invalida faria o teste "passar" pelo motivo errado.
+    CHAVE = "35260708318452000209550010000123451234567899"
+
+    def _com(self, *, baixa=b"%PDF-1.4", texto="", nome="dacte.pdf"):
+        """Roda `_tem_chave_fiscal` com download e leitura de PDF controlados."""
+        with patch.object(PG, "_baixar", return_value=baixa), \
+             patch.object(PG, "_pdf_text", return_value=texto):
+            return PG._tem_chave_fiscal(nome)
+
+    def test_pdf_com_chave_valida_e_preservado(self):
+        chave = F.extract_access_keys(f"DACTE chave {self.CHAVE}")
+        self.assertTrue(chave, "fixture invalida — a chave precisa passar nas 5 camadas")
+        self.assertTrue(self._com(texto=f"DACTE  {chave[0]}  ..."))
+
+    def test_boleto_comum_e_apagado(self):
+        """Sem esta metade, a barreira preservaria TUDO e a purga viraria no-op."""
+        self.assertFalse(self._com(texto="Boleto 34191790010104351004791020150008291070026000"))
+
+    def test_sequencia_de_44_digitos_invalida_nao_preserva(self):
+        """A validacao e a canonica (UF/mes/ano/modelo/DV), nao um '44 digitos' ganancioso —
+        senao qualquer numero longo preservaria o objeto e a purga nunca apagaria nada."""
+        self.assertFalse(self._com(texto="0" * 44))
+
+    def test_falha_ao_baixar_PRESERVA(self):
+        """Nao conseguir ler o arquivo nao e prova de que ele e descartavel. A funcao autoriza
+        uma remocao irreversivel: na duvida, ela nao autoriza."""
+        self.assertTrue(self._com(baixa=None))
+
+    def test_imagem_nao_e_inspecionada(self):
+        """Imagem nao tem chave em texto; abri-la seria custo sem resposta possivel."""
+        with patch.object(PG, "_baixar") as baixar:
+            self.assertFalse(PG._tem_chave_fiscal("comprovante.png"))
+        baixar.assert_not_called()
+
+    def test_pdf_ilegivel_PRESERVA(self):
+        with patch.object(PG, "_baixar", return_value=b"lixo"), \
+             patch.object(PG, "_pdf_text", side_effect=OSError("pdf quebrado")):
+            self.assertTrue(PG._tem_chave_fiscal("x.pdf"))
+
+    def test_a_barreira_roda_TAMBEM_no_dry_run(self):
+        """Se so rodasse na execucao real, o `--dry-run` prometeria apagar o que a purga
+        preservaria — e o dry-run e o unico relatorio que o operador le antes de decidir."""
+        codigo = (_ROOT / "scripts" / "purge_orphan_attachments.py").read_text(encoding="utf-8")
+        corpo = re.search(r"def main\(.*?(?=\nif __name__)", codigo, re.S).group(0)
+        self.assertIsNotNone(corpo, "main nao encontrada — parser cego")
+        pos_barreira = corpo.index("_tem_chave_fiscal(nome)")
+        pos_dry_run = corpo.index("if args.dry_run")
+        self.assertLess(pos_barreira, pos_dry_run,
+                        "a inspecao de conteudo ficou DEPOIS do dry-run: o relatorio mentiria")
+
+
 class SupabaseRestPortasTest(unittest.TestCase):
     """`storage_list` e `rest_write` — as portas que faltavam cobrir no modulo compartilhado."""
 
@@ -399,6 +465,33 @@ class SupabaseRestPortasTest(unittest.TestCase):
         fake, _ = self._fake([[]])
         with patch.object(SR.urllib.request, "urlopen", fake):
             self.assertEqual(SR.storage_list("http://fake", {}, "attachments"), [])
+
+    def test_storage_list_com_metadata_devolve_tamanho_e_pagina_igual(self):
+        """O modo `com_metadata` alimenta a decisao de SOBRESCREVER ou nao um objeto do bucket
+        (`varredura_historica.storage_key_for`): nome coincidir nao prova identidade de conteudo,
+        e o 409 do upload tampouco. Se o formato do `metadata` mudar ou o ramo novo parar de
+        paginar, so este teste acusa — os demais exercitam apenas o modo lista."""
+        cheia = [{"name": f"f{i}.pdf", "id": str(i), "metadata": {"size": i}}
+                 for i in range(SR.PAGE_SIZE)]
+        fake, chamadas = self._fake([cheia, [{"name": "ultimo.pdf", "id": "x",
+                                              "metadata": {"size": 42}}]])
+        with patch.object(SR.urllib.request, "urlopen", fake):
+            meta = SR.storage_list("http://fake", {}, "attachments", com_metadata=True)
+        self.assertIsInstance(meta, dict)
+        self.assertEqual(len(meta), SR.PAGE_SIZE + 1)
+        self.assertEqual(len(chamadas), 2, "o modo com_metadata parou de paginar")
+        self.assertEqual(meta["ultimo.pdf"]["size"], 42)
+
+    def test_storage_list_com_metadata_tolera_metadata_ausente(self):
+        """Objeto sem `metadata` vira `{}` — e `storage_key_for` trata isso como "nao sei o
+        tamanho", subindo em vez de assumir que e o mesmo arquivo."""
+        fake, _ = self._fake([[{"name": "a.pdf", "id": "1"},
+                               {"name": "b.pdf", "id": "2", "metadata": None},
+                               {"name": "pasta", "id": None}]])
+        with patch.object(SR.urllib.request, "urlopen", fake):
+            meta = SR.storage_list("http://fake", {}, "attachments", com_metadata=True)
+        self.assertEqual(set(meta), {"a.pdf", "b.pdf"})
+        self.assertEqual(meta["b.pdf"], {})
 
     def test_rest_write_devolve_o_corpo_quando_ha(self):
         fake, _ = self._fake([[{"id": 1}]])

@@ -19,6 +19,7 @@ Sem dependencia externa (urllib da stdlib), como o resto dos scripts.
 
 import json
 import urllib.error
+import urllib.parse
 import urllib.request
 
 # Teto "Max rows" do Supabase. Paginamos ate a pagina vir incompleta.
@@ -92,14 +93,20 @@ def rest_write(base: str, headers: dict, path: str, payload: dict,
         return False, f"falha de rede ({e})"
 
 
-def storage_list(base: str, headers: dict, bucket: str) -> list:
-    """Nomes dos objetos do bucket, paginados.
+def storage_list(base: str, headers: dict, bucket: str, com_metadata: bool = False):
+    """Objetos do bucket, paginados. Devolve lista de nomes, ou `{nome: metadata}`.
 
     `id` nulo = PLACEHOLDER DE PASTA (ex.: a entrada "manual" dos anexos da migration 079), nao
     um objeto: baixa-lo devolve HTTP 400. Os PDFs do pipeline sao flat na raiz, entao pular as
     pastas nao perde nada.
+
+    `com_metadata=True` devolve o `metadata` de cada objeto (`size`, `mimetype`, `eTag`) em vez
+    de so o nome. Serve a quem precisa decidir se o objeto ja no bucket e o MESMO arquivo que
+    esta prestes a subir: o nome coincidir NAO prova identidade de conteudo, e o HTTP 409 do
+    upload tampouco (ele diz apenas "ja existe um objeto com essa chave").
     """
     names: list = []
+    meta: dict = {}
     for pagina in range(MAX_PAGES):
         body = json.dumps({"prefix": "", "limit": PAGE_SIZE,
                            "offset": pagina * PAGE_SIZE}).encode()
@@ -114,8 +121,48 @@ def storage_list(base: str, headers: dict, bucket: str) -> list:
         except NETWORK_ERRORS as e:
             raise RestError(f"storage/list: falha de rede ({e})") from e
         if not page:
-            return names
-        names.extend(o["name"] for o in page if o.get("name") and o.get("id"))
+            return meta if com_metadata else names
+        for o in page:
+            if not (o.get("name") and o.get("id")):
+                continue
+            names.append(o["name"])
+            meta[o["name"]] = o.get("metadata") or {}
         if len(page) < PAGE_SIZE:
-            return names
+            return meta if com_metadata else names
     raise RestError(f"storage/list: mais de {MAX_PAGES} paginas — offset ignorado?")
+
+
+def storage_upload(base: str, headers: dict, bucket: str, key: str, data: bytes,
+                   content_type: str = "application/octet-stream",
+                   upsert: bool = False) -> tuple:
+    """Sobe um objeto ao bucket. Devolve `(estado, detalhe)` — NUNCA levanta.
+
+    Estados: `"subiu"` · `"ja_existe"` (HTTP 409, NAO e falha) · `"erro"`.
+
+    `upsert=False` e o DEFAULT deliberado, e o unico modo usado pela varredura historica: subir
+    com `x-upsert: true` SOBRESCREVERIA o objeto que ja esta no bucket — exatamente o que os
+    invariantes de uma passada aditiva proibem. `SupabaseControl.upload_attachment` do reader
+    hardcoda `true` (ele QUER sobrescrever, pois reprocessa o mesmo anexo), por isso nao serve
+    aqui. O 409 volta como estado proprio porque "o objeto ja estava la" e sucesso do ponto de
+    vista de quem so quer garantir que o arquivo exista.
+
+    O `Content-Type` do arquivo SOBREPOE o do `headers` recebido — os scripts montam o header
+    padrao com `application/json`, que gravaria o mime errado no objeto.
+    """
+    h = {k: v for k, v in headers.items() if k.lower() != "content-type"}
+    h["Content-Type"] = content_type
+    if upsert:
+        h["x-upsert"] = "true"
+    url = f"{base}/storage/v1/object/{bucket}/{urllib.parse.quote(key, safe='')}"
+    req = urllib.request.Request(url, data=data, headers=h, method="POST")
+    try:
+        with urllib.request.urlopen(req, timeout=120) as r:
+            r.read()
+        return "subiu", ""
+    except urllib.error.HTTPError as e:
+        detalhe = e.read().decode(errors="replace")[:150]
+        if e.code == 409:
+            return "ja_existe", detalhe
+        return "erro", f"HTTP {e.code} {detalhe}"
+    except NETWORK_ERRORS as e:
+        return "erro", f"falha de rede ({e})"

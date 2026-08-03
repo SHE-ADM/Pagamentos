@@ -116,6 +116,15 @@ Estas regras se aplicam a **todo** código novo ou alterado neste projeto, sem e
      o teste em `0 === 0`, verde para sempre.
   3. **Validação por mutante** — introduzir o defeito de propósito e conferir que o teste fica
      VERMELHO. Teste que não falha quando o defeito existe não é teste, é decoração.
+  4. **Guarda que procura a AUSÊNCIA de algo precisa ler CÓDIGO, não prosa** *(lição de
+     2026-08-03)*. Os scripts explicam em comentário justamente o que não devem fazer ("nunca
+     escreve em PDF_INBOX"), então a guarda casaria a própria advertência. O helper é
+     `_sem_prosa` (`tests/test_fiscal_document_consistency.py`), e ele usa **`ast` + `tokenize`**,
+     não regex: `re.sub(r"#[^\n]*", "")` corta a partir de um `#` **dentro de string**
+     (`"select # from financial_account_control"` perde o identificador → **falso negativo**, o
+     pior desfecho possível numa guarda), e `re.sub(r'"""…"""')` engole o código entre duas
+     strings triplas não relacionadas. `tokenize` sabe o que é comentário; `ast` sabe o que é
+     docstring.
   Vale mais para defeito de **verificação** que para defeito de código: teste verde é justamente o
   que faz parar de olhar. A pergunta que encontra os três: *"o que aconteceria se eu quebrasse isto
   de propósito?"* — se a resposta for "nada falharia", o teste está incompleto.
@@ -125,14 +134,22 @@ Estas regras se aplicam a **todo** código novo ou alterado neste projeto, sem e
   alias `@` (espelhando `@/*`→`./*` do tsconfig) e coleta testes em `lib/**` **e** `app/**`
   (`*.test.ts`) — rotas têm teste co-locado (ex.: `app/api/emails/read/route.test.ts`
   cobre 422/200/502 mockando `triggerReader`).
-- **Suíte Python (pytest):** `py -3 -m pytest tests/` — **851 testes** (ex.:
+- **Suíte Python (pytest):** `py -3 -m pytest tests/` — **978 testes** (ex.:
   `test_link_extraction.py`, `test_email_body_extraction.py`, `test_body_amount.py`,
   `test_body_invoice_table.py`, `test_body_platform_invoice.py`,
   `test_body_resolvers.py`, `test_extract_pdf.py`, `test_body_full.py`,
   `test_fiscal_key.py`, `test_fiscal_document_hook.py`,
-  `test_fiscal_document_consistency.py`). Cobre o
+  `test_fiscal_document_consistency.py`, `test_varredura_historica.py`,
+  `test_is_processed.py`). Cobre o
   pipeline de extração; rodar após mexer em `read_emails.py`/`extract_pdf.py` ou nos
-  scripts de reprocessamento. Não é incluída no `npm test`.
+  scripts de reprocessamento. Não é incluída no `npm test` (que soma **1.231** no Node).
+- 🔴 **Teste não pode depender de estado LOCAL herdado do ambiente** *(lição de 2026-08-03)*.
+  `MainDryRunTest` lia o `data/varredura_checkpoint.json` **real**: enquanto o script nunca tinha
+  rodado o arquivo não existia e os 7 casos passavam **por acidente** — na primeira execução de
+  verdade, o checkpoint apareceu com o UIDVALIDITY da caixa e o teste ficou vermelho. Nem o code
+  review nem 15 mutantes pegaram, porque **nenhum deles alterava o disco**. Arquivo de estado
+  (checkpoint, cache, lock, diretório de saída) se isola no `setUp` com
+  `tempfile.TemporaryDirectory` + `mock.patch.object`, nunca se herda do projeto.
 - Referência de granularidade: `frontend-vite/src/components/StatusBadge.test.tsx`,
   `ExpandableText.test.tsx`, `organisms/LoginForm.test.tsx`.
 - **`apps/portal-next`**: testado via **server rendering** (`react-dom/server`
@@ -1667,7 +1684,7 @@ invariante está travado em `apps/api-backend/lib/auth.concurrency.test.ts`, em 
 `auth.test.ts` (que mocka o SDK inteiro e portanto **não** cobre isto). O teste foi validado contra
 o mutante das duas camadas sabotadas: ele falha quando o defeito existe.
 
-## Roadmap de enriquecimento de dados — 9 ONDAS (Ondas 1 e 2 CONCLUÍDAS em 2026-07-31)
+## Roadmap de enriquecimento de dados — 9 ONDAS (1, 2 e 3 CONCLUÍDAS; 4 com o script PRONTO, não executado)
 
 Plano completo em **[docs/roadmap-enriquecimento-dados.md](docs/roadmap-enriquecimento-dados.md)** —
 **ler antes de mexer em qualquer item abaixo.** Objetivo: ampliar a acurácia e a gama de perguntas
@@ -1679,8 +1696,8 @@ verificação por oráculo diferencial → fechamento). Migrations reservadas: *
 |---|---|---|
 | 1 | ✅ **CONCLUÍDA** (migrations **103/104**) | 9 colunas na `vw_payables` · filtros de compliance · eixo `tipo` · **7ª tool `demonstrativo_despesas`** · somas de juros/descontos · **rate limit** · 15 sugestões em 4 temas · bateria de regressão |
 | 2 | ✅ **CONCLUÍDA** (migrations **105/106**) | `body_full` + `body_search` (tsvector) + GIN · backfill de 383 corpos · reader grava o corpo completo · **8ª tool `buscar_emails`** — deploy do `read_emails.py` **APLICADO e verificado em prod** |
-| 3 | ✅ **CONCLUÍDA** (migrations **107/108**) | `fiscal_document` pela **chave de acesso** (CT-e 57 · NF-e 55 · CF-e 59 · NFC-e 65), sem LLM · `fiscal_key.py` · gancho no Passo 1 · purga preservando o PDF fiscal · backfill de 172 documentos · **9ª tool `documentos_fiscais`** — deploy do reader **PENDENTE** |
-| 4 | Varredura histórica | passada **única** e **estritamente aditiva** na caixa postal |
+| 3 | ✅ **CONCLUÍDA** (migrations **107/108**) | `fiscal_document` pela **chave de acesso** (CT-e 57 · NF-e 55 · CF-e 59 · NFC-e 65), sem LLM · `fiscal_key.py` · gancho no Passo 1 · purga preservando o PDF fiscal · backfill de 172 documentos · **9ª tool `documentos_fiscais`** — deploy **APLICADO e verificado em prod** (27/27, 2026-08-01) |
+| 4 | ✅ **CONCLUÍDA** (sem migration, sem deploy) | `scripts/varredura_historica.py` — passada única e estritamente aditiva na caixa postal: **+70 corpos · +7 chaves fiscais · +4 objetos**, 0 falhas, contas intocadas. 🔴 **A premissa caiu: a INBOX tinha 264 de 1.166 e-mails — 0 CT-e recuperados** |
 | 5 | Fiscais camada 2 | itens de NF-e / peso-rota-frete do CT-e (via LLM) |
 | 6 | Campos derivados | `competence_month`, `dim_date`, parcelamento, `days_late`, recorrência |
 | 7 | Governança | popular `audit_log` (existe com **0 linhas**) |
@@ -1767,10 +1784,12 @@ verificação por oráculo diferencial → fechamento). Migrations reservadas: *
 - 🔴 **No `ts_headline`, passar o MESMO texto que o tsvector indexa.** Passar só o corpo deixava
   **41% dos resultados sem destaque** (50 e-mails casam apenas pelo assunto e não têm corpo algum)
   — o modelo recebia linha sem contexto, sem saber por que ela veio.
-- **Cobertura da busca é PARCIAL e o prompt diz isso**: corpo completo só a partir de 31/07/2026,
-  440 corpos antigos seguem truncados (recuperáveis na Onda 4) e os **251 sem keyword** não têm
-  corpo. O modelo é instruído a responder *"não encontrei nos e-mails com corpo disponível"* —
-  **nunca** *"nunca foi mencionado"*.
+- **Cobertura da busca é PARCIAL e o prompt diz isso**: corpo completo só a partir de 31/07/2026;
+  a Onda 4 recuperou 70 corpos antigos e **436 seguem sem corpo, DEFINITIVAMENTE** (os e-mails
+  saíram da INBOX — não são mais recuperáveis por via nenhuma); e os **255 sem keyword** não têm
+  corpo por decisão de escopo. O modelo é instruído a responder *"não encontrei nos e-mails com
+  corpo disponível"* — **nunca** *"nunca foi mencionado"*. Essa instrução ficou **mais** importante
+  depois da Onda 4, não menos: a lacuna é agora permanente.
 - **Decisão de escopo (item 2.3): opção A.** Não guardar o corpo do e-mail sem keyword — exigiria
   `FETCH RFC822` completo por mensagem (com anexos) para material não-financeiro, com PII.
 
@@ -2036,12 +2055,23 @@ py -3 scripts\reprocess_beneficiario_final.py                    # aplica
 ```
 
 > 📦 **`scripts/supabase_rest.py` — acesso REST/Storage compartilhado pelos scripts de
-> manutenção** (`rest_get` paginado · `rest_write` que devolve `(ok, motivo)` · `storage_list`).
+> manutenção:** `rest_get` (paginado) · `rest_write` → `(ok, motivo)`, nunca levanta ·
+> `storage_list(..., com_metadata=False)` · `storage_upload(..., upsert=False)`.
 > Nasceu em 2026-08-01 porque `purge_orphan_attachments.py` e `backfill_fiscal_documents.py`
 > tinham cópias divergentes das mesmas funções — e a divergência custou caro (ver o bloco da
 > paginação em "O que a Onda 3 entregou"). **Ao escrever script novo que fale com o Supabase,
 > use este módulo**; não copie o `_rest` de ninguém. Roda no DEV: fica em `scripts/`, fora dos
 > `DEPLOY_GLOBS`, então não entra no manifesto de deploy.
+>
+> - **`storage_upload` nasce com `upsert=False`** — o default é o modo SEGURO, e é o único que a
+>   varredura histórica usa: subir com `x-upsert: true` **sobrescreveria** o objeto que já está no
+>   bucket. `SupabaseControl.upload_attachment` do reader hardcoda `true` (ele QUER sobrescrever,
+>   pois reprocessa o mesmo anexo) e por isso não serve a quem é aditivo. O **HTTP 409 volta como
+>   estado próprio** (`"ja_existe"`), não como erro: "o objeto já estava lá" é sucesso para quem só
+>   quer garantir que o arquivo exista.
+> - **`storage_list(com_metadata=True)`** devolve `{nome: metadata}` (com `size`) em vez de só os
+>   nomes. Existe porque **nome coincidir não prova identidade de conteúdo, e o 409 tampouco** — é
+>   o que permite decidir entre reusar a chave e gerar uma alternativa.
 
 Limpar do bucket os **objetos ÓRFÃOS** — os que nenhuma linha referencia. `upload_attachment`
 publica TODO PDF no Passo 1, **antes** de saber se ele vira conta; quando não vira (CT-e/NF-e
@@ -2049,8 +2079,10 @@ publica TODO PDF no Passo 1, **antes** de saber se ele vira conta; quando não v
 repetida), o objeto fica sem `financial_account_attachment.storage_key` nem
 `financial_account_control.source_file` — e, desde a **080**, invisível pela API. **PRESERVA** o que
 é trabalho em aberto: e-mail em `pendente`/`falha` e objeto citado em `email_processing_errors`
-(extração falhou — o bucket é a cópia acessível; o original só existe no IMAP). IRREVERSÍVEL — use
-`--dry-run` primeiro; o backup diário (skill `backup-supabase`) cobre o bucket.
+(extração falhou — o bucket é a cópia acessível; o original só existe no IMAP) — **e, desde
+2026-08-03, todo órfão cujo PDF carrega chave fiscal, decidido pelo CONTEÚDO** (ver o bloco
+"a purga decide pelo CONTEÚDO" abaixo). IRREVERSÍVEL — use `--dry-run` primeiro; o backup diário
+(skill `backup-supabase`) cobre o bucket.
 
 > 🔴 **Desde a Onda 3 há uma TERCEIRA fonte de "referenciado": `fiscal_document.storage_key`.**
 > CT-e/NF-e sem boleto, por regra de negócio, nunca tem linha em anexo nem em conta — sem essa
@@ -2074,16 +2106,28 @@ repetida), o objeto fica sem `financial_account_attachment.storage_key` nem
 > `safe_filename` reduz tudo a ASCII. Medido antes da troca: as duas formas preservam os **mesmos
 > 12 objetos**, então a mudança é exata e a nova diz o que quer dizer.
 
-> ⚠️ **LIMITAÇÃO CONHECIDA — a preservação é por `storage_key`, não por "o PDF contém chave".**
-> A mesma chave de acesso costuma chegar por **dois** objetos (o PDF consolidado da transportadora
-> e o individual), e a UNIQUE de `access_key` registra só o primeiro. O segundo não consta em
-> `fiscal_document`, vira órfão e **é apagado — mesmo sendo um DACTE legítimo**. Medido em
-> 2026-08-01: dos 78 órfãos, **11 contêm chave válida** (19 documentos) e **4 seriam apagados**
-> (o pior carrega **6 DACTEs**). **Não há perda de DADO** — as chaves estão registradas; perde-se
-> o PDF, que é o que a Onda 3 existe para parar de perder. Corrigir exige decisão de escopo: ou a
-> purga abre cada órfão com pdfplumber (caro), ou `fiscal_document` deixa de ter 1 `storage_key`
-> por chave e ganha uma tabela de ocorrências (muda o modelo). **Em aberto por decisão, não por
-> esquecimento.**
+> ✅ **RESOLVIDO em 2026-08-03 — a purga passou a decidir pelo CONTEÚDO, não só por
+> `storage_key`** (`_tem_chave_fiscal`, última barreira antes da remoção).
+>
+> **O defeito era estrutural:** a preservação por `fiscal_document.storage_key` cobre apenas o
+> **primeiro** objeto de cada chave, porque `access_key` é UNIQUE. Quando a mesma chave chega por
+> **dois** objetos (o PDF consolidado da transportadora e o individual), o segundo não consta em
+> lugar nenhum, vira órfão e era apagado — **mesmo sendo um DACTE legítimo**. Pior: **a lacuna
+> crescia**. Medida em 2026-08-01 dava **4** objetos; em 2026-08-03, **10** (18 chaves, o pior com
+> **6 DACTEs**) — cada CT-e reenviado somava um.
+>
+> **A correção:** antes de apagar, a purga baixa cada candidato, lê o texto e preserva o que
+> carrega chave válida (`fiscal_key.extract_access_keys`, com as 5 camadas — não um "44 dígitos"
+> ganancioso, que preservaria qualquer boleto). Três decisões, todas na direção de **não apagar**:
+> só PDF é inspecionado (imagem não tem chave em texto); **falha ao baixar ou ao ler → PRESERVA**
+> (a função autoriza uma remoção irreversível: na dúvida, não autoriza); e ela roda **também no
+> `--dry-run`**, senão o relatório prometeria apagar o que a execução preservaria — e o dry-run é
+> o único relatório que o operador lê antes de decidir. Efeito medido: **68 → 58 a apagar**, os 10
+> fiscais preservados com motivo próprio, ~34 s de inspeção.
+>
+> **Não é otimização — é a diferença entre apagar e não apagar um documento fiscal.** Testes em
+> `tests/test_backfill_provenance.py` (`PurgaPreservaPorConteudoTest`), validados por 4 mutantes,
+> incluindo a guarda de ordem (mover a barreira para depois do dry-run deixa o teste vermelho).
 
 ```powershell
 py -3 scripts\purge_orphan_attachments.py --dry-run  # lista o que apagaria e o que preserva
@@ -2126,6 +2170,70 @@ invariantes estão travadas por teste com mutante em `tests/test_fiscal_document
 > passou a paginar por `order=id&limit&offset`, com guarda de regressão nos mesmos testes.
 > **Lição:** consulta REST cujo resultado vira DADO GRAVADO precisa paginar — o corte vem com HTTP
 > 200, sem exceção e sem sinal.
+
+**Varredura histórica da caixa postal (Onda 4) — EXECUTADA em 2026-08-03; a onda está FECHADA.**
+Passada **ÚNICA** e **estritamente ADITIVA** sobre a INBOX. **`read_emails.py --all` NÃO serve** (a
+dedup por `message_id` pula exatamente o conjunto a reprocessar) e o `reprocess_message.py` opera um
+Message-ID por vez. Roda da máquina de dev — sem migration, sem deploy, fora do
+`check_deploy_parity`:
+
+> 🔴 **O QUE A EXECUÇÃO ENSINOU — a premissa da onda estava errada, e ninguém tinha medido.**
+> O plano projetava recuperar ~115 PDFs de CT-e e 440 corpos. A caixa tinha **264 mensagens** contra
+> **1.166** linhas em `email_control`: **~900 e-mails (77%) já não estão na INBOX** — saíram depois
+> de processados, o que **não** tem relação com a purga de 15/07, a causa que se supunha. Resultado
+> real: **+70 corpos** (de 506 candidatos), **+7 chaves fiscais** (todas NF-e) e **+4 objetos**;
+> **0 CT-e**. Os 436 corpos restantes e os ~115 CT-e são **irrecuperáveis** — não há segunda passada
+> que traga mais. **Lição:** quando um plano se justifica por *"a fonte é volátil, corra"*, o
+> primeiro passo é **MEDIR a fonte**, não escrever o coletor — um `--dry-run` de dois minutos, na
+> Onda 2, teria mostrado que a INBOX guarda ~3 meses e que a recuperação nunca foi possível na
+> escala planejada.
+>
+> **Invariantes verificados NO BANCO** (não só por teste): `financial_account_control` **673 → 673**
+> e `max(id)` **822 → 822**; `email_control` 1.166 → 1.166 (nenhuma linha criada); quarentena vazia;
+> reexecução devolve `a processar: 0 de 264` (idempotência provada em produção).
+
+```powershell
+py -3 scripts\varredura_historica.py --dry-run                     # dimensiona a caixa (barato)
+py -3 scripts\varredura_historica.py --dry-run --deep --limit 200  # taxa real de anexos/chaves
+py -3 scripts\varredura_historica.py --limit 50                    # primeira passada real
+py -3 scripts\varredura_historica.py                               # passada completa
+```
+
+> 🔴 **Os quatro invariantes são ESTRUTURAIS — não afrouxar nenhum** (todos travados por teste,
+> validados por mutante em `tests/test_varredura_historica.py` + `VarreduraHistoricaSeguraTest`):
+> (1) **nunca grava conta** — o identificador `financial_account_control` não existe no código, só
+> na prosa; (2) **nunca marca `\Seen`** — a caixa é reaberta em **EXAMINE** (`readonly=True`, em que
+> o servidor não *pode* gravar flag permanente), todo fetch usa `BODY.PEEK[]` e não há
+> `STORE`/`+FLAGS`; (3) **`body_full` só quando NULO** — o filtro `&body_full=is.null` vai **na
+> URL**, atômico no servidor e imune a corrida com o reader agendado; (4) **objeto do bucket nunca
+> sobrescrito** — upload sem `x-upsert`, com 409 tratado como "já existe".
+>
+> ⚠️ **`data/pdfs_inbox` é território PROIBIDO para este script** — e o motivo não é colisão de
+> nome: `retry_extraction.py:101,180` resolve PDFs **pelo nome** lá dentro, a partir do banco. Um
+> arquivo nosso cujo nome casasse um `source_file` pendente seria extraído por ele e **viraria
+> conta**, furando o invariante (1) pela porta dos fundos. O script usa `tempfile` e, quando um
+> upload falha, guarda o PDF em `data/varredura_pdfs/` (quarentena).
+>
+> ⚠️ **O que ele deliberadamente NÃO faz:** não cria linha em `email_control` para e-mail que nunca
+> foi registrado (só grava o documento fiscal, que guarda a própria proveniência e não tem FK); não
+> grava o corpo dos **251 e-mails sem keyword** (mantém a opção A do item 2.3 — o custo de FETCH
+> deixou de valer, mas o **PII** de comunicação interna permanece); e **não sobe PDF sem chave de
+> acesso** (sem linha em `fiscal_document` a próxima purga o apagaria como órfão) — `--upload-all`
+> é o escape consciente.
+>
+> **Checkpoint** em `data/varredura_checkpoint.json` (gitignored), gravado de forma **atômica**
+> (`.tmp` + `os.replace`) e validado por **UIDVALIDITY**: o UID só é estável dentro do par
+> `(mailbox, UIDVALIDITY)`, então retomar numa caixa recriada processaria as mensagens erradas **em
+> silêncio**. A identidade gravada é a capturada **na abertura**, nunca a corrente — quando a
+> reconexão aborta por UIDVALIDITY diferente, o atributo já mudou, e gravá-lo tornaria o checkpoint
+> falsamente "compatível" na execução seguinte (bug real, encontrado na autorrevisão).
+>
+> **Ordem operacional (cumprida em 2026-08-03; repetir se a caixa voltar a acumular histórico):**
+> `--dry-run` → `--dry-run --deep` → `--limit 50` real conferindo `count(*)`/`max(id)` de
+> `financial_account_control` antes e depois → passada completa → reexecutar para provar a
+> idempotência. A `purge_orphan_attachments` **está liberada**: além dos 4 objetos novos (que têm
+> linha em `fiscal_document`), ela passou a preservar **pelo conteúdo** todo órfão que carrega
+> chave fiscal — ver "a purga decide pelo CONTEÚDO" na seção da purga.
 
 Preencher **contato do fornecedor** (telefone/WhatsApp/chave PIX) em `supplier` a partir do texto
 já gravado nas contas (ver "Contato do fornecedor"). Agrupa por `sk_supplier`, lógica de 2 slots,
@@ -5008,7 +5116,7 @@ internet` ao CHECK de `document_type` e faz backfill — ver "Normalização de 
 
 | Tabela | Propósito |
 |---|---|
-| `email_control` | Dedup/controle. `status` ∈ (`extraído`, `recebido`, `pendente`, `falha`, `ignorado`, `duplicidade`) — **migrations 022/031**. `extraído`=PDF extraído (CSV gerado); `recebido`=sem PDF, conta via corpo; `pendente`=PDF salvo sem CSV (substitui `baixado`); `falha`=casou keyword mas sem PDF e sem conta no corpo; `ignorado`=não-financeiro (sem keyword) **ou NF-e pura sem conta a pagar** (`subject_is_pure_nfe`); `duplicidade`=pagável do corpo duplica conta já registrada por outro e-mail (**migration 031**; card/filtro próprios em `/emails`). O status é calculado em `process_message` pelo resultado real (conta/CSV/corpo/duplicata), não por `pdf_extracted`. **Visibilidade por REMETENTE (migration 078):** a policy SELECT (`authenticated`) filtra por `lower(sender_email)=lower(auth.email())` quando o grupo do usuário tem `sees_only_own_accounts` (Comercial) — `/emails` mostra só os e-mails de que o usuário é remetente; demais grupos veem tudo; `service_role` com bypass. **Corpo (migrations 105/106 — Onda 2):** `body_preview` segue TRUNCADO em 500 chars (é o preview da tela) e **`body_full`** guarda o corpo INTEIRO — não unificar os dois. **`body_search`** é `tsvector` GERADO de assunto+corpo (`to_tsvector('portuguese'::regconfig, left(…, 100000))` — regconfig explícito porque a versão de 1 argumento é STABLE; o `left` é teto contra o limite de 1 MB do tsvector, que **quebraria o INSERT**), com índice GIN e a tool `analytics.buscar_emails`. `body_full` **NULL significa "ainda não temos o corpo"** (e-mail antigo com preview truncado, ou sem keyword — que nem tem o corpo baixado), distinto de string vazia; **440 corpos antigos seguem NULL** até a varredura da Onda 4. `authenticated` NÃO grava nessas colunas (o UPDATE dele é restrito a `reviewed_at`) |
+| `email_control` | Dedup/controle. `status` ∈ (`extraído`, `recebido`, `pendente`, `falha`, `ignorado`, `duplicidade`) — **migrations 022/031**. `extraído`=PDF extraído (CSV gerado); `recebido`=sem PDF, conta via corpo; `pendente`=PDF salvo sem CSV (substitui `baixado`); `falha`=casou keyword mas sem PDF e sem conta no corpo; `ignorado`=não-financeiro (sem keyword) **ou NF-e pura sem conta a pagar** (`subject_is_pure_nfe`); `duplicidade`=pagável do corpo duplica conta já registrada por outro e-mail (**migration 031**; card/filtro próprios em `/emails`). O status é calculado em `process_message` pelo resultado real (conta/CSV/corpo/duplicata), não por `pdf_extracted`. **Visibilidade por REMETENTE (migration 078):** a policy SELECT (`authenticated`) filtra por `lower(sender_email)=lower(auth.email())` quando o grupo do usuário tem `sees_only_own_accounts` (Comercial) — `/emails` mostra só os e-mails de que o usuário é remetente; demais grupos veem tudo; `service_role` com bypass. **Corpo (migrations 105/106 — Onda 2):** `body_preview` segue TRUNCADO em 500 chars (é o preview da tela) e **`body_full`** guarda o corpo INTEIRO — não unificar os dois. **`body_search`** é `tsvector` GERADO de assunto+corpo (`to_tsvector('portuguese'::regconfig, left(…, 100000))` — regconfig explícito porque a versão de 1 argumento é STABLE; o `left` é teto contra o limite de 1 MB do tsvector, que **quebraria o INSERT**), com índice GIN e a tool `analytics.buscar_emails`. `body_full` **NULL significa "ainda não temos o corpo"** (e-mail antigo com preview truncado, ou sem keyword — que nem tem o corpo baixado), distinto de string vazia. **A Onda 4 recuperou 70 dos 506 candidatos (2026-08-03); os 436 restantes são IRRECUPERÁVEIS** — os e-mails já não estão na INBOX, e não há segunda passada que os traga. `authenticated` NÃO grava nessas colunas (o UPDATE dele é restrito a `reviewed_at`) |
 | `financial_account_control` | Tabela principal de contas a pagar — uma linha por documento; alimentada pelo pipeline de e-mail **e** por CRUD manual (baixas, consolidações, dashboards). Substitui a antiga `financial_emails` (dropada na migration 020). O fornecedor é referenciado **só pela FK `sk_supplier`** (surrogate key snowflake, NOT NULL — **migration 042**, antes era `supplier_id`) — nome/CNPJ vêm do JOIN com `supplier` (colunas denormalizadas dropadas na **migration 041**). Tem `sender_email` (migration 023; backfill em 025) usado na resolução p/ alinhar `supplier.email`, e `subject` (migration 025) — exibidos/buscados em `/consulta`. **Classificação contábil** (migrations 047/048): `cost_center_id`/`chart_account_id` SMALLINT, NOT NULL DEFAULT 0 (FKs para os cadastros; id 0 = "não informado") — preenchidos no CRUD manual (cascata centro→plano). **Autoria** (migrations 076/077): `created_by` (DONO — base da visibilidade por dono), `updated_by`, `status_changed_by`, `status_changed_at` — UUID → `auth.users`, NOT NULL DEFAULT sentinela `teste@otimotex.com.br`, carimbados pelo servidor/trigger `trg_fac_authorship` (ver "Visibilidade de contas por dono" / "Auditoria de autor"). **`payment_date`** (DATE, migration 096): **a data de pagamento da conta** — carimbada pela trigger `trg_fac_payment_date` ao entrar em `status_id = 8` e limpa ao sair; escrita SÓ pela trigger (fora do grant de coluna de `authenticated` e do schema Zod de escrita). Usar como data de pagamento sem ressalva; a auditoria estrutural e o limite do histórico (backfill da 096 = vencimento) estão no bloco da 096 acima. 🔴 **`competence_date` é TEXT no formato `YYYY-MM` (mês de competência) e NUNCA deve ser convertida para DATE** — `'2026-06'::date` é erro de sintaxe, e o formato é contrato de 3 camadas (prompt do Claude em `extract_pdf.py`, template do CSV, schema Zod); converter faria **todo INSERT do reader falhar**. A coluna derivada `competence_month` está planejada na Onda 6 do roadmap de enriquecimento, com `to_date` blindado por regex |
 | `financial_cost_center` / `financial_chart_of_account` | **Cadastros de classificação contábil** (pré-existentes, **preservados em limpezas**) usados como lookup no modal de contas. `financial_cost_center` é **gerenciado pelo CRUD de centros de custo** (`/tabelas/centros-de-custo` — PK `cost_center_id` SMALLINT IDENTITY ALWAYS; id 0 = sentinela "não informado", fora do CRUD; ver "CRUD de centros de custo"). `financial_chart_of_account` (também gerenciado pelo **CRUD de Plano de contas** — `/tabelas/plano-de-contas`) tem `cost_center_id` (relaciona o plano ao centro — base da CASCATA), `chart_account_subgroup_id` (FK → subgrupo) e `is_postable` (só os postáveis são lançáveis). Os cadastros `financial_bank`, `financial_account`, `financial_chart_of_account_group` e `financial_chart_of_account_subgroup` também ganharam CRUD próprio (grupo Tabelas — ver "CRUDs dos demais cadastros contábeis"). Lidos via `lib/lookups.ts` (service_role) **e** pelo frontend via embed REST (papel `authenticated`); RLS habilitado com policy de SELECT `TO authenticated` (migration 049 — sem ela o embed voltava null e a UI mostrava `#id`) |
 | `email_processing_errors` | Log de falhas com `raw_payload` JSON. **Visibilidade por REMETENTE (migration 078):** policy SELECT (`authenticated`) filtra por `lower(sender_email)=lower(auth.email())` para grupo com `sees_only_own_accounts` (Comercial) — `/erros` mostra só os erros de que o usuário é remetente; demais veem tudo; `service_role` com bypass |
