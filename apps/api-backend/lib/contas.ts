@@ -21,6 +21,7 @@ import { getSupabaseAdmin } from './supabase-admin';
 import { setSupplierClassification } from './suppliers';
 import { checkClassificationPair } from './classification';
 import { ApiServiceError } from './api-error';
+import { applyOrder } from './sort';
 
 const TABLE = 'financial_account_control';
 const SUPPLIER_TABLE = 'supplier';
@@ -147,7 +148,11 @@ const contaRepository = {
       query = query.or(clauses.join(','));
     }
 
-    return query.order('created_at', { ascending: false }).range(params.from, params.to);
+    // Desempate por `id` obrigatório — paginação por range/offset (ver lib/sort.ts).
+    // `created_at` sozinho não é único; empates fazem a mesma conta repetir entre
+    // páginas e outra sumir, sem erro nenhum.
+    return applyOrder(query, null, { column: 'created_at', ascending: false }, 'id')
+      .range(params.from, params.to);
   },
 
   findById(id: number) {

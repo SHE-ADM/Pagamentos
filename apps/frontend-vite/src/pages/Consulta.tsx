@@ -55,6 +55,7 @@ import { useCompanyOptions } from '../hooks/useCompanyOptions';
 import { fmtDate, fmtDateTime, fmtMoney, fmtCnpj, fmtCostCenter, fmtChartAccount } from '../lib/format';
 import { nextPaymentDate } from '../lib/paymentDate';
 import { csvCell } from '../lib/csv';
+import { appendUniqueById } from '../lib/appendUniqueById';
 
 // Fornecedor no card de detalhe: id (sk_supplier) concatenado ao nome com " - ".
 const fmtSupplier = (r: FinancialAccountControl): string => {
@@ -294,6 +295,12 @@ export default function Consulta() {
 
   const [loadingMore, setLoadingMore] = useState(false);
   const loadingMoreRef = useRef(false);
+  // Geração da requisição: só a MAIS RECENTE pode aplicar seu resultado. Sem isso, um
+  // append em voo (scroll) que responde DEPOIS de um replace (troca de filtro/ordenação)
+  // concatenaria a página da consulta ANTIGA sobre a lista nova — misturando dois
+  // conjuntos e duplicando linhas. O `loadingMoreRef` não cobre esse caso: ele serializa
+  // appends entre si, não append × replace.
+  const requestSeq = useRef(0);
 
   // Recarrega os KPIs (independente da paginação do grid).
   const refreshStats = useCallback(async () => {
@@ -315,6 +322,7 @@ export default function Consulta() {
         setLoading(true);
       }
       setError(null);
+      const seq = ++requestSeq.current;
       try {
         const result = await getFinancialAccountControl({
           ...applied,
@@ -323,17 +331,27 @@ export default function Consulta() {
           sortCol: sort.col ?? undefined,
           sortDir: sort.dir ?? undefined,
         });
-        setRows((prev) => (mode === 'append' ? [...prev, ...result.data] : result.data));
+        // Resposta obsoleta (outro load partiu depois deste) → descarta INTEIRA, inclusive
+        // total/page: aplicar só parte deixaria o estado incoerente com as linhas em tela.
+        if (seq !== requestSeq.current) return;
+        // append usa appendUniqueById: com paginação por offset sobre um conjunto que muda
+        // (o reader grava a cada 5 min), a página seguinte pode devolver uma linha já
+        // exibida. A dedup por `id` é o que garante "a mesma conta nunca aparece 2x".
+        setRows((prev) => (mode === 'append' ? appendUniqueById(prev, result.data) : result.data));
         setTotal(result.total);
         setPage(pageNum);
       } catch (e) {
+        if (seq !== requestSeq.current) return;
         setError(getErrorMessage(e));
       } finally {
-        if (mode === 'append') {
-          loadingMoreRef.current = false;
-          setLoadingMore(false);
-        } else {
-          setLoading(false);
+        // O ref é liberado SEMPRE, mesmo em resposta obsoleta — deixá-lo travado
+        // impediria qualquer append seguinte (scroll infinito morto, sem erro visível).
+        if (mode === 'append') loadingMoreRef.current = false;
+        // Já os indicadores só são desligados pela requisição CORRENTE: uma resposta
+        // obsoleta apagaria o spinner de uma busca que ainda está em andamento.
+        if (seq === requestSeq.current) {
+          if (mode === 'append') setLoadingMore(false);
+          else setLoading(false);
         }
       }
     },

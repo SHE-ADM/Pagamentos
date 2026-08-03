@@ -2054,6 +2054,23 @@ py -3 scripts\reprocess_beneficiario_final.py --dry-run --ids 561,562  # só est
 py -3 scripts\reprocess_beneficiario_final.py                    # aplica
 ```
 
+Regravar o corpo dos e-mails cujo texto salvo é só o **aviso "conteúdo em HTML"** (ver "Corpo
+PLACEHOLDER"). Rebusca o HTML no IMAP (**EXAMINE + BODY.PEEK** — nunca marca `\Seen`), nunca toca
+em conta e faz **PATCH condicional** (o filtro do placeholder vai NA URL, imune a corrida com o
+reader agendado). Reusa as funções canônicas do reader — não reimplementa a detecção:
+
+```powershell
+py -3 scripts\backfill_placeholder_bodies.py --dry-run   # mede e lista, sem gravar
+py -3 scripts\backfill_placeholder_bodies.py             # regrava
+```
+
+> **Aplicado em 2026-08-03: 5 regravados de 29.** A medição ANTES de escrever o coletor (lição da
+> Onda 4) mostrou que só **5** dos 29 ainda estavam na INBOX — os outros **24 são irrecuperáveis**
+> (a caixa guarda ~3 meses). Reexecução confirma idempotência (29 → 24, 0 recuperáveis). O
+> `body_search` é coluna GERADA e acompanhou sozinha. Guardas em
+> `tests/test_backfill_placeholder_bodies.py` (invariantes lidos com `_sem_prosa`, validados por
+> mutante). **Roda no DEV** — fica em `scripts/`, fora dos `DEPLOY_GLOBS`.
+
 > 📦 **`scripts/supabase_rest.py` — acesso REST/Storage compartilhado pelos scripts de
 > manutenção:** `rest_get` (paginado) · `rest_write` → `(ok, motivo)`, nunca levanta ·
 > `storage_list(..., com_metadata=False)` · `storage_upload(..., upsert=False)`.
@@ -3124,7 +3141,13 @@ sempre vence o corpo), sem duplicar. Testes: `tests/test_dup_barcode_synthetic.p
 hard delete das duplicatas do corpo ids 7 (mantido 176), 218 (mantido 217) e 512 (mantido 511,
 enriquecido com o barcode). **NÃO são duplicatas** (preservados): boletos distintos de mesmo
 valor/vencimento com barcodes próprios (HYOSUNG 286/287, GNRE 297/300 e 329/330, DAMSP 267/402)
-e lançamentos manuais com números distintos (Multa 411/412).
+e lançamentos manuais com números distintos (Multa 411/412). **Limpeza retroativa** (2026-08-03):
+hard delete do id **210** (CATAGUASES R$ 4.842,19 venc. 29/06, vinda do CORPO de um "Aviso de
+Vencimento") — duplicava o **124**, que é o boleto real e foi **preservado** (`pdf_text`, com
+barcode, nosso número e o PDF anexado). Critério do usuário: remover a **mais nova**; "sem status
+pago" não desempatava (ambas estavam `pago`). O `email_control` de origem passou a **`duplicidade`**
+— sem isso ficaria `extraído` apontando para conta inexistente. É duplicata ANTERIOR ao fix de
+2026-07-13 (a regra atual já a bloquearia: o corpo sem barcode casa `sk_supplier`+valor+vencimento).
 
 **Retry da consulta de dedup (robustez de rede — não regredir):** um hiccup de rede na
 consulta de duplicidade (`_find`) faria `find_financial_duplicate` retornar `None` ("sem
@@ -3701,6 +3724,30 @@ fix). Correção pontual da conta 669 aplicada em 2026-07-23 (fornecedor → sk_
 "CONTABIL ESQUEMA", mesmo da
 conta 668; nº documento → "20880"; classificação contábil → 9/61, herdada do fornecedor).
 
+**E-mail de PLATAFORMA não identifica fornecedor — e IDENTIFICADOR FORTE vence e-mail
+(migration 109, 2026-08-03 — não regredir):** o Passo 4 (e-mail) resolvia o fornecedor mesmo
+quando a extração trouxera um **CNPJ** que simplesmente ainda não estava cadastrado. Como
+`no-reply@sswsistemas.com.br` é o endereço da **plataforma SSW** (usada por dezenas de
+transportadoras) e estava em **4 fornecedores distintos**, a conta ia para o primeiro que casasse.
+Caso real (conta **794**, fatura SSW nº 79399): a extração devolveu corretamente `PANTANAL
+LOGISTICA E TRANSPORTES LTDA` + CNPJ `08662661000194`, e a conta foi gravada sob `TRANSPORTADORA
+J.D.F.`. **O defeito atinge exatamente o fornecedor NOVO** — a PRIMEIRA fatura de cada
+transportadora era atribuída a uma antiga, e as seguintes acertavam (aí o cadastro já existia e
+casava por nome/CNPJ); por isso passou despercebido: das 14 contas de faturas SSW, **só 1** estava
+errada (conferido lendo o beneficiário de cada PDF no bucket). Duas travas independentes:
+1. **CNPJ/CPF informado que não casou ⇒ fornecedor NOVO ⇒ auto-insert**, nunca casar por e-mail
+   (`v_has_strong` em `resolve_supplier_id`). Vale para QUALQUER plataforma (SIEG, Efí…), sem
+   lista para manter.
+2. **`_is_platform_email`** (domínios `sswsistemas.com.br`/`ssw.inf.br`) — mesmo raciocínio do
+   `_is_internal_email` da 046: endereço compartilhado por vários fornecedores identifica o
+   INTERMEDIÁRIO, não quem recebe. Bloqueia casar, armazenar no auto-insert **e propagar por
+   `_add_supplier_email`** — sem o terceiro, a limpeza dos cadastros se desfaria na fatura
+   seguinte. Ao descobrir plataforma nova (endereço presente em fornecedores de empresas
+   diferentes), acrescente o domínio na função **e** limpe os cadastros que já o capturaram.
+**Não regride** (verificado contra o banco com rollback): CNPJ cadastrado casa; nome cadastrado
+casa; e-mail LEGÍTIMO sem CNPJ **segue casando** (regra da 054 preservada). Correção de dados:
+conta 794 → PANTANAL (sk 1323) com a classificação de transporte preservada.
+
 **SIGLA DE RAZÃO SOCIAL (LTDA) como âncora do nome no assunto (não regredir):** a razão social
 quase sempre TERMINA numa sigla societária (`LTDA`/`EIRELI`/`EPP`/`MEI`/`S.A.`), então ela é a
 âncora mais confiável para isolar o nome do fornecedor no assunto. `_supplier_name_by_legal_suffix`
@@ -4230,6 +4277,21 @@ desescapa, colapsa espaços) para alimentar a extração — recupera "Fatura n�
 realizado com sucesso". Dedup do corpo (`find_financial_duplicate`) evita duplicar conta já
 registrada. Testes: `tests/test_body_html_extraction.py`.
 
+**Corpo PLACEHOLDER — "não-vazio" não quer dizer "tem conteúdo" (2026-08-03, não regredir):**
+o fallback acima só disparava com `if not body_text` (corpo VAZIO). A plataforma **SSW** manda um
+`text/plain` de **55 caracteres** — *"O conteúdo deste e-mail está somente disponível em HTML"* —
+que é não-vazio, então o HTML nunca era lido. Consequências medidas: **29 e-mails** gravaram o
+aviso como se fosse o corpo, a guarda do cedente (`_ssw_cedente_from_body`) **nunca teve texto
+para ler** — foi por isso que a correção de julho para faturas SSW não impediu a reincidência — e
+o `body_full` da Onda 2 ficou inútil para a tool `buscar_emails`. Fix: `_plain_body_is_placeholder`
++ `if not body_text or _plain_body_is_placeholder(body_text)`, e só substitui quando o HTML rende
+algo (HTML ilegível não pode apagar o pouco que havia). **Deliberadamente conservador** — exige o
+padrão do aviso **E** texto curto (`_PLACEHOLDER_BODY_MAX_CHARS = 200`): corpo curto legítimo é a
+NORMA aqui (`"FORNECEDOR X / VALOR / VENCIMENTO"` cabe em 90 chars, e há dezenas na base), logo um
+critério por tamanho descartaria justamente o texto de onde saem fornecedor, valor e vencimento.
+Testes: `tests/test_placeholder_body.py` — inclui **guarda `ast`** de que `process_message` de fato
+consulta o detector: a primeira versão do teste reimplementava a regra e passava no mutante.
+
 **Fallbacks de campo (corpo E PDF — `build_financial_payload`):** `issue_date` vazio →
 data do e-mail (`received_at`); `due_date` vazio → `issue_date` → hoje; `invoice_number`
 vazio → `"{document_type}_{ddmmyy(vencimento|emissão)}"`. Um **identificador de fornecedor**
@@ -4440,6 +4502,29 @@ faturas SIEG em `ignorado`; o handler A1 (baixar o boleto real) segue como melho
   indisponível (`*/*` ou `0-19/*`), **não zera** — estima `offset + itens + (página cheia ? pageSize : 0)`
   e marca `totalIsEstimate` em `Paginated<T>` (evita prender o usuário na página 1). `Consulta.tsx`
   trata a estimativa de forma transparente (sem mudança visual no footer).
+- 🔴 **PAGINAÇÃO POR OFFSET EXIGE DESEMPATE ÚNICO — `lib/stableOrder.ts` (2026-08-03, não
+  regredir):** `ORDER BY coluna` **não define ordem total** quando há empates, e a ordem efetiva
+  muda com o plano de execução. Como cada página é uma consulta NOVA, uma linha empatada pode cair
+  no fim da página N e reaparecer no início da N+1 (**duplicada na tela**) enquanto outra é pulada
+  nas duas (**some da tela** — o sintoma pior, porque não gera erro nenhum: a conta simplesmente
+  deixa de ser paga). Provado no banco: a mesma página (`offset 100, limit 50`, `due_date desc`)
+  devolveu conjuntos DIFERENTES conforme o plano — 1 linha entrou, 1 saiu. **Empates são a norma:**
+  ordenar por Situação empata **682 de 682** linhas (maior grupo 493); tipo de documento 677;
+  vencimento 647. Todo `order` de listagem paginada passa por `stableOrder({column, dir, fallback,
+  tiebreak})`, que anexa a **PK** ao final (`due_date.desc,id.desc`) — aplicado em `/consulta`,
+  `/erros`, `/emails` e nos dois logs de cobrança. Na Next API o equivalente é **`applyOrder`**
+  (`lib/sort.ts`), usado pelos 7 CRUDs + `contas`; a guarda `lib/sort.guard.test.ts` **lê o código**
+  e reprova qualquer listagem paginada nova que chame `.order()` direto. Caso de origem: duas linhas
+  idênticas no grid de `/consulta` (conta 708 exibida 2×).
+- **`lib/appendUniqueById.ts` — 2ª barreira, no scroll infinito de `/consulta`:** o desempate acima
+  elimina o não-determinismo do PLANO, mas não o do CONJUNTO — o reader grava contas a cada 5 min e
+  o botão "Atualizar" dispara leitura sob demanda, então uma inserção entre a página N e a N+1
+  desloca a janela do offset e reexibe uma linha. A dedup por `id` é o que garante o invariante que
+  o usuário enxerga ("a mesma conta nunca aparece 2×"); **preserva a versão já em tela**, senão a
+  curadoria NF/Boleto em voo piscaria de volta ao valor antigo. `Consulta.load()` ainda carrega uma
+  **guarda de geração** (`requestSeq`): um append em voo que responde DEPOIS de um replace (troca de
+  filtro/ordenação) concatenaria a página da consulta ANTIGA sobre a lista nova — o `loadingMoreRef`
+  serializa appends entre si, não append × replace.
 - `services/emailReader.ts` — leitura IMAP **assíncrona com progresso** (proxy Vite → Flask):
   `startEmailRead` faz `POST /api/emails/read/start` (Flask dispara `run_reader` numa **thread**
   e responde na hora) e `getEmailReadProgress` faz `GET /api/emails/progress`. `Emails.handleRead`
@@ -4690,8 +4775,14 @@ local/agendada (ver flag `EMAIL_READER_ENABLED` acima e memória [[vercel-deploy
 ## Banco de dados (Supabase)
 
 Migrations em `supabase/migrations/`, aplicadas **manualmente no SQL Editor** (ou via Supabase
-MCP — ver a nota de cada uma) em ordem numérica (`001` → `108`). **Próxima migration = `109`**
+MCP — ver a nota de cada uma) em ordem numérica (`001` → `109`). **Próxima migration = `110`**
 (verificar sempre antes de criar nova).
+
+**A `109` impede o E-MAIL de SEQUESTRAR o fornecedor** (aplicada via Supabase MCP em 2026-08-03,
+idempotente) — ver "E-mail de PLATAFORMA não identifica fornecedor" em "Auto-resolução de
+fornecedor". Cria `_is_platform_email`, faz o Passo 4 (e-mail) ser pulado quando há CNPJ/CPF
+extraído que não casou, bloqueia o e-mail de plataforma no auto-insert e em `_add_supplier_email`,
+e limpa os 4 cadastros que já o haviam capturado.
 
 **As `107`/`108` são a Onda 3** (aplicadas via psql em 2026-08-01, idempotentes). A **107** cria
 `public.fiscal_document` — o documento fiscal eletrônico pela chave de acesso de 44 dígitos, tabela
@@ -6175,6 +6266,27 @@ lê os arquivos do disco.
 > barcode) e a remoção do fornecedor-lixo 1315 já foram aplicadas na Supabase compartilhada.
 > Validação (esperado `boleto 1040983896 True`):
 > `py -3 -c "import sys; sys.path.insert(0,'skills/email-reader/scripts'); import read_emails as R; b='Voce recebe o boleto\nCobranca\n N 1040983896\nDados do emissor\nAGENCIA K1 DIGITAL\nEsta cobranca foi gerada pela Efi. Pela plataforma e possivel emitir cartao de credito\n'; print(R._classify_body_payment_method(b), R._BODY_CHARGE_NUM_RE.search(b).group(1), bool(R._BODY_ISSUER_RE.search(b)))"`
+
+> **DEPLOY 2026-08-03 — corpo PLACEHOLDER ("conteúdo em HTML") ✅ APLICADO e verificado em prod:**
+> o reader passa a cair no HTML também quando o texto plano é só o aviso de que a mensagem está em
+> HTML — ver "Corpo PLACEHOLDER". Deploy = copiar **`read_emails.py`** (o `extract_pdf.py` NÃO muda)
+> **+ `scheduler/deploy-manifest.json`**. **Sem `.env`, sem dependência nova.** A **migration 109**
+> (fornecedor/plataforma) já rodou na Supabase compartilhada → **nenhum passo de banco** em produção.
+> **Degrada com segurança:** o código ANTIGO segue funcionando (só continua gravando o aviso como
+> corpo). Verificado em prod: `27/27 conferem`, exit 0, e a validação abaixo devolvendo `True`:
+> `py -3 -c "import sys; sys.path.insert(0,'skills/email-reader/scripts'); import read_emails as R; print(R._plain_body_is_placeholder('O conteudo deste e-mail esta somente disponivel em HTML'))"`
+>
+> ⚠️ **O `deploy-manifest.json` esquecido produz um veredito ENGANOSO — e aconteceu neste deploy.**
+> O `check_deploy_parity.py` lê o manifesto **do diretório de PRODUÇÃO**, não o do repo: com a régua
+> velha, o `read_emails.py` recém-copiado apareceu como **DIVERGENTE** e o script mandou "copie os
+> arquivos acima" — apontando justamente o arquivo que estava CERTO. O `CLAUDE.md` já documentava
+> isso para `EXTRA`; vale igual para `DIVERGENTE`. **Sinal que distingue os dois lados:** se a
+> validação funcional responde `True` **e** o verificador acusa divergência, o problema é o
+> manifesto. Confirme comparando os dois hashes em produção (o cálculo normaliza CRLF→LF, então
+> `Get-FileHash` cru não serve):
+> `py -3 -c 'import hashlib,json;from pathlib import Path;f="skills/email-reader/scripts/read_emails.py";b=Path(f).read_bytes().replace(b"\r\n",b"\n").replace(b"\r",b"\n");print("arquivo  :",hashlib.sha256(b).hexdigest());print("manifesto:",json.loads(Path("scheduler/deploy-manifest.json").read_text(encoding="utf-8"))["files"][f])'`
+> **O branch/merge NÃO influencia** — produção não é clone git; se o manifesto de lá bate o hash de
+> `git show HEAD:scheduler/deploy-manifest.json`, ele é o do deploy ANTERIOR.
 
 ### Deploy manual da Cobrança de vencidos (envios) em produção (caso específico — não regredir)
 

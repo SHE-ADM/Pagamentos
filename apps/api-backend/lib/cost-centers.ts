@@ -20,7 +20,7 @@ import {
 } from '@sheild/shared/schemas';
 import type { ZodError } from 'zod';
 import { getSupabaseAdmin } from './supabase-admin';
-import { resolveSort, type SortOrder } from './sort';
+import { applyOrder, resolveSort, type SortOrder } from './sort';
 import { ApiServiceError } from './api-error';
 
 const COST_CENTER_TABLE = 'financial_cost_center';
@@ -77,12 +77,11 @@ const costCenterRepository = {
     }
 
     // Sort server-side validado; sem sort válido → ordem default (código asc).
+    // applyOrder desempata pela PK — obrigatório com paginação por range (ver lib/sort.ts).
     const sorted = resolveSort(params.sort, params.order, SORTABLE_COLUMNS);
-    const ordered = sorted
-      ? query.order(sorted.column, { ascending: sorted.ascending, nullsFirst: false })
-      : query.order('cost_center_code', { ascending: true, nullsFirst: false });
+    const fallback = { column: 'cost_center_code', ascending: true, nullsFirst: false };
 
-    return ordered.range(params.from, params.to);
+    return applyOrder(query, sorted, fallback, 'cost_center_id').range(params.from, params.to);
   },
 
   findById(id: number) {
