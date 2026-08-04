@@ -34,6 +34,12 @@ describe('ExpenseDetailModal', () => {
     expect(screen.getAllByText('a vencer').length).toBeGreaterThan(0); // badge de situação (status_id 3)
   });
 
+  it('mostra fantasia + razão social quando DIVERGEM (mesma regra do grid de /consulta)', () => {
+    const r = mk(9, 50, 'PEGAMIL', 'ITW PPF BRASIL ADESIVOS LTDA', '6.1.01', 'Insumos', '2026-07-20');
+    render(<ExpenseDetailModal open title="Grupo · Insumos" rows={[r]} onClose={vi.fn()} />);
+    expect(screen.getByText('PEGAMIL · ITW PPF BRASIL ADESIVOS LTDA')).toBeInTheDocument();
+  });
+
   it('a célula de Situação não quebra o badge em várias linhas', () => {
     render(<ExpenseDetailModal open title="X" rows={ROWS} onClose={vi.fn()} />);
     const badge = screen.getAllByText('a vencer')[0];

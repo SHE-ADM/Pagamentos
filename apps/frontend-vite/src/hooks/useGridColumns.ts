@@ -17,7 +17,7 @@ import CheckToggle from '../components/atoms/CheckToggle';
 import StatusSelectCell, { type StatusOption } from '../components/atoms/StatusSelectCell';
 import type { FinancialAccountFlag, ExpenseDetailRow } from '../services/supabase';
 // Formatters de exibição: fonte única em src/lib/format.ts (compartilhada com Consulta.tsx/Emails.tsx).
-import { fmtDate, fmtDateTime, fmtMoney, fmtCnpj, fmtCpf, fmtChartAccountFull } from '../lib/format';
+import { fmtDate, fmtDateTime, fmtMoney, fmtCnpj, fmtCpf, fmtChartAccountFull, fmtSupplierName } from '../lib/format';
 
 // Opções do dropdown inline de situação — value = status_id (fonte única), label =
 // nome capitalizado. Ordem de CICLO DE VIDA (a vencer → vencido → …), não a ordem do id
@@ -108,17 +108,19 @@ export function getConsultaColumns(
     render: (r) => fmtDate(r.issue_date),
   },
   {
-    // Fornecedor vem do JOIN com `supplier` (migrations 040/041). O grid exibe APENAS
-    // `trade_name` (razão fantasia) — todos os fornecedores têm `trade_name` preenchido.
-    // Ordenação SERVER-SIDE pela mesma coluna via embed do PostgREST `supplier(trade_name)`,
-    // então a ordem casa exatamente o exibido. Texto longo QUEBRA em várias linhas (wrap).
+    // Fornecedor vem do JOIN com `supplier` (migrations 040/041). Exibe o nome fantasia e,
+    // QUANDO DIVERGE dele, também a razão social (fmtSupplierName) — com fantasia cadastrado
+    // como MARCA ("PEGAMIL" para "ITW PPF BRASIL ADESIVOS"), o fantasia sozinho deixava o
+    // fornecedor irreconhecível. Ordenação SERVER-SIDE segue por `supplier(trade_name)`: é
+    // pelo fantasia que a célula COMEÇA, então a ordem continua casando o que se lê.
+    // Texto longo QUEBRA em várias linhas (wrap).
     key: 'supplier_name',
     header: 'Fornecedor',
     size: 170,
     minSize: 130,
     sortKey: 'supplier(trade_name)',
     wrap: true,
-    render: (r) => r.supplier?.trade_name ?? '—',
+    render: (r) => fmtSupplierName(r.supplier),
   },
   {
     // Empresa PAGADORA (JOIN com `company` pela FK sk_company — migrations 083/084):
@@ -462,7 +464,10 @@ export function getExpenseDetailColumns(): ColumnDef<ExpenseDetailRow>[] {
       header: 'Fornecedor',
       size: 200,
       wrap: true,
-      render: (r) => r.supplier?.trade_name ?? r.supplier?.legal_name ?? '—',
+      // Mesma regra do grid de /consulta (fmtSupplierName): fantasia + razão social
+      // quando divergem. Sem isto, o MESMO fornecedor aparecia de formas diferentes
+      // conforme a tela — 'PEGAMIL' aqui e 'PEGAMIL · ITW PPF…' lá.
+      render: (r) => fmtSupplierName(r.supplier),
     },
     {
       key: 'chart_account',

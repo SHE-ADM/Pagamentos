@@ -104,3 +104,42 @@ export const fmtChartAccountFull = (r: FinancialAccountControl): string => {
   ].filter(Boolean);
   return parts.length ? parts.join(' · ') : '—';
 };
+
+/**
+ * Nome do fornecedor para exibição: nome fantasia + razão social **quando divergem**.
+ *
+ * O grid mostrava apenas `trade_name`, e quando o nome fantasia cadastrado é uma MARCA
+ * ("PEGAMIL") em vez da razão social ("ITW PPF BRASIL ADESIVOS LTDA") o fornecedor ficava
+ * irreconhecível — parecia a conta de outra empresa.
+ *
+ * Só concatena quando os dois nomes acrescentam informação um ao outro. Quando um CONTÉM o
+ * outro ("CIPATEX" dentro de "CIPATEX IMPREGNADORA DE PAPÉIS E TECIDOS LTDA") repetir seria
+ * poluição sem ganho: o fantasia sozinho já identifica. A comparação ignora acento, caixa e
+ * pontuação, senão "S/A" × "SA" contariam como nomes distintos.
+ *
+ * Medido no cadastro (1.294 fornecedores ativos): 534 exibem os dois, 734 caem no caso
+ * "um contém o outro" e 26 têm só um dos nomes.
+ */
+export const fmtSupplierName = (
+  s?: { trade_name?: string | null; legal_name?: string | null } | null,
+): string => {
+  const trade = s?.trade_name?.trim() ?? '';
+  const legal = s?.legal_name?.trim() ?? '';
+  if (!trade) return legal || '—';
+  if (!legal) return trade;
+  const t = normalizeName(trade);
+  const l = normalizeName(legal);
+  // Normalização vazia (nome só de pontuação) cairia em includes('') === true e esconderia
+  // a razão social — trata como "não comparável" e mostra os dois.
+  if (t && l && (l.includes(t) || t.includes(l))) return trade;
+  return `${trade} · ${legal}`;
+};
+
+// Compara nomes ignorando acento, caixa e pontuação: "S/A" e "SA" são o mesmo nome.
+const normalizeName = (v: string): string =>
+  v
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim();

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { fmtDate, fmtDateTime, fmtMoney, fmtCnpj, fmtCpf, fmtCostCenter, fmtChartAccount, fmtChartAccountFull } from './format';
+import { fmtDate, fmtDateTime, fmtMoney, fmtCnpj, fmtCpf, fmtCostCenter, fmtChartAccount, fmtChartAccountFull, fmtSupplierName } from './format';
 import type { FinancialAccountControl } from '@sheild/shared';
 
 describe('format', () => {
@@ -75,5 +75,54 @@ describe('format', () => {
       chart_account: { account_code: '1.1', account_description: 'Caixa' },
     } as unknown as FinancialAccountControl;
     expect(fmtChartAccountFull(partial)).toBe('1.1 — Caixa · CC1 — Administrativo');
+  });
+});
+
+describe('fmtSupplierName — fantasia + razão social quando divergem', () => {
+  it('concatena quando os nomes são distintos (caso PEGAMIL / ITW PPF)', () => {
+    expect(
+      fmtSupplierName({ trade_name: 'PEGAMIL', legal_name: 'ITW PPF BRASIL ADESIVOS LTDA' }),
+    ).toBe('PEGAMIL · ITW PPF BRASIL ADESIVOS LTDA');
+  });
+
+  it('mostra só o fantasia quando um nome CONTÉM o outro', () => {
+    // Repetir "CIPATEX" dentro da razão social seria poluição sem ganho.
+    expect(
+      fmtSupplierName({
+        trade_name: 'CIPATEX',
+        legal_name: 'CIPATEX IMPREGNADORA DE PAPEIS E TECIDOS LTDA',
+      }),
+    ).toBe('CIPATEX');
+  });
+
+  it('trata nomes idênticos como um só', () => {
+    expect(
+      fmtSupplierName({ trade_name: 'ARLETE TRANSPORTES LTDA', legal_name: 'ARLETE TRANSPORTES LTDA' }),
+    ).toBe('ARLETE TRANSPORTES LTDA');
+  });
+
+  it('ignora acento, caixa e pontuação na comparação', () => {
+    // "S/A" × "SA" e maiúsculas/minúsculas não podem contar como nomes diferentes.
+    expect(fmtSupplierName({ trade_name: 'Seguros Sura', legal_name: 'SEGUROS SURA S/A' })).toBe(
+      'Seguros Sura',
+    );
+    expect(fmtSupplierName({ trade_name: 'CONFECÇÕES', legal_name: 'Confeccoes' })).toBe('CONFECÇÕES');
+  });
+
+  it('usa o nome existente quando só um está preenchido', () => {
+    expect(fmtSupplierName({ trade_name: 'ACME', legal_name: null })).toBe('ACME');
+    expect(fmtSupplierName({ trade_name: null, legal_name: 'ACME LTDA' })).toBe('ACME LTDA');
+    expect(fmtSupplierName({ trade_name: '   ', legal_name: 'ACME LTDA' })).toBe('ACME LTDA');
+  });
+
+  it('devolve — sem fornecedor', () => {
+    expect(fmtSupplierName(null)).toBe('—');
+    expect(fmtSupplierName(undefined)).toBe('—');
+    expect(fmtSupplierName({ trade_name: null, legal_name: null })).toBe('—');
+  });
+
+  it('não engole a razão social quando o fantasia é só pontuação', () => {
+    // Normalização vazia cairia em includes('') === true e esconderia a razão social.
+    expect(fmtSupplierName({ trade_name: '- -', legal_name: 'ACME LTDA' })).toBe('- - · ACME LTDA');
   });
 });
