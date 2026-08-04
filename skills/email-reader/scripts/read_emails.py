@@ -769,7 +769,7 @@ class SupabaseControl:
             sval = f"{float(v):.2f}" if col == "amount" else str(v)
             return f"{col}=eq.{urllib.parse.quote(sval, safe='')}"
 
-        def _find(clauses: list) -> dict | None:
+        def _find(clauses: list, select: str = "id,due_date,barcode") -> dict | None:
             # Re-tenta em falha TRANSITORIA (rede/timeout): uma consulta que falha
             # e retorna None seria lida como "sem duplicata" e criaria conta
             # duplicada. Um resultado vazio (rows == []) NAO e erro — retorna None
@@ -781,7 +781,7 @@ class SupabaseControl:
                 try:
                     req = urllib.request.Request(
                         f"{self.base}/rest/v1/financial_account_control"
-                        f"?{filters}&select=id,due_date,barcode&limit=1",
+                        f"?{filters}&select={select}&limit=1",
                         headers=self.headers,
                     )
                     with urllib.request.urlopen(req, timeout=5) as r:
@@ -821,10 +821,29 @@ class SupabaseControl:
         # distintos pela dedup, mas MESMO nosso número 000000091070-8). Escopo por
         # fornecedor (o nosso número é único por beneficiário/título). Só com nosso número
         # substancial (>= 8 dígitos, não-zero) para não fundir títulos distintos.
+        # GUARDA (conta 316/TRT, 2026-08-04 — nao regredir): o campo extraido como "nosso
+        # numero" NEM SEMPRE identifica o TITULO. Em alguns layouts o LLM copia o codigo
+        # AGENCIA/CONTA do cedente (ex.: "0001/0000515-6"), que e o MESMO em todos os
+        # boletos daquele fornecedor — e ai a 1b funde a mensalidade de agosto com a de
+        # julho e o pagavel se PERDE em silencio (o e-mail fica 'extraido', sem conta).
+        # Discriminador: uma REEMISSAO e o MESMO titulo, entao carrega o MESMO numero de
+        # documento; boletos DISTINTOS tem numeros distintos. Medido: no caso que criou a
+        # 1b (SIEG 323/560) `invoice_number` == `nosso_numero` nos dois; no TRT os numeros
+        # diferem (00561066674 x 00569007593) com o nosso_numero identico.
+        # So descarta quando AMBOS os numeros sao PROPRIOS (nao sinteticos) e diferem —
+        # sem numero proprio de um dos lados, o nosso numero segue valendo sozinho.
         nosso = str(payload.get("nosso_numero") or "").strip()
         if _is_real_nosso_numero(nosso):
             m = _find([supplier_clause,
-                       f"nosso_numero=eq.{urllib.parse.quote(nosso, safe='')}"])
+                       f"nosso_numero=eq.{urllib.parse.quote(nosso, safe='')}"],
+                      select="id,due_date,barcode,invoice_number")
+            if m and not _same_title(payload.get("invoice_number"), m.get("invoice_number")):
+                log.info(
+                    "    [DEDUP-1b] nosso numero igual mas Nº de documento diferente "
+                    f"({payload.get('invoice_number')!r} x {m.get('invoice_number')!r}) — "
+                    "titulos distintos, nao deduplica"
+                )
+                m = None
             if m:
                 return m
 
@@ -1560,7 +1579,34 @@ NOTIFICATION_PHRASE_TERMS = (
     "fatura a vencer", "aviso de fatura",
     # Notificacao de disponibilizacao de CT-e (SSW/transportadora) sem boleto.
     "conhecimento de transporte",
+    # Cadastro/alteracao de meio de pagamento (ex.: Locaweb "Nova forma de pagamento
+    # registrada!"): avisa que um CARTAO foi cadastrado — nao ha valor nem documento.
+    # Casava a keyword "pagamento" e caia em 'falha', poluindo /erros (ids 1262/1263).
+    "forma de pagamento", "meio de pagamento",
+    # Operacional de transportadora (SSW "AGENDAMENTO DE COLETA") — casa a keyword
+    # "transporte" mas nao e cobranca (id 806).
+    "agendamento de coleta",
+    # Aviso de RECEBIMENTO de mercadoria/NF pelo destinatario — nao e conta a pagar
+    # (id 429). Distinto de "confirmacao de PAGAMENTO", que ja e tratada acima e num
+    # nivel FORTE (subject_is_payment_confirmation).
+    "confirmacao de recebimento", "confirmacao recebimento",
 )
+
+
+# Subdominio DESCARTAVEL de campanha de phishing: "servidor" + hash aleatorio, sob um
+# dominio que nada tem a ver com o suposto remetente — ex.:
+# setorfinanceiro@servidor9n3xa9.powerallynigeria.com, no_responder@servidorj2tzqm.dkaitech.com.
+# Os assuntos IMITAM cobranca ("Segue NFs e BOLETOS 60582", "Pagamento referente ao pedido"),
+# entao casam keyword e caem em 'falha' — e um deles, se um dia trouxesse anexo, viraria conta
+# a pagar FALSA. Padrao deliberadamente ESTREITO (o literal "servidor" + >=5 chars de hash):
+# nao existe remetente legitimo com essa forma, e um filtro generico por dominio desconhecido
+# barraria fornecedor novo. Ids 945/1083/1184.
+_DISPOSABLE_SENDER_RE = re.compile(r"@servidor[a-z0-9]{5,}\.", re.IGNORECASE)
+
+
+def is_disposable_sender(sender_email: "str | None") -> bool:
+    """Remetente de subdominio descartavel (campanha de phishing). Ver _DISPOSABLE_SENDER_RE."""
+    return bool(_DISPOSABLE_SENDER_RE.search(sender_email or ""))
 
 
 def subject_is_ignorable_notification(subject: str) -> bool:
@@ -3406,6 +3452,36 @@ def _is_synthetic_invoice_number(invoice: str | None) -> bool:
     return bool(_SYNTHETIC_INVOICE_RE.search(s))
 
 
+def _same_title(novo_invoice, cand_invoice) -> bool:
+    """Os dois documentos sao o MESMO TITULO, do ponto de vista do Nº DE DOCUMENTO?
+
+    Usado como guarda da impressao 1b da dedup (fornecedor + nosso numero). Devolve
+    True — "pode deduplicar" — em dois casos:
+      - os numeros PROPRIOS coincidem (comparados so pelos DIGITOS: '001/00561066674-1'
+        e '00561066674' sao o mesmo titulo escrito de formas diferentes); ou
+      - um dos lados NAO tem numero proprio (ausente ou SINTETICO tipo 'boleto_150826'),
+        e entao ele nao contradiz nada — o nosso numero segue decidindo sozinho, como
+        antes desta guarda.
+
+    So devolve False quando AMBOS tem numero proprio e eles DIFEREM: dois titulos
+    distintos do mesmo fornecedor. Conservador de proposito — na duvida, mantem o
+    comportamento anterior, porque deduplicar a mais PERDE um pagavel em silencio."""
+    a = re.sub(r"\D", "", str(novo_invoice or ""))
+    b = re.sub(r"\D", "", str(cand_invoice or ""))
+    if _is_synthetic_invoice_number(str(novo_invoice or "")) or not a:
+        return True
+    if _is_synthetic_invoice_number(str(cand_invoice or "")) or not b:
+        return True
+    # Comparacao por CONTINENCIA, nao por igualdade: o mesmo titulo aparece com prefixo de
+    # carteira e/ou DV conforme o campo ('001/00561066674-1' -> '001005610666741' contem
+    # '00561066674'). Exige >= 6 digitos no lado menor para que numeros curtos nao casem
+    # por acaso — abaixo disso a continencia nao significa nada.
+    menor, maior = (a, b) if len(a) <= len(b) else (b, a)
+    if len(menor) < 6:
+        return a == b
+    return menor in maior
+
+
 def _is_real_nosso_numero(nn: str | None) -> bool:
     """True se `nn` parece um NOSSO NÚMERO real do banco (>= 8 dígitos, não só zeros).
     O nosso número identifica o TÍTULO no banco e é ESTÁVEL entre reemissões (2ª via /
@@ -3946,6 +4022,79 @@ def _ssw_cedente_from_body(sender_email: "str | None", body_text: "str | None",
     if not cnpj and not name:
         return (None, None)
     return (name or None, cnpj)
+
+
+# Distancia MAXIMA (em caracteres) entre o NOME rotulado e o identificador (CNPJ/CPF)
+# no corpo. O corpo costuma citar VARIOS CNPJs — o do pagador (bloco do destinatario),
+# o da plataforma no rodape, o de um terceiro mencionado — e so vale o que esta JUNTO
+# do nome rotulado. Mesmo padrao da janela usada em parse_supplier_contacts para nao
+# adotar uma chave PIX distante do rotulo "pix".
+_BODY_SUPPLIER_ID_WINDOW = 200
+
+
+def _payload_has_strong_supplier_id(payload: dict) -> bool:
+    """O documento anexado trouxe CNPJ ou CPF do fornecedor? Nome NAO conta.
+
+    Nome sozinho e o que o Vision/LLM erra: ele copia qualquer razao social impressa
+    no documento (transportadora, cliente, sacado). CNPJ/CPF sao identificadores
+    FORTES — quando presentes, o anexo manda e nenhum override do corpo se aplica."""
+    return any(str(payload.get(k) or "").strip()
+               for k in ("supplier_cnpj", "supplier_cpf"))
+
+
+def _body_supplier_identity(body_text: "str | None",
+                            own_cnpj: "str | None") -> "tuple[str | None, str | None, str | None]":
+    """Fornecedor ROTULADO no corpo do e-mail **com identificador forte junto**.
+
+    Serve para blindar o caminho do ANEXO: quando o documento anexado nao traz CNPJ/CPF,
+    o nome que o Vision/LLM leu dele e apenas "alguma razao social impressa na pagina" —
+    e num PEDIDO isso costuma ser a TRANSPORTADORA, nao quem recebe o pagamento. Caso de
+    origem (conta 822, "Pagamento Bordados"): o anexo era a foto de um pedido e o Vision
+    gravou "TRANSFER EXPRESS", enquanto o CORPO nomeava o fornecedor de forma explicita
+    ("Razao Social: I S da Silva Camisetas e Malharia" + "CNPJ: 44.427.588/0001-30").
+    Como a regra geral e "o anexo vence o corpo", o corpo nem era consultado e a conta
+    nasceu sob um fornecedor errado, recem-criado e sem CNPJ.
+
+    Retorna (nome, cnpj_14, cpf_11) — ou (None, None, None) quando nao ha um par
+    confiavel. GUARDAS (cada uma existe por um caso real do banco):
+
+    1. EXIGE nome ROTULADO **e** CNPJ/CPF. So o CNPJ nao basta: nos boletos que o
+       despachante repassa (contas 423-428, "Dr. Ricardo") o corpo traz o CNPJ do
+       CLIENTE solto, sem rotulo de fornecedor — disparar ali trocaria o fornecedor
+       correto pelo de um terceiro. Medido: das 8 contas historicas de anexo com
+       fornecedor sem CNPJ e CNPJ no corpo, o par rotulado so existe na 822.
+    2. O identificador tem de estar DENTRO da janela a partir do nome
+       (_BODY_SUPPLIER_ID_WINDOW) — CNPJ do rodape/pagador nao pertence ao rotulo.
+    3. Descarta o CNPJ da PROPRIA empresa pagadora pela RAIZ de 8 digitos (bloco do
+       destinatario; filiais do grupo compartilham a raiz — mesma regra de
+       _finalize_supplier).
+    4. Descarta nome que seja um TIPO de documento/pagamento (_is_non_supplier_term).
+
+    Funcao PURA. Reusa _resolve_body_supplier_identity (a extracao canonica do corpo)
+    para nao criar uma segunda fonte de verdade do que e "fornecedor rotulado"."""
+    if not body_text:
+        return (None, None, None)
+
+    label_match = (_BODY_NAME_RE.search(body_text)
+                   or _BODY_ISSUER_RE.search(body_text))
+    if not label_match:
+        return (None, None, None)          # guarda 1: sem rotulo, nao ha par confiavel
+    name = label_match.group(1).strip()
+    if not name or _is_non_supplier_term(name):
+        return (None, None, None)          # guarda 4
+
+    # guarda 2: so o identificador que esta JUNTO do nome rotulado.
+    window = body_text[label_match.end():label_match.end() + _BODY_SUPPLIER_ID_WINDOW]
+    _, cnpj, cpf = _resolve_body_supplier_identity(window)
+
+    # guarda 3: o CNPJ do proprio pagador nunca e o fornecedor.
+    own = re.sub(r"\D", "", str(own_cnpj or ""))
+    if cnpj and len(own) >= 8 and cnpj[:8] == own[:8]:
+        cnpj = None
+
+    if not cnpj and not cpf:
+        return (None, None, None)          # guarda 1 (a outra metade do par)
+    return (name, cnpj, cpf)
 
 
 _MAX_PDF_LINK_BYTES = 50 * 1024 * 1024  # 50 MB
@@ -4561,6 +4710,13 @@ def extract_and_store_accounts(saved_pdfs: list, message_id: str,
     ssw_cedente_name, ssw_cedente_cnpj = _ssw_cedente_from_body(
         err_ctx.get("sender_email"), body_text, _own_cnpj)
 
+    # ROBUSTEZ (fornecedor ROTULADO no corpo vence o nome lido do ANEXO sem identificador
+    # forte): o nome que o Vision/LLM le de um pedido/recibo e so "alguma razao social
+    # impressa na pagina" — tipicamente a TRANSPORTADORA. Quando o corpo nomeia o
+    # fornecedor com CNPJ/CPF ao lado, ele e a fonte melhor. Computado uma vez por
+    # e-mail; aplicado por linha abaixo, so nas que nao trazem CNPJ/CPF proprios.
+    body_sup_name, body_sup_cnpj, body_sup_cpf = _body_supplier_identity(body_text, _own_cnpj)
+
     # Senhas candidatas (CNPJ[:4]/[:5]/[:6] do pagador) para boletos protegidos —
     # computadas uma vez por e-mail; vazias quando o CNPJ não está disponível.
     pdf_passwords = pdf_password_candidates(ctrl.company_cnpj())
@@ -4694,14 +4850,41 @@ def extract_and_store_accounts(saved_pdfs: list, message_id: str,
         # SÓ quando a linha É um boleto real (linha digitável válida) — o cedente do corpo
         # é o credor autoritativo; o emitente do CT-e agregado é a transportadora
         # subcontratada. Degrada sozinho quando o corpo não nomeia o cedente (None/None).
+        ssw_aplicado = False
         if (ssw_cedente_cnpj or ssw_cedente_name) and _is_boleto_barcode(payload.get("barcode")):
             if ssw_cedente_cnpj:
                 payload["supplier_cnpj"] = ssw_cedente_cnpj
             if ssw_cedente_name:
                 payload["supplier_name"] = ssw_cedente_name
             payload.pop("supplier_cpf", None)  # cedente PJ — descarta CPF do emitente
+            ssw_aplicado = True
             log.info("    [CEDENTE-SSW] fornecedor do boleto pelo cedente do corpo: "
                      f"{ssw_cedente_name!r} / {ssw_cedente_cnpj}")
+
+        # Fornecedor ROTULADO no corpo (nome + CNPJ/CPF juntos) sobrepoe o nome que o
+        # anexo trouxe SEM identificador forte. A condicao e o coracao da regra: com
+        # CNPJ/CPF proprios, o ANEXO manda (nao regride boleto/nota, que sempre os traz);
+        # sem eles, o nome do anexo e um palpite e o par rotulado do corpo e melhor.
+        #
+        # `not ssw_aplicado` NAO e redundante (achado da autorrevisao): quando o unico CNPJ
+        # do corpo SSW e o da PROPRIA empresa, _ssw_cedente_from_body devolve o cedente
+        # so com NOME — e a linha fica sem identificador forte, deixando este override
+        # sobrepor o cedente que a guarda SSW acabou de gravar. O CEDENTE do boleto e o
+        # credor autoritativo daquela fatura; nada no corpo o supera.
+        if ((body_sup_cnpj or body_sup_cpf)
+                and not ssw_aplicado
+                and not _payload_has_strong_supplier_id(payload)):
+            payload["supplier_name"] = body_sup_name
+            # Exclusivos: gravar os dois faria a RPC casar por CNPJ e deixar um CPF
+            # orfao no cadastro. Prioriza o CNPJ (PJ), como no override SSW.
+            if body_sup_cnpj:
+                payload["supplier_cnpj"] = body_sup_cnpj
+                payload.pop("supplier_cpf", None)
+            else:
+                payload["supplier_cpf"] = body_sup_cpf
+                payload.pop("supplier_cnpj", None)
+            log.info("    [FORNECEDOR-CORPO] anexo sem CNPJ/CPF — fornecedor pelo rotulo "
+                     f"do corpo: {body_sup_name!r} / {body_sup_cnpj or body_sup_cpf}")
 
         # CT-e / transporte SEM boleto NAO gera conta a pagar (regra 1): o CT-e e
         # documento fiscal; so o boleto de frete e pagavel. supplier_name ainda
@@ -5165,6 +5348,43 @@ def _received_at_from(meta: bytes | None, date_header: str) -> str:
     return received_at
 
 
+def email_sem_conteudo_extraivel(has_attachment: bool, pdf_links, body_text) -> bool:
+    """O e-mail nao tinha NADA de onde extrair: sem anexo, sem link e sem corpo util.
+
+    Isso NAO e uma falha do pipeline — e um e-mail que nunca poderia virar conta: thread de
+    resposta vazia ("RES: boleto e nf em anexo favor confirmar"), encaminhamento sem corpo,
+    aviso cujo conteudo estava so no assunto. Marcar como 'falha' os coloca em /erros, onde
+    competem por atencao com extracao que REALMENTE quebrou — e nenhum deles e acionavel.
+
+    🔴 A presenca de LINK importa: com link, o e-mail TINHA de onde extrair e o download
+    fracassou — isso e falha de verdade e precisa continuar visivel em /erros. Sem esta
+    condicao, a guarda mascararia justamente o caso que mais merece investigacao (portal que
+    mudou, SSRF bloqueando destino legitimo, PDF que sumiu).
+
+    Medido nos 21 e-mails em 'falha' de 2026-08-04: 11 tinham corpo VAZIO, sem anexo e sem
+    link — nenhum recuperavel por `reprocess_link_emails` nem por `reprocess_body_emails`."""
+    if has_attachment or pdf_links:
+        return False
+    # AUSENCIA de conteudo, NUNCA "corpo curto": corpo curto legitimo e a NORMA aqui —
+    # "FORNECEDOR X R$ 250,00 venc 10/08" cabe em 33 chars e E um pagavel. Por isso o
+    # criterio e nao sobrar UM caractere alfanumerico depois de remover espaco e
+    # pontuacao. Medido: os 11 casos reais tinham o corpo literalmente vazio.
+    return not re.sub(r"[\W_]+", "", str(body_text or ""), flags=re.UNICODE)
+
+
+def _pdf_only_deduplicated(attachment_account: bool, accounts_saved: int) -> bool:
+    """O ANEXO respondeu por um pagavel que JA existia — dedup — sem gravar conta nova.
+
+    `attachment_account` e True quando o anexo gerou conta NOVA **ou** casou uma existente
+    (`accounts_saved > 0 or dup_matches > 0`). Com `accounts_saved == 0` so resta a segunda
+    hipotese, entao a informacao ja estava disponivel: nao foi preciso mudar a assinatura de
+    `extract_and_store_accounts`, que 38 testes desempacotam com 4 valores.
+
+    Existe como funcao (e nao inline no call site) para poder ser testada e para que a
+    guarda de WIRING em tests/test_status_for_result.py tenha um nome a procurar."""
+    return bool(attachment_account) and accounts_saved == 0
+
+
 def status_for_result(has_attachment: bool, csv_generated: bool,
                        body_created: bool, pure_nfe: bool = False,
                        accounts_saved: int = 0, notification: bool = False,
@@ -5205,6 +5425,17 @@ def status_for_result(has_attachment: bool, csv_generated: bool,
     if nonpayable:
         return "ignorado"
     if csv_generated:
+        # O PDF foi lido e gerou CSV, mas nenhuma conta NOVA saiu dele (accounts_saved==0
+        # — o primeiro `if` ja retornou quando houve). Se TODAS as linhas foram
+        # deduplicadas contra contas existentes, o resultado honesto e 'duplicidade':
+        # antes isso caia em 'extraído', indistinguivel de "gravou conta", e foi assim que
+        # a perda do boleto T.R.T (conta 847) ficou INVISIVEL — e-mail verde, sem conta e
+        # sem erro em /erros. Com o status proprio, 'extraído' volta a significar "gerou
+        # conta" e o caso aparece no card "Duplicidades" de /emails.
+        # `not body_created` preserva a precedencia do corpo (teste existente): quando o
+        # corpo gravou conta nova, o e-mail nao e duplicata — e 'extraído', como antes.
+        if duplicate and not body_created:
+            return "duplicidade"
         return "extraído"
     if body_created:
         return "recebido"
@@ -5372,8 +5603,14 @@ def process_message(mail, uid: bytes, keywords: list,
         rec["status"] = status_for_result(
             has_att, csv_generated, body_created,
             pure_nfe=subject_is_pure_nfe(subject), accounts_saved=accounts_saved,
-            notification=subject_is_ignorable_notification(subject),
-            duplicate=(body_outcome == BODY_DUPLICATE),
+            # 'notification' produz 'ignorado' quando nao houve anexo/CSV/conta. Alem do
+            # assunto de aviso, entram aqui: remetente de subdominio descartavel
+            # (phishing que IMITA cobranca) e e-mail sem nada de onde extrair.
+            notification=(subject_is_ignorable_notification(subject)
+                          or is_disposable_sender(sender_email)
+                          or email_sem_conteudo_extraivel(has_att, pdf_links, body_text)),
+            duplicate=(body_outcome == BODY_DUPLICATE
+                       or _pdf_only_deduplicated(attachment_account, accounts_saved)),
             nonpayable=(nonpayable_only or body_outcome == BODY_IGNORED))
 
         # Regra: TODA falha gera log em email_processing_errors para revisão —

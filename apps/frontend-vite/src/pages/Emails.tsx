@@ -14,7 +14,7 @@ import Alert from '../components/atoms/Alert';
 import AttachmentViewer from '../components/AttachmentViewer';
 import ExpandableText from '../components/ExpandableText';
 import DataGrid from '../components/organisms/DataGrid';
-import { fmtDateTime as fmt, fmtDate, fmtMoney } from '../lib/format';
+import { fmtDateTime as fmt, fmtDate, fmtMoney, fmtSupplierName } from '../lib/format';
 
 // Tempo decorrido em mm:ss para o banner de progresso.
 const fmtElapsed = (s: number): string => {
@@ -632,9 +632,9 @@ export default function Emails() {
                                     >
                                       <span
                                         className="truncate text-zinc-600 flex-1"
-                                        title={a.supplier?.trade_name ?? a.supplier?.legal_name ?? ''}
+                                        title={fmtSupplierName(a.supplier)}
                                       >
-                                        {a.supplier?.trade_name ?? a.supplier?.legal_name ?? '—'}
+                                        {fmtSupplierName(a.supplier)}
                                       </span>
                                       <span className="font-mono text-zinc-500 whitespace-nowrap">{fmtDate(a.due_date)}</span>
                                       <span className="font-mono font-medium text-zinc-600 whitespace-nowrap">

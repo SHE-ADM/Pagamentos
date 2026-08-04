@@ -49,4 +49,36 @@ describe('getConsultaColumns — coluna Empresa', () => {
     expect(cols.find((c) => c.key === 'company')?.render?.(r)).toBe('LEBIANCO');
     expect(cols.find((c) => c.key === 'supplier_name')?.render?.(r)).toBe('OTIMOTEX');
   });
+
+  // WIRING da coluna Fornecedor com fmtSupplierName. Sem um caso de nomes DIVERGENTES, o
+  // render podia voltar a mostrar só o fantasia sem nada ficar vermelho: as fixturas acima
+  // usam legal_name null ou igual ao fantasia, e nesses casos o código novo e o antigo dão
+  // o MESMO resultado. Medido: o mutante `fmtSupplierName(r.supplier).split(' · ')[0]`
+  // passava 748/748 testes e typecheck limpo. Os testes de format.test.ts não cobrem isto —
+  // são da função pura; este é o call site.
+  it('Fornecedor mostra fantasia + razão social quando DIVERGEM (marca × razão social)', () => {
+    const r = row({
+      supplier: {
+        trade_name: 'PEGAMIL',
+        legal_name: 'ITW PPF BRASIL ADESIVOS LTDA',
+        cnpj: null,
+        cpf: null,
+      },
+    });
+    expect(columns().find((c) => c.key === 'supplier_name')?.render?.(r)).toBe(
+      'PEGAMIL · ITW PPF BRASIL ADESIVOS LTDA',
+    );
+  });
+
+  it('Fornecedor NÃO repete a razão social quando um nome contém o outro', () => {
+    const r = row({
+      supplier: {
+        trade_name: 'CIPATEX',
+        legal_name: 'CIPATEX IMPREGNADORA DE PAPEIS E TECIDOS LTDA',
+        cnpj: null,
+        cpf: null,
+      },
+    });
+    expect(columns().find((c) => c.key === 'supplier_name')?.render?.(r)).toBe('CIPATEX');
+  });
 });

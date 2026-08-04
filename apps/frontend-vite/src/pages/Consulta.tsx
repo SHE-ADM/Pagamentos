@@ -52,15 +52,19 @@ import ContaAttachments from '../components/organisms/ContaAttachments';
 import { uploadContaAttachments, type UploadOutcome } from '../services/contaAttachments';
 import { getConsultaColumns, STATUS_OPTIONS, type ToggleFlag, type StatusChangeCallback } from '../hooks/useGridColumns';
 import { useCompanyOptions } from '../hooks/useCompanyOptions';
-import { fmtDate, fmtDateTime, fmtMoney, fmtCnpj, fmtCostCenter, fmtChartAccount } from '../lib/format';
+import { fmtDate, fmtDateTime, fmtMoney, fmtCnpj, fmtCostCenter, fmtChartAccount, fmtSupplierName } from '../lib/format';
 import { nextPaymentDate } from '../lib/paymentDate';
 import { csvCell } from '../lib/csv';
 import { appendUniqueById } from '../lib/appendUniqueById';
 
 // Fornecedor no card de detalhe: id (sk_supplier) concatenado ao nome com " - ".
 const fmtSupplier = (r: FinancialAccountControl): string => {
-  const name = r.supplier?.trade_name ?? r.supplier?.legal_name;
-  return name ? `${r.sk_supplier} - ${name}` : String(r.sk_supplier);
+  // Decide pelo DADO, não pelo texto que o helper devolve: comparar com o literal '—'
+  // acoplava este componente ao sentinela de fmtSupplierName, e uma troca lá faria o
+  // detalhe exibir "1193 - —" sem nada acusar.
+  const s = r.supplier;
+  const temNome = Boolean(s?.trade_name?.trim() || s?.legal_name?.trim());
+  return temNome ? `${r.sk_supplier} - ${fmtSupplierName(s)}` : String(r.sk_supplier);
 };
 
 const PAGE_SIZE = 50;
@@ -96,6 +100,7 @@ const CSV_COLS: CsvCol[] = [
   { header: 'due_date', get: (r) => r.due_date },
   { header: 'status', get: (r) => r.status_dim?.status_name ?? '' },
   { header: 'supplier_name', get: (r) => r.supplier?.trade_name ?? r.supplier?.legal_name },
+  { header: 'supplier_legal_name', get: (r) => r.supplier?.legal_name },
   { header: 'supplier_cnpj', get: (r) => r.supplier?.cnpj ?? r.supplier?.cpf },
   { header: 'document_type', get: (r) => r.document_type },
   { header: 'cost_center', get: (r) => fmtCostCenter(r) },
