@@ -125,24 +125,43 @@ Estas regras se aplicam a **todo** código novo ou alterado neste projeto, sem e
      pior desfecho possível numa guarda), e `re.sub(r'"""…"""')` engole o código entre duas
      strings triplas não relacionadas. `tokenize` sabe o que é comentário; `ast` sabe o que é
      docstring.
+  5. **Testar a função PURA não cobre o CALL SITE** *(lição de 2026-08-04, code review max)*. Ao
+     trocar o render da coluna "Fornecedor" por `fmtSupplierName`, o helper ganhou 8 testes
+     unitários — e o **wiring** ficou sem nenhum: as fixtures da coluna usavam `legal_name` nulo ou
+     igual ao fantasia, casos em que o código novo e o antigo produzem o MESMO texto. Medido: o
+     mutante `fmtSupplierName(r.supplier).split(' · ')[0]`, que restaura o comportamento antigo
+     **mantendo o import usado**, passava **748/748 testes e typecheck limpo**. ⚠️ O mutante
+     INGÊNUO (voltar ao `trade_name ?? '—'`) é pego — mas pelo `tsc`, com `TS6133: import órfão`;
+     isso detecta "o símbolo ficou sem uso", **não** "a célula perdeu a razão social". Ao escolher
+     o mutante, prefira o que **preserva as referências** e muda só o comportamento; senão o gate
+     que acusa é outro e a conclusão sai errada. Travado em `useGridColumns.test.ts` (fixture
+     `PEGAMIL` × `ITW PPF BRASIL ADESIVOS LTDA`).
   Vale mais para defeito de **verificação** que para defeito de código: teste verde é justamente o
   que faz parar de olhar. A pergunta que encontra os três: *"o que aconteceria se eu quebrasse isto
   de propósito?"* — se a resposta for "nada falharia", o teste está incompleto.
+  > ⚠️ **Mutante e concorrência não se misturam** *(erro cometido no review de 2026-08-04)*. Dois
+  > processos paralelos sobre o MESMO arquivo — um aplicando mutante, outro lendo — fazem o leitor
+  > observar um estado transitório e concluir o oposto do que o repositório contém (aconteceu: um
+  > verificador reportou que a coluna não usava o helper, com o arquivo íntegro e o lint em exit 0).
+  > Validação por mutante roda **isolada**: em série, ou sobre cópia do arquivo.
 - **Suíte configurada (Vitest):** `apps/frontend-vite` (jsdom + Testing Library) e
   `apps/api-backend` (env node). Rode `npm test` na raiz (roda todos os workspaces) ou
   `npm run test --workspace=apps/<app>`. No `api-backend`, o `vitest.config.ts` resolve o
   alias `@` (espelhando `@/*`→`./*` do tsconfig) e coleta testes em `lib/**` **e** `app/**`
   (`*.test.ts`) — rotas têm teste co-locado (ex.: `app/api/emails/read/route.test.ts`
   cobre 422/200/502 mockando `triggerReader`).
-- **Suíte Python (pytest):** `py -3 -m pytest tests/` — **978 testes** (ex.:
+- **Suíte Python (pytest):** `py -3 -m pytest tests/` — **1.093 testes** (ex.:
   `test_link_extraction.py`, `test_email_body_extraction.py`, `test_body_amount.py`,
   `test_body_invoice_table.py`, `test_body_platform_invoice.py`,
+  `test_body_supplier_override.py`, `test_arrecadacao_gnre.py`,
+  `test_dup_nosso_numero_titulo.py`, `test_email_sem_pagavel.py`,
   `test_body_resolvers.py`, `test_extract_pdf.py`, `test_body_full.py`,
   `test_fiscal_key.py`, `test_fiscal_document_hook.py`,
   `test_fiscal_document_consistency.py`, `test_varredura_historica.py`,
   `test_is_processed.py`). Cobre o
   pipeline de extração; rodar após mexer em `read_emails.py`/`extract_pdf.py` ou nos
-  scripts de reprocessamento. Não é incluída no `npm test` (que soma **1.231** no Node).
+  scripts de reprocessamento. Não é incluída no `npm test` (que soma **1.276** no Node —
+  frontend-vite 751 · api-backend 523 · portal-next 2, medidos em 2026-08-04).
 - 🔴 **Teste não pode depender de estado LOCAL herdado do ambiente** *(lição de 2026-08-03)*.
   `MainDryRunTest` lia o `data/varredura_checkpoint.json` **real**: enquanto o script nunca tinha
   rodado o arquivo não existia e os 7 casos passavam **por acidente** — na primeira execução de
@@ -2432,10 +2451,26 @@ coluna "Situação" renderiza o `StatusSelectCell` (dropdown inline que altera a
 `status_id`**; opções `STATUS_OPTIONS` value=id, e o badge é exibido pelo **nome** resolvido via
 `STATUS_NAME_BY_ID`/embed `status_dim`) — ambos precisam dos callbacks da página. (A coluna "Ações"/`onEdit` foi removida — a edição da conta parte
 do botão "Editar conta" do painel de detalhe.) Os cabeçalhos são abreviados (`NF`/`BOL`) para poupar
-largura, mas o `aria-label` do checkbox continua descritivo (`Tem NF`/`Tem Boleto`). A coluna **"Fornecedor" deriva do JOIN com `supplier`** e exibe **apenas `trade_name`**
-(razão fantasia — todos os fornecedores têm `trade_name` preenchido; sem fallback para
-`legal_name` no grid); a antiga coluna **"CNPJ/CPF" foi REMOVIDA do grid** (segue no card de
-detalhe + embed). A **coluna "Plano de contas" tem visualização ENRIQUECIDA** (`fmtChartAccountFull`,
+largura, mas o `aria-label` do checkbox continua descritivo (`Tem NF`/`Tem Boleto`). A coluna **"Fornecedor" deriva do JOIN com `supplier`** e exibe **nome fantasia + razão social
+QUANDO DIVERGEM** (`fmtSupplierName`, `lib/format.ts` — separador ` · `, mesmo padrão de
+`fmtChartAccountFull`); a antiga coluna **"CNPJ/CPF" foi REMOVIDA do grid** (segue no card de
+detalhe + embed).
+
+> **Por que a regra é "quando divergem" e não "sempre os dois" (2026-08-04 — substitui a decisão
+> anterior de exibir só o `trade_name`):** com o fantasia cadastrado como **MARCA** — "PEGAMIL"
+> para `ITW PPF BRASIL ADESIVOS LTDA` — o fantasia sozinho deixava o fornecedor irreconhecível e
+> parecia a conta de outra empresa. Mas concatenar SEMPRE polui: em `CIPATEX` ×
+> `CIPATEX IMPREGNADORA DE PAPEIS E TECIDOS LTDA` um nome **contém** o outro e a repetição não
+> acrescenta nada. Por isso `fmtSupplierName` concatena só quando nenhum contém o outro,
+> comparando **sem acento, caixa e pontuação** (senão `S/A` × `SA` contariam como distintos).
+> Medido no cadastro (1.294 fornecedores ativos): **534** exibem os dois, **734** caem no caso
+> "um contém o outro" e **26** têm só um dos nomes.
+>
+> **A ordenação continua por `supplier(trade_name)`** e permanece coerente: é pelo fantasia que a
+> célula COMEÇA, então a ordem casa o que se lê. Aplicado também no **card de detalhe**
+> (`fmtSupplier`, que prefixa o `sk_supplier`); no **CSV** a razão social ganhou **coluna própria**
+> (`supplier_legal_name`) em vez de ser concatenada — numa planilha, dado separado por coluna é
+> processável, texto concatenado não é. Testes em `src/lib/format.test.ts`. A **coluna "Plano de contas" tem visualização ENRIQUECIDA** (`fmtChartAccountFull`,
 `lib/format.ts`): **concatena plano de contas + grupo + subgrupo + centro de custo** (cada parte
 `código — descrição`, separador ` · `; partes ausentes/id 0 omitidas). A **antiga coluna "Centro de
 custo" foi REMOVIDA do grid** (dobrada dentro da célula de plano de contas) — mas a **edição
@@ -3099,6 +3134,50 @@ vencimento **mais recente**, chama `update_financial` para atualizar `due_date` 
 guia paga uma vez, sempre com o boleto válido. A trigger recalcula a situação em `status` no
 UPDATE (só quando em aberto — migration 034).
 
+🔴 **A impressão 1b tem uma GUARDA DE TÍTULO desde 2026-08-04 — não removê-la** (`_same_title`).
+O campo que o LLM extrai como "nosso número" **nem sempre identifica o título**: em alguns
+layouts ele copia o **código AGÊNCIA/CONTA do cedente** — no T.R.T Monitoramento,
+`0001/0000515-6`, o **mesmo em todos os boletos** daquele fornecedor. A 1b então fundia a
+mensalidade de **agosto** com a de **julho**: a conta nova não era criada, o `update_financial`
+gravava na conta antiga o **barcode do boleto novo**, e o `email_control` ficava **`extraído`
+sem conta** — pagável **perdido em silêncio**, sem linha em `/erros`. Foi assim que o boleto de
+R$ 450,00 venc. 15/08 sumiu (relato do usuário: *"esse novo de ontem não to achando"*).
+**Discriminador:** uma REEMISSÃO é o MESMO título e carrega o MESMO nº de documento; boletos
+DISTINTOS têm números distintos. Medido: no caso que criou a 1b (SIEG 323/560)
+`invoice_number == nosso_numero` nos dois; no TRT o nosso número é idêntico e os números de
+documento diferem (`00561066674` × `00569007593`). `_same_title` compara por **continência de
+dígitos** (`001/00561066674-1` contém `00561066674` — carteira e DV variam por campo), exige
+≥6 dígitos e devolve **True** ("pode deduplicar") quando um dos lados não tem número próprio
+ou tem número **sintético** — conservador de propósito, porque deduplicar a mais **perde um
+pagável**, enquanto deduplicar a menos só cria uma conta a revisar. Testes:
+`tests/test_dup_nosso_numero_titulo.py` (9 casos, validado por mutante). Correção de dados:
+conta **316** teve o barcode e o `nosso_numero` restaurados (estavam com os do boleto de
+agosto) e o e-mail 1250 foi reprocessado → conta **847** (R$ 450,00, venc. 15/08, "a vencer").
+✅ **RESOLVIDO — `status='extraído'` voltou a significar "gerou conta"** (2026-08-04). Antes,
+ele era emitido também quando o CSV foi gerado e a dedup descartou TUDO, e foi essa ambiguidade
+que deixou a perda do T.R.T invisível: e-mail verde, sem conta, sem erro em `/erros`. Agora
+`status_for_result` devolve **`duplicidade`** nesse caso (`if duplicate and not body_created`
+dentro do ramo `csv_generated`), então o e-mail cai no card "Duplicidades" de `/emails` e a
+auditoria fica possível. O `not body_created` preserva a precedência do corpo — conta nova
+gravada pelo corpo continua `extraído` (teste pré-existente).
+🔴 **A informação já existia: `attachment_account` é `accounts_saved > 0 or dup_matches > 0`**,
+logo `attachment_account and accounts_saved == 0` É a dedup. A 1ª versão acrescentou um 5º
+valor ao retorno de `extract_and_store_accounts` e **quebrou 38 testes** que o desempacotam com
+4 — assinatura pública não se muda por um contador. O helper `_pdf_only_deduplicated` existe
+para dar um NOME que a guarda de wiring possa procurar.
+⚠️ **A guarda de WIRING é o que trava isso** (`WiringDuplicidadeDoPdfTest`): os testes de
+`status_for_result` passam `duplicate=True` na mão e ficaram VERDES com o mutante que corta a
+ligação (`or False`) — 1079/1079. A guarda lê o código de `process_message` e exige
+`_pdf_only_deduplicated` **dentro do argumento `duplicate=`**, com sanidade do parser. Reincidência
+da lição §2 item 5 — a função pura não prova que o call site a usa.
+
+**Varredura de perdas (2026-08-04):** os **106** e-mails `extraído` sem conta foram auditados
+baixando o PDF de cada um e conferindo se a linha digitável existe em alguma conta — **39** são
+dedup correta, **65** não têm boleto legível (link/corpo/CT-e/imagem) e **2** eram candidatos,
+ambos verificados como dedup CORRETA (SIEG = reemissão já paga na conta 323; Adolpho Loyola =
+mesmo título da conta 483, `109/57990943-4`, cancelada pelo usuário). **O T.R.T foi a única
+perda real**, e já está recuperada (conta 847).
+
 **Impressão 1b — `sk_supplier` + `nosso_numero` (identificador ESTÁVEL do título — não regredir):**
 o **nosso número** é o identificador do título no banco e a **2ª via / aviso de vencimento MANTÉM o
 mesmo** — mesmo quando a reemissão muda **VALOR (juros) E VENCIMENTO** ao mesmo tempo, combinação que
@@ -3148,6 +3227,15 @@ barcode, nosso número e o PDF anexado). Critério do usuário: remover a **mais
 pago" não desempatava (ambas estavam `pago`). O `email_control` de origem passou a **`duplicidade`**
 — sem isso ficaria `extraído` apontando para conta inexistente. É duplicata ANTERIOR ao fix de
 2026-07-13 (a regra atual já a bloquearia: o corpo sem barcode casa `sk_supplier`+valor+vencimento).
+
+✅ **A impressão 3 está CONFIRMADA em produção (varredura de 2026-08-04 — não regredir).** Agrupando
+a base inteira por `sk_supplier`+valor+vencimento, **a duplicata mais recente é a conta 718** (28/07:
+o "Aviso de vencimento" da ITW/PPF duplicando o boleto **515** — mesmo título 211839-2, R$ 2.407,44,
+venc. 28/07, `fatura` × `boleto`). **Nenhuma duplicata nasceu depois disso**, e a data não é
+coincidência: o fix da impressão 3 é de **13/07**, mas só chegou à máquina de produção no **deploy
+de 29/07** — um dia depois da 718. As 451 e 524 são da mesma janela e da mesma causa. Ou seja, o
+intervalo entre "corrigido no repo" e "copiado para produção" é observável no dado, e é o argumento
+concreto para o `check_deploy_parity.py` existir.
 
 **Retry da consulta de dedup (robustez de rede — não regredir):** um hiccup de rede na
 consulta de duplicidade (`_find`) faria `find_financial_duplicate` retornar `None` ("sem
@@ -3418,6 +3506,122 @@ LTDA** (CNPJ 45.175.261/0001-80, o Beneficiário) sendo o correto **INORGAN INDU
   (sk 944, CNPJ 56.879.838/0001-51); os 36 name-only foram corretamente ignorados. **Deploy:** copiar
   só `extract_pdf.py` (o `read_emails.py` NÃO muda; sem `.env`/passo de banco).
 
+**Fornecedor ROTULADO no corpo vence o nome do ANEXO sem identificador forte
+(`_body_supplier_identity` — conta 822, 2026-08-04; não regredir):** o nome que o Vision/LLM lê de
+um **pedido/recibo** é apenas "alguma razão social impressa na página" — e num pedido isso costuma
+ser a **TRANSPORTADORA**, não quem recebe o pagamento. Como a regra geral é "o anexo vence o corpo",
+o corpo nem era consultado. Falha real (conta **822**, "Pagamento Bordados" de `bruna@lebianco.com.br`):
+o anexo era a foto de um `Pedido.jpeg` e o Vision gravou **"TRANSFER EXPRESS"** (criando um cadastro
+novo, sem CNPJ), enquanto o CORPO nomeava o fornecedor de forma explícita — `Razão Social: I S da
+Silva Camisetas e Malharia` + `CNPJ: 44.427.588/0001-30` (sk 1193, que **já existia**, com 3 contas).
+
+Regra: quando a linha extraída do anexo **NÃO traz `supplier_cnpj` nem `supplier_cpf`**, o par
+**nome ROTULADO + identificador** do corpo o sobrepõe. Aplicado no **Passo 2** de
+`extract_and_store_accounts`, logo **DEPOIS** do override SSW (quando aquele grava o cedente, a linha
+já tem identificador forte e este não dispara). Mesma família de `_ssw_cedente_from_body`.
+
+- **A condição é o coração da regra:** com CNPJ/CPF **próprios**, o **ANEXO manda**. Boleto e nota
+  fiscal sempre os trazem, então **nada regride** — só a extração de imagem/pedido, que é justamente
+  a que erra o nome.
+- 🔴 **Exige nome ROTULADO *e* identificador — só o CNPJ NÃO basta.** Nos boletos que o despachante
+  repassa (contas **423-428**, "Dr. Ricardo") o corpo traz o CNPJ do **CLIENTE solto**, sem rótulo:
+  disparar ali trocaria o fornecedor correto pelo de um terceiro, reintroduzindo pela porta dos
+  fundos o erro que a memória [[dr-ricardo-reembolso]] documenta. Essa guarda não é teórica — foi
+  medida: das 8 contas históricas de anexo com fornecedor sem CNPJ **e** CNPJ no corpo, o **par
+  rotulado só existe na 822**.
+- **Janela `_BODY_SUPPLIER_ID_WINDOW` (200 chars)** entre o nome e o identificador — o corpo cita
+  vários CNPJs (pagador, plataforma no rodapé, terceiro mencionado) e só vale o que está **junto** do
+  rótulo. Mesmo padrão da janela da chave PIX em `parse_supplier_contacts`.
+- **Descarta o CNPJ da própria empresa pagadora pela RAIZ de 8 dígitos** (bloco do destinatário;
+  filiais do grupo compartilham a raiz) e **nome que seja tipo de documento** (`_is_non_supplier_term`).
+- **CNPJ e CPF são exclusivos** no override: gravar os dois faria a RPC casar por CNPJ e deixar um
+  CPF órfão no cadastro. Prioriza o CNPJ (PJ), como o override SSW.
+- **Reusa `_resolve_body_supplier_identity`** (a extração canônica do corpo) em vez de criar uma 2ª
+  fonte de verdade do que é "fornecedor rotulado".
+- 🔴 **O CEDENTE do override SSW tem precedência — a flag `ssw_aplicado` NÃO é redundante**
+  *(achado da autorrevisão)*. Quando o único CNPJ do corpo SSW é o da **própria empresa**,
+  `_ssw_cedente_from_body` devolve o cedente **só com NOME** — a linha fica sem identificador forte
+  e este override sobreporia o cedente recém-gravado. O cedente do boleto é o credor autoritativo
+  daquela fatura; nada no corpo o supera. Checar só "tem CNPJ/CPF?" não basta para expressar isso.
+- **Verificação — A/B contra a base REAL, não só fixtures:** rodado o helper contra os corpos das
+  **423** contas de anexo; dispara em **1** (a 822) e com o valor correto. ⚠️ A medição equivalente
+  feita por **regex no Postgres deu FALSO NEGATIVO** (não casou nem a 822) — a checagem tem de rodar
+  no **Python**, com a mesma função do pipeline. Testes: `tests/test_body_supplier_override.py`
+  (18 casos, validados contra **5 mutantes** — um por guarda, mais o da precedência SSW).
+- **Correção de dados (2026-08-04):** conta 822 → sk 1193 + classificação default dele (6/585); o
+  cadastro-lixo **1320 "TRANSFER EXPRESS"** recebeu **soft delete** (`deleted_at`) — 0 contas órfãs.
+  O **valor** foi ajustado depois, por decisão do usuário, de R$ 4.874,40 (total do pedido, que o
+  Vision leu da imagem) para **R$ 2.437,20** — o `1º pagamento` que o corpo especifica; a
+  `processing_notes` registra a troca. ⚠️ **O 2º pagamento NÃO foi lançado:** o corpo diz "após o
+  pagamento total farão a emissão da NF", mas não traz data nem cobrança da 2ª parcela, e criar
+  conta sem documento seria inventar obrigação. Ele deve chegar por e-mail próprio.
+
+**GUIA DE ARRECADAÇÃO: o valor é o TOTAL A RECOLHER e o vencimento é a DATA-LIMITE
+(GNRE — 2026-08-04; não regredir):** uma guia tem **duas** de cada, e o extrator vinha
+pegando a errada nas duas:
+
+| Campo | O que o LLM pegava | O correto |
+|---|---|---|
+| Valor | `Valor Principal` (só o tributo) | **`Total a Recolher`** (principal + atualização + juros + multa) |
+| Vencimento | `Data de Vencimento` (do TRIBUTO — já passou) | **`Documento Válido para pagamento`** (data-limite desta guia) |
+
+Estrago medido antes da correção: **27 das 31** GNRE gravadas **a MENOR** (R$ 297,17 no
+total — pagar a menor gera novos juros) e **31 das 32** com vencimento **anterior à própria
+emissão**, isto é, nascendo `vencido` (a tela mostrava um bloco inteiro de guias vermelhas).
+
+- **O VALOR vem do CÓDIGO DE BARRAS, não do texto** (`amount_from_arrecadacao` em
+  `febraban.py`, aplicado por `apply_arrecadacao_amount`): o emissor codifica o total a
+  recolher nas posições 5-15 do código de arrecadação. É determinístico e imune ao LLM —
+  mesmo papel que o fator de vencimento tem para o vencimento do boleto. Diferente de
+  `apply_barcode_amount` (que só PREENCHE quando falta valor), este **SOBRESCREVE**: o
+  número errado também é um número, e aquele não o corrigiria.
+- 🔴 **`id_valor` (posição 3) decide DUAS coisas — o que o campo significa e como o DV é
+  calculado.** `6`/`8` = valor EFETIVO (dinheiro); `7`/`9` = valor de **REFERÊNCIA**
+  (identificador: contrato, matrícula, competência). Tratar 7/9 como valor gravaria um
+  número enorme e arbitrário como R$. O módulo do DV vem do mesmo dígito: 6/7 → módulo 10,
+  8/9 → módulo 11.
+- **`arrecadacao_dv_refuted` preenche a lacuna que `barcode_dv_refuted` declarava não
+  cobrir** ("arrecadacao (48) tem outro esquema de DV"). Sem ela, um barcode corrompido por
+  OCR sobrescreveria um valor que o LLM leu certo — a classe de falha do id 463. Validada
+  contra os dados reais (**31/31 conferem**) *e* por discriminação (corrompendo 1 dígito por
+  vez, **380/432 = 87%** são refutadas) — 100% de aprovação sozinho também seria o sintoma
+  de uma função que nunca refuta nada.
+- 🔴 **`amount_charged` recebe o total DIRETAMENTE, nunca via `resolve_amount_charged`**
+  *(achado da autorrevisão)*. Aquela função aplica a aritmética de BOLETO (`amount −
+  descontos + mora/multa`), e numa guia os juros **já estão dentro** do total: recalcular
+  somaria `fine_interest` uma segunda vez (id 773: 47,51 + 0,47 = **47,98**, valor que não
+  existe no documento; no id 817 o erro seria de **+R$ 103,80**). Os componentes são
+  **preservados** como memória de cálculo. Consequência assumida: em guia de arrecadação a
+  identidade `amount − desc + juros = amount_charged` **não vale**, porque a guia não tem
+  "valor do documento" separado do total.
+- **A precedência do vencimento vive num lugar só** (`apply_text_due_date`, extraída do
+  `build_record`): (1) rótulo "Vencimento" impresso, quando plausível — regra pré-existente
+  do boleto securitizado (id 473/474); (2) data-limite da guia, que vence até o item 1.
+- **O item 2 é restrito ao documento de ARRECADAÇÃO, decidido pelo BARCODE** (determinístico),
+  não pelo `document_type` do LLM: num boleto comum um "válido para pagamento até" significa
+  outra coisa.
+- 🔴 **O item 2 NÃO passa por `_due_date_plausible`.** Em guia de tributo o `issue_date` do
+  documento é **anulado** (`TAX_DOC_TYPES` — guia não tem emissão confiável) e quem preenche
+  a coluna é o fallback do reader: **a data do E-MAIL**. Um reenvio dias depois a põe depois
+  do dia-limite, e a guarda `>= emissão` descartaria justamente a data correta.
+- **Verificação — A/B contra os PDFs REAIS, não só fixtures:** os 31 PDFs foram baixados do
+  bucket e reprocessados. Data-limite encontrada em **31/31**; o rótulo "Vencimento" do
+  `_TEXT_DUE_RE` não casa em **nenhuma** GNRE (hoje a data vem do LLM). **Alcance medido em
+  toda a base:** entre os **33** documentos de arrecadação NÃO-GNRE (dare, darf, iptu, conta
+  de telefone, dae, iss, dam/duam), **0** teriam o valor alterado e **0** o vencimento — 30
+  não têm o rótulo e 3 têm data-limite idêntica ao vencimento. As duas regras são cirúrgicas.
+  Testes: `tests/test_arrecadacao_gnre.py` (33 casos, **6 mutantes**).
+- ⚠️ **Um mutante revelou teste que passava PELO MOTIVO ERRADO** *(lição a repetir)*: o caso
+  da guarda de "valor de referência" trocava o `id_valor` para 9 — o que **também** quebra o
+  DV —, então o `None` vinha do gate de DV, não da guarda testada, e o mutante que removia a
+  guarda não era pego. A fixture passou a **recalcular o DV** (helper `_com_id_valor`), mais
+  uma contraprova de que 6/8 **entregam** o valor.
+- **Correção de dados (2026-08-04):** as **31** guias com barcode tiveram `amount`,
+  `amount_charged` e `due_date` corrigidos a partir das duas fontes verificadas (barcode com
+  DV conferido + texto do PDF). Resultado: vencimento anterior à emissão **31 → 0**; 4 guias
+  saíram de `vencido` para `a vencer`. A **32ª (id 266)** não foi tocada — é lançamento
+  manual, sem barcode e sem PDF, logo sem fonte para verificar.
+
 **Override de GUIA TRIBUTÁRIA pelo ACRÔNIMO no ASSUNTO (não regredir):** guias estaduais
 são visualmente quase idênticas (DARE × GARE × GNRE) e o Claude do `extract_pdf.py` troca
 uma pela outra (caso real: id 326, assunto "PAGAMENTO DARE - REF. T05S1" extraído do
@@ -3669,6 +3873,14 @@ ou seja, a guarda só deixa de criar cadastro-lixo. Testes:
 
 ### Auto-resolução de fornecedor
 
+> **Três regras de fornecedor moram na seção "Normalização de `document_type`"**, junto do caso de
+> documento que as originou — procure lá antes de concluir que uma situação não é tratada:
+> **CEDENTE do boleto vence o EMITENTE do CT-e** (fatura SSW), **Beneficiário Final vence
+> Beneficiário/Cedente** (boleto securitizado) e **Fornecedor ROTULADO no corpo vence o nome do
+> ANEXO sem identificador forte** (`_body_supplier_identity` — anexo que é pedido/recibo lido por
+> Vision). As três sobrepõem o fornecedor **extraído**, antes de `_finalize_supplier`; os fallbacks
+> desta seção só entram quando nada foi extraído.
+
 **ASSUNTO como ÚLTIMO recurso para o nome do fornecedor (não regredir):** e-mail INTERNO de
 pagamento ("PAGAMENTO BOLETO HYOSUNG 181063-3", "ENC: GUIA GNRE", "PAGAMENTO PIX FULANO")
 encaminha um boleto/imagem cujo anexo **não traz nome/CNPJ/CPF**, e o remetente interno
@@ -3747,6 +3959,16 @@ errada (conferido lendo o beneficiário de cada PDF no bucket). Duas travas inde
 **Não regride** (verificado contra o banco com rollback): CNPJ cadastrado casa; nome cadastrado
 casa; e-mail LEGÍTIMO sem CNPJ **segue casando** (regra da 054 preservada). Correção de dados:
 conta 794 → PANTANAL (sk 1323) com a classificação de transporte preservada.
+
+✅ **Reverificado por EXECUÇÃO em 2026-08-04** (não por leitura da migration): rodando
+`resolve_supplier_id('<CNPJ novo>', NULL, '<transportadora nova>', 'no-reply@sswsistemas.com.br')`
+dentro de um `BEGIN … ROLLBACK`, a RPC devolve um **sk NOVO** (auto-insert) — antes da 109 devolvia
+o **241** (`TRANSPORTADORA J.D.F.`). Complementos conferidos no mesmo momento: o e-mail da
+plataforma não está mais em **nenhum** dos 4 campos de e-mail de nenhum cadastro, e a única conta
+que ainda aponta para o sk 241 é a **371**, de 02/07 e **cancelada**. Reproduzir a situação que
+causou o bug é a única forma de provar a correção — "a migration está aplicada" não prova
+comportamento. Este bloco de verificação nasceu de um falso alarme: ver o aviso de DIAGNÓSTICO em
+`lib/appendUniqueById.ts` (grid exibindo valor antigo depois de correção feita no banco).
 
 **SIGLA DE RAZÃO SOCIAL (LTDA) como âncora do nome no assunto (não regredir):** a razão social
 quase sempre TERMINA numa sigla societária (`LTDA`/`EIRELI`/`EPP`/`MEI`/`S.A.`), então ela é a
@@ -4125,10 +4347,12 @@ R$ 5.576,66): o boleto anexado deduplicou contra o id 159 (venc. 18/07 pelo fato
 código de barras), mas o corpo gravou uma 2ª conta com venc. 11/07 (lido do texto, sem
 barcode), que ainda foi auto-baixada para `pago` por causa da data errada. Cobertura:
 `tests/test_boleto_dedup_suppresses_body.py`. **Limpeza retroativa** (2026-07-13): hard
-delete do id 510 (id 159 preservado). Caso ainda ABERTO após o fix: id 7 (corpo, ESPRO
-R$ 304) duplica o id 176 (boleto) — mesma dívida em **e-mails separados**, não deduplicada
-por o tipo divergir (`outro`×`boleto`); causa distinta (gap de dedup cross-e-mail), não
-coberta por este fix.
+delete do id 510 (id 159 preservado). ✅ **FECHADO** — este bloco descrevia como "caso ainda
+ABERTO" o id 7 (corpo, ESPRO R$ 304) duplicando o id 176 (boleto), não deduplicado por o tipo
+divergir (`outro`×`boleto`). Os dois lados foram resolvidos **no mesmo dia** e o texto não
+acompanhou: a **impressão 3 deixou de exigir `document_type` igual** (ver "Impressão 3 casa por
+`sk_supplier`+valor+vencimento, INDEPENDENTE do `document_type`") e o **id 7 foi hard-deletado**
+na limpeza daquela regra. Conferido em 2026-08-04: a conta 7 **não existe**.
 
 **MÚLTIPLAS PARCELAS no corpo → UMA conta por boleto (NUNCA somar — não regredir):**
 quando o corpo lista uma TABELA de boletos (documento, parcela, emissão, vencimento,
@@ -4449,7 +4673,40 @@ e-mails de aviso/confirmação **sem anexo e sem conta no corpo** (gatilho no lu
 frases `informativo, confirmado (o) pagamento, confirmação de/do pagamento, pagamento confirmado,
 pagamento processado, aviso de vencimento, título a vencer, lembrete de vencimento, títulos
 próximos do vencimento, comprovante de pix, protesto, protestado, cartório, comunicado,
-fatura a vencer, aviso de fatura, conhecimento de transporte`.
+fatura a vencer, aviso de fatura, conhecimento de transporte, forma de pagamento, meio de
+pagamento, agendamento de coleta, confirmação de recebimento, confirmação recebimento`.
+
+**MAIS DUAS FONTES alimentam `notification` desde 2026-08-04 (não regredir)** — nasceram da
+varredura dos 21 e-mails em `falha`, em que **nenhum era recuperável** (`reprocess_link_emails`
+e `reprocess_body_emails` devolveram **0** dos dois lados: 16 já não estavam na INBOX e os 5
+restantes não tinham link nem dados no corpo). Não eram falhas do pipeline — eram e-mails que
+**nunca poderiam virar conta**, e marcá-los `falha` os punha em `/erros` competindo por atenção
+com extração que de fato quebrou:
+
+- **`email_sem_conteudo_extraivel(has_attachment, pdf_links, body_text)`** — sem anexo, sem
+  link e sem corpo útil. 🔴 **A condição do LINK é o que impede a guarda de mascarar falha
+  real:** com link, o e-mail TINHA de onde extrair e o download fracassou (portal que mudou,
+  SSRF barrando destino legítimo, PDF removido) — isso continua `falha` e visível. 🔴 O critério
+  é **AUSÊNCIA de conteúdo, nunca tamanho**: corpo curto é a NORMA aqui (`FORNECEDOR X R$ 250,00
+  venc 10/08` cabe em 33 chars e É um pagável), então exige não sobrar **um** caractere
+  alfanumérico. Medido: os 11 casos reais tinham o corpo literalmente vazio (thread `RES:` cujo
+  conteúdo ficou só no assunto).
+- **`is_disposable_sender(sender_email)`** — subdomínio descartável de campanha de phishing
+  (`@servidor` + hash, ex.: `setorfinanceiro@servidor9n3xa9.powerallynigeria.com`). Os assuntos
+  **imitam cobrança** ("Segue NFs e BOLETOS 60582"), então casam keyword; um deles, se um dia
+  trouxesse anexo, viraria **conta a pagar FALSA**. O padrão é deliberadamente ESTREITO (o
+  literal `servidor` + ≥5 de hash): um filtro genérico por domínio desconhecido barraria
+  fornecedor novo, que é o que o pipeline precisa aceitar. Não casa `contato@servidor.com.br`.
+
+As três fontes alimentam `notification`, que **só** produz `ignorado` quando não houve
+anexo/CSV/conta — nenhuma delas pode esconder conta que o pipeline conseguiu extrair. Testes:
+`tests/test_email_sem_pagavel.py` (11 casos, **5 mutantes**), incluindo **guarda de wiring** que
+lê `process_message` e exige as três dentro do argumento `notification=` — a função pura não
+prova que o call site a usa (§2 item 5, reincidente).
+**Reclassificação de 2026-08-04:** as guardas foram aplicadas aos históricos com as **mesmas
+funções** do pipeline → **21 `falha` → 8**, e `/erros` de 35 → 22. Os **8 que permanecem** têm
+corpo com conteúdo e são falha legítima, para revisão humana: Lmed ×2 (portal com CAPTCHA,
+adiado), SEGUROS SURA, Romplas, PUCOMEX, LE BIANCO/PERIPAN, duartecobranca e um `boleto teste`.
 **CT-e/transporte (não regredir):** os termos `cte`/`ct-e`/`dacte`/`conhecimento de transporte`
 fecham a lacuna da notificação de CT-e **sem anexo/link** (ex.: SSW "Arquivos de Conhecimento de
 Transporte Eletronico", "OCORRENCIA CTE …") — a regra CT-e-sem-boleto de `extract_and_store` só
@@ -4525,6 +4782,16 @@ faturas SIEG em `ignorado`; o handler A1 (baixar o boleto real) segue como melho
   **guarda de geração** (`requestSeq`): um append em voo que responde DEPOIS de um replace (troca de
   filtro/ordenação) concatenaria a página da consulta ANTIGA sobre a lista nova — o `loadingMoreRef`
   serializa appends entre si, não append × replace.
+  > ⚠️ **DIAGNÓSTICO — "o grid mostra o valor ANTIGO depois de eu corrigir o dado no banco" NÃO é
+  > regressão do pipeline** *(falso alarme real em 2026-08-04)*. "Preserva a versão já em tela" é
+  > exatamente isso: uma linha carregada ANTES de uma correção feita por fora (SQL, outro usuário,
+  > reprocessamento) continua exibindo o valor velho enquanto a aba viver — carregar mais páginas
+  > **não** a atualiza, porque a dedup por `id` mantém a versão que já está na lista. O caso: a
+  > conta **794** (fatura SSW) aparecia como `TRANSPORTADORA J.D.F.` na tela **um dia depois** de
+  > ter sido corrigida para PANTANAL no banco, e o relato chegou como "voltou a puxar o nome
+  > errado". **Antes de investigar o extrator, confira o dado no banco e mande recarregar**
+  > ("Buscar"/F5). Só se a linha continuar errada APÓS o reload é que o problema está no caminho de
+  > leitura (`SELECT_WITH_EMBEDS`) ou na extração.
 - `services/emailReader.ts` — leitura IMAP **assíncrona com progresso** (proxy Vite → Flask):
   `startEmailRead` faz `POST /api/emails/read/start` (Flask dispara `run_reader` numa **thread**
   e responde na hora) e `getEmailReadProgress` faz `GET /api/emails/progress`. `Emails.handleRead`
@@ -4574,13 +4841,13 @@ faturas SIEG em `ignorado`; o handler A1 (baixar o boleto real) segue como melho
   `*,supplier(trade_name,legal_name,cnpj,cpf),cost_center:financial_cost_center(cost_center_code,cost_center_description),chart_account:financial_chart_of_account(account_code,account_description,group:financial_chart_of_account_group(group_code,group_description),subgroup:financial_chart_of_account_subgroup(subgroup_code,subgroup_description))`.
   O embed de `chart_account` traz a **hierarquia aninhada** (grupo/subgrupo) para a **célula
   enriquecida "Plano de contas"** do grid (plano + grupo + subgrupo + centro de custo concatenados —
-  ver seção do `useGridColumns`). O grid exibe o fornecedor por **`trade_name`** apenas (sem fallback
-  para `legal_name` no grid — o card de detalhe e o CSV mantêm o nome completo) e **Plano de contas**
+  ver seção do `useGridColumns`). O grid exibe o fornecedor por **`fmtSupplierName`** — fantasia +
+  razão social **quando divergem** (ver a nota na seção do `useGridColumns`) — e **Plano de contas**
   (concatenado); a coluna **CNPJ/CPF** e a **coluna "Centro de custo"** foram **removidas do grid** (a
   primeira segue no detalhe; o centro de custo agora aparece dentro da célula de plano de contas).
   Lookups da Next API em `services/lookups.ts`. No **card de detalhe**
-  de `/consulta`, o campo **Fornecedor** exibe `sk_supplier - nome` (helper `fmtSupplier`; fallback
-  só o id quando o JOIN não traz nome) — o cabeçalho do painel, a coluna do grid e o CSV seguem só
+  de `/consulta`, o campo **Fornecedor** exibe `sk_supplier - nome` (helper `fmtSupplier`, que
+  delega o nome a `fmtSupplierName`; fallback só o id quando o JOIN não traz nome) — o cabeçalho do painel, a coluna do grid e o CSV seguem só
   com o nome.
   A coluna **"Fornecedor" É ordenável** server-side por `supplier(trade_name)` (embed do PostgREST);
   ver a nota das colunas de embed acima. A **busca por fornecedor** resolve antes os `sk_supplier` que casam o termo
@@ -6287,6 +6554,98 @@ lê os arquivos do disco.
 > `py -3 -c 'import hashlib,json;from pathlib import Path;f="skills/email-reader/scripts/read_emails.py";b=Path(f).read_bytes().replace(b"\r\n",b"\n").replace(b"\r",b"\n");print("arquivo  :",hashlib.sha256(b).hexdigest());print("manifesto:",json.loads(Path("scheduler/deploy-manifest.json").read_text(encoding="utf-8"))["files"][f])'`
 > **O branch/merge NÃO influencia** — produção não é clone git; se o manifesto de lá bate o hash de
 > `git show HEAD:scheduler/deploy-manifest.json`, ele é o do deploy ANTERIOR.
+
+> **DEPLOY 2026-08-04 (1º do dia) — fornecedor rotulado no corpo vence o nome do anexo (✅ APLICADO
+> e verificado em prod):** `27/27 conferem | faltando: 0 | divergentes: 0 | extras: 0` → *"Produção
+> em paridade com o repositório"* (a paridade do 2º deploy do dia reconfirma este, pois o
+> `read_emails.py` está entre os 27 arquivos conferidos). Quando o
+> anexo não traz CNPJ/CPF, o par **nome rotulado + identificador** do corpo passa a definir o
+> fornecedor — ver "Fornecedor ROTULADO no corpo vence o nome do ANEXO sem identificador forte".
+> Deploy = copiar **`skills\email-reader\scripts\read_emails.py`** (o `extract_pdf.py` NÃO muda)
+> **+ `scheduler\deploy-manifest.json`** (a régua; sem ela o verificador acusa o arquivo CERTO como
+> `DIVERGENTE` — ver o aviso acima). **Sem `.env`, sem dependência nova, sem passo de banco** (a
+> correção da conta 822 e o soft delete do cadastro 1320 já valem para dev+prod, mesma Supabase).
+> **Degrada com segurança:** o código ANTIGO segue funcionando — só continua gravando o nome que o
+> Vision leu da imagem (exige correção manual, como a que foi feita na 822). Como os deltas de
+> `read_emails.py` são cumulativos, esta cópia carrega junto as pendências anteriores.
+> Validação (esperado `('I S da Silva Camisetas e Malharia', '44427588000130', None)` e depois
+> `(None, None, None)` — o caso "Dr. Ricardo", CNPJ solto sem rótulo, que NÃO pode disparar):
+> `py -3 -c "import sys; sys.path.insert(0,'skills/email-reader/scripts'); import read_emails as R; print(R._body_supplier_identity('Razao Social: I S da Silva Camisetas e Malharia\r\nCNPJ: 44.427.588/0001-30\r\n','47273917000123')); print(R._body_supplier_identity('Segue boleto.\r\nCNPJ 04.622.733/0001-19\r\n','47273917000123'))"`
+>
+> ⚠️ **Comando de uma linha para PRODUÇÃO é PowerShell — a quebra de linha vai como `\r\n`, NUNCA
+> como `` `r`n `` (erro cometido na 1ª entrega deste deploy).** O PowerShell escapa com **backtick**,
+> então dentro de aspas DUPLAS o `` `r`n `` vira CR/LF **reais**, que partem a string Python no meio
+> → `SyntaxError: unterminated string literal`. A barra invertida **não** é escape do PowerShell,
+> então `\r\n` chega literal ao Python, que o interpreta. A forma que funciona nos dois shells:
+> **aspas DUPLAS externas + aspas SIMPLES internas + `\r\n`** (verificado executando em
+> `powershell.exe` de verdade, não por leitura). Trocar as aspas de lugar TAMBÉM quebra: com aspas
+> simples externas o PowerShell consome as duplas internas ao repassar ao executável nativo
+> (`SyntaxError: '(' was never closed`). Só importa quando o helper precisa da quebra REAL — o
+> comando de 2026-07-28 usa `\\r\\n` e passa nos dois shells por acidente, porque ali a regex casa
+> mesmo com os caracteres literais.
+
+> **DEPLOY 2026-08-04 (2º do dia) — guia de arrecadação: total a recolher + data-limite
+> (✅ APLICADO e verificado em prod):** `27/27 conferem | faltando: 0 | divergentes: 0 |
+> extras: 0` → *"Produção em paridade com o repositório"*, e a validação funcional devolvendo
+> **`47.51`** e **`2026-07-31`** (a guia do id 773). Ver "GUIA DE ARRECADAÇÃO: o valor é o
+> TOTAL A RECOLHER e o vencimento é a DATA-LIMITE". Deploy = copiar **DOIS** arquivos de
+> código **+ o manifesto**:
+>
+> | De (dev) | Para (produção) |
+> |---|---|
+> | `skills\pdf-contas-pagar\scripts\febraban.py` | `C:\Sheild\API\Pagamentos\skills\pdf-contas-pagar\scripts\` |
+> | `skills\pdf-contas-pagar\scripts\extract_pdf.py` | idem |
+> | `scheduler\deploy-manifest.json` | `C:\Sheild\API\Pagamentos\scheduler\` |
+>
+> 🔴 **Copie o `febraban.py` PRIMEIRO (ou os dois juntos).** O `extract_pdf.py` novo importa
+> `amount_from_arrecadacao`/`arrecadacao_44`/`arrecadacao_dv_refuted` **no topo**, então com o
+> `febraban.py` antigo o import falha com `ImportError` e **NENHUM PDF é extraído** — não só a
+> guia. É a mesma assimetria deliberada do `fiscal_key.py`: o `extract_pdf` **estoura** (alto e
+> cedo), enquanto o `read_emails` degrada. O `read_emails.py` **não muda nesta**, mas carrega o
+> delta do 1º deploy do dia; na dúvida, copie os três.
+>
+> **Sem `.env`, sem dependência nova, sem passo de banco** (a correção das 31 guias já vale para
+> dev+prod, mesma Supabase). **Degrada com segurança:** o código antigo segue gravando o valor
+> principal e o vencimento do tributo — o que exige correção manual, como a que foi feita.
+> Validação (esperado `47.51` e `2026-07-31` — a guia do id 773):
+> `py -3 -c "import sys; sys.path.insert(0,'skills/pdf-contas-pagar/scripts'); import extract_pdf as E, febraban as F; print(F.amount_from_arrecadacao('858800000008475100902623120120260736170318519000')); print(E.extract_payment_deadline_from_text('Documento Valido para pagamento 31/07/2026'))"`
+
+> **DEPLOY 2026-08-04 (3º do dia) — guarda de TÍTULO na dedup + status `duplicidade`
+> (✅ APLICADO e verificado em prod):** `27/27 conferem | faltando: 0 | divergentes: 0 |
+> extras: 0` → *"Produção em paridade com o repositório"*, e a validação funcional devolvendo
+> **`False True True duplicidade`** — os quatro invariantes de uma vez. Duas correções no MESMO arquivo, ambas
+> nascidas do boleto T.R.T que sumiu (ver "A impressão 1b tem uma GUARDA DE TÍTULO"):
+> (1) `_same_title` impede que um "nosso número" que na verdade é o código do cedente funda
+> boletos mensais distintos — **era perda silenciosa de pagável**; (2) `status_for_result`
+> devolve **`duplicidade`** quando o PDF foi lido e a dedup descartou tudo, para que o caso
+> pare de se disfarçar de `extraído`. Deploy = copiar **`skills\email-reader\scripts\read_emails.py`**
+> (o `extract_pdf.py` e o `febraban.py` NÃO mudam nesta) **+ `scheduler\deploy-manifest.json`**.
+> **Sem `.env`, sem dependência nova, sem passo de banco** (a conta 847 e o reparo da 316 já
+> valem para dev+prod, mesma Supabase). **Degrada com segurança:** o código antigo segue
+> funcionando — só volta a poder engolir o boleto mensal do mês seguinte, que é justamente o
+> defeito. Validação (esperado `False True True duplicidade`):
+> `py -3 -c "import sys; sys.path.insert(0,'skills/email-reader/scripts'); import read_emails as R; print(R._same_title('001/00569007593-3','001/00561066674-1'), R._same_title('000000091070-8','000000091070-8'), R._pdf_only_deduplicated(True,0), R.status_for_result(True,True,False,accounts_saved=0,duplicate=True))"`
+>
+> Os quatro valores, em ordem: títulos distintos **não** deduplicam · reemissão do mesmo
+> título **ainda** deduplica · o anexo que só casou conta existente é reconhecido · e o
+> e-mail desse caso vira `duplicidade` em vez de `extraído`.
+
+> **DEPLOY 2026-08-04 (4º do dia) — e-mail não-pagável deixa de virar `falha`
+> (✅ APLICADO em prod; conferência a registrar):**
+> três guardas que alimentam `notification` — `email_sem_conteudo_extraivel`,
+> `is_disposable_sender` e os termos novos de notificação; ver "MAIS DUAS FONTES alimentam
+> `notification`". Deploy = copiar **`skills\email-reader\scripts\read_emails.py`** (o
+> `extract_pdf.py` e o `febraban.py` NÃO mudam nesta) **+ `scheduler\deploy-manifest.json`**.
+> **Sem `.env`, sem dependência nova, sem passo de banco** (a reclassificação dos 16 históricos
+> já vale para dev+prod, mesma Supabase). **Degrada com segurança:** o código antigo segue
+> funcionando — só continua marcando `falha` em e-mail que nunca viraria conta, poluindo
+> `/erros`. Nenhuma conta deixa de ser criada por causa disso, nem antes nem depois.
+> Validação (esperado `True False True False True`):
+> `py -3 -c "import sys; sys.path.insert(0,'skills/email-reader/scripts'); import read_emails as R; print(R.email_sem_conteudo_extraivel(False,[],''), R.email_sem_conteudo_extraivel(False,['http://x/b.pdf'],''), R.is_disposable_sender('setorfinanceiro@servidor9n3xa9.powerallynigeria.com'), R.is_disposable_sender('contato@servidor.com.br'), R.subject_is_ignorable_notification('Nova forma de pagamento registrada!'))"`
+>
+> Os cinco valores, em ordem: e-mail sem nada é não-pagável · **com LINK continua `falha`**
+> (a guarda não mascara download que fracassou) · phishing é pego · domínio legítimo chamado
+> "servidor" NÃO é pego · e o aviso de cadastro de cartão é notificação.
 
 ### Deploy manual da Cobrança de vencidos (envios) em produção (caso específico — não regredir)
 
