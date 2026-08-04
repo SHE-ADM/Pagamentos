@@ -112,6 +112,95 @@ def barcode_dv_refuted(barcode) -> bool:
     return (1 if dv in (0, 10, 11) else dv) != int(digits[4])
 
 
+# ── Arrecadacao (guia de tributo / concessionaria) ────────────────────────────
+# Layout do CODIGO DE BARRAS de arrecadacao (44 digitos, sem os DVs de bloco):
+#     produto(1)='8' segmento(1) id_valor(1) DV_geral(1) valor(11) empresa(4) campo_livre(25)
+# A LINHA DIGITAVEL (48) e o mesmo conteudo em 4 blocos de 12 = 11 digitos + DV do bloco.
+#
+# O `id_valor` (posicao 3) diz o que o campo de 11 digitos SIGNIFICA e como o DV geral e
+# calculado — os dois de uma vez, e por isso ele e a chave de tudo aqui:
+#     6 = valor EFETIVO   (DV modulo 10)     8 = valor EFETIVO   (DV modulo 11)
+#     7 = valor REFERENCIA (DV modulo 10)    9 = valor REFERENCIA (DV modulo 11)
+# "Referencia" NAO e dinheiro — e um identificador (contrato, matricula, competencia).
+# Tratar 7/9 como valor gravaria um numero enorme e arbitrario como se fosse R$.
+_ARRECADACAO_VALOR_EFETIVO = ("6", "8")
+_ARRECADACAO_MOD11 = ("8", "9")
+
+
+def arrecadacao_44(barcode) -> "str | None":
+    """Codigo de barras de arrecadacao com 44 digitos, a partir de 44 ou 48 (linha digitavel).
+
+    Da linha digitavel de 48, descarta o DV de cada um dos 4 blocos de 12. Retorna None
+    para qualquer coisa que nao seja arrecadacao (nao comeca por '8', outro comprimento)."""
+    if not barcode:
+        return None
+    d = re.sub(r"\D", "", str(barcode))
+    if not d.startswith("8"):
+        return None                     # invariante do produto '8' (mesma de is_boleto_barcode)
+    if len(d) == 44:
+        return d
+    if len(d) == 48:
+        return d[0:11] + d[12:23] + d[24:35] + d[36:47]
+    return None
+
+
+def arrecadacao_dv_refuted(barcode) -> bool:
+    """O DV GERAL refuta este codigo de arrecadacao? (True = comprovadamente errado.)
+
+    Contraparte de `barcode_dv_refuted` para o esquema de arrecadacao, que aquela funcao
+    declara nao cobrir ("arrecadacao (48) tem outro esquema de DV"). Mesma semantica de
+    nome: False significa NAO REFUTADO (confere OU a regra nao se aplica), nunca "valido".
+
+    O modulo vem do `id_valor`: 6/7 -> modulo 10; 8/9 -> modulo 11. Existe para que o
+    valor embutido so seja adotado quando o codigo foi lido corretamente — sem isso, um
+    barcode corrompido por OCR sobrescreveria um valor que o LLM leu certo (a mesma classe
+    de falha do id 463, em que o fator de um barcode mal lido estragou o vencimento)."""
+    d = arrecadacao_44(barcode)
+    if d is None or d[2] not in ("6", "7", "8", "9"):
+        return False                    # nao ha o que refutar
+    corpo = d[:3] + d[4:]               # tudo menos o proprio DV (posicao 4)
+    if d[2] in _ARRECADACAO_MOD11:
+        soma, peso = 0, 2
+        for ch in reversed(corpo):
+            soma += int(ch) * peso
+            peso = 2 if peso == 9 else peso + 1
+        resto = soma % 11
+        dv = 0 if resto in (0, 1) else 11 - resto
+    else:                               # modulo 10
+        soma, peso = 0, 2
+        for ch in reversed(corpo):
+            prod = int(ch) * peso
+            soma += prod if prod < 10 else prod - 9
+            peso = 1 if peso == 2 else 2
+        dv = (10 - soma % 10) % 10
+    return dv != int(d[3])
+
+
+def amount_from_arrecadacao(barcode) -> "float | None":
+    """Valor (R$) embutido no codigo de barras de ARRECADACAO — posicoes 5-15, em centavos.
+
+    E o TOTAL A RECOLHER: o emissor codifica o valor que sera efetivamente debitado, ja
+    com atualizacao monetaria, juros e multa. Numa GNRE isso o distingue do "Valor
+    Principal" impresso ao lado, que e so a parcela do tributo — e era o que o LLM vinha
+    copiando (27 das 31 guias gravadas A MENOR, R$ 297,17 no total).
+
+    Retorna None quando o valor nao e confiavel, e cada motivo importa:
+      - `id_valor` 7/9 => o campo e valor de REFERENCIA (identificador), nao dinheiro;
+      - DV geral refutado => o codigo foi lido errado (OCR), entao o valor tambem esta;
+      - fora da faixa plausivel => lixo.
+    Determinístico e imune ao LLM, como o fator de vencimento e para o vencimento."""
+    d = arrecadacao_44(barcode)
+    if d is None or d[2] not in _ARRECADACAO_VALOR_EFETIVO:
+        return None
+    if arrecadacao_dv_refuted(barcode):
+        return None
+    try:
+        valor = int(d[4:15]) / 100.0
+    except ValueError:
+        return None
+    return valor if 0 < valor < 5_000_000 else None
+
+
 def extract_barcode(text):
     # Prefere o padrao estruturado da linha digitavel (mais preciso)
     ld = extract_linha_digitavel(text)

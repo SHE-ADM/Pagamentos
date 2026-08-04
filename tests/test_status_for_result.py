@@ -159,3 +159,87 @@ class StatusForResultTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class StatusDuplicidadeDoPdfTest(unittest.TestCase):
+    """PDF lido cujas linhas foram TODAS deduplicadas → 'duplicidade', não 'extraído'.
+
+    Antes disso, 'extraído' era emitido tanto para "gravou conta" quanto para "descartou
+    tudo na dedup" — e foi assim que a perda do boleto T.R.T (conta 847) ficou invisível:
+    e-mail verde, sem conta e sem erro em /erros. Ver a guarda `_same_title`.
+    """
+
+    def test_csv_sem_conta_com_dedup_vira_duplicidade(self):
+        self.assertEqual(
+            read_emails.status_for_result(has_attachment=True, csv_generated=True,
+                                          body_created=False, accounts_saved=0,
+                                          duplicate=True),
+            "duplicidade",
+        )
+
+    def test_csv_COM_conta_continua_extraido(self):
+        # Conta nova gravada: o e-mail produziu pagável, mesmo tendo deduplicado outra linha.
+        self.assertEqual(
+            read_emails.status_for_result(has_attachment=True, csv_generated=True,
+                                          body_created=False, accounts_saved=1,
+                                          duplicate=True),
+            "extraído",
+        )
+
+    def test_csv_sem_conta_e_sem_dedup_continua_extraido(self):
+        # Sem dedup, o descarte tem outra causa (sem_valor/erro) e já aparece em /erros.
+        self.assertEqual(
+            read_emails.status_for_result(has_attachment=True, csv_generated=True,
+                                          body_created=False, accounts_saved=0),
+            "extraído",
+        )
+
+    def test_corpo_com_conta_nova_tem_precedencia(self):
+        # NÃO REGREDIR: conta nova do corpo vence a duplicata do PDF.
+        self.assertEqual(
+            read_emails.status_for_result(has_attachment=True, csv_generated=True,
+                                          body_created=True, accounts_saved=0,
+                                          duplicate=True),
+            "extraído",
+        )
+
+
+class WiringDuplicidadeDoPdfTest(unittest.TestCase):
+    """GUARDA DE WIRING — a função pura não prova que o call site a usa.
+
+    Lição registrada no CLAUDE.md §2 item 5 e reincidente aqui: os testes de
+    `status_for_result` passam `duplicate=True` na mão, então continuam VERDES mesmo que
+    `process_message` deixe de informar a dedup do PDF. Medido: o mutante que troca a
+    chamada por `or False` passava nos 1079 testes. Esta guarda lê o CÓDIGO.
+    """
+
+    def _fonte_process_message(self) -> str:
+        import inspect
+        return inspect.getsource(read_emails.process_message)
+
+    def test_helper_decide_pelo_anexo_sem_conta_nova(self):
+        # conta nova gravada → não é duplicata
+        self.assertFalse(read_emails._pdf_only_deduplicated(True, 1))
+        # anexo respondeu por pagável existente, sem conta nova → duplicata
+        self.assertTrue(read_emails._pdf_only_deduplicated(True, 0))
+        # anexo não respondeu por pagável nenhum → não é duplicata (é falha/pendente)
+        self.assertFalse(read_emails._pdf_only_deduplicated(False, 0))
+
+    def test_process_message_INFORMA_a_dedup_do_pdf_ao_status(self):
+        fonte = self._fonte_process_message()
+        # sanidade do parser: se `status_for_result` sumir daqui, a guarda vira 0===0
+        self.assertIn("status_for_result(", fonte,
+                      "parser quebrado: process_message não chama mais status_for_result")
+        self.assertIn("_pdf_only_deduplicated(", fonte,
+                      "REGRESSÃO: process_message não informa mais a dedup do anexo ao "
+                      "status — o PDF deduplicado volta a virar 'extraído' e a perda de "
+                      "pagável fica invisível de novo")
+
+    def test_a_dedup_do_pdf_alimenta_o_parametro_duplicate(self):
+        # Não basta a função ser chamada em algum lugar: tem de ser no argumento certo.
+        fonte = self._fonte_process_message()
+        trecho = fonte[fonte.index("status_for_result("):]
+        dup = trecho[trecho.index("duplicate="):]
+        dup = dup[:dup.index("\n", dup.index(")"))] if ")" in dup else dup
+        self.assertIn("_pdf_only_deduplicated", dup,
+                      "a dedup do anexo não está ligada ao parâmetro `duplicate`")

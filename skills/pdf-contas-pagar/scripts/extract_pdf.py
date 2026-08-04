@@ -173,9 +173,16 @@ EXTRACTION_PROMPT = (
     "'Data de Emissao', 'Emissao', 'Data Emissao'. Formato YYYY-MM-DD.\n"
     "- due_date: data de vencimento. Labels: 'Vencimento', 'Data de Vencimento', "
     "'Data Vencimento'. NAO confundir com 'Data do Documento' (issue_date) "
-    "nem com 'Data do Processamento'. Formato YYYY-MM-DD.\n"
+    "nem com 'Data do Processamento'. Formato YYYY-MM-DD. "
+    "EXCECAO — GUIA DE ARRECADACAO (GNRE, DARE, GARE, DARF, DAM/DUAM e afins): use a "
+    "data-limite de pagamento, rotulada 'Documento Valido para pagamento' / 'Valido para "
+    "pagamento ate' / 'Pagar ate'. Nessas guias 'Data de Vencimento' e o vencimento do "
+    "TRIBUTO (ja passou, e o que gera os juros) e NAO deve ser usado.\n"
     "- amount: Valor do Documento (numero decimal com ponto). Em recibo/comprovante "
-    "de postagem (Correios), use o 'Valor do porte' / 'Valor total' do recibo.\n"
+    "de postagem (Correios), use o 'Valor do porte' / 'Valor total' do recibo. "
+    "EXCECAO — GUIA DE ARRECADACAO (GNRE, DARE, GARE, DARF, DAM/DUAM e afins): use o "
+    "'Total a Recolher' / 'Valor Total' (principal + atualizacao monetaria + juros + "
+    "multa), NUNCA o 'Valor Principal' isolado.\n"
     "- discount: (-) Desconto / Abatimentos (decimal; 0 se em branco)\n"
     "- other_deductions: (-) Outras deducoes (decimal; 0 se em branco)\n"
     "- fine_interest: (+) Mora / Multa (decimal; 0 se em branco)\n"
@@ -378,7 +385,8 @@ def extract_date(text):
 # aqui para que todo call site (e teste) que ja usava `extract_pdf.<nome>` siga valendo.
 from febraban import (  # noqa: F401 — reexport intencional
     _coerce_date, _due_date_plausible, _normalize_barcode_format,
-    amount_from_barcode, authoritative_barcode_due_date, barcode_dv_refuted,
+    amount_from_arrecadacao, amount_from_barcode, arrecadacao_44,
+    arrecadacao_dv_refuted, authoritative_barcode_due_date, barcode_dv_refuted,
     due_date_from_barcode, extract_barcode, extract_linha_digitavel,
     is_boleto_barcode, normalize_barcode, normalize_barcode_allow_misread,
 )
@@ -460,7 +468,111 @@ def extract_due_date_from_text(text) -> "str | None":
         return None
 
 
+# Data-LIMITE de pagamento de uma GUIA DE ARRECADACAO. Numa GNRE convivem DUAS datas, e a
+# util e a segunda:
+#   "Data de Vencimento"            = vencimento do TRIBUTO (ja passou; e o que gera os juros)
+#   "Documento Valido para pagamento" = ate quando ESTA guia pode ser paga pelo valor impresso
+# Gravar a primeira produzia guia "vencida" no mesmo instante em que era emitida — medido:
+# 31 das 32 GNRE tinham vencimento ANTERIOR a propria emissao.
+# Rotulos aceitos sao ancorados em "pagamento"/"pagar" para nao casar "valido ate" de outra
+# coisa (certidao, garantia). Ate 40 chars sem digito/barra entre o rotulo e a data.
+_TEXT_PAYMENT_DEADLINE_RE = re.compile(
+    r"(?i)(?:documento\s+v[aá]lido\s+para\s+pagamento"
+    r"|v[aá]lid[oa]\s+para\s+pagamento(?:\s+at[eé])?"
+    r"|pag(?:ar|ue|amento)\s+at[eé]"
+    r"|data\s+limite\s+(?:de|para)\s+pagamento)"
+    r"[^\d/]{0,40}?(\d{2}/\d{2}/\d{4})",
+    re.DOTALL,
+)
 
+
+def extract_payment_deadline_from_text(text) -> "str | None":
+    """Data-limite de pagamento IMPRESSA no texto ('Documento Válido para pagamento').
+
+    Determinística, como `extract_due_date_from_text` — só muda o rótulo. Retorna
+    'YYYY-MM-DD' ou None. Só faz sentido em PDF de TEXTO (no Vision o `raw` é o JSON)."""
+    if not text:
+        return None
+    m = _TEXT_PAYMENT_DEADLINE_RE.search(text)
+    if not m:
+        return None
+    try:
+        return datetime.strptime(m.group(1), "%d/%m/%Y").date().isoformat()
+    except ValueError:
+        return None
+
+
+def apply_text_due_date(rec: dict, raw) -> bool:
+    """Vencimento pela ANALISE DO TEXTO do PDF — a cadeia de precedencia num lugar so.
+
+    Ordem (a de baixo vence a de cima):
+      1. rotulo "Vencimento" impresso, quando plausivel (>= emissao). Prioridade sobre o
+         LLM e sobre o fator do barcode: a data impressa e a verdade do boleto (id
+         473/474, securitizado com fator STALE de 2025 contra vencimento impresso de 2026).
+      2. data-LIMITE de uma GUIA DE ARRECADACAO ("Documento Valido para pagamento"), que
+         vence ate o item 1 — numa guia, "Vencimento" e o vencimento do TRIBUTO, que ja
+         passou, e adota-lo fazia a conta NASCER vencida.
+
+    O item 2 e restrito ao documento de ARRECADACAO, decidido pelo BARCODE (deterministico,
+    nao pelo `document_type` do LLM): num boleto comum um eventual "valido para pagamento
+    ate" significa outra coisa e sobrepor o vencimento seria regressao.
+
+    O item 2 NAO passa por `_due_date_plausible` de proposito. Em guia de tributo o
+    `issue_date` do documento e ANULADO logo abaixo (TAX_DOC_TYPES — guia nao tem data de
+    emissao confiavel), e quem preenche a coluna e o fallback do reader: a data do
+    E-MAIL. Um reenvio/reprocessamento dias depois poe essa data DEPOIS do dia-limite, e a
+    guarda `>= emissao` descartaria justamente a data correta. Medido nas 31 guias atuais:
+    a data-limite nunca e anterior, mas a folga e de 0 a 3 dias — nao ha margem para
+    depender disso. Retorna True se alterou. Funcao pura sobre (rec, raw)."""
+    alterou = False
+    text_due = extract_due_date_from_text(raw)
+    if text_due and _due_date_plausible(text_due, rec.get("issue_date")):
+        rec["due_date"] = text_due
+        alterou = True
+    if arrecadacao_44(rec.get("barcode")) is not None:
+        deadline = extract_payment_deadline_from_text(raw)
+        if deadline:
+            rec["due_date"] = deadline
+            alterou = True
+    return alterou
+
+
+def apply_arrecadacao_amount(rec: dict) -> bool:
+    """Valor AUTORITATIVO da guia de arrecadação = o embutido no código de barras.
+
+    Diferente de `apply_barcode_amount` (que só PREENCHE quando o valor está ausente),
+    este **SOBRESCREVE**: numa guia, o número impresso que o LLM tende a copiar é o
+    "Valor Principal", enquanto o que se paga é o "Total a Recolher" — e é este que o
+    emissor codifica no código de barras. Só age quando `amount_from_arrecadacao` confia
+    no código (valor efetivo + DV geral não refutado), então um barcode corrompido por
+    OCR não estraga um valor que o LLM leu certo. Idempotente.
+
+    🔴 `amount_charged` recebe o total DIRETAMENTE — nunca via `resolve_amount_charged`.
+    Aquela função aplica a aritmética de BOLETO (amount - descontos + mora/multa), e numa
+    guia os juros ja estao DENTRO do total: recalcular somaria `fine_interest` uma segunda
+    vez (medido no id 773: 47,51 + 0,47 = 47,98, um valor que nao existe no documento).
+    Os componentes (fine_interest, other_additions) sao PRESERVADOS como detalhe do que
+    compoe o total — deixam de ser parcelas a somar e passam a ser memoria de calculo.
+    Consequencia assumida: em guia de arrecadacao a identidade "amount - desc + juros =
+    amount_charged" NAO vale, porque a guia nao tem "valor do documento" separado do
+    total; ela tem Valor Principal + acrescimos = Total a Recolher, e e o total que se paga."""
+    bc_amount = amount_from_arrecadacao(rec.get("barcode"))
+    if bc_amount is None:
+        return False
+    try:
+        atual = float(rec.get("amount")) if rec.get("amount") not in (None, "") else None
+    except (TypeError, ValueError):
+        atual = None
+    if atual is not None and abs(atual - bc_amount) < 0.005:
+        return False                                  # ja e o valor correto
+    rec["amount"] = bc_amount
+    rec["amount_charged"] = bc_amount
+    note = (f"Valor corrigido pelo código de barras de arrecadação "
+            f"(total a recolher): {atual if atual is not None else '—'} → {bc_amount}")
+    rec["processing_notes"] = (
+        f'{rec["processing_notes"]} | {note}' if rec.get("processing_notes") else note
+    )
+    return True
 
 
 
@@ -1047,6 +1159,11 @@ def build_record(pdf_path, raw, source):
         rec["barcode"] = normalize_barcode_allow_misread(ld)
     # Tier 1: valor ausente no texto mas presente no codigo de barras bancario.
     apply_barcode_amount(rec)
+    # GUIA DE ARRECADACAO (GNRE/DARE/tributo): o valor a pagar e o "Total a Recolher"
+    # (principal + atualizacao + juros + multa), que o emissor codifica no codigo de
+    # barras — e NAO o "Valor Principal" que o LLM copia do lado. SOBRESCREVE, porque o
+    # numero errado tambem e um numero e o `apply_barcode_amount` acima nao o corrigiria.
+    apply_arrecadacao_amount(rec)
     # Vencimento pelo fator do barcode recuperado aqui (regex/Vision) — idempotente com o
     # builder; cobre o caso do LLM ter perdido o barcode que o regex/Vision recuperou. Os gates
     # (valor + venc >= emissao) evitam sobrescrever com fator mal lido/stale.
@@ -1054,9 +1171,7 @@ def build_record(pdf_path, raw, source):
     # PRIORIDADE MAXIMA (analise do PDF REAL): a data de vencimento IMPRESSA no texto do PDF, quando
     # presente e plausivel (>= emissao), VENCE o LLM e o fator do barcode — a data impressa e a
     # verdade do boleto (id 473/474 securitizado: fator stale de 2025 vs vencimento impresso de 2026).
-    text_due = extract_due_date_from_text(raw)
-    if text_due and _due_date_plausible(text_due, rec.get("issue_date")):
-        rec["due_date"] = text_due
+    apply_text_due_date(rec, raw)
     # Boleto com PIX: barcode de boleto valido (recuperado aqui via regex/Vision)
     # define o pagamento como boleto, sobrepondo um payment_method='pix' do LLM.
     apply_boleto_barcode_override(rec)
