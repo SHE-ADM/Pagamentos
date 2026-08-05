@@ -1,0 +1,140 @@
+# Histórico de deploys do pipeline Python (produção)
+
+Registro condensado dos deploys manuais para `C:\Sheild\API\Pagamentos`. Extraído do `CLAUDE.md`
+em 2026-08-04, quando os blocos somavam ~490 linhas de passo-a-passo **já cumprido**.
+
+**Isto é histórico, não procedimento.** O procedimento vivo está no `CLAUDE.md`:
+
+- **"COMO SABER SE PRODUÇÃO ESTÁ ATUALIZADA"** — `check_deploy_parity.py` é a fonte da verdade do
+  estado; as lições transversais (manifesto viaja junto, `EXTRA` = régua obsoleta, contar pelo que
+  MUDOU, nunca `--update` em produção) vivem lá.
+- **"Deploy manual do Email Reader em produção"** — quais arquivos copiar e como validar.
+
+Cada entrada guarda **o que mudou** e **a lição não-óbvia**, quando houver. O passo-a-passo
+operacional foi descartado por já ter sido executado; o texto integral continua recuperável em
+`git show <commit>:CLAUDE.md` (o corte é do commit de 2026-08-04).
+
+> A regra de negócio de cada item **não** está aqui — ela vive na seção correspondente do
+> `CLAUDE.md` (ex.: "Normalização de `document_type`", "Auto-resolução de fornecedor"). Aqui fica
+> só o que diz respeito a **levar aquilo para produção**.
+
+---
+
+## 2026-08-04
+
+| # | Mudança | Arquivos |
+|---|---|---|
+| 5º | **HOTFIX `pdf_links`** — o 4º deploy do dia quebrou o caminho principal (todo e-mail com anexo → `falha`) | `read_emails.py` + manifesto |
+| 4º | E-mail não-pagável deixa de virar `falha` (`email_sem_conteudo_extraivel`, `is_disposable_sender`) | `read_emails.py` + manifesto |
+| 3º | Guarda de TÍTULO na dedup por nosso número + status `duplicidade` para dedup só-PDF | `read_emails.py` + manifesto |
+| 2º | Guia de arrecadação: valor = total a recolher (do barcode) e vencimento = data-limite | `febraban.py`, `extract_pdf.py` + manifesto |
+| 1º | Fornecedor rotulado no corpo vence o nome do anexo sem identificador forte | `read_emails.py` + manifesto |
+
+**Lições que ficaram:**
+
+- 🔴 **Ordem de cópia importa quando o módulo é importado no topo.** O `extract_pdf.py` do 2º
+  deploy importa `amount_from_arrecadacao`/`arrecadacao_dv_refuted` de `febraban.py` **no topo** —
+  com o `febraban.py` antigo o import falha e **nenhum PDF é extraído**, não só a guia. Copie o
+  módulo novo primeiro, ou os dois juntos. Assimetria deliberada: o `read_emails.py` **degrada**
+  (avisa no log e segue), o `extract_pdf.py` **estoura** — é o que faz um rename futuro aparecer
+  alto e cedo em vez de virar silêncio.
+- ⚠️ **Comando de uma linha para produção é PowerShell — a quebra de linha vai como `\r\n`, nunca
+  como `` `r`n ``.** O PowerShell escapa com backtick, então dentro de aspas duplas o `` `r`n ``
+  vira CR/LF **reais**, que partem a string Python no meio (`SyntaxError: unterminated string
+  literal`). A barra invertida não é escape do PowerShell, então `\r\n` chega literal ao Python,
+  que o interpreta. Forma que funciona nos dois shells: **aspas duplas externas + aspas simples
+  internas + `\r\n`**. Trocar as aspas de lugar também quebra (com aspas simples externas o
+  PowerShell consome as duplas ao repassar ao executável nativo).
+- O 5º deploy é a origem da **lição 6 da §2** do `CLAUDE.md` (guarda de wiring por texto não cobre
+  o call site executado). A lição está lá, não aqui.
+
+---
+
+## 2026-08-03 — corpo PLACEHOLDER ("conteúdo em HTML")
+
+`read_emails.py` passou a cair no HTML quando o texto plano é só o aviso de que a mensagem está em
+HTML. Copiado com o manifesto.
+
+**Lição:** o manifesto esquecido produz um **veredito enganoso** — o `check_deploy_parity.py` lê o
+manifesto **do diretório de produção**, então com a régua velha o arquivo recém-copiado aparece
+como `DIVERGENTE` e o script manda recopiar justamente o que está certo. Sinal que distingue os
+dois lados: **a validação funcional responde `True` e o verificador acusa divergência ⇒ o problema
+é o manifesto**. O branch/merge não influencia — produção não é clone git.
+
+---
+
+## 2026-08-01 — Onda 3: documento fiscal pela chave de acesso
+
+`fiscal_key.py` (**arquivo NOVO**), `extract_pdf.py` (reexport) e `read_emails.py` (gancho), mais o
+manifesto — que foi de 26 para 27 arquivos.
+
+**Lições:** o `extract_pdf.py` importa `fiscal_key` no topo → sem ele, `ModuleNotFoundError` e
+**nenhum PDF extraído**; copiar o novo primeiro. E foi aqui que se descobriu que **`EXTRA` casando
+`DEPLOY_GLOBS` significa manifesto obsoleto**, não arquivo sobrando (produção não cria arquivo) —
+a lição está no bloco de paridade do `CLAUDE.md`.
+
+---
+
+## 2026-07-31 — Onda 2: corpo completo do e-mail
+
+`read_emails.py` passou a gravar `email_control.body_full`. Migrations 105/106 já aplicadas na
+Supabase compartilhada.
+
+**Lição de verificação:** a presença de uma constante prova só que o arquivo mudou; para provar que
+a **alteração** está lá, use `inspect.getsource` da função em produção —
+`print('grava:', 'body_full' in inspect.getsource(R.process_message))`. Vale para qualquer deploy
+do reader em que o horário da cópia seja incerto.
+
+**Nota:** e-mail processado logo ANTES da cópia fica sem `body_full` e a dedup **não** o
+reprocessa. Esperado; esses corpos eram alvo da Onda 4.
+
+---
+
+## 2026-07-28 — quatro deploys
+
+| Mudança | Arquivos |
+|---|---|
+| Endurecimento do caminho do corpo + **`febraban.py` (arquivo NOVO)** | `read_emails.py`, `extract_pdf.py`, `febraban.py` |
+| Regra de SEGURADORA + porta livre no guard SSRF + PDF espelhado | `read_emails.py`, `extract_pdf.py` |
+| Tabela de faturas achatada no corpo | `read_emails.py`, `extract_pdf.py` |
+| Ignorar "Recebemos o seu pagamento" · notificação de cobrança de plataforma | `read_emails.py` |
+
+**Lição:** o `febraban.py` foi o **primeiro** arquivo novo a revelar que `DEPLOY_GLOBS` precisa ser
+estendido — sem ele o corpo degrada para validação só por comprimento **e avisa no log**
+(`[BARCODE] … Deploy parcial?`). É assim que se detecta uma cópia incompleta.
+
+---
+
+## 2026-07-23 · 2026-07-20 · 2026-07-16 · 2026-07-15 · 2026-07-10 · 2026-07-06
+
+Todos em `read_emails.py` (salvo onde indicado), todos com migrations já aplicadas na Supabase
+compartilhada — portanto **sem passo de banco** em produção.
+
+| Data | Mudança |
+|---|---|
+| 07-23 | NFS-e/NF-e combinada com boleto vira conta · remetente encaminhado no corpo + "Fatura No:" |
+| 07-20 | Descartar extrato/relatório que acompanha o boleto |
+| 07-17 | `sk_company` como chave de relacionamento · empresa pagadora por precedência (3 empresas) |
+| 07-16 | Contato do fornecedor · dedup por nosso número · **Beneficiário Final** (`extract_pdf.py`) |
+| 07-15 | Vínculo do anexo do e-mail (migration 079) |
+| 07-10 | `pix` deixa de ser tipo de documento (`extract_pdf.py` junto) · autoria `created_by` |
+| 07-06 | Cartório + classificação contábil forçada — **único que exigiu `.env`** (`EMAIL_KEYWORDS`) |
+
+**Lições:**
+
+- **Os deltas de `read_emails.py` são cumulativos.** Cada cópia carrega as pendências anteriores —
+  por isso a lista acima não precisa ser aplicada em ordem, basta a versão mais recente.
+- **`sk_company` degradou com segurança** porque `company_id` foi preservado (NOT NULL UNIQUE): o
+  código antigo seguiu funcionando entre a migration e a cópia. Migration que **substitui** coluna
+  deve manter a antiga até o deploy do consumidor.
+- **07-06 é o único caso de `.env`** nesta série. O `.env` não é versionado, então mudança em
+  `EMAIL_KEYWORDS` exige edição manual no arquivo de produção — não vem junto com o `.py`.
+
+---
+
+## 2026-06-29 — dependência nova: `pypdf`
+
+A descriptografia de boletos com senha e o split de carnê exigem `pypdf` na máquina do scheduler:
+`py -3 -m pip install "pypdf~=6.13"`. Sem ele, `import extract_pdf` falha e a extração para.
+**Dependência nova é o único caso em que copiar arquivo não basta** — está no `CLAUDE.md`, junto do
+procedimento.

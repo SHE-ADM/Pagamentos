@@ -213,7 +213,10 @@ export async function getEmailStats(): Promise<EmailStats> {
 
 // SELECT com os JOINs de exibição: fornecedor (nome/CNPJ/CPF) + classificação
 // contábil (centro de custo / plano de contas) via aliases de embed do PostgREST.
-const SELECT_WITH_EMBEDS =
+// Exportado para o teste-guarda de withChartAccountJoin (que precisa provar que a
+// promoção a !inner acerta ESTE select, e não um parecido).
+// ts-prune-ignore-next
+export const SELECT_WITH_EMBEDS =
   '*,supplier(trade_name,legal_name,cnpj,cpf),' +
   // Empresa pagadora (FK sk_company — migrations 083/084): nome exibido na coluna "Empresa"
   // do grid e no card de detalhe. Precisa espelhar o SELECT_WITH_SUPPLIER da Next API — a
@@ -253,6 +256,19 @@ interface FinancialAccountControlFilters {
   year?: number | null;
   dateFrom?: string;
   dateTo?: string;
+  // ── Classificação contábil (2ª linha de filtros de /consulta) ────────────────
+  // Independentes entre si, combinados por AND. undefined/'' = sem filtro.
+  /** FK DIRETA da conta — o centro de custo DA CONTA (o mesmo que o grid exibe). */
+  costCenterId?: number;
+  /**
+   * Plano de contas pela DESCRIÇÃO (é o que o ChartAccountSelect devolve). A mesma
+   * descrição existe em vários centros de custo como linhas distintas, então filtrar
+   * por ela casa TODOS os planos homônimos — que é a intenção de "filtrar por plano".
+   */
+  chartAccountDescription?: string;
+  /** Coluna de financial_chart_of_account (a fato não tem FK de grupo/subgrupo). */
+  chartAccountGroupId?: number;
+  chartAccountSubgroupId?: number;
   page?: number;
   pageSize?: number;
   sortCol?: string;
@@ -424,11 +440,59 @@ async function resolveSearchIds(term: string | undefined): Promise<SearchIds> {
 
 const EMPTY_SEARCH_IDS: SearchIds = { supplierIds: [], costCenterIds: [], chartAccountIds: [] };
 
+// ── Filtro por classificação contábil: plano / grupo / subgrupo ────────────────
+// Descrição do plano, GRUPO e SUBGRUPO não são colunas de financial_account_control:
+// vivem em financial_chart_of_account, alcançada pela FK chart_account_id. O PostgREST
+// resolve isso com FILTRO EM RECURSO EMBUTIDO — mas o filtro só DESCARTA A CONTA quando
+// o embed é `!inner`.
+//
+// VERIFICADO CONTRA O BANCO REAL (2026-08-04), porque a falha aqui é SILENCIOSA:
+//   embed simples + chart_account.chart_account_group_id=eq.24 → 706 linhas (o TOTAL da
+//   tabela — o filtro não restringe nada, e ainda assim responde HTTP 200);
+//   com !inner                                                 → 198, que é exatamente
+//   o que o SQL equivalente devolve. Sem o !inner a tela mostraria a base inteira como
+//   se estivesse filtrada.
+//
+// O join é COMPROVADAMENTE loss-free: chart_account_id é NOT NULL DEFAULT 0 e a linha
+// sentinela id 0 EXISTE no cadastro (migration 048) — medido: 706 contas, 706 após o
+// join. Sendo to-one, ele também não pode DUPLICAR linhas, o que quebraria a paginação
+// por offset do scroll infinito.
+const CHART_ALIAS = 'chart_account';
+const CHART_EMBED = `${CHART_ALIAS}:financial_chart_of_account`;
+const CHART_EMBED_INNER = `${CHART_EMBED}!inner`;
+// Embed MÍNIMO para os SELECTs que não trazem a classificação (KPIs: select=amount / id).
+// O PostgREST exige ao menos uma coluna no embed; chart_account_id é a mais barata.
+const CHART_EMBED_MINIMAL = `${CHART_EMBED_INNER}(chart_account_id)`;
+
+/**
+ * Promove o embed do plano de contas a `!inner` — pré-requisito para filtrar por coluna
+ * do recurso embutido. Idempotente. Se o select já embute o plano (o SELECT_WITH_EMBEDS
+ * do grid), reescreve no lugar, preservando as colunas e os embeds aninhados
+ * (group/subgroup); senão anexa o embed mínimo (caminho dos KPIs).
+ *
+ * Só é chamado quando há filtro de plano/grupo/subgrupo: sem eles o `select` fica
+ * INTOCADO e a URL de abertura da página continua idêntica à de hoje.
+ */
+// ts-prune-ignore-next
+export function withChartAccountJoin(select: string): string {
+  if (select.includes(`${CHART_EMBED_INNER}(`)) return select;
+  if (select.includes(`${CHART_EMBED}(`)) return select.replace(`${CHART_EMBED}(`, `${CHART_EMBED_INNER}(`);
+  // Select ausente/vazio cai em `*` ANTES do embed. Devolver só o embed produziria um
+  // `select` sem nenhuma coluna de topo: o PostgREST responderia 200 com linhas contendo
+  // apenas `chart_account`, e o grid renderizaria vazio sem erro nenhum. O contrato "o
+  // chamador já setou o select" vale para as 3 rotas de hoje, mas contrato escrito só em
+  // comentário não protege a 4ª — e a falha dele seria silenciosa, como a do `!inner`.
+  return select ? `${select},${CHART_EMBED_MINIMAL}` : `*,${CHART_EMBED_MINIMAL}`;
+}
+
 // Exportado para teste unitário puro (sem fetch) — monta o or(...) do PostgREST.
 // ts-prune-ignore-next
 export function applyFinancialFilters(
   params: URLSearchParams,
-  { supplier, docType, statusId, skCompany, paymentMethod, dateField, month, year, dateFrom, dateTo }: FinancialAccountControlFilters,
+  {
+    supplier, docType, statusId, skCompany, paymentMethod, dateField, month, year, dateFrom, dateTo,
+    costCenterId, chartAccountDescription, chartAccountGroupId, chartAccountSubgroupId,
+  }: FinancialAccountControlFilters,
   searchIds: SearchIds = EMPTY_SEARCH_IDS,
   // Só o GRID inclui canceladas; os KPIs (Valor total) mantêm a exclusão para não
   // somar cancelado (evita confusão). Default = excluir cancelado.
@@ -468,6 +532,30 @@ export function applyFinancialFilters(
   if (statusId != null) params.set('status_id', `eq.${statusId}`);
   else if (!includeCancelled) params.set('status_id', `neq.${STATUS_ID_CANCELADO}`);
   if (paymentMethod) params.set('payment_method', `eq.${paymentMethod}`);
+  // Centro de custo — FK DIRETA da conta, sem join. `!= null` (e não truthy) porque 0 é
+  // o sentinela "não informado", um id legítimo: truthy o descartaria em silêncio.
+  if (costCenterId != null) params.set('cost_center_id', `eq.${costCenterId}`);
+  // Plano / grupo / subgrupo — filtro no recurso EMBUTIDO (ver withChartAccountJoin).
+  // NÃO competem pelo ÚNICO slot `or=` (que é da busca livre): são params escalares em
+  // chaves próprias, que o PostgREST combina por AND com tudo o mais — inclusive com o
+  // próprio or= e com o status_id=neq.cancelado dos KPIs.
+  //
+  // O valor de `eq.` vai CRU, sem aspas. Medido nesta instalação: `eq."Serviços Gerais"`
+  // devolve 0 linhas (as aspas entram no valor comparado) enquanto `eq.Serviços Gerais`
+  // devolve as 2 corretas — e o mesmo vale para descrição com vírgula ou parênteses, que
+  // existem no cadastro (9 planos). Aspas só são interpretadas DENTRO de lista (`or=`,
+  // `in.()`), que é o caso do ilikeContains logo acima — não em parâmetro isolado.
+  const chartFilters: [string, string][] = [];
+  if (chartAccountDescription) chartFilters.push([`${CHART_ALIAS}.account_description`, `eq.${chartAccountDescription}`]);
+  if (chartAccountGroupId != null) chartFilters.push([`${CHART_ALIAS}.chart_account_group_id`, `eq.${chartAccountGroupId}`]);
+  if (chartAccountSubgroupId != null) chartFilters.push([`${CHART_ALIAS}.chart_account_subgroup_id`, `eq.${chartAccountSubgroupId}`]);
+  if (chartFilters.length > 0) {
+    // CONTRATO: o chamador JÁ setou `select` (as 3 rotas fazem: grid, valor total e
+    // contagem). Sem promover a !inner o filtro não descarta conta nenhuma — ver o
+    // bloco de verificação em CHART_EMBED.
+    params.set('select', withChartAccountJoin(params.get('select') ?? ''));
+    for (const [key, value] of chartFilters) params.set(key, value);
+  }
   // Filtro de data na coluna escolhida (vencimento por padrão):
   //  1) Intervalo explícito dateFrom/dateTo (busca global por range OU card "7 dias")
   //     tem PRECEDÊNCIA — quando presente, vence o mês/ano.
@@ -485,22 +573,17 @@ export function applyFinancialFilters(
   }
 }
 
-export async function getFinancialAccountControl({
-  supplier,
-  docType,
-  statusId,
-  skCompany,
-  paymentMethod,
-  dateField,
-  month,
-  year,
-  dateFrom,
-  dateTo,
-  page = 1,
-  pageSize = 20,
-  sortCol,
-  sortDir,
-}: FinancialAccountControlFilters = {}): Promise<Paginated<FinancialAccountControl>> {
+// Recebe o objeto de filtros INTEIRO e o repassa a applyFinancialFilters — mesmo padrão
+// de getFinancialAccountTotalValue/getFinancialAccountCount. Antes esta função
+// destrinchava os 14 campos e REMONTAVA um literal para a chamada; um campo novo que
+// entrasse só na interface era descartado aqui em silêncio (sem erro de tipo, sem teste
+// vermelho) enquanto os KPIs o respeitavam — o sintoma seria "o grid está errado", longe
+// da causa. Só paginação/ordenação são desestruturadas, porque são usadas aqui mesmo;
+// que elas viajem junto para applyFinancialFilters é inócuo (ela lê só o que lhe cabe).
+export async function getFinancialAccountControl(
+  filters: FinancialAccountControlFilters = {},
+): Promise<Paginated<FinancialAccountControl>> {
+  const { supplier, page = 1, pageSize = 20, sortCol, sortDir } = filters;
   const offset = (page - 1) * pageSize;
   const url = new URL(`${BASE_URL}/rest/v1/financial_account_control`);
   // JOIN com supplier via FK sk_supplier — retorna dados canônicos do cadastro
@@ -524,12 +607,7 @@ export async function getFinancialAccountControl({
   // classificação contábil (centro de custo / plano de contas / grupo / subgrupo) em paralelo.
   const searchIds = await resolveSearchIds(supplier);
   // Grid: inclui canceladas (includeCancelled=true). Os KPIs continuam excluindo.
-  applyFinancialFilters(
-    url.searchParams,
-    { supplier, docType, statusId, skCompany, paymentMethod, dateField, month, year, dateFrom, dateTo },
-    searchIds,
-    true,
-  );
+  applyFinancialFilters(url.searchParams, filters, searchIds, true);
   const reqHeaders = await authHeaders({ Prefer: 'count=exact' });
   const res = await fetch(url.toString(), { headers: reqHeaders });
   if (!res.ok) throw new Error(`Supabase ${res.status}: ${await res.text()}`);

@@ -140,3 +140,98 @@ class WiringDasGuardasTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ProcessMessageCaminhoComAnexoTest(unittest.TestCase):
+    """EXECUTA `process_message` no caminho COM ANEXO — a cobertura que faltava.
+
+    Origem (2026-08-04): `email_sem_conteudo_extraivel(has_att, pdf_links, body_text)` foi
+    ligada em `process_message` lendo `pdf_links`, que só era atribuído dentro de
+    `if not saved_pdfs:`. Com anexo, o ramo não roda e o nome fica sem valor →
+    **UnboundLocalError** DEPOIS de a conta já estar gravada: 13 e-mails de um único dia
+    (boletos de R$ 43k, R$ 49,5k, R$ 101k) tiveram conta criada mas `email_control` gravado
+    como 'falha', com linha em /erros.
+
+    `WiringDasGuardasTest` não pegava — e não é defeito dela: ela lê o TEXTO de
+    `process_message` e prova que a chamada EXISTE. Só executar prova que ela FUNCIONA.
+    É a §2 item 5 do CLAUDE.md ("a função pura não cobre o call site") no seu grau
+    seguinte: nem o call site conferido por texto cobre o call site EXECUTADO.
+    """
+
+    class _Ctrl:
+        """Stub de SupabaseControl — registra o que recebeu, sem rede."""
+
+        def __init__(self):
+            self.registrados = []
+            self.erros = []
+
+        def register(self, rec):
+            self.registrados.append(dict(rec))
+            return True
+
+        def register_error(self, rec, tipo, msg, raw_payload=None):
+            self.erros.append((tipo, msg))
+            return True
+
+    @staticmethod
+    def _mensagem(com_anexo: bool, corpo: str) -> bytes:
+        from email.message import EmailMessage
+
+        m = EmailMessage()
+        m["Subject"] = "PAGAMENTO BOLETO MODART 10083-1"
+        m["From"] = "ester@otimotex.com.br"
+        m["Message-ID"] = "<guarda-com-anexo@local>"
+        m.set_content(corpo)
+        if com_anexo:
+            m.add_attachment(b"%PDF-1.4 fake", maintype="application",
+                             subtype="pdf", filename="boleto.pdf")
+        return m.as_bytes()
+
+    class _Mail:
+        def __init__(self, raw: bytes):
+            self._raw = raw
+
+        def uid(self, cmd, uid, spec=None):
+            meta = b'1 (INTERNALDATE "04-Aug-2026 10:00:00 +0000" RFC822 {1}'
+            return "OK", [(meta, self._raw)]
+
+    def _roda(self, com_anexo: bool, extract_ret, corpo: str = "Segue o boleto."):
+        from unittest.mock import patch
+
+        ctrl = self._Ctrl()
+        mail = self._Mail(self._mensagem(com_anexo, corpo))
+        anexos = [Path("boleto.pdf")] if com_anexo else []
+        with patch.object(R, "save_attachments", lambda *a, **k: list(anexos)), \
+             patch.object(R, "save_inline_images", lambda *a, **k: []), \
+             patch.object(R, "extract_and_store_accounts", lambda *a, **k: extract_ret), \
+             patch.object(R, "try_extract_from_body", lambda *a, **k: R.BODY_NONE), \
+             patch.object(R, "append_log_csv", lambda rec: None):
+            rec = R.process_message(mail, b"1", ["boleto"], False, False, ctrl)
+        return rec, ctrl
+
+    def test_com_anexo_e_conta_gravada_o_email_fica_extraido(self):
+        # O caminho principal do pipeline: anexo → CSV → conta. Antes do fix, este
+        # caso saía 'falha' com notes="Erro: cannot access local variable 'pdf_links'".
+        rec, ctrl = self._roda(True, (["boleto.csv"], 1, False, True))
+
+        self.assertEqual(rec["status"], "extraído", f"notes={rec.get('notes')!r}")
+        self.assertNotIn("pdf_links", str(rec.get("notes") or ""))
+        self.assertEqual(ctrl.erros, [], "e-mail com conta gravada não pode gerar linha em /erros")
+        self.assertTrue(ctrl.registrados and ctrl.registrados[-1]["status"] == "extraído")
+
+    def test_com_anexo_sem_conta_ainda_percorre_a_guarda_sem_estourar(self):
+        # Anexo salvo que não gerou conta ⇒ 'pendente'. O ponto é que a guarda
+        # `email_sem_conteudo_extraivel` é avaliada com pdf_links=[] sem levantar.
+        rec, _ = self._roda(True, ([], 0, False, False))
+
+        self.assertEqual(rec["status"], "pendente", f"notes={rec.get('notes')!r}")
+        self.assertNotIn("pdf_links", str(rec.get("notes") or ""))
+
+    def test_sem_anexo_continua_valendo_a_regra_do_nao_pagavel(self):
+        # Não-regressão do caminho que a feature original endereçou: sem anexo, sem
+        # link e sem corpo útil ⇒ 'ignorado', não 'falha'. Corpo VAZIO de propósito —
+        # com texto útil o e-mail é falha legítima, e o caso deixaria de testar a guarda.
+        rec, ctrl = self._roda(False, ([], 0, False, False), corpo="")
+
+        self.assertEqual(rec["status"], "ignorado", f"notes={rec.get('notes')!r}")
+        self.assertEqual(ctrl.erros, [])

@@ -348,3 +348,32 @@ de aplicação" no sumário).
 - XSS não reproduzível (React escapa; sem HTML cru; CSV endurecido); segredos só públicos no bundle.
 - `requireAdmin` (papel) vs `requireAdminGroup` (grupo) corretos; login público sem enumeração; Flask sem CORS aberto + guarda CSRF nos disparos + bind loopback + TLS verificado.
 - Nenhum segredo versionado ou no histórico do git; `.gitignore` completo.
+
+---
+
+## Adendo — S5-1 foi REVERTIDO depois deste relatório (registrado em 2026-08-04)
+
+A tabela "Status de aplicação (Fase 2)" acima marca **S5-1 + S5-2** como aplicados no commit
+`8774cd8` ("sandbox no iframe do PDF + CSP"). Isso ficou **desatualizado**: o `sandbox` foi
+**removido** logo depois, porque quebrava a funcionalidade que ele protegia.
+
+**Motivo da reversão** (o comentário canônico vive em
+`apps/frontend-vite/src/components/AttachmentViewer.tsx`): o visualizador de PDF do Chrome
+(MimeHandlerView/PDFium) **não renderiza de forma confiável em iframe sandboxed**, nem com
+`allow-scripts`. Na prática o usuário via um documento quebrado e só o botão de download
+funcionava — ou seja, o boleto deixava de ser visualizável no app.
+
+| Item | Estado real hoje |
+|---|---|
+| **S5-1** (sandbox no iframe do PDF) | ❌ **NÃO aplicado** — revertido; o `CLAUDE.md` proíbe reintroduzi-lo |
+| **S5-2** (header CSP) | ✅ aplicado — segue valendo |
+
+**Risco residual aceito, explicitamente:** sem `sandbox`, um arquivo servido como PDF que na
+verdade fosse HTML+JS poderia navegar a janela top. Mitigações em vigor: o objeto vem do bucket
+`attachments` por URL assinada, o upload é restrito a mimes de uma allowlist validada **contra o
+`info()` do Storage** (não contra o que o cliente declara — ver "Anexos de conta" no `CLAUDE.md`),
+e a CSP do S5-2 permanece.
+
+**Regra que fica:** ao reverter uma correção de segurança, o relatório que a declarou aplicada
+precisa de adendo no mesmo movimento. Um relatório que afirma "aplicado" sobre um controle
+inexistente é pior que a ausência do controle — ele faz a próxima auditoria pular o item.

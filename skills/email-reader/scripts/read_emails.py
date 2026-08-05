@@ -5530,7 +5530,15 @@ def process_message(mail, uid: bytes, keywords: list,
         # Baixar PDFs e acionar extração
         saved_pdfs = save_attachments(msg, sender_email, subject, received_at)
 
-        # Sem anexo direto: tentar baixar PDF de links no corpo do e-mail
+        # Sem anexo direto: tentar baixar PDF de links no corpo do e-mail.
+        # `pdf_links` PRECISA nascer aqui, fora do `if`: ele é lido incondicionalmente
+        # lá embaixo, por `email_sem_conteudo_extraivel(has_att, pdf_links, body_text)`.
+        # Atribuído só dentro do ramo, o e-mail COM ANEXO (o caminho principal do
+        # pipeline!) levantava UnboundLocalError depois de a conta já estar gravada —
+        # a conta existia, mas o e-mail virava 'falha' e ia para /erros. A guarda de
+        # wiring de tests/test_email_sem_pagavel.py não pegava: ela lê o TEXTO de
+        # process_message e prova que a chamada existe, não que ela executa.
+        pdf_links: list[str] = []
         link_downloaded = False
         if not saved_pdfs:
             body_html = get_body_html(msg)

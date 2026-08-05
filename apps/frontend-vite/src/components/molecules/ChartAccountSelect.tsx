@@ -24,9 +24,28 @@ interface ChartAccountSelectProps {
   label: string;
   error?: string;
   id?: string;
+  /**
+   * Apresentação. `'form'` (padrão) = comportamento de sempre, intocado para o ContaForm
+   * e o SupplierForm. `'filter'` = uso em BARRA DE FILTRO: sem rótulo em bloco (o
+   * placeholder já nomeia o campo e o nome acessível continua vindo do `aria-label`),
+   * altura alinhada à do `.input` dos <select> nativos vizinhos e — o principal —
+   * carga TARDIA da lista (ver `filterDefaults`).
+   */
+  variant?: 'form' | 'filter';
+  /** Texto do campo vazio. Default por variante. */
+  placeholder?: string;
 }
 
-export default function ChartAccountSelect({ value, onChange, label, error, id }: Readonly<ChartAccountSelectProps>) {
+export default function ChartAccountSelect({
+  value,
+  onChange,
+  label,
+  error,
+  id,
+  variant = 'form',
+  placeholder,
+}: Readonly<ChartAccountSelectProps>) {
+  const isFilter = variant === 'filter';
   // Mirror CONTROLADO do `value` (padrão dos selects do projeto): react-select guarda a
   // opção, mas o pai é a fonte de verdade — sincroniza no render, sem useEffect nem remonte
   // por `key`. Para o plano, value e label são a própria descrição.
@@ -53,9 +72,36 @@ export default function ChartAccountSelect({ value, onChange, label, error, id }
     }
   }, []);
 
+  // ── Carga TARDIA da lista inicial (só variant='filter') ──────────────────────
+  // No 'form' o campo é obrigatório e sempre usado, então `defaultOptions` booleano
+  // (= carrega na montagem) se paga. Num FILTRO opcional isso custaria ~530 descrições
+  // na ABERTURA de /consulta, que é justamente o que não pode acontecer.
+  //
+  // Passar `defaultOptions={false}` e virar para `true` ao abrir o menu NÃO funciona:
+  // no react-select 5.10.2 o efeito que dispara a carga tem lista de dependências vazia
+  // ("designed to only run when the component mounts", useAsync). O que ele reavalia a
+  // cada render é o `defaultOptions` quando ele é um ARRAY — por isso a lista é buscada
+  // aqui, no primeiro onMenuOpen, e entregue como array.
+  const [filterDefaults, setFilterDefaults] = useState<ChartAccountOption[] | undefined>(undefined);
+  const [loadingDefaults, setLoadingDefaults] = useState(false);
+
+  const handleMenuOpen = useCallback(() => {
+    if (filterDefaults !== undefined || loadingDefaults) return; // já carregou / carregando
+    setLoadingDefaults(true);
+    void loadOptions('').then((opts) => {
+      // Só memoiza o SUCESSO. `loadOptions` engole a exceção e devolve [] — gravar esse []
+      // marcaria "já carregado" e a guarda acima bloquearia toda abertura seguinte: uma
+      // indisponibilidade momentânea da Next API no instante da 1ª abertura deixava o menu
+      // vazio pelo resto do mount. Lista legitimamente vazia (cadastro sem plano postável)
+      // custa uma requisição por abertura — preço barato para não fossilizar uma falha.
+      if (opts.length > 0) setFilterDefaults(opts);
+      setLoadingDefaults(false);
+    });
+  }, [filterDefaults, loadingDefaults, loadOptions]);
+
   return (
     <div>
-      <span className="block text-sm font-medium text-gray-700 mb-1">{label}</span>
+      {!isFilter && <span className="block text-sm font-medium text-gray-700 mb-1">{label}</span>}
       <AsyncSelect<ChartAccountOption>
         inputId={id}
         aria-label={label}
@@ -63,18 +109,23 @@ export default function ChartAccountSelect({ value, onChange, label, error, id }
         value={selected}
         isClearable
         cacheOptions
-        defaultOptions
+        defaultOptions={isFilter ? filterDefaults : true}
+        onMenuOpen={isFilter ? handleMenuOpen : undefined}
+        isLoading={isFilter ? loadingDefaults : undefined}
         loadOptions={loadOptions}
         onChange={(opt) => {
           setSelected(opt);
           onChange(opt ? opt.value : null);
         }}
-        placeholder="Buscar plano de contas…"
+        placeholder={placeholder ?? (isFilter ? 'Plano de contas' : 'Buscar plano de contas…')}
         loadingMessage={() => 'Buscando…'}
         noOptionsMessage={() => loadError ?? 'Nenhum plano de contas encontrado'}
         classNamePrefix="rs"
         classNames={{
-          control: () => 'min-h-[38px] rounded-lg border border-slate-200 bg-white text-sm',
+          control: () =>
+            isFilter
+              ? 'min-h-[34px] rounded-lg border border-slate-200 bg-white text-sm'
+              : 'min-h-[38px] rounded-lg border border-slate-200 bg-white text-sm',
           menu: () => 'rounded-lg border border-slate-200 bg-white shadow-lg text-sm z-20',
           option: ({ isFocused }) => (isFocused ? 'bg-brand/10 px-3 py-2' : 'px-3 py-2'),
         }}

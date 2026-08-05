@@ -41,10 +41,23 @@ vi.mock('../hooks/useIdleLogout', () => ({
   resumeIdleLogout: vi.fn(),
 }));
 
-// Lookup do filtro "Empresa" (useCompanyOptions) — evita rede no teste.
+// Lookups dos filtros — evitam rede no teste. A factory SUBSTITUI o módulo inteiro, então
+// todo lookup que /consulta (ou os componentes que ela monta) importar precisa constar
+// aqui, senão o import da página quebra.
+//  · listCompanies                     → filtro "Empresa" (useCompanyOptions)
+//  · listCostCenters/Groups/Subgroups  → 2ª linha (useClassificationFilterOptions)
+//  · listPlanoDescriptions             → 2ª linha (ChartAccountSelect variant="filter")
 const listCompaniesMock = vi.fn();
+const listCostCentersMock = vi.fn();
+const listChartAccountGroupsMock = vi.fn();
+const listChartAccountSubgroupsMock = vi.fn();
+const listPlanoDescriptionsMock = vi.fn();
 vi.mock('../services/lookups', () => ({
   listCompanies: () => listCompaniesMock(),
+  listCostCenters: () => listCostCentersMock(),
+  listChartAccountGroups: () => listChartAccountGroupsMock(),
+  listChartAccountSubgroups: () => listChartAccountSubgroupsMock(),
+  listPlanoDescriptions: () => listPlanoDescriptionsMock(),
 }));
 
 // useAuth: o hard delete de conta só aparece para o grupo Administrador (mutável por teste).
@@ -93,6 +106,20 @@ describe('Consulta', () => {
       { sk_company: 1, trade_name: 'OTIMOTEX TECIDOS' },
       { sk_company: 2, trade_name: 'LEBIANCO' },
     ]);
+    listCostCentersMock.mockReset();
+    listCostCentersMock.mockResolvedValue([
+      { cost_center_id: 4, cost_center_code: '004', cost_center_description: 'Logística' },
+    ]);
+    listChartAccountGroupsMock.mockReset();
+    listChartAccountGroupsMock.mockResolvedValue([
+      { chart_account_group_id: 24, group_code: '24', group_description: 'Despesas Fixas' },
+    ]);
+    listChartAccountSubgroupsMock.mockReset();
+    listChartAccountSubgroupsMock.mockResolvedValue([
+      { chart_account_subgroup_id: 93, subgroup_code: '93', subgroup_description: 'Copa e Cozinha' },
+    ]);
+    listPlanoDescriptionsMock.mockReset();
+    listPlanoDescriptionsMock.mockResolvedValue([{ account_description: 'Serviços Gerais' }]);
     getFinancialAccountControl.mockResolvedValue({ data: [], total: 0 });
     getFinancialStats.mockResolvedValue({
       totalRecords: 0,
@@ -520,5 +547,120 @@ describe('Consulta', () => {
         expect.objectContaining({ statusId: undefined, month: now.getMonth(), year: now.getFullYear() }),
       ),
     );
+  });
+  // ── 2ª linha de filtros: classificação contábil ─────────────────────────────
+  // Independentes (AND) e aplicados no "Buscar", como os selects da 1ª linha.
+
+  // O PLANO é o único dos 4 que não é <select> nativo (é o ChartAccountSelect, react-select
+  // com carga tardia), e por isso é o único cujo call site poderia quebrar em silêncio: a
+  // chave viaja por SPREAD para getFinancialAccountControl e é opcional do outro lado, então
+  // renomeá-la só aqui sai com `tsc --noEmit` exit 0. Este caso dirige o componente REAL —
+  // abre o menu, escolhe a descrição e verifica que ela chega ao serviço.
+  it('filtrar por PLANO consulta com chartAccountDescription', async () => {
+    const user = userEvent.setup();
+    render(<Consulta />);
+    await waitFor(() => expect(getFinancialAccountControl).toHaveBeenCalled());
+
+    await user.click(screen.getByRole('combobox', { name: 'Filtrar por plano de contas' }));
+    await user.click(await screen.findByText('Serviços Gerais'));
+    await user.click(screen.getByRole('button', { name: 'Buscar' }));
+
+    await waitFor(() =>
+      expect(getFinancialAccountControl).toHaveBeenLastCalledWith(
+        expect.objectContaining({ chartAccountDescription: 'Serviços Gerais' }),
+      ),
+    );
+  });
+
+  it('filtrar por GRUPO consulta com chartAccountGroupId', async () => {
+    const user = userEvent.setup();
+    render(<Consulta />);
+    await waitFor(() => expect(getFinancialAccountControl).toHaveBeenCalled());
+    await screen.findByRole('option', { name: '24 — Despesas Fixas' });
+
+    await user.selectOptions(screen.getByLabelText('Filtrar por grupo de plano de contas'), '24');
+    await user.click(screen.getByRole('button', { name: 'Buscar' }));
+
+    await waitFor(() =>
+      expect(getFinancialAccountControl).toHaveBeenLastCalledWith(
+        expect.objectContaining({ chartAccountGroupId: 24 }),
+      ),
+    );
+  });
+
+  it('combina grupo + centro de custo numa consulta só (AND, sem cascata)', async () => {
+    const user = userEvent.setup();
+    render(<Consulta />);
+    await screen.findByRole('option', { name: '24 — Despesas Fixas' });
+
+    await user.selectOptions(screen.getByLabelText('Filtrar por grupo de plano de contas'), '24');
+    await user.selectOptions(screen.getByLabelText('Filtrar por centro de custo'), '4');
+    await user.selectOptions(screen.getByLabelText('Filtrar por sub grupo de plano de contas'), '93');
+    await user.click(screen.getByRole('button', { name: 'Buscar' }));
+
+    await waitFor(() =>
+      expect(getFinancialAccountControl).toHaveBeenLastCalledWith(
+        expect.objectContaining({ chartAccountGroupId: 24, costCenterId: 4, chartAccountSubgroupId: 93 }),
+      ),
+    );
+  });
+
+  // Escolher um filtro NÃO pode disparar consulta — é o que evita 3 requisições por
+  // clique de select e o que mantém a coerência com os selects da 1ª linha.
+  it('escolher o filtro NÃO consulta antes do "Buscar"', async () => {
+    const user = userEvent.setup();
+    render(<Consulta />);
+    await screen.findByRole('option', { name: '24 — Despesas Fixas' });
+    getFinancialAccountControl.mockClear();
+
+    await user.selectOptions(screen.getByLabelText('Filtrar por grupo de plano de contas'), '24');
+    await flush();
+
+    expect(getFinancialAccountControl).not.toHaveBeenCalled();
+  });
+
+  it('os filtros contábeis alcançam os cards "Valor total"/"Total de registros"', async () => {
+    const user = userEvent.setup();
+    render(<Consulta />);
+    await screen.findByRole('option', { name: '004 — Logística' });
+    getFinancialAccountTotalValue.mockClear();
+    getFinancialAccountCount.mockClear();
+
+    await user.selectOptions(screen.getByLabelText('Filtrar por centro de custo'), '4');
+    await user.click(screen.getByRole('button', { name: 'Buscar' }));
+
+    await waitFor(() =>
+      expect(getFinancialAccountTotalValue).toHaveBeenLastCalledWith(
+        expect.objectContaining({ costCenterId: 4 }),
+      ),
+    );
+    expect(getFinancialAccountCount).toHaveBeenLastCalledWith(expect.objectContaining({ costCenterId: 4 }));
+  });
+
+  // "Limpar" e os cards derivam de BASE_FILTERS — é isso que zera os 4 campos novos
+  // sem nenhuma linha dedicada. O teste trava esse acoplamento.
+  it('o botão Limpar zera os filtros contábeis', async () => {
+    const user = userEvent.setup();
+    render(<Consulta />);
+    await screen.findByRole('option', { name: '24 — Despesas Fixas' });
+
+    await user.selectOptions(screen.getByLabelText('Filtrar por grupo de plano de contas'), '24');
+    await user.selectOptions(screen.getByLabelText('Filtrar por centro de custo'), '4');
+    await user.click(screen.getByRole('button', { name: 'Buscar' }));
+    await waitFor(() =>
+      expect(getFinancialAccountControl).toHaveBeenLastCalledWith(
+        expect.objectContaining({ chartAccountGroupId: 24 }),
+      ),
+    );
+
+    await user.click(screen.getByRole('button', { name: 'Limpar' }));
+
+    await waitFor(() =>
+      expect(getFinancialAccountControl).toHaveBeenLastCalledWith(
+        expect.objectContaining({ chartAccountGroupId: undefined, costCenterId: undefined }),
+      ),
+    );
+    expect(screen.getByLabelText('Filtrar por grupo de plano de contas')).toHaveValue('');
+    expect(screen.getByLabelText('Filtrar por centro de custo')).toHaveValue('');
   });
 });
