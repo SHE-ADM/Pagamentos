@@ -6,6 +6,8 @@ import {
   applyFinancialFilters,
   groupDocumentTypeLabel,
   isTaxDocumentType,
+  withChartAccountJoin,
+  SELECT_WITH_EMBEDS,
 } from './supabase';
 
 describe('parsePaginationTotal', () => {
@@ -242,5 +244,150 @@ describe('applyFinancialFilters — situação por status_id (fonte única)', ()
     const params = new URLSearchParams();
     applyFinancialFilters(params, { statusId: 9 }, undefined, true);
     expect(params.get('status_id')).toBe('eq.9');
+  });
+});
+
+// ── Filtros de classificação contábil (2ª linha de /consulta) ──────────────────
+// Centro de custo é FK DIRETA da conta; plano/grupo/subgrupo vivem em
+// financial_chart_of_account e exigem filtro em RECURSO EMBUTIDO com !inner.
+//
+// Os valores esperados abaixo foram medidos contra o banco real em 2026-08-04 (ver o
+// comentário de CHART_EMBED em supabase.ts): sem !inner o filtro devolve a tabela
+// INTEIRA (706) respondendo HTTP 200; com !inner devolve 198 para o grupo 24, que é o
+// que o SQL equivalente dá. É uma falha silenciosa — daí a bateria abaixo.
+describe('applyFinancialFilters — classificação contábil', () => {
+  it('centro de custo é FK direta: filtra sem tocar no select (nada de join)', () => {
+    const params = new URLSearchParams();
+    params.set('select', 'amount');
+    applyFinancialFilters(params, { costCenterId: 4 });
+    expect(params.get('cost_center_id')).toBe('eq.4');
+    expect(params.get('select')).toBe('amount'); // sem !inner: não precisa de join
+  });
+
+  it('grupo filtra pelo embed E promove o select a !inner', () => {
+    const params = new URLSearchParams();
+    params.set('select', SELECT_WITH_EMBEDS);
+    applyFinancialFilters(params, { chartAccountGroupId: 24 });
+    expect(params.get('chart_account.chart_account_group_id')).toBe('eq.24');
+    expect(params.get('select')).toContain('chart_account:financial_chart_of_account!inner(');
+  });
+
+  it('subgrupo filtra pelo embed E promove o select a !inner', () => {
+    const params = new URLSearchParams();
+    params.set('select', SELECT_WITH_EMBEDS);
+    applyFinancialFilters(params, { chartAccountSubgroupId: 93 });
+    expect(params.get('chart_account.chart_account_subgroup_id')).toBe('eq.93');
+    expect(params.get('select')).toContain('!inner(');
+  });
+
+  // REGRESSÃO CRÍTICA: aspas em `eq.` isolado NÃO são interpretadas pelo PostgREST —
+  // medido: eq."Serviços Gerais" devolve 0 linhas e eq.Serviços Gerais devolve as 2
+  // corretas. Citar o valor (como se faz DENTRO de or=/in.(), via ilikeContains)
+  // quebraria TODO filtro de plano, em silêncio.
+  it('descrição do plano vai CRUA, sem aspas', () => {
+    const params = new URLSearchParams();
+    params.set('select', SELECT_WITH_EMBEDS);
+    applyFinancialFilters(params, { chartAccountDescription: 'Serviços Gerais' });
+    expect(params.get('chart_account.account_description')).toBe('eq.Serviços Gerais');
+  });
+
+  it('descrição com vírgula/parênteses também vai crua (9 planos reais têm)', () => {
+    const params = new URLSearchParams();
+    params.set('select', SELECT_WITH_EMBEDS);
+    applyFinancialFilters(params, { chartAccountDescription: 'Amostras, Brindes e Divulgação' });
+    expect(params.get('chart_account.account_description')).toBe('eq.Amostras, Brindes e Divulgação');
+  });
+
+  it('grupo + subgrupo juntos promovem o select UMA vez só (idempotente)', () => {
+    const params = new URLSearchParams();
+    params.set('select', SELECT_WITH_EMBEDS);
+    applyFinancialFilters(params, { chartAccountGroupId: 24, chartAccountSubgroupId: 93 });
+    const select = params.get('select') ?? '';
+    expect(select.match(/!inner/g)).toHaveLength(1);
+  });
+
+  // O guarda de NÃO-REGRESSÃO da abertura da página: sem filtro contábil a URL do grid
+  // tem de sair exatamente como saía antes desta feature.
+  it('SEM filtro contábil, o select fica INTOCADO e não há chave chart_account.*', () => {
+    const params = new URLSearchParams();
+    params.set('select', SELECT_WITH_EMBEDS);
+    applyFinancialFilters(params, { docType: 'boleto' });
+    expect(params.get('select')).toBe(SELECT_WITH_EMBEDS);
+    expect([...params.keys()].some((k) => k.startsWith('chart_account.'))).toBe(false);
+  });
+
+  it('caminho dos KPIs (select=amount) recebe o embed MÍNIMO', () => {
+    const params = new URLSearchParams();
+    params.set('select', 'amount');
+    applyFinancialFilters(params, { chartAccountGroupId: 24 });
+    expect(params.get('select')).toBe('amount,chart_account:financial_chart_of_account!inner(chart_account_id)');
+  });
+
+  // O slot `or=` é ÚNICO e é da busca livre. Os filtros contábeis são params escalares
+  // em chaves próprias — não podem competir por ele.
+  it('convive com a busca livre sem consumir o slot or=', () => {
+    const params = new URLSearchParams();
+    params.set('select', SELECT_WITH_EMBEDS);
+    applyFinancialFilters(
+      params,
+      { supplier: 'ICMS', chartAccountGroupId: 24, costCenterId: 4 },
+      { supplierIds: [10], costCenterIds: [], chartAccountIds: [] },
+    );
+    expect(params.get('or')).toContain('sk_supplier.in.(10)');
+    expect(params.get('chart_account.chart_account_group_id')).toBe('eq.24');
+    expect(params.get('cost_center_id')).toBe('eq.4');
+  });
+
+  // 0 é o sentinela "não informado" — um id legítimo. `!= null` (e não truthy) é o que
+  // impede descartá-lo em silêncio, mesmo que hoje os lookups não o ofereçam.
+  it('id 0 (sentinela "não informado") é filtrável, não é descartado como falsy', () => {
+    const params = new URLSearchParams();
+    params.set('select', SELECT_WITH_EMBEDS);
+    applyFinancialFilters(params, { costCenterId: 0, chartAccountGroupId: 0 });
+    expect(params.get('cost_center_id')).toBe('eq.0');
+    expect(params.get('chart_account.chart_account_group_id')).toBe('eq.0');
+  });
+});
+
+describe('withChartAccountJoin', () => {
+  // GUARDA CROSS-LAYER: prova que a promoção acerta o SELECT_WITH_EMBEDS REAL. Se o
+  // alias do embed for renomeado lá, o helper deixaria de casar e passaria a ANEXAR um
+  // segundo embed — filtro e exibição apontando para embeds diferentes, sem erro algum.
+  it('promove o embed do SELECT_WITH_EMBEDS real NO LUGAR, sem anexar um segundo', () => {
+    const out = withChartAccountJoin(SELECT_WITH_EMBEDS);
+    expect(out).toContain('chart_account:financial_chart_of_account!inner(');
+    expect(out).not.toContain('!inner(chart_account_id)'); // não anexou o embed mínimo
+    // Conta o EMBED (alias + tabela), não a substring "financial_chart_of_account" — que
+    // também aparece em ..._group e ..._subgroup, os embeds aninhados.
+    expect(out.match(/chart_account:financial_chart_of_account/g)).toHaveLength(1);
+  });
+
+  it('preserva as colunas e os embeds ANINHADOS de grupo/subgrupo', () => {
+    const out = withChartAccountJoin(SELECT_WITH_EMBEDS);
+    expect(out).toContain('group:financial_chart_of_account_group(');
+    expect(out).toContain('subgroup:financial_chart_of_account_subgroup(');
+    expect(out).toContain('account_description');
+  });
+
+  // Sanidade do parser: se o token procurado sumisse do select, os testes acima
+  // continuariam "passando" por caminhos errados — este falha alto.
+  it('sanidade: o SELECT_WITH_EMBEDS realmente contém o embed procurado', () => {
+    expect(SELECT_WITH_EMBEDS).toContain('chart_account:financial_chart_of_account(');
+  });
+
+  it('é idempotente', () => {
+    const once = withChartAccountJoin(SELECT_WITH_EMBEDS);
+    expect(withChartAccountJoin(once)).toBe(once);
+  });
+
+  it('anexa o embed mínimo quando o select não embute o plano', () => {
+    expect(withChartAccountJoin('id')).toBe('id,chart_account:financial_chart_of_account!inner(chart_account_id)');
+  });
+
+  // Select vazio NÃO pode virar "só o embed": o PostgREST responderia 200 com linhas sem
+  // nenhuma coluna de topo e o grid renderizaria vazio, sem erro. Hoje as 3 rotas setam o
+  // select antes — este caso protege a 4ª, cuja falha seria silenciosa.
+  it('select vazio cai em `*` antes do embed, nunca só no embed', () => {
+    expect(withChartAccountJoin('')).toBe('*,chart_account:financial_chart_of_account!inner(chart_account_id)');
   });
 });

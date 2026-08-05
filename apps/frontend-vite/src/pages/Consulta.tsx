@@ -52,6 +52,8 @@ import ContaAttachments from '../components/organisms/ContaAttachments';
 import { uploadContaAttachments, type UploadOutcome } from '../services/contaAttachments';
 import { getConsultaColumns, STATUS_OPTIONS, type ToggleFlag, type StatusChangeCallback } from '../hooks/useGridColumns';
 import { useCompanyOptions } from '../hooks/useCompanyOptions';
+import { useClassificationFilterOptions } from '../hooks/useClassificationFilterOptions';
+import ChartAccountSelect from '../components/molecules/ChartAccountSelect';
 import { fmtDate, fmtDateTime, fmtMoney, fmtCnpj, fmtCostCenter, fmtChartAccount, fmtSupplierName } from '../lib/format';
 import { nextPaymentDate } from '../lib/paymentDate';
 import { csvCell } from '../lib/csv';
@@ -152,6 +154,15 @@ interface ConsultaFilters {
   // Range explícito — usado só pelo card "A vencer em 7 dias" (sobre due_date).
   dateFrom: string;
   dateTo: string;
+  // ── 2ª linha: classificação contábil ────────────────────────────────────────
+  // Independentes entre si (combinados por AND, sem cascata) e aplicados no
+  // "Buscar"/Enter, como Empresa/Tipo Documento/Situação.
+  // Plano de contas pela DESCRIÇÃO (é o que o ChartAccountSelect devolve); '' = sem
+  // filtro, e nenhuma descrição real é string vazia, então não há ambiguidade.
+  chartAccountDescription: string;
+  chartAccountSubgroupId?: number;
+  chartAccountGroupId?: number;
+  costCenterId?: number;
 }
 
 // Campos não-período zerados (vencimento como campo de data padrão).
@@ -166,6 +177,13 @@ const BASE_FILTERS = {
   dateField: 'due_date' as const,
   dateFrom: '',
   dateTo: '',
+  // Classificação contábil (2ª linha). Estar AQUI é o que faz "Limpar" e os cards de
+  // KPI zerarem estes filtros sem nenhuma linha extra: initialFilters(),
+  // allPeriodFilters(), handleClear e handleCardFilter derivam todos daqui.
+  chartAccountDescription: '',
+  chartAccountSubgroupId: undefined as number | undefined,
+  chartAccountGroupId: undefined as number | undefined,
+  costCenterId: undefined as number | undefined,
 };
 
 // Opções do filtro de situação — value = status_id (fonte única), label = nome da
@@ -297,6 +315,11 @@ export default function Consulta() {
   // Opções do filtro de empresa (mesmo hook do ContaForm). Lista vazia → o select fica só
   // com "Empresa" (todas), que é justamente o estado sem filtro — não quebra a tela.
   const companyOptions = useCompanyOptions();
+  // Opções dos 3 <select> nativos da 2ª linha (centro/grupo/subgrupo): 3 requisições em
+  // PARALELO à Next API, disparadas em efeito de montagem — não bloqueiam o primeiro
+  // paint nem a consulta do grid (que vai ao Supabase REST, outro host). Lista vazia
+  // (carregando ou falhou) → o select fica só com o placeholder, que é "sem filtro".
+  const classification = useClassificationFilterOptions();
 
   const [loadingMore, setLoadingMore] = useState(false);
   const loadingMoreRef = useRef(false);
@@ -1009,6 +1032,70 @@ export default function Consulta() {
           <button onClick={handleClear} className="btn w-24 justify-center">
             Limpar
           </button>
+        </div>
+
+        {/* 2ª LINHA de filtros — classificação contábil. Fica numa linha PRÓPRIA para não
+            estreitar nem empurrar a busca livre da 1ª linha, que segue sendo o controle
+            em destaque. Os 4 são INDEPENDENTES (combinados por AND, sem cascata) e
+            aplicam no "Buscar"/Enter, como os selects da 1ª linha. */}
+        <div className="flex gap-2 flex-wrap items-center mb-2">
+          {/* Plano de contas — busca digitável: são ~530 descrições, volume demais para um
+              <select> nativo. variant="filter" NÃO carrega a lista na abertura da página
+              (só no 1º clique que abre o menu). */}
+          <div className="w-72 max-w-full">
+            <ChartAccountSelect
+              id="consulta-chart-account"
+              variant="filter"
+              label="Filtrar por plano de contas"
+              value={f.chartAccountDescription || null}
+              onChange={(d) => sf('chartAccountDescription', d ?? '')}
+            />
+          </div>
+          <select
+            id="consulta-chart-subgroup"
+            name="consulta-chart-subgroup"
+            aria-label="Filtrar por sub grupo de plano de contas"
+            className="input w-56"
+            value={f.chartAccountSubgroupId == null ? '' : String(f.chartAccountSubgroupId)}
+            onChange={(e) => sf('chartAccountSubgroupId', e.target.value ? Number(e.target.value) : undefined)}
+          >
+            <option value="">Sub grupo</option>
+            {classification.subgroups.map((s) => (
+              <option key={s.value} value={s.value}>
+                {s.label}
+              </option>
+            ))}
+          </select>
+          <select
+            id="consulta-chart-group"
+            name="consulta-chart-group"
+            aria-label="Filtrar por grupo de plano de contas"
+            className="input w-52"
+            value={f.chartAccountGroupId == null ? '' : String(f.chartAccountGroupId)}
+            onChange={(e) => sf('chartAccountGroupId', e.target.value ? Number(e.target.value) : undefined)}
+          >
+            <option value="">Grupo</option>
+            {classification.groups.map((g) => (
+              <option key={g.value} value={g.value}>
+                {g.label}
+              </option>
+            ))}
+          </select>
+          <select
+            id="consulta-cost-center"
+            name="consulta-cost-center"
+            aria-label="Filtrar por centro de custo"
+            className="input w-52"
+            value={f.costCenterId == null ? '' : String(f.costCenterId)}
+            onChange={(e) => sf('costCenterId', e.target.value ? Number(e.target.value) : undefined)}
+          >
+            <option value="">Centro de custo</option>
+            {classification.costCenters.map((c) => (
+              <option key={c.value} value={c.value}>
+                {c.label}
+              </option>
+            ))}
+          </select>
         </div>
 
         <div className="card mb-2">
