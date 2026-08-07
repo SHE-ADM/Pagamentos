@@ -112,6 +112,22 @@ interface DataGridProps<T> {
   defaultPinning?: ColumnPinningState;
   /** Densidade inicial (ex.: `compact` para abrir denso). */
   defaultDensity?: GridDensity;
+  /**
+   * Renderiza os CONTROLES da toolbar (densidade · colunas · restaurar) num nó fora do grid —
+   * em `/consulta`, a célula livre da 1ª coluna da 2ª linha da barra de filtros. Portal, não
+   * elevação de estado: o layout do grid vive no `useGridPreferences` daqui, e subi-lo para a
+   * página tocaria todas as telas com grid para atender a uma. Ver o contrato dos três
+   * valores em `GridToolbar`, incluindo por que `null` (nó ainda não montado) difere de
+   * ausente.
+   */
+  toolbarControlsTarget?: HTMLElement | null;
+  /**
+   * Renderiza a BARRA DE SELEÇÃO (N selecionadas · situação em lote · exportar · limpar) num
+   * nó fora do grid — em `/consulta`, o cabeçalho da página. Com este destino a faixa acima do
+   * grid deixa de existir, e com ela os 48px que precisavam ficar reservados só para o grid
+   * não saltar ao marcar a primeira linha. Mesmo contrato de três valores.
+   */
+  toolbarSelectionTarget?: HTMLElement | null;
 }
 
 const SKELETON_ROWS = 5;
@@ -316,6 +332,8 @@ export default function DataGrid<T>({
   onLoadMore,
   defaultPinning,
   defaultDensity,
+  toolbarControlsTarget,
+  toolbarSelectionTarget,
 }: Readonly<DataGridProps<T>>) {
   const { ref: viewportRef, breakpoint } = useContainerBreakpoint<HTMLDivElement>();
   const [rowSelection, setRowSelection] = useState<Record<string, boolean>>({});
@@ -846,6 +864,10 @@ export default function DataGrid<T>({
           onResetLayout={reset}
           density={density}
           onDensityChange={setDensity}
+          // Repassado sempre: `undefined` (página que não pediu o slot) preserva o
+          // comportamento inline, e é exatamente o que o contrato da prop distingue de `null`.
+          controlsPortalTarget={toolbarControlsTarget}
+          selectionPortalTarget={toolbarSelectionTarget}
           selectedCount={enableSelection ? selectedRows.length : 0}
           onExportSelected={
             enableSelection && onExportSelected

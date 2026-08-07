@@ -2,7 +2,8 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, waitFor, within, fireEvent } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import type { FinancialAccountControl } from '@sheild/shared';
-import { STATUS_ID_PAGO, STATUS_ID_A_VENCER, STATUS_ID_CANCELADO } from '@sheild/shared';
+import { SENTINEL_AUTHOR_ID } from '../lib/sentinelAuthor';
+import { STATUS_ID_PAGO, STATUS_ID_A_VENCER, STATUS_ID_CANCELADO, STATUS_ID_VENCIDO } from '@sheild/shared';
 
 // Flush de microtasks — garante que o .then da persistência da flag (e a checagem de
 // baixa automática) já rodou antes de asserções do tipo "não foi chamado".
@@ -27,6 +28,10 @@ vi.mock('../services/supabase', () => ({
   setFinancialAccountStatus: (...args: unknown[]) => setFinancialAccountStatus(...args),
   setFinancialAccountStatusBulk: (...args: unknown[]) => setFinancialAccountStatusBulk(...args),
   getAppUsers: (...args: unknown[]) => getAppUsers(...args),
+  // Opções do filtro de plano de contas: só as descrições EM USO em
+  // financial_account_control (busca geral, com a RLS do usuário). Vive aqui, e não em
+  // services/lookups, porque a Next API lê com service_role e ignoraria a RLS.
+  listUsedChartAccountDescriptions: () => Promise.resolve(['Serviços Gerais']),
 }));
 
 // Mocka o leitor IMAP — o teste cobre o disparo pelo botão "Atualizar", não a rede.
@@ -222,8 +227,11 @@ describe('Consulta', () => {
     expect(screen.getByText('ester@otimotex.com.br')).toBeInTheDocument();
   });
 
-  it('detalhe OMITE "Última edição por"/"Situação alterada por" quando o autor é o sentinela (teste@otimotex)', async () => {
-    const SENTINEL = 'fe8d268d-2bc3-4418-8cae-65e426c3fb4e';
+  it('detalhe OMITE "Última edição por"/"Situação alterada por" quando o autor é o sentinela', async () => {
+    // Importa a MESMA constante que a página usa, em vez de repetir o UUID: quando a
+    // identidade do sentinela mudou (migration 110, teste@ → financeiro@), a cópia local
+    // ficou obsoleta e o caso quebrou por um motivo que não era o comportamento sob teste.
+    const SENTINEL = SENTINEL_AUTHOR_ID;
     // Sentinela NÃO está no diretório → testa o fallback por UUID (isSentinelAuthor).
     getAppUsers.mockResolvedValue({ 'uuid-a': 'ester@otimotex.com.br' });
     getFinancialAccountControl.mockResolvedValue({
@@ -331,9 +339,11 @@ describe('Consulta', () => {
     expect(screen.getByText('Total de registros')).toBeInTheDocument();
     expect(screen.getByText('Vencidas')).toBeInTheDocument();
 
+    // A mensagem nomeia o período em vigor ("Nenhum registro em <Mês>/<ano>…") — o texto
+    // genérico só aparece no escopo global. Ver o caso dedicado mais abaixo.
     await waitFor(() =>
       expect(
-        screen.getByText(/Nenhum registro encontrado/),
+        screen.getByText(/Nenhum registro em /),
       ).toBeInTheDocument(),
     );
   });
@@ -437,7 +447,7 @@ describe('Consulta', () => {
     await screen.findByRole('option', { name: 'LEBIANCO' });
 
     await user.selectOptions(screen.getByLabelText('Filtrar por empresa'), '2');
-    await user.click(screen.getByRole('button', { name: 'Buscar' }));
+    await user.click(screen.getByRole('button', { name: /^Buscar/ }));
 
     await waitFor(() =>
       expect(getFinancialAccountControl).toHaveBeenLastCalledWith(
@@ -462,7 +472,7 @@ describe('Consulta', () => {
     getFinancialAccountCount.mockClear();
 
     await user.selectOptions(screen.getByLabelText('Filtrar por empresa'), '2');
-    await user.click(screen.getByRole('button', { name: 'Buscar' }));
+    await user.click(screen.getByRole('button', { name: /^Buscar/ }));
 
     await waitFor(() =>
       expect(getFinancialAccountTotalValue).toHaveBeenLastCalledWith(
@@ -472,18 +482,253 @@ describe('Consulta', () => {
     expect(getFinancialAccountCount).toHaveBeenLastCalledWith(expect.objectContaining({ skCompany: 2 }));
   });
 
-  it('a busca por intervalo De/Até é global (zera mês/ano) e usa dateFrom/dateTo', async () => {
-    const user = userEvent.setup();
+  // SEM clicar em "Buscar": preencher o intervalo aplica sozinho e zera o período, porque
+  // a precedência do serviço ignora month/year quando há range — deixar o mês aceso seria
+  // o botão mentindo sobre o que está filtrado.
+  it('o intervalo De/Até aplica sozinho e zera mês/ano', async () => {
     render(<Consulta />);
     await waitFor(() => expect(getFinancialAccountControl).toHaveBeenCalled());
 
     fireEvent.change(screen.getByLabelText(/data inicial/i), { target: { value: '2026-03-01' } });
     fireEvent.change(screen.getByLabelText(/data final/i), { target: { value: '2026-03-31' } });
-    await user.click(screen.getByRole('button', { name: 'Buscar' }));
 
     await waitFor(() =>
       expect(getFinancialAccountControl).toHaveBeenLastCalledWith(
         expect.objectContaining({ dateFrom: '2026-03-01', dateTo: '2026-03-31', month: null, year: null }),
+      ),
+    );
+  });
+
+  // Caminho de VOLTA. Sem ele, apagar as datas deixaria o usuário preso em escopo global
+  // (toda a base, nenhum mês em destaque) sem nenhuma ação que explicasse o que houve.
+  it('apagar as duas datas devolve o período ao mês/ano corrente', async () => {
+    render(<Consulta />);
+    await waitFor(() => expect(getFinancialAccountControl).toHaveBeenCalled());
+    const now = new Date();
+
+    fireEvent.change(screen.getByLabelText(/data inicial/i), { target: { value: '2026-03-01' } });
+    await waitFor(() =>
+      expect(getFinancialAccountControl).toHaveBeenLastCalledWith(
+        expect.objectContaining({ month: null, year: null }),
+      ),
+    );
+
+    fireEvent.change(screen.getByLabelText(/data inicial/i), { target: { value: '' } });
+
+    await waitFor(() =>
+      expect(getFinancialAccountControl).toHaveBeenLastCalledWith(
+        expect.objectContaining({ dateFrom: '', month: now.getMonth(), year: now.getFullYear() }),
+      ),
+    );
+  });
+
+  // O caminho de volta é o DESFAZER da operação, não um pulo para um default: quem
+  // navegava em outro mês tem de voltar para ele. O mês é escolhido por deslocamento a
+  // partir do corrente (nunca igual a ele), senão em Março o teste passaria por
+  // coincidência — o defeito que ele trava é justamente "restaurou o mês corrente".
+  it('o caminho de volta devolve o mês que estava selecionado, não o corrente', async () => {
+    const user = userEvent.setup();
+    render(<Consulta />);
+    await waitFor(() => expect(getFinancialAccountControl).toHaveBeenCalled());
+    const outroMes = (new Date().getMonth() + 6) % 12;
+
+    const botoesDeMes = within(screen.getByRole('group', { name: 'Filtrar por mês' })).getAllByRole('button');
+    await user.click(botoesDeMes[outroMes]);
+    await waitFor(() =>
+      expect(getFinancialAccountControl).toHaveBeenLastCalledWith(
+        expect.objectContaining({ month: outroMes }),
+      ),
+    );
+
+    fireEvent.change(screen.getByLabelText(/data inicial/i), { target: { value: '2026-03-01' } });
+    await waitFor(() =>
+      expect(getFinancialAccountControl).toHaveBeenLastCalledWith(
+        expect.objectContaining({ dateFrom: '2026-03-01', month: null }),
+      ),
+    );
+
+    fireEvent.change(screen.getByLabelText(/data inicial/i), { target: { value: '' } });
+    await waitFor(() =>
+      expect(getFinancialAccountControl).toHaveBeenLastCalledWith(
+        expect.objectContaining({ dateFrom: '', month: outroMes }),
+      ),
+    );
+  });
+
+  // CONTRAPARTE do teste acima, e o par é que faz o guarda: o caminho de volta só vale
+  // para quem foi levado ao escopo global PELO intervalo. Com um card de KPI ativo (global
+  // de propósito), restaurar o mês corrente estreitaria a consulta em silêncio — e o card
+  // seguiria aceso dizendo o contrário. A condição ingênua "o período está vazio" faz
+  // exatamente isso; é `periodBeforeRange` NULO que distingue os dois casos.
+  it('com um card de KPI ativo, apagar as datas NÃO restaura o mês corrente', async () => {
+    const user = userEvent.setup();
+    render(<Consulta />);
+    await waitFor(() => expect(getFinancialAccountControl).toHaveBeenCalled());
+
+    await user.click(screen.getByText('Vencidas'));
+    await waitFor(() =>
+      expect(getFinancialAccountControl).toHaveBeenLastCalledWith(
+        expect.objectContaining({ statusId: STATUS_ID_VENCIDO, month: null, year: null }),
+      ),
+    );
+
+    fireEvent.change(screen.getByLabelText(/data inicial/i), { target: { value: '2026-03-01' } });
+    await waitFor(() =>
+      expect(getFinancialAccountControl).toHaveBeenLastCalledWith(
+        expect.objectContaining({ dateFrom: '2026-03-01' }),
+      ),
+    );
+
+    // Asserção POSITIVA sobre a mesma chamada que carrega `dateFrom: ''` — evita o
+    // formato "ausência depois de um flush", que não alcançaria a janela de 300 ms.
+    fireEvent.change(screen.getByLabelText(/data inicial/i), { target: { value: '' } });
+    await waitFor(() =>
+      expect(getFinancialAccountControl).toHaveBeenLastCalledWith(
+        expect.objectContaining({ dateFrom: '', month: null, year: null }),
+      ),
+    );
+  });
+
+  // GUARDA do resetFilterGate. Sem ele, escolher um filtro e clicar "Limpar" dentro da
+  // janela faz o patch pendente cair por cima do estado já limpo 300 ms depois — o filtro
+  // "volta sozinho" na tela, sem erro. Duas escolhas deliberadas de formato:
+  //  · `fireEvent` nos dois passos (não `userEvent`), para o intervalo entre eles ser 0 ms:
+  //    o teste não pode depender de vencer uma corrida contra tempo real;
+  //  · a passagem da janela é provada por um filtro POSTERIOR que aplica de fato, não por
+  //    um sleep fixo — que viraria falso verde se FILTER_APPLY_DELAY_MS crescesse.
+  it('"Limpar" dentro da janela descarta o filtro pendente (não volta sozinho)', async () => {
+    render(<Consulta />);
+    await screen.findByRole('option', { name: '24 — Despesas Fixas' });
+    getFinancialAccountControl.mockClear();
+    const now = new Date();
+
+    fireEvent.change(screen.getByLabelText('Filtrar por grupo de plano de contas'), { target: { value: '24' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Limpar' }));
+
+    // Sanidade: o "Limpar" precisa MESMO ter aplicado — senão a asserção de ausência
+    // adiante passaria por não ter acontecido nada.
+    await waitFor(() =>
+      expect(getFinancialAccountControl).toHaveBeenLastCalledWith(
+        expect.objectContaining({
+          chartAccountGroupId: undefined,
+          month: now.getMonth(),
+          year: now.getFullYear(),
+        }),
+      ),
+    );
+
+    // Um apply COMPLETO depois do "Limpar" prova que a janela inteira transcorreu.
+    fireEvent.change(screen.getByLabelText('Filtrar por tipo de documento'), { target: { value: 'boleto' } });
+    await waitFor(() =>
+      expect(getFinancialAccountControl).toHaveBeenLastCalledWith(
+        expect.objectContaining({ docType: 'boleto' }),
+      ),
+    );
+    expect(getFinancialAccountControl).not.toHaveBeenCalledWith(
+      expect.objectContaining({ chartAccountGroupId: 24 }),
+    );
+  });
+
+  // CONTRAPARTE do teste acima, e a diferença entre os dois é a regra: "Limpar"/card/"Buscar"
+  // redefinem o filtro INTEIRO, então descartar o pendente é o certo; navegar por MÊS só
+  // acrescenta um recorte de período, e ali o pendente tem de sobreviver.
+  //
+  // O defeito que este caso trava (medido antes da correção): `applyPeriod` fazia
+  // `setApplied((a) => ({ ...a, ...patch }))` — patch parcial — depois de `resetFilterGate()`
+  // jogar fora o pendente. O tipo escolhido continuava VISÍVEL no <select> (`f` o guardava) e
+  // sumia da consulta, de forma permanente: `pendingApply` carrega só o patch, nunca `f`
+  // inteiro, então nenhum filtro seguinte o traria de volta.
+  //
+  // `fireEvent` nos dois passos (não `userEvent`): o intervalo entre eles fica em 0 ms, dentro
+  // da janela de 300 ms. Com `userEvent` o apply do tipo já teria acontecido e o caso não
+  // exercitaria o descarte — passaria com o defeito presente.
+  it('navegar por mês PRESERVA o filtro escolhido dentro da janela', async () => {
+    render(<Consulta />);
+    await waitFor(() => expect(getFinancialAccountControl).toHaveBeenCalled());
+    getFinancialAccountControl.mockClear();
+
+    fireEvent.change(screen.getByLabelText('Filtrar por tipo de documento'), { target: { value: 'boleto' } });
+    const botoesDeMes = within(screen.getByRole('group', { name: 'Filtrar por mês' })).getAllByRole('button');
+    fireEvent.click(botoesDeMes[2]); // Mar
+
+    // Sanidade: o clique no mês precisa MESMO ter aplicado — sem isto a asserção seguinte
+    // poderia passar por não ter havido consulta alguma.
+    await waitFor(() =>
+      expect(getFinancialAccountControl).toHaveBeenLastCalledWith(expect.objectContaining({ month: 2 })),
+    );
+    // O select segue exibindo "boleto"…
+    expect(screen.getByLabelText<HTMLSelectElement>('Filtrar por tipo de documento').value).toBe('boleto');
+    // …e a consulta tem de carregar o mesmo: é a divergência tela × consulta que se impede.
+    expect(getFinancialAccountControl).toHaveBeenLastCalledWith(
+      expect.objectContaining({ docType: 'boleto', month: 2 }),
+    );
+  });
+
+  // Os DOIS seletores de data são independentes — este par é o guarda da regra, nos dois
+  // sentidos. Um teste de mão única continuaria verde se um deles escrevesse nos dois
+  // campos, que é exatamente o acoplamento que esta feature removeu.
+  it('o seletor do INTERVALO muda rangeDateField sem tocar em dateField', async () => {
+    const user = userEvent.setup();
+    render(<Consulta />);
+    await waitFor(() => expect(getFinancialAccountControl).toHaveBeenCalled());
+
+    await user.selectOptions(screen.getByLabelText('Data do intervalo (De/Até)'), 'payment_date');
+
+    await waitFor(() =>
+      expect(getFinancialAccountControl).toHaveBeenLastCalledWith(
+        expect.objectContaining({ rangeDateField: 'payment_date', dateField: 'due_date' }),
+      ),
+    );
+  });
+
+  it('o seletor do PERÍODO muda dateField sem tocar em rangeDateField', async () => {
+    const user = userEvent.setup();
+    render(<Consulta />);
+    await waitFor(() => expect(getFinancialAccountControl).toHaveBeenCalled());
+
+    await user.selectOptions(screen.getByLabelText(/Tipo de data/i), 'issue_date');
+
+    await waitFor(() =>
+      expect(getFinancialAccountControl).toHaveBeenLastCalledWith(
+        expect.objectContaining({ dateField: 'issue_date', rangeDateField: 'due_date' }),
+      ),
+    );
+  });
+
+  // O nome acessível dos campos De/Até tem de seguir o seletor que REALMENTE os governa.
+  // Derivá-lo de `dateField` faria o leitor de tela anunciar "Vencimento — data inicial"
+  // enquanto a consulta usa payment_date: erro mudo, que nenhuma asserção de dado pega.
+  it('o rótulo dos campos De/Até acompanha o seletor do intervalo', async () => {
+    const user = userEvent.setup();
+    render(<Consulta />);
+    await waitFor(() => expect(getFinancialAccountControl).toHaveBeenCalled());
+
+    await user.selectOptions(screen.getByLabelText('Data do intervalo (De/Até)'), 'payment_date');
+
+    expect(screen.getByLabelText('Pagamento — data inicial')).toBeInTheDocument();
+    expect(screen.getByLabelText('Pagamento — data final')).toBeInTheDocument();
+  });
+
+  // rangeDateField mora em BASE_FILTERS — é isso que faz o card "A vencer em 7 dias"
+  // continuar sendo 7 dias de VENCIMENTO mesmo com "Pagamento" escolhido antes do clique.
+  // Declará-lo só em initialFilters() passaria em todo o resto da suíte.
+  it('o card "A vencer em 7 dias" reseta o intervalo para vencimento', async () => {
+    const user = userEvent.setup();
+    render(<Consulta />);
+    await waitFor(() => expect(getFinancialAccountControl).toHaveBeenCalled());
+
+    await user.selectOptions(screen.getByLabelText('Data do intervalo (De/Até)'), 'payment_date');
+    await waitFor(() =>
+      expect(getFinancialAccountControl).toHaveBeenLastCalledWith(
+        expect.objectContaining({ rangeDateField: 'payment_date' }),
+      ),
+    );
+
+    await user.click(screen.getByText('A vencer em 7 dias'));
+
+    await waitFor(() =>
+      expect(getFinancialAccountControl).toHaveBeenLastCalledWith(
+        expect.objectContaining({ rangeDateField: 'due_date' }),
       ),
     );
   });
@@ -556,20 +801,223 @@ describe('Consulta', () => {
   // chave viaja por SPREAD para getFinancialAccountControl e é opcional do outro lado, então
   // renomeá-la só aqui sai com `tsc --noEmit` exit 0. Este caso dirige o componente REAL —
   // abre o menu, escolhe a descrição e verifica que ela chega ao serviço.
-  it('filtrar por PLANO consulta com chartAccountDescription', async () => {
+  // SEM clicar em "Buscar" — este caso cobria o plano pelo caminho do botão, que lê `f`
+  // inteiro e por isso passaria mesmo se `queueApply` perdesse o patch. O plano é o único
+  // dos 4 filtros que não é <select> nativo, então é justamente o que mais precisa do
+  // caminho auto-aplicado exercitado ponta a ponta.
+  it('escolher o PLANO aplica sozinho, com chartAccountDescription', async () => {
     const user = userEvent.setup();
     render(<Consulta />);
     await waitFor(() => expect(getFinancialAccountControl).toHaveBeenCalled());
 
     await user.click(screen.getByRole('combobox', { name: 'Filtrar por plano de contas' }));
     await user.click(await screen.findByText('Serviços Gerais'));
-    await user.click(screen.getByRole('button', { name: 'Buscar' }));
 
     await waitFor(() =>
       expect(getFinancialAccountControl).toHaveBeenLastCalledWith(
         expect.objectContaining({ chartAccountDescription: 'Serviços Gerais' }),
       ),
     );
+  });
+
+  // ALINHAMENTO das duas linhas de filtro. A promessa é "cada filtro contábil tem a
+  // largura do controle logo acima" — e isso é ESTRUTURAL: uma única declaração de tracks
+  // mais o `col-start-2` do primeiro item da 2ª linha. jsdom não faz layout, então o
+  // guarda observa o que DECIDE a largura (a posição na grade), não a largura medida.
+  //
+  // O par de asserções é o que dá dente: sem a 2ª, trocar o template de colunas quebraria
+  // o alinhamento com o teste verde; sem a 1ª, remover o `col-start-2` faria o mesmo.
+  it('a 2ª linha de filtros começa na coluna da Empresa (larguras herdadas da 1ª)', async () => {
+    render(<Consulta />);
+    await waitFor(() => expect(getFinancialAccountControl).toHaveBeenCalled());
+
+    const grade = document.querySelector('.overflow-x-auto > .grid');
+    expect(grade).not.toBeNull();
+    // Tracks: 1=busca 2=Empresa 3=Tipo Documento 4=Tipo Pagamento 5=Situação 6/7=datas
+    // 8=seletor da coluna de data (1ª linha) / Limpar (2ª). As colunas 6-8 são IGUAIS
+    // (8,5rem) para que os campos de data, o seletor e os dois botões casem entre si —
+    // é isso que mantém "Buscar" sob "data final" e "Limpar" sob "Vencimento" com a
+    // mesma largura. As 3 e 4 voltaram a 11/10rem: em 9rem os placeholders "Tipo
+    // Documento"/"Tipo Pagamento" ficavam CORTADOS no estado vazio, que é justamente
+    // quando o rótulo é a única pista do que o campo faz. A 1 subiu de 22,5rem para 25rem
+    // quando os controles da toolbar do grid passaram a ocupar a célula sob a busca: os
+    // quatro botões somam ~24,5rem e invadiriam a coluna 2 na largura mínima da grade.
+    expect(grade?.className).toContain(
+      'grid-cols-[minmax(25rem,1fr)_16.5rem_11rem_10rem_10rem_8.5rem_8.5rem_8.5rem]',
+    );
+    // A folga da direita é absorvida pela BUSCA, não deixada em branco: `w-full` faz a
+    // grade ocupar o contêiner e o `1fr` da coluna 1 come a sobra, encostando todo o
+    // resto à direita. `min-w-max` é o par obrigatório — sem ele a grade encolheria
+    // abaixo dos tracks em tela estreita, em vez de rolar no `overflow-x-auto`.
+    expect(grade?.className).toContain('w-full');
+    expect(grade?.className).toContain('min-w-max');
+
+    // O plano ancora a 2ª linha na coluna 2 (sob "Empresa"); sub grupo, grupo e centro de
+    // custo caem em 3, 4 e 5 pelo auto-placement.
+    const plano = screen.getByRole('combobox', { name: 'Filtrar por plano de contas' });
+    const celulaDoPlano = plano.closest('.col-start-2');
+    expect(celulaDoPlano).not.toBeNull();
+    expect(celulaDoPlano?.parentElement).toBe(grade);
+
+    // As outras TRÊS âncoras. Não são estilo: o cursor do auto-placement nunca anda para
+    // trás, então sem `col-start-7` os dois botões escorregariam para a coluna 6 (livre
+    // desde que o seletor de data subiu para a 1ª linha), e sem `col-start-8` o "Limpar"
+    // deixaria de fechar a linha sob o seletor.
+    const seletorDeData = screen.getByLabelText('Data do intervalo (De/Até)');
+    expect(seletorDeData.closest('.col-start-8')).not.toBeNull();
+    expect(screen.getByRole('button', { name: /^Buscar/ }).className).toContain('col-start-7');
+    expect(screen.getByRole('button', { name: 'Limpar' }).className).toContain('col-start-8');
+  });
+
+  // Os controles da toolbar do grid (densidade · colunas · restaurar) moram na 1ª coluna da
+  // 2ª linha de filtros, sob a busca — não mais soltos acima do grid. Como eles chegam lá por
+  // PORTAL, um `getByRole` comum continuaria achando os botões em qualquer lugar da página:
+  // é a POSIÇÃO no DOM que precisa ser observada, senão remover `toolbarControlsTarget` (ou
+  // trocar o portal por render inline) devolveria os botões para cima do grid com a suíte
+  // inteira verde.
+  it('os controles do grid ficam na 1ª coluna da 2ª linha de filtros', async () => {
+    render(<Consulta />);
+    await waitFor(() => expect(getFinancialAccountControl).toHaveBeenCalled());
+
+    const grade = document.querySelector('.overflow-x-auto > .grid');
+    expect(grade).not.toBeNull();
+
+    // Os três controles estão DENTRO da grade de filtros…
+    const restaurar = screen.getByRole('button', { name: /Restaurar/ });
+    const colunas = screen.getByRole('button', { name: /Colunas/ });
+    const densidade = screen.getByRole('group', { name: 'Densidade das linhas' });
+    for (const el of [restaurar, colunas, densidade]) {
+      expect(grade?.contains(el)).toBe(true);
+    }
+
+    // …e o slot que os recebe é o PRIMEIRO filho da grade depois dos 8 itens da 1ª linha,
+    // isto é, a célula da coluna 1 da 2ª linha — a que fica sob o campo de busca.
+    const slot = restaurar.parentElement?.parentElement;
+    expect(slot?.parentElement).toBe(grade);
+    const itens = Array.from(grade?.children ?? []);
+    expect(itens.indexOf(slot as Element)).toBe(8); // 0..7 = 1ª linha; 8 = 1ª célula da 2ª
+
+    // Sanidade do guarda: o item seguinte é o plano de contas, ancorado na coluna 2. Sem
+    // esta linha, o caso passaria mesmo se a 2ª linha tivesse perdido os filtros contábeis.
+    expect(itens[9].className).toContain('col-start-2');
+  });
+
+  // A barra de seleção também sai por PORTAL — agora para o cabeçalho da página. Como no
+  // caso acima, `getByText('2 selecionadas')` a acharia em qualquer lugar do DOM: o que
+  // precisa ser observado é a POSIÇÃO. Se ela voltasse para cima do grid, os 48px da faixa
+  // reservada voltariam com ela e a única evidência seria o espaço em branco na tela.
+  it('a barra de seleção fica no cabeçalho da página, não acima do grid', async () => {
+    const user = userEvent.setup();
+    getFinancialAccountControl.mockResolvedValue({ data: [makeRow()], total: 1 });
+    render(<Consulta />);
+    await screen.findByText('12345');
+
+    await user.click(screen.getByRole('checkbox', { name: 'Selecionar todas as linhas' }));
+
+    // O cabeçalho é o irmão ANTERIOR à área rolável — é ele que fica fixo com o grid rolado.
+    const rolavel = document.querySelector('.overflow-y-auto');
+    const cabecalho = rolavel?.previousElementSibling;
+    expect(cabecalho?.textContent).toContain('Consulta de movimentações');
+
+    const barra = screen.getByText('1 selecionada').closest('div');
+    expect(cabecalho?.contains(barra as Node)).toBe(true);
+    // …e nada dela sobrou dentro da área que rola, onde o grid vive.
+    expect(rolavel?.contains(barra as Node)).toBe(false);
+    // Sanidade: a faixa reservada de 48px não existe mais em lugar nenhum da página.
+    expect(document.querySelector('.min-h-12')).toBeNull();
+  });
+
+  // O cabeçalho passou a dividir a linha com a barra de seleção, e em ~1366px de largura a
+  // soma (título + barra + botões) fica no limite. Sem `truncate` o texto QUEBRA em duas
+  // linhas, o cabeçalho vai de 38px para ~58px e o grid desce ao marcar a primeira conta —
+  // o salto que trazer a barra para cá existe para eliminar. jsdom não faz layout, então o
+  // guarda observa o que DECIDE o comportamento: as classes que impedem a quebra.
+  it('o título do cabeçalho encolhe sem quebrar linha (não cresce a altura)', async () => {
+    render(<Consulta />);
+    await waitFor(() => expect(getFinancialAccountControl).toHaveBeenCalled());
+
+    const titulo = screen.getByRole('heading', { name: 'Consulta de movimentações' });
+    expect(titulo.className).toContain('truncate');
+    // O bloco precisa PODER encolher (min-w-0) — com `truncate` sozinho, e o piso
+    // min-content de volta, o título empurraria a barra em vez de reticenciar.
+    expect(titulo.parentElement?.className).toContain('min-w-0');
+    // O subtítulo divide a mesma coluna: sem truncate, é ele que quebra.
+    expect(screen.getByText('Contas a pagar').className).toContain('truncate');
+  });
+
+  // MESMA armadilha do menu do filtro de plano, agora no botão "Colunas": ao trazer a toolbar
+  // para a barra de filtros, o popover (que era `absolute`) passou a viver dentro do
+  // `overflow-x-auto`, cujo `overflow-y` computa para `auto` e corta na vertical. Ele abria
+  // clipado — a gestão de colunas ficava inutilizável, sem erro nenhum. Medido por sonda antes
+  // da correção. jsdom não faz layout, então o guarda é ESTRUTURAL: o painel não pode ter
+  // ancestral que corte o overflow.
+  it('o painel de Colunas abre FORA do contêiner que corta o overflow', async () => {
+    const user = userEvent.setup();
+    render(<Consulta />);
+    await waitFor(() => expect(getFinancialAccountControl).toHaveBeenCalled());
+
+    await user.click(screen.getByRole('button', { name: /Colunas/ }));
+    const painel = await screen.findByRole('dialog', { name: 'Gerenciar colunas' });
+
+    // Sanidade: o contêiner que corta EXISTE nesta tela. Sem isto, renomear a classe faria o
+    // `closest` abaixo devolver null por engano e o caso passaria com o painel clipado.
+    expect(document.querySelector('.overflow-x-auto')).not.toBeNull();
+    expect(painel.closest('.overflow-x-auto')).toBeNull();
+  });
+
+  // REGRESSÃO VISUAL que nenhum teste de dado pegava: a grade única de filtros vive num
+  // `overflow-x-auto`, e `overflow-x: auto` com `overflow-y: visible` faz o Y computar
+  // para `auto` — o contêiner corta na vertical. O react-select renderiza o menu inline,
+  // logo abaixo do controle, então ele nascia CLIPADO: nenhuma opção aparecia na tela.
+  // Digitar o texto exato "funcionava" só porque a opção invisível ficava focada e o
+  // Enter a escolhia — daí o relato "só acha com o texto inteiro; o grid não filtra".
+  //
+  // O guarda é ESTRUTURAL (jsdom não faz layout, então não há como medir o clipe): a
+  // opção renderizada não pode ter nenhum ancestral que corte o overflow.
+  it('o menu do filtro de plano abre FORA do contêiner que corta o overflow', async () => {
+    const user = userEvent.setup();
+    render(<Consulta />);
+    await waitFor(() => expect(getFinancialAccountControl).toHaveBeenCalled());
+
+    await user.click(screen.getByRole('combobox', { name: 'Filtrar por plano de contas' }));
+    const opcao = await screen.findByText('Serviços Gerais');
+
+    // Sanidade do guarda: o contêiner que corta EXISTE nesta tela. Sem esta asserção, o
+    // caso passaria trivialmente se a classe fosse renomeada e o menu voltasse a ser
+    // clipado por um contêiner que o `closest` abaixo não conhece mais.
+    expect(document.querySelector('.overflow-x-auto')).not.toBeNull();
+    expect(opcao.closest('.overflow-x-auto')).toBeNull();
+  });
+
+  // O grid vazio precisa dizer em QUE ESCOPO não achou. Um plano que existe no cadastro
+  // mas não tem conta NAQUELE MÊS devolve zero linhas — e a mensagem antiga ("ajuste os
+  // filtros e clique em Buscar") fazia isso parecer filtro quebrado, além de mandar
+  // clicar num botão que hoje ALARGA o período em vez de aplicar.
+  // 🔴 As DUAS metades do nome precisam ser observadas. Até 2026-08-07 só a primeira era: o
+  // caso afirmava "e aponta o caminho de alargar" e não asseverava nada sobre isso — reescrever
+  // a segunda frase da mensagem passava com a suíte verde (foi o que aconteceu ao alinhar o
+  // texto com o novo nome do botão). A 2ª asserção compara a mensagem com o NOME ACESSÍVEL do
+  // próprio botão, em vez de repetir a frase: assim a instrução ("use Buscar para…") e o que o
+  // leitor de tela anuncia ao chegar nele não podem divergir sem alguém ficar vermelho.
+  it('o grid vazio nomeia o mês em vigor e aponta o caminho de alargar', async () => {
+    render(<Consulta />);
+    const now = new Date();
+    const mes = ['Janeiro', 'Fevereiro', 'Março', 'Abril', 'Maio', 'Junho', 'Julho',
+      'Agosto', 'Setembro', 'Outubro', 'Novembro', 'Dezembro'][now.getMonth()];
+
+    const mensagem = await screen.findByText(
+      new RegExp(`Nenhum registro em ${mes}/${now.getFullYear()}`),
+    );
+    expect(mensagem).toBeInTheDocument();
+
+    // A ação que a mensagem manda executar é a do botão de busca — sem intervalo em tela,
+    // "Buscar em todos os meses e anos".
+    const acao = screen
+      .getByRole('button', { name: /^Buscar/ })
+      .getAttribute('aria-label')
+      ?.replace(/^Buscar\s+/, '');
+    expect(acao).toBeTruthy(); // sanidade: sem o aria-label o `toContain` abaixo é trivial
+    expect(mensagem.textContent ?? '').toContain(acao ?? '');
   });
 
   it('filtrar por GRUPO consulta com chartAccountGroupId', async () => {
@@ -579,7 +1027,7 @@ describe('Consulta', () => {
     await screen.findByRole('option', { name: '24 — Despesas Fixas' });
 
     await user.selectOptions(screen.getByLabelText('Filtrar por grupo de plano de contas'), '24');
-    await user.click(screen.getByRole('button', { name: 'Buscar' }));
+    await user.click(screen.getByRole('button', { name: /^Buscar/ }));
 
     await waitFor(() =>
       expect(getFinancialAccountControl).toHaveBeenLastCalledWith(
@@ -588,35 +1036,70 @@ describe('Consulta', () => {
     );
   });
 
-  it('combina grupo + centro de custo numa consulta só (AND, sem cascata)', async () => {
-    const user = userEvent.setup();
+  // COALESCÊNCIA: três mudanças em sequência viram UMA consulta, não três. É o guarda da
+  // promessa de volume do portão único — sem ele, aplicar no onChange de cada controle
+  // dispararia 3 consultas de grid (mais 3 de "Valor total" e 3 de contagem).
+  // `fireEvent` (e não `userEvent`) nos três: o intervalo entre eles passa a ser 0 ms, e
+  // o guarda deixa de depender de vencer uma corrida contra tempo real. Com `userEvent`
+  // eram ~90 ms por `selectOptions` contra a janela de 300 ms — passa, mas uma máquina
+  // carregada faria a 1ª consulta sair antes da 3ª mudança e o teste ficaria vermelho
+  // sem defeito nenhum. O que se quer travar aqui é a coalescência, não a velocidade.
+  it('combina grupo + centro de custo + sub grupo numa consulta só (AND, sem cascata)', async () => {
     render(<Consulta />);
     await screen.findByRole('option', { name: '24 — Despesas Fixas' });
+    getFinancialAccountControl.mockClear();
 
-    await user.selectOptions(screen.getByLabelText('Filtrar por grupo de plano de contas'), '24');
-    await user.selectOptions(screen.getByLabelText('Filtrar por centro de custo'), '4');
-    await user.selectOptions(screen.getByLabelText('Filtrar por sub grupo de plano de contas'), '93');
-    await user.click(screen.getByRole('button', { name: 'Buscar' }));
+    fireEvent.change(screen.getByLabelText('Filtrar por grupo de plano de contas'), { target: { value: '24' } });
+    fireEvent.change(screen.getByLabelText('Filtrar por centro de custo'), { target: { value: '4' } });
+    fireEvent.change(screen.getByLabelText('Filtrar por sub grupo de plano de contas'), { target: { value: '93' } });
 
     await waitFor(() =>
       expect(getFinancialAccountControl).toHaveBeenLastCalledWith(
         expect.objectContaining({ chartAccountGroupId: 24, costCenterId: 4, chartAccountSubgroupId: 93 }),
       ),
     );
+    expect(getFinancialAccountControl).toHaveBeenCalledTimes(1);
   });
 
-  // Escolher um filtro NÃO pode disparar consulta — é o que evita 3 requisições por
-  // clique de select e o que mantém a coerência com os selects da 1ª linha.
-  it('escolher o filtro NÃO consulta antes do "Buscar"', async () => {
+  // Item 9 do pedido. ATENÇÃO ao que este teste substituiu: havia aqui um caso afirmando
+  // "escolher o filtro NÃO consulta antes do Buscar" que continuou VERDE depois da
+  // mudança — ele usava `flush()` (0 ms), que não alcança a janela de coalescência, então
+  // media apenas "ainda não consultou NESTE instante". Daí o `waitFor` abaixo: ele espera
+  // a consulta acontecer de fato, e é o único formato que falha se o auto-aplicar sumir.
+  it('escolher o filtro consulta sozinho, sem clicar em "Buscar"', async () => {
     const user = userEvent.setup();
     render(<Consulta />);
     await screen.findByRole('option', { name: '24 — Despesas Fixas' });
     getFinancialAccountControl.mockClear();
 
     await user.selectOptions(screen.getByLabelText('Filtrar por grupo de plano de contas'), '24');
-    await flush();
 
-    expect(getFinancialAccountControl).not.toHaveBeenCalled();
+    await waitFor(() =>
+      expect(getFinancialAccountControl).toHaveBeenLastCalledWith(
+        expect.objectContaining({ chartAccountGroupId: 24 }),
+      ),
+    );
+  });
+
+  // Auto-aplicar RESTRINGE dentro do período em tela; só o "Buscar" alarga para toda a
+  // base. Sem esta asserção, ligar o select ao handleSearch passaria em tudo.
+  it('o filtro auto-aplicado PRESERVA o mês/ano corrente', async () => {
+    const user = userEvent.setup();
+    render(<Consulta />);
+    await screen.findByRole('option', { name: '24 — Despesas Fixas' });
+    const now = new Date();
+
+    await user.selectOptions(screen.getByLabelText('Filtrar por grupo de plano de contas'), '24');
+
+    await waitFor(() =>
+      expect(getFinancialAccountControl).toHaveBeenLastCalledWith(
+        expect.objectContaining({
+          chartAccountGroupId: 24,
+          month: now.getMonth(),
+          year: now.getFullYear(),
+        }),
+      ),
+    );
   });
 
   it('os filtros contábeis alcançam os cards "Valor total"/"Total de registros"', async () => {
@@ -627,7 +1110,7 @@ describe('Consulta', () => {
     getFinancialAccountCount.mockClear();
 
     await user.selectOptions(screen.getByLabelText('Filtrar por centro de custo'), '4');
-    await user.click(screen.getByRole('button', { name: 'Buscar' }));
+    await user.click(screen.getByRole('button', { name: /^Buscar/ }));
 
     await waitFor(() =>
       expect(getFinancialAccountTotalValue).toHaveBeenLastCalledWith(
@@ -646,7 +1129,7 @@ describe('Consulta', () => {
 
     await user.selectOptions(screen.getByLabelText('Filtrar por grupo de plano de contas'), '24');
     await user.selectOptions(screen.getByLabelText('Filtrar por centro de custo'), '4');
-    await user.click(screen.getByRole('button', { name: 'Buscar' }));
+    await user.click(screen.getByRole('button', { name: /^Buscar/ }));
     await waitFor(() =>
       expect(getFinancialAccountControl).toHaveBeenLastCalledWith(
         expect.objectContaining({ chartAccountGroupId: 24 }),
