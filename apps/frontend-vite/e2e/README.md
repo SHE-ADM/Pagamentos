@@ -31,6 +31,22 @@ $env:A11Y_TEST_PASSWORD='...'
 npm run test:e2e
 ```
 
+> 🔴 **O usuário PRECISA de `app_metadata.password_changed = true`** — criá-lo pelo Dashboard
+> **não** define essa marca, e sem ela o `ProtectedRoute` manda o 1º login para
+> `/auth/change-password`: os specs protegidos nunca chegam a `/consulta` e falham por um
+> motivo que não tem nada a ver com acessibilidade. Criar pela Admin API já com a marca:
+>
+> ```
+> POST {SUPABASE_URL}/auth/v1/admin/users     (Authorization: Bearer <service_role>)
+> { "email": "...", "password": "...", "email_confirm": true,
+>   "app_metadata": { "password_changed": true } }
+> ```
+>
+> `app_metadata`, nunca `user_metadata` — a segunda é gravável pelo próprio cliente e não
+> serve como marca de confiança (achado S1-1). **Verifique o login antes de cadastrar o
+> secret**, com o mesmo grant que o app usa (`POST /auth/v1/token?grant_type=password`, com a
+> anon key): criar o usuário não prova que ele loga.
+
 Sem essas variáveis, o bloco de rotas protegidas é **pulado** (não falha a suíte).
 
 ## Escopo / limitação
