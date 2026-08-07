@@ -44,6 +44,7 @@ import { updateConta, deleteConta } from '../services/contas';
 import { useAuth } from '../contexts/AuthContext';
 import { suspendIdleLogout, resumeIdleLogout } from '../hooks/useIdleLogout';
 import { getErrorMessage } from '../lib/getErrorMessage';
+import { SENTINEL_AUTHOR_ID, SENTINEL_AUTHOR_EMAIL } from '../lib/sentinelAuthor';
 import Alert from '../components/atoms/Alert';
 import ExpandableText from '../components/ExpandableText';
 import DataGrid from '../components/organisms/DataGrid';
@@ -138,6 +139,51 @@ function exportCsv(rows: FinancialAccountControl[]) {
 const MONTHS = ['Jan', 'Fev', 'Mar', 'Abr', 'Mai', 'Jun', 'Jul', 'Ago', 'Set', 'Out', 'Nov', 'Dez'];
 const MONTHS_FULL = ['Janeiro', 'Fevereiro', 'Março', 'Abril', 'Maio', 'Junho', 'Julho', 'Agosto', 'Setembro', 'Outubro', 'Novembro', 'Dezembro'];
 
+// Janela de coalescência dos filtros: mudanças dentro dela viram UM apply só. Curta o
+// bastante para parecer imediata, longa o bastante para agrupar De+Até e a digitação.
+const FILTER_APPLY_DELAY_MS = 300;
+
+// Coluna de data do INTERVALO De/Até. O período (botões de mês) tem o seu próprio campo
+// e só aceita vencimento/emissão — os dois são independentes de propósito.
+type RangeDateField = 'due_date' | 'issue_date' | 'payment_date';
+
+// Rótulo por valor num Record, não num ternário: com três valores, um
+// `x === 'due_date' ? 'Vencimento' : 'Emissão'` rotularia `payment_date` como "Emissão"
+// — errado, mudo e sem erro de tipo. Assim, um valor novo vira erro de compilação.
+const RANGE_DATE_FIELD_LABEL: Record<RangeDateField, string> = {
+  due_date: 'Vencimento',
+  issue_date: 'Emissão',
+  payment_date: 'Pagamento',
+};
+
+// Ressalva de DADO, exposta ao usuário no `title` do seletor: `payment_date` é NULL em
+// toda conta não paga (então o intervalo por pagamento descarta o que está em aberto —
+// combinado com Situação "a vencer" dá 0 linhas, sem erro), e nas contas pagas ANTES da
+// migration 096 o backfill gravou o VENCIMENTO. Não há dado real alternativo no banco.
+const RANGE_DATE_FIELD_HINT =
+  'Data usada no intervalo De/Até (independente do período por mês). ' +
+  'Pagamento mostra apenas contas já pagas — as em aberto não têm data de pagamento.';
+
+// Contraparte da ressalva acima, para o seletor do PERÍODO. Ele governa só os botões de
+// mês/ano — e enquanto houver intervalo De/Até preenchido, o período não está em vigor (o
+// intervalo tem precedência no serviço), então trocar a coluna aqui não muda a consulta na
+// hora. O controle NÃO é desabilitado nesse estado, e a diferença é a razão desta ressalva
+// existir: clicar num mês LIMPA o intervalo, e é esta coluna que passa a valer no mesmo
+// clique. Desabilitá-lo obrigaria a apagar as datas antes de poder escolher a coluna.
+const PERIOD_DATE_FIELD_HINT =
+  'Coluna usada pelos botões de mês e ano. Com o intervalo De/Até preenchido o período ' +
+  'fica suspenso, e esta coluna volta a valer ao escolher um mês (o que limpa o intervalo).';
+
+// Rótulo VISÍVEL do botão de busca é sempre "Buscar" (copy de produto); o nome acessível diz
+// o que o clique faz DE FATO — e isso depende do estado, então uma frase única mentiria numa
+// das metades. Sem intervalo, o clique alarga o período para todos os meses e anos. COM
+// intervalo, o período já está global (defini-lo zera mês/ano) e o intervalo é PRESERVADO:
+// anunciar "todos os períodos" ali seria falso, porque a consulta segue restrita às datas
+// digitadas. Os dois começam por "Buscar", como exige a WCAG 2.5.3 (Label in Name).
+function searchButtonName(hasDateRange: boolean): string {
+  return hasDateRange ? 'Buscar mantendo o intervalo de datas' : 'Buscar em todos os meses e anos';
+}
+
 interface ConsultaFilters {
   supplier: string;
   docType: string;
@@ -146,12 +192,16 @@ interface ConsultaFilters {
   // Empresa pagadora (sk_company: 1=OTIMOTEX TECIDOS, 2=LEBIANCO, 3=OTIMOTEX FARDOS). undefined = todas.
   skCompany?: number;
   paymentMethod: string;
-  // Coluna do filtro de período: vencimento (padrão) ou emissão.
+  // Coluna do filtro de PERÍODO (botões de mês/ano): vencimento (padrão) ou emissão.
   dateField: 'due_date' | 'issue_date';
   // Mês (0-indexed) / ano selecionados. Ambos null = escopo "Todas" (sem filtro de período).
   month: number | null;
   year: number | null;
-  // Range explícito — usado só pelo card "A vencer em 7 dias" (sobre due_date).
+  // Coluna do INTERVALO explícito De/Até — seletor PRÓPRIO, sem nenhuma ligação com o
+  // `dateField` da linha dos meses (pedido do dono do produto). É o único que oferece
+  // `payment_date`; ver a ressalva sobre NULL/backfill em RANGE_DATE_FIELD_HINT.
+  rangeDateField: RangeDateField;
+  // Range explícito — inputs De/Até e o card "A vencer em 7 dias" (este sobre due_date).
   dateFrom: string;
   dateTo: string;
   // ── 2ª linha: classificação contábil ────────────────────────────────────────
@@ -175,6 +225,11 @@ const BASE_FILTERS = {
   skCompany: undefined as number | undefined,
   paymentMethod: '',
   dateField: 'due_date' as const,
+  // Declarar AQUI (e não só em initialFilters) é o que faz "Limpar" e os cards de KPI
+  // resetarem o seletor do intervalo. Em particular, é o que mantém o card "A vencer em
+  // 7 dias" filtrando VENCIMENTO mesmo que o usuário tenha deixado "Pagamento"
+  // selecionado antes de clicar — o spread de allPeriodFilters() reseta primeiro.
+  rangeDateField: 'due_date' as RangeDateField,
   dateFrom: '',
   dateTo: '',
   // Classificação contábil (2ª linha). Estar AQUI é o que faz "Limpar" e os cards de
@@ -192,6 +247,25 @@ const STATUS_FILTER_OPTIONS = ACCOUNT_STATUSES.map((name) => ({
   id: STATUS_IDS[name],
   label: name,
 }));
+
+// Mensagem do grid vazio. Precisa dizer em QUE ESCOPO não encontrou — a mensagem antiga
+// ("ajuste os filtros e clique em Buscar") passou a mentir duas vezes desde a aplicação
+// automática: o filtro JÁ foi aplicado, e "Buscar" agora alarga o período em vez de aplicar.
+//
+// O caso concreto que expôs isso: escolher um plano de contas e ver o grid vazio parece
+// "o filtro não fez nada", quando na verdade o filtro RESTRINGE dentro do mês em tela.
+// Medido no cadastro real — "Mercadorias para Revenda" tem 192 contas no total e 60 em
+// agosto/2026; já "Cursos Profissionalizantes" existe no cadastro e não tem conta alguma.
+// Sem nomear o período, os dois casos são indistinguíveis de um filtro quebrado.
+function emptyGridMessage(applied: ConsultaFilters): string {
+  if (applied.month != null && applied.year != null) {
+    // "todos os meses e anos" repete o nome acessível do próprio botão (`searchButtonName`)
+    // — a mensagem que manda clicar e o que o leitor de tela anuncia ao chegar nele têm de
+    // descrever a mesma ação, senão a instrução aponta para um botão que "diz" outra coisa.
+    return `Nenhum registro em ${MONTHS_FULL[applied.month]}/${applied.year} com estes filtros — use "Buscar" para procurar em todos os meses e anos.`;
+  }
+  return 'Nenhum registro encontrado com estes filtros.';
+}
 
 // Estado padrão de navegação: mês/ano corrente por vencimento (grid abre no mês atual).
 // Função de MÓDULO — new Date() é impuro e não pode ser chamado no escopo de render
@@ -257,10 +331,16 @@ interface MetricCard {
 }
 
 // Sentinela: default de created_by/updated_by/status_changed_by quando não há usuário real
-// resolvido (migrations 076/077). "Última edição por" / "Situação alterada por" apontando p/
-// ele não representam uma edição de um usuário de verdade — então não são exibidos.
-const SENTINEL_AUTHOR_EMAIL = 'teste@otimotex.com.br';
-const SENTINEL_AUTHOR_ID = 'fe8d268d-2bc3-4418-8cae-65e426c3fb4e';
+// resolvido (migrations 076/077; identidade trocada para financeiro@otimotex.com.br pela 110).
+// "Última edição por" / "Situação alterada por" apontando p/ ele não representam uma edição de
+// um usuário de verdade — então não são exibidos.
+//
+// ⚠️ Consequência conhecida da identidade atual: `financeiro@otimotex.com.br` é uma conta de
+// login REAL. Quando alguém entrar com ela e editar uma conta, esta regra vai ocultar a
+// autoria dessa edição, porque o código trata a identidade como "nenhum usuário". Foi decisão
+// deliberada (substituição literal do sentinela anterior); a alternativa mapeada é ocultar
+// pelo FATO ("nunca editada": `updated_by = created_by` e `status_changed_at = created_at`)
+// em vez de pela identidade, o que removeria o acoplamento a um e-mail específico.
 
 export default function Consulta() {
   // Só o GRUPO ADMINISTRADOR vê/executa o hard delete de conta (o backend também impõe
@@ -310,8 +390,30 @@ export default function Consulta() {
   const [reading, setReading] = useState(false);
   const [progress, setProgress] = useState<ReadProgress | null>(null);
   const readingRef = useRef(false);
-  const sf = <K extends keyof ConsultaFilters>(k: K, v: ConsultaFilters[K]) =>
-    setF((x) => ({ ...x, [k]: v }));
+  // Patch acumulado à espera de virar filtro aplicado. É ESTADO, não ref: o timer passa a
+  // ser propriedade de um efeito, cujo cleanup o cancela sozinho — inclusive ao desmontar
+  // e quando um caminho síncrono (Buscar/Limpar/card/período) zera o pendente. Com refs,
+  // a leitura dentro dos handlers entrava na cadeia `cards → onCardClick` construída no
+  // render e caía na regra react-hooks/refs.
+  const [pendingApply, setPendingApply] = useState<Partial<ConsultaFilters> | null>(null);
+  // Período que o intervalo De/Até substituiu — `null` quando não foi ele que o zerou.
+  // Guarda o VALOR anterior, e não um booleano, porque o caminho de volta é o desfazer da
+  // própria operação: quem estava em Março tem de voltar para Março, não para o mês
+  // corrente. Ser `null` é o que impede o restauro para quem chegou ao escopo global de
+  // propósito (card de KPI, "Buscar") — ali restaurar estreitaria a consulta em silêncio,
+  // com o card seguindo aceso, que é a incoerência que o portão existe para evitar.
+  const [periodBeforeRange, setPeriodBeforeRange] =
+    useState<{ month: number | null; year: number | null } | null>(null);
+  // Destino dos controles da toolbar do grid (densidade · colunas · restaurar), que passaram
+  // a ocupar a célula livre da 1ª coluna da 2ª linha de filtros — sob a busca genérica.
+  // ESTADO, e não `useRef`: o portal precisa re-renderizar quando o nó existir, e um ref
+  // mutável não avisa ninguém. O callback ref roda no commit, antes do paint, então o slot
+  // já está preenchido no primeiro quadro que o usuário vê.
+  const [gridToolbarSlot, setGridToolbarSlot] = useState<HTMLDivElement | null>(null);
+  // Destino da barra de seleção do grid (N selecionadas · situação em lote · exportar ·
+  // limpar), que passou a viver no CABEÇALHO da página. Mesma mecânica de estado do slot
+  // acima, e o motivo do lugar está no comentário do próprio slot, no JSX.
+  const [gridSelectionSlot, setGridSelectionSlot] = useState<HTMLDivElement | null>(null);
   // Opções do filtro de empresa (mesmo hook do ContaForm). Lista vazia → o select fica só
   // com "Empresa" (todas), que é justamente o estado sem filtro — não quebra a tela.
   const companyOptions = useCompanyOptions();
@@ -393,13 +495,21 @@ export default function Consulta() {
   }, [load, page]);
 
   // Reset: quando o filtro aplicado ou a ordenação mudam (e no mount), recomeça da
-  // página 1 e recarrega os KPIs. load() seta `loading` no início — o effect é a
-  // ferramenta certa para o fetch-on-change.
+  // página 1. load() seta `loading` no início — o effect é a ferramenta certa para o
+  // fetch-on-change.
   useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect
     void load(1, 'replace');
+  }, [load]);
+
+  // KPIs no MOUNT, não a cada filtro: getFinancialStats() é GLOBAL por design (não lê
+  // filtro nenhum) e puxa até 1000 linhas — refazê-lo a cada apply era desperdício puro,
+  // e com a aplicação automática seria desperdício multiplicado. Os pontos que MUDAM
+  // dado (curadoria, situação, exclusão, leitura de e-mails) já chamam refreshStats().
+  useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     void refreshStats();
-  }, [load, refreshStats]);
+  }, [refreshStats]);
 
   // Diretório de usuários (id→e-mail) para o detalhe — busca única no mount. Falha é
   // silenciosa (o detalhe cai no fallback do UUID). void: fire-and-forget idiomático.
@@ -407,22 +517,19 @@ export default function Consulta() {
     void getAppUsers().then(setAppUsers).catch(() => undefined);
   }, []);
 
-  // Debounce da busca por fornecedor (fonte única — sem ref): 350ms após a última tecla,
-  // congela f.supplier em applied. O cleanup cancela o timeout pendente quando f.supplier
-  // muda OU quando applied.supplier muda por outra via (Enter/Buscar, card, Limpar) —
-  // eliminando a corrida em que um timeout antigo sobrescreveria o valor recém-aplicado.
+  // Janela de coalescência do portão de filtros: cada acréscimo ao patch pendente
+  // reinicia o timer (o cleanup cancela o anterior), então um usuário compondo vários
+  // filtros gera UMA consulta em vez de uma por controle. O cleanup também cobre o
+  // desmonte e o cancelamento síncrono (Buscar/Limpar/card/período → pendente = null).
   useEffect(() => {
-    if (f.supplier === applied.supplier) return; // já sincronizado (inclui o 1º mount)
+    if (!pendingApply) return;
     const t = setTimeout(() => {
-      // Busca por fornecedor é GLOBAL: ao ter texto, zera o período (mês/ano → "Todas")
-      // para procurar em toda a base; ao limpar, mantém o período como está.
-      const goGlobal = f.supplier !== '';
-      setApplied((prev) => ({ ...prev, supplier: f.supplier, ...(goGlobal ? { month: null, year: null } : {}) }));
-      if (goGlobal) setF((prev) => ({ ...prev, month: null, year: null }));
+      setApplied((a) => ({ ...a, ...pendingApply }));
       setPage(1);
-    }, 350);
+      setPendingApply(null);
+    }, FILTER_APPLY_DELAY_MS);
     return () => clearTimeout(t);
-  }, [f.supplier, applied.supplier]);
+  }, [pendingApply]);
 
   // "Valor total" e "Total de registros" (ambos SEM cancelado) refletem o filtro
   // aplicado (cards ou filtros manuais). Dependem só de `applied` — não re-somam ao
@@ -672,10 +779,85 @@ export default function Consulta() {
     }
   }, [load, refreshStats]);
 
-  // Buscar: aplica o filtro atual. Busca é GLOBAL — zera o período (mês/ano → "Todas")
-  // para procurar em toda a base (inclui o intervalo De/Até, que filtra por dateField).
-  // React faz batch dos setState — gera um único load novo.
+  // Zera o estado transitório do portão de filtros. Quem aplica de forma SÍNCRONA
+  // (Buscar/Limpar/card/período) precisa dos dois: descartar o timer, senão um patch
+  // antigo cai por cima depois; e esquecer o período memorizado, porque esses quatro
+  // caminhos definem o escopo de propósito — mantê-lo faria um "apagar as datas"
+  // posterior restaurar um período obsoleto por cima da escolha do usuário.
+  const resetFilterGate = () => {
+    setPendingApply(null);
+    setPeriodBeforeRange(null);
+  };
+
+  // PORTÃO ÚNICO de aplicação dos filtros (busca automática — sem clicar em "Buscar").
+  //
+  // Escreve em `f` na hora (o controle precisa ecoar o usuário) e acumula o patch no
+  // ESTADO `pendingApply` (não num ref — ver o porquê na declaração dele), com UM timer
+  // só. Por que não aplicar direto no onChange de cada controle: um apply
+  // dispara 3 requisições (grid + "Valor total" + contagem), e compor um filtro de 7
+  // controles daria ~21; pior, <select> nativo no Firefox/Windows emite `change` a CADA
+  // opção percorrida com as setas do teclado, o que multiplicaria isso por opção. O
+  // acúmulo também faz De+Até virarem um apply só, em vez de dois.
+  //
+  // Lê `f` do closure em vez de um ref: só é chamado de handler de evento, onde o estado
+  // do render corrente é o correto (entre dois eventos o React já re-renderizou). A
+  // escrita usa a forma FUNCIONAL, então nem uma leitura obsoleta perderia um patch.
+  const queueApply = (patch: Partial<ConsultaFilters>) => {
+    const merged = { ...f, ...patch };
+    const touchesRange = 'dateFrom' in patch || 'dateTo' in patch;
+    let derived: Partial<ConsultaFilters> = {};
+
+    if (touchesRange) {
+      if (merged.dateFrom !== '' || merged.dateTo !== '') {
+        // Intervalo definido vence o período — simétrico ao que os botões de mês já
+        // fazem ao limpar dateFrom/dateTo. Sem isso o mês seguiria aceso mentindo, já
+        // que a precedência do serviço ignora month/year quando há range.
+        derived = { month: null, year: null };
+        // Memoriza só quando há MESMO um período para substituir. A guarda é
+        // auto-limitante: depois da primeira vez o período já está zerado, então o
+        // segundo campo do intervalo não sobrescreve a memória com o valor nulo.
+        if (merged.month != null || merged.year != null) {
+          setPeriodBeforeRange({ month: merged.month, year: merged.year });
+        }
+      } else if (periodBeforeRange) {
+        // Caminho de VOLTA: apagar as duas datas deixaria o usuário preso em escopo
+        // global (toda a base, nenhum mês em destaque) sem nenhuma ação que explicasse.
+        // Devolve o período EXATO que o intervalo substituiu — e só existe para quem foi
+        // levado até lá PELO intervalo; quem escolheu o escopo global de propósito (card
+        // de KPI, "Buscar") tem `periodBeforeRange` nulo e não é estreitado em silêncio.
+        derived = periodBeforeRange;
+        setPeriodBeforeRange(null);
+      }
+    }
+    // Busca textual é GLOBAL: ao ter texto, procura em toda a base; ao limpar, mantém o
+    // período como está (comportamento preservado do debounce anterior).
+    if (typeof patch.supplier === 'string' && patch.supplier !== '') {
+      derived = { ...derived, month: null, year: null };
+    }
+
+    const full = { ...patch, ...derived };
+    setF((prev) => ({ ...prev, ...full }));
+
+    // O card ativo é preservado quando o filtro apenas RESTRINGE (empresa, tipo,
+    // classificação) — mesmo precedente da navegação por mês — e limpo quando o usuário
+    // mexe no campo que o card possui; senão o card "Vencidas" ficaria aceso exibindo
+    // contas pagas.
+    if ('statusId' in patch || (touchesRange && activeCard === 'avencer7')) setActiveCard(null);
+
+    // Acumula por forma FUNCIONAL: mudanças rápidas somam num patch só, e o efeito
+    // abaixo reinicia a janela a cada acréscimo.
+    setPendingApply((prev) => ({ ...(prev ?? {}), ...full }));
+  };
+
+  // Atalho de uma chave só — a forma como a maioria dos controles chama o portão.
+  const qf = <K extends keyof ConsultaFilters>(k: K, v: ConsultaFilters[K]) =>
+    queueApply({ [k]: v });
+
+  // Buscar: com a aplicação automática, o que resta a este botão é ALARGAR o escopo —
+  // zera o período (mês/ano → "Todas") para procurar em toda a base. Daí o `title`: um
+  // botão "Buscar" que troca "Junho" por "todas as datas" sem avisar seria surpreendente.
   const handleSearch = () => {
+    resetFilterGate();
     const next = { ...f, month: null, year: null };
     setF(next);
     setApplied(next);
@@ -684,6 +866,7 @@ export default function Consulta() {
   };
   // Limpar: volta ao estado padrão (mês/ano corrente por vencimento) e reseta a ordenação.
   const handleClear = () => {
+    resetFilterGate();
     const init = initialFilters();
     setF(init);
     setApplied(init);
@@ -692,13 +875,22 @@ export default function Consulta() {
     setPage(1);
   };
 
-  // Período (campo/mês/ano/"Todas"): aplica imediatamente em f e applied, como o
-  // dashboard — os filtros de texto/select continuam dependendo de "Buscar".
+  // Período (campo/mês/ano/"Todas"): aplica imediatamente em f e applied, como o dashboard.
   // NÃO limpa o card ativo: navegar por mês mantém o card destacado (narrows aquele
   // mês), e clicar o card de novo continua sendo o caminho de volta ao mês atual.
+  //
+  // Deriva de `f`, e NÃO de um patch parcial sobre `applied` (mesmo formato de handleSearch).
+  // O motivo é o `resetFilterGate()` da linha acima: ele descarta o patch que ainda espera na
+  // janela de 300 ms, mas esse patch JÁ está em `f` (o controle precisa ecoar o usuário na
+  // hora). Com `setApplied((a) => ({ ...a, ...patch }))` o filtro escolhido logo antes do
+  // clique some da consulta e FICA visível no controle — divergência que não se resolve
+  // sozinha, porque `pendingApply` carrega só o patch, nunca `f` inteiro. Partir de `f`
+  // incorpora o pendente em vez de perdê-lo.
   const applyPeriod = (patch: Partial<ConsultaFilters>) => {
-    setF((x) => ({ ...x, ...patch }));
-    setApplied((a) => ({ ...a, ...patch }));
+    resetFilterGate();
+    const next = { ...f, ...patch };
+    setF(next);
+    setApplied(next);
     setPage(1);
   };
 
@@ -715,6 +907,7 @@ export default function Consulta() {
   // Cards são GLOBAIS: ativar um mostra TODOS os períodos do status (month/year null);
   // desligar volta ao padrão mês a mês (mês/ano corrente).
   const handleCardFilter = (cardId: string, filterOverride: Partial<ConsultaFilters>) => {
+    resetFilterGate();
     setSort({ col: null, dir: null });
     if (activeCard === cardId) {
       setActiveCard(null);
@@ -723,6 +916,9 @@ export default function Consulta() {
       setApplied(init);
     } else {
       setActiveCard(cardId);
+      // O spread de allPeriodFilters() reseta ANTES do override — é o que mantém o card
+      // "A vencer em 7 dias" sobre VENCIMENTO mesmo com "Pagamento" escolhido no seletor
+      // do intervalo (rangeDateField mora em BASE_FILTERS justamente por isso).
       const next = { ...allPeriodFilters(), ...filterOverride };
       setF(next);
       setApplied(next);
@@ -730,8 +926,13 @@ export default function Consulta() {
     setPage(1);
   };
 
-  // Rótulo do campo de data ativo (compartilhado pelos botões de mês e pelo intervalo De/Até).
-  const dateFieldLabel = f.dateField === 'due_date' ? 'Vencimento' : 'Emissão';
+  // Rótulo do campo do INTERVALO — é ele, e não o do período, que governa os campos
+  // De/Até. Derivá-lo de `f.dateField` faria o leitor de tela anunciar "Vencimento —
+  // data inicial" enquanto a consulta usa payment_date, sem nenhum teste ficar vermelho.
+  const rangeDateFieldLabel = RANGE_DATE_FIELD_LABEL[f.rangeDateField];
+  // Derivado de `f` (o formulário), não de `applied`: o nome tem de descrever o que o clique
+  // fará AGORA, e o intervalo digitado já está em `f` mesmo antes da janela de 300 ms fechar.
+  const searchName = searchButtonName(f.dateFrom !== '' || f.dateTo !== '');
 
   const vencidasCount = stats.vencidas ?? 0;
   const cards: MetricCard[] = [
@@ -788,12 +989,37 @@ export default function Consulta() {
     <div className="flex flex-col h-full">
       {/* Barra superior em gradiente (2px) — acento de marca */}
       <div className="h-0.5 bg-linear-to-r from-brand to-brand-dark" />
-      <div className="px-6 py-1 border-b border-slate-200 bg-white flex items-center justify-between">
-        <div>
-          <h1 className="text-sm font-semibold text-slate-800">Consulta de movimentações</h1>
-          <p className="text-xs text-slate-500 mt-0.5">Contas a pagar</p>
+      <div className="px-6 py-1 border-b border-slate-200 bg-white flex items-center justify-between gap-3">
+        {/* `truncate` nos DOIS textos, e não só `min-w-0` no bloco: com a barra de seleção
+            ocupando o meio desta linha, um notebook 1366×768 (≈1.110px úteis com a sidebar)
+            fica no limite — título ~190px + barra ~580px + botões ~330px + gaps/padding.
+            Sob essa pressão o texto QUEBRARIA em duas linhas e o cabeçalho passaria de 38px
+            para ~58px, empurrando o grid ao marcar a primeira conta: o mesmo salto que trazer
+            a barra para cá existe para eliminar. Com `truncate` o bloco encolhe com
+            reticências e a altura da linha não muda. */}
+        <div className="min-w-0">
+          <h1 className="truncate text-sm font-semibold text-slate-800">Consulta de movimentações</h1>
+          <p className="truncate text-xs text-slate-500 mt-0.5">Contas a pagar</p>
         </div>
-        <div className="flex gap-2">
+        {/* Destino, por PORTAL a partir do DataGrid (`toolbarSelectionTarget`), da barra de
+            seleção do grid — N selecionadas · situação em lote · exportar · limpar.
+
+            🔴 Ela morava numa faixa logo acima do cabeçalho do grid, e essa faixa tinha de
+            reservar 48px MESMO VAZIA: sem a reserva, marcar a primeira linha empurrava o
+            grid para baixo sob o ponteiro e o clique seguinte, numa baixa em lote, caía na
+            linha errada. Ou seja, pagava-se 48px de altura de grid em toda sessão para
+            proteger um clique.
+
+            Aqui os dois lados são atendidos: esta linha já mede 38px por causa do bloco do
+            título, a barra cabe nela inteira (ver o cálculo do padding em `GridToolbar`) e
+            nada salta ao aparecer — enquanto os 48px voltam a ser linhas de dado. De brinde,
+            o cabeçalho está FORA da área rolável (`overflow-y-auto` começa no <div> abaixo),
+            então as ações em lote continuam ao alcance com o grid rolado.
+
+            Nasce VAZIO: sem `aria-hidden` (o conteúdo que chega é interativo) e sem largura
+            própria, então com `justify-between` o título e os botões seguem nas pontas. */}
+        <div ref={setGridSelectionSlot} className="min-w-0" />
+        <div className="flex gap-2 shrink-0">
           <button onClick={() => exportCsv(rows)} className="btn" disabled={!rows.length}>
             <Download size={14} /> Exportar carregados ({rows.length})
           </button>
@@ -872,22 +1098,36 @@ export default function Consulta() {
 
         {/* Período: tipo de data (vencimento/emissão) + mês + ano + "Todas" — mesmo
             princípio do Dashboard. O seletor "Tipo de data" fica AQUI, junto do período
-            que ele controla (campo usado pelos botões de mês E pelo intervalo De/Até).
-            Aplica imediatamente; o grid e o card "Valor total" seguem o período (cards de KPI ficam globais). */}
+            que ele controla. Aplica imediatamente; o grid e o card "Valor total" seguem
+            o período (cards de KPI ficam globais). */}
         <div className="flex items-center justify-start gap-3 flex-wrap mb-2">
-          {/* Tipo de data: coluna usada pelos botões de mês E pelo intervalo De/Até.
-              Aplica imediatamente (re-filtra a visão atual na nova coluna). */}
-          <select
-            id="consulta-date-field"
-            name="consulta-date-field"
-            aria-label="Tipo de data (vencimento ou emissão)"
-            className="input h-7 w-32 py-0 text-xs"
-            value={f.dateField}
-            onChange={(e) => applyPeriod({ dateField: e.target.value as ConsultaFilters['dateField'] })}
-          >
-            <option value="due_date">Vencimento</option>
-            <option value="issue_date">Emissão</option>
-          </select>
+          {/* Tipo de data: coluna usada pelos BOTÕES DE MÊS/ANO — e só por eles. O
+              intervalo De/Até tem seletor PRÓPRIO e independente, na grade abaixo (ele
+              oferece "Pagamento", que o período não oferece). Aplica imediatamente.
+
+              O wrapper existe pela mesma razão do seletor do intervalo: pendurar a ressalva
+              como texto de VERDADE na árvore acessível. Aqui ela responde "por que trocar a
+              coluna não mudou nada agora?" — com o intervalo preenchido o período fica
+              suspenso. Ver PERIOD_DATE_FIELD_HINT, inclusive por que o controle NÃO é
+              desabilitado nesse estado. */}
+          <div>
+            <select
+              id="consulta-date-field"
+              name="consulta-date-field"
+              aria-label="Tipo de data do período (vencimento ou emissão)"
+              aria-describedby="consulta-date-field-hint"
+              title={PERIOD_DATE_FIELD_HINT}
+              className="input h-7 w-32 py-0 text-xs"
+              value={f.dateField}
+              onChange={(e) => applyPeriod({ dateField: e.target.value as ConsultaFilters['dateField'] })}
+            >
+              <option value="due_date">Vencimento</option>
+              <option value="issue_date">Emissão</option>
+            </select>
+            <span id="consulta-date-field-hint" className="sr-only">
+              {PERIOD_DATE_FIELD_HINT}
+            </span>
+          </div>
 
           <div className="flex gap-0.5 flex-wrap" role="group" aria-label="Filtrar por mês">
             {MONTHS.map((m, i) => (
@@ -926,16 +1166,41 @@ export default function Consulta() {
           </button>
         </div>
 
-        <div className="flex gap-2 flex-wrap mb-2">
-          <div className="relative w-90 max-w-full">
+        {/* GRADE DOS FILTROS — as duas linhas num ÚNICO grid, para que as colunas se
+            alinhem entre si (busca↔plano, empresa↔sub grupo, tipo doc↔grupo, tipo
+            pagamento↔centro de custo, buscar↔limpar). O template é declarado UMA vez:
+            "mesma largura" deixa de ser dois `w-*` mantidos à mão em pontos distantes do
+            arquivo e passa a ser estrutural — desalinhar por edição parcial fica
+            impossível. Por isso os controles NÃO levam `w-*`: o `w-full` que o
+            `@utility input` já traz preenche a célula, e os `.btn` (inline-flex) são
+            esticados pelo grid, o que iguala Buscar e Limpar por construção.
+
+            `overflow-x-auto` + `w-max`: grid não quebra, transborda. Confinar o overflow
+            AQUI faz as duas linhas rolarem JUNTAS (o alinhamento sobrevive em tela
+            estreita, ao contrário do flex-wrap, que o destruía) e impede que o scroll
+            lateral vaze para a página — o container externo é `overflow-y-auto`, cujo
+            overflow-x computa para `auto`, e arrastar o DataGrid junto quebraria as
+            colunas fixadas (position: sticky).
+
+            Tracks em comprimento explícito, nunca `1fr` cru: `fr` tem mínimo
+            `min-content`, e o `min-content` de um <select> é a opção mais longa — as
+            descrições de centro de custo estourariam a coluna.
+
+            O mínimo da coluna 1 é 25rem (era 22,5rem) porque ela deixou de servir só à
+            busca: abaixo dela ficam os controles da toolbar do grid, cujos botões
+            (Confortável · Compacto · Colunas · Restaurar) somam ~24,5rem. Com 22,5rem eles
+            invadiriam a coluna 2 na largura mínima da grade. */}
+        <div className="overflow-x-auto mb-2">
+          <div className="grid w-full min-w-max grid-cols-[minmax(25rem,1fr)_16.5rem_11rem_10rem_10rem_8.5rem_8.5rem_8.5rem] items-center gap-2">
+          <div className="relative">
             <input
               id="consulta-supplier"
               name="consulta-supplier"
               aria-label="Buscar por fornecedor, CNPJ, número do documento, valor, assunto, remetente, e-mail do fornecedor, centro de custo, plano de contas, grupo ou subgrupo"
-              className="input w-full pr-8"
+              className="input pr-8"
               placeholder="Fornecedor, Nº doc, valor, assunto, centro de custo, plano de contas…"
               value={f.supplier}
-              onChange={(e) => sf('supplier', e.target.value)}
+              onChange={(e) => qf('supplier', e.target.value)}
               onKeyDown={(e) => {
                 if (e.key === 'Enter') handleSearch();
               }}
@@ -944,7 +1209,7 @@ export default function Consulta() {
               <button
                 type="button"
                 aria-label="Limpar busca"
-                onClick={() => sf('supplier', '')}
+                onClick={() => qf('supplier', '')}
                 className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-500 hover:text-slate-600"
               >
                 <X size={14} />
@@ -958,9 +1223,9 @@ export default function Consulta() {
             id="consulta-company"
             name="consulta-company"
             aria-label="Filtrar por empresa"
-            className="input w-36"
+            className="input"
             value={f.skCompany == null ? '' : String(f.skCompany)}
-            onChange={(e) => sf('skCompany', e.target.value ? Number(e.target.value) : undefined)}
+            onChange={(e) => qf('skCompany', e.target.value ? Number(e.target.value) : undefined)}
           >
             <option value="">Empresa</option>
             {companyOptions.map((c) => (
@@ -969,13 +1234,13 @@ export default function Consulta() {
               </option>
             ))}
           </select>
-          <select id="consulta-doc-type" name="consulta-doc-type" aria-label="Filtrar por tipo de documento" className="input w-40" value={f.docType} onChange={(e) => sf('docType', e.target.value)}>
+          <select id="consulta-doc-type" name="consulta-doc-type" aria-label="Filtrar por tipo de documento" className="input" value={f.docType} onChange={(e) => qf('docType', e.target.value)}>
             <option value="">Tipo Documento</option>
             {DOCUMENT_TYPES.map((t) => (
               <option key={t}>{t}</option>
             ))}
           </select>
-          <select id="consulta-payment-method" name="consulta-payment-method" aria-label="Filtrar por tipo de pagamento" className="input w-36" value={f.paymentMethod} onChange={(e) => sf('paymentMethod', e.target.value)}>
+          <select id="consulta-payment-method" name="consulta-payment-method" aria-label="Filtrar por tipo de pagamento" className="input" value={f.paymentMethod} onChange={(e) => qf('paymentMethod', e.target.value)}>
             <option value="">Tipo Pagamento</option>
             {PAYMENT_METHODS.map((m) => (
               <option key={m}>{m}</option>
@@ -985,9 +1250,9 @@ export default function Consulta() {
             id="consulta-status"
             name="consulta-status"
             aria-label="Filtrar por situação"
-            className="input w-32"
+            className="input"
             value={f.statusId == null ? '' : String(f.statusId)}
-            onChange={(e) => sf('statusId', e.target.value ? Number(e.target.value) : undefined)}
+            onChange={(e) => qf('statusId', e.target.value ? Number(e.target.value) : undefined)}
           >
             <option value="">Situação</option>
             {STATUS_FILTER_OPTIONS.map((s) => (
@@ -996,68 +1261,107 @@ export default function Consulta() {
               </option>
             ))}
           </select>
-          {/* Intervalo De/Até — busca GLOBAL por range de data na coluna escolhida no
-              seletor "Tipo de data" da barra de período (acima). Aplica via "Buscar" (ou Enter). */}
+          {/* Intervalo De/Até — filtra pela coluna do seletor LOGO ABAIXO (independente
+              do "Tipo de data" da linha dos meses). Aplica sozinho; sem Enter, que aqui
+              significaria "alargar o período", não "aplicar". */}
           <input
             id="consulta-date-from"
             name="consulta-date-from"
-            aria-label={`${dateFieldLabel} — data inicial`}
+            aria-label={`${rangeDateFieldLabel} — data inicial`}
             type="date"
-            className="input w-36"
+            className="input"
             value={f.dateFrom}
             max={f.dateTo || undefined}
-            onChange={(e) => sf('dateFrom', e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter') handleSearch();
-            }}
-            title={`${dateFieldLabel} de`}
+            onChange={(e) => qf('dateFrom', e.target.value)}
+            title={`${rangeDateFieldLabel} de`}
           />
           <input
             id="consulta-date-to"
             name="consulta-date-to"
-            aria-label={`${dateFieldLabel} — data final`}
+            aria-label={`${rangeDateFieldLabel} — data final`}
             type="date"
-            className="input w-36"
+            className="input"
             value={f.dateTo}
             min={f.dateFrom || undefined}
-            onChange={(e) => sf('dateTo', e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter') handleSearch();
-            }}
-            title={`${dateFieldLabel} até`}
+            onChange={(e) => qf('dateTo', e.target.value)}
+            title={`${rangeDateFieldLabel} até`}
           />
-          <button onClick={handleSearch} className="btn btn-primary w-24">
-            <Search size={14} /> Buscar
-          </button>
-          <button onClick={handleClear} className="btn w-24 justify-center">
-            Limpar
-          </button>
-        </div>
+          {/* Seletor da coluna de data do INTERVALO — fecha a 1ª linha (coluna 8), ao lado
+              dos campos De/Até que ele governa. `col-start-8` é explícito e não decorativo:
+              é o que documenta a posição e o que o teste de alinhamento observa.
+              O nome acessível NÃO pode conter "Tipo de data" — é o nome do seletor do
+              período, e o teste que o localiza passaria a casar dois elementos.
 
-        {/* 2ª LINHA de filtros — classificação contábil. Fica numa linha PRÓPRIA para não
-            estreitar nem empurrar a busca livre da 1ª linha, que segue sendo o controle
-            em destaque. Os 4 são INDEPENDENTES (combinados por AND, sem cascata) e
-            aplicam no "Buscar"/Enter, como os selects da 1ª linha. */}
-        <div className="flex gap-2 flex-wrap items-center mb-2">
-          {/* Plano de contas — busca digitável: são ~530 descrições, volume demais para um
-              <select> nativo. variant="filter" NÃO carrega a lista na abertura da página
-              (só no 1º clique que abre o menu). */}
-          <div className="w-72 max-w-full">
+              O wrapper existe para abrigar a ressalva de dado como texto de VERDADE na
+              árvore acessível: `title` sozinho não aparece no toque, não é focável e,
+              com `aria-label` presente, não é anunciado de forma confiável — e é essa
+              ressalva que explica por que "Pagamento" + Situação "a vencer" devolve 0
+              linhas. O `sr-only` é posicionado, mas fica DENTRO do wrapper em vez de
+              solto no grid, para não depender de "item absoluto não ocupa track". */}
+          <div className="col-start-8 min-w-0">
+            <select
+              id="consulta-range-date-field"
+              name="consulta-range-date-field"
+              aria-label="Data do intervalo (De/Até)"
+              aria-describedby="consulta-range-date-field-hint"
+              title={RANGE_DATE_FIELD_HINT}
+              className="input"
+              value={f.rangeDateField}
+              onChange={(e) => qf('rangeDateField', e.target.value as RangeDateField)}
+            >
+              {Object.entries(RANGE_DATE_FIELD_LABEL).map(([value, label]) => (
+                <option key={value} value={value}>
+                  {label}
+                </option>
+              ))}
+            </select>
+            <span id="consulta-range-date-field-hint" className="sr-only">
+              {RANGE_DATE_FIELD_HINT}
+            </span>
+          </div>
+
+          {/* ── 2ª linha da MESMA grade ──────────────────────────────────────────────
+              Abre na COLUNA 1, sob a busca genérica, com os controles da toolbar do grid
+              (densidade · colunas · restaurar) — antes soltos acima do grid. Eles chegam
+              aqui por PORTAL a partir do DataGrid (`toolbarControlsTarget`), porque o
+              estado de layout do grid vive no `useGridPreferences` dele; elevá-lo para cá
+              tocaria todas as telas com grid para atender só a esta.
+
+              O <div> é o destino do portal e nasce VAZIO — por isso não leva `aria-hidden`
+              (o conteúdo real é interativo) nem texto. Ocupa a coluna 1 por auto-placement,
+              que é o que empurra o cursor para a coluna 2, onde o plano de contas ancora. */}
+          <div ref={setGridToolbarSlot} className="min-w-0" />
+
+          {/* ── Classificação contábil (colunas 2 a 5) ───────────────────────────────
+              Os 4 são INDEPENDENTES (combinados por AND, sem cascata) e, como os da 1ª
+              linha, aplicam sozinhos. Plano de contas é busca digitável: são ~530
+              descrições, volume demais para um <select> nativo; variant="filter" NÃO
+              carrega a lista na abertura da página (só no 1º clique que abre o menu).
+              `min-w-0` porque o react-select, sem ele, empurra o track da coluna.
+
+              `col-start-2` mantém cada filtro contábil sob o controle correspondente da 1ª
+              linha — plano↔Empresa, sub grupo↔Tipo Documento, grupo↔Tipo Pagamento, centro
+              de custo↔Situação. Hoje o slot da toolbar já ocupa a coluna 1 e deixaria o
+              cursor aqui de qualquer forma; a âncora fica EXPLÍCITA porque remover o slot
+              (ou movê-lo) puxaria os quatro filtros uma coluna à esquerda em silêncio.
+              Só este item é posicionado à mão; os três seguintes caem nas colunas 3, 4 e 5
+              pelo auto-placement, que nunca anda para trás. */}
+          <div className="col-start-2 min-w-0">
             <ChartAccountSelect
               id="consulta-chart-account"
               variant="filter"
               label="Filtrar por plano de contas"
               value={f.chartAccountDescription || null}
-              onChange={(d) => sf('chartAccountDescription', d ?? '')}
+              onChange={(d) => qf('chartAccountDescription', d ?? '')}
             />
           </div>
           <select
             id="consulta-chart-subgroup"
             name="consulta-chart-subgroup"
             aria-label="Filtrar por sub grupo de plano de contas"
-            className="input w-56"
+            className="input"
             value={f.chartAccountSubgroupId == null ? '' : String(f.chartAccountSubgroupId)}
-            onChange={(e) => sf('chartAccountSubgroupId', e.target.value ? Number(e.target.value) : undefined)}
+            onChange={(e) => qf('chartAccountSubgroupId', e.target.value ? Number(e.target.value) : undefined)}
           >
             <option value="">Sub grupo</option>
             {classification.subgroups.map((s) => (
@@ -1070,9 +1374,9 @@ export default function Consulta() {
             id="consulta-chart-group"
             name="consulta-chart-group"
             aria-label="Filtrar por grupo de plano de contas"
-            className="input w-52"
+            className="input"
             value={f.chartAccountGroupId == null ? '' : String(f.chartAccountGroupId)}
-            onChange={(e) => sf('chartAccountGroupId', e.target.value ? Number(e.target.value) : undefined)}
+            onChange={(e) => qf('chartAccountGroupId', e.target.value ? Number(e.target.value) : undefined)}
           >
             <option value="">Grupo</option>
             {classification.groups.map((g) => (
@@ -1085,9 +1389,9 @@ export default function Consulta() {
             id="consulta-cost-center"
             name="consulta-cost-center"
             aria-label="Filtrar por centro de custo"
-            className="input w-52"
+            className="input"
             value={f.costCenterId == null ? '' : String(f.costCenterId)}
-            onChange={(e) => sf('costCenterId', e.target.value ? Number(e.target.value) : undefined)}
+            onChange={(e) => qf('costCenterId', e.target.value ? Number(e.target.value) : undefined)}
           >
             <option value="">Centro de custo</option>
             {classification.costCenters.map((c) => (
@@ -1096,6 +1400,31 @@ export default function Consulta() {
               </option>
             ))}
           </select>
+          {/* Os DOIS botões fecham a 2ª linha, lado a lado (colunas 7 e 8). `col-start-7`
+              é obrigatório: o cursor do auto-placement pararia na 6 (livre desde que o
+              seletor de data subiu para a 1ª linha) e os botões ficariam deslocados uma
+              coluna à esquerda. O `col-start-8` do "Limpar" é redundante em relação ao
+              vizinho, mas fica explícito para que mexer num não desloque o outro em
+              silêncio — os dois estão travados no teste de alinhamento.
+
+              Com a aplicação automática, "Buscar" não "aplica" mais — ele ALARGA o escopo.
+              O nome acessível diz isso; o rótulo visível segue "Buscar" (copy de produto), e
+              o nome o CONTÉM, como exige a WCAG 2.5.3 (Label in Name). Sem o aria-label, a
+              única pista da mudança de escopo era o `title`, invisível para teclado e leitor
+              de tela. O nome varia com o estado porque o efeito varia — ver
+              `searchButtonName`. */}
+          <button
+            onClick={handleSearch}
+            className="btn btn-primary col-start-7"
+            aria-label={searchName}
+            title={searchName}
+          >
+            <Search size={14} /> Buscar
+          </button>
+          <button onClick={handleClear} className="btn justify-center col-start-8">
+            Limpar
+          </button>
+          </div>
         </div>
 
         <div className="card mb-2">
@@ -1120,12 +1449,18 @@ export default function Consulta() {
             onLoadMore={loadMore}
             defaultPinning={CONSULTA_DEFAULT_PINNING}
             defaultDensity="compact"
+            // Densidade · colunas · restaurar sobem para a 1ª coluna da 2ª linha de filtros;
+            // a barra de seleção vai para o cabeçalho da página. Com os dois fora, não sobra
+            // nada acima do cabeçalho do grid — nem a faixa de 48px que só existia para
+            // reservar a altura da barra de seleção (ver o slot no cabeçalho).
+            toolbarControlsTarget={gridToolbarSlot}
+            toolbarSelectionTarget={gridSelectionSlot}
             onExportSelected={exportCsv}
             bulkStatusOptions={STATUS_OPTIONS}
             onBulkStatusChange={handleBulkStatusChange}
             maxBodyHeight="78vh"
             loading={loading}
-            emptyMessage={loading ? 'Buscando registros…' : 'Nenhum registro encontrado — ajuste os filtros e clique em Buscar'}
+            emptyMessage={loading ? 'Buscando registros…' : emptyGridMessage(applied)}
             // Rodapé SEMPRE-visível abaixo das células: a informação adicional do registro,
             // destacada em fonte (Jakarta itálica) e cor (brand) distintas das células.
             renderRowFooter={(r) =>

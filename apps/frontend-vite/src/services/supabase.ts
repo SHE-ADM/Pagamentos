@@ -248,12 +248,15 @@ interface FinancialAccountControlFilters {
   // Empresa pagadora (FK sk_company: 1=OTIMOTEX TECIDOS, 2=LEBIANCO, 3=OTIMOTEX FARDOS). undefined = todas.
   skCompany?: number;
   paymentMethod?: string;
-  // Coluna de data do filtro de período: vencimento (default) ou emissão.
+  // Coluna de data do PERÍODO (botões de mês/ano): vencimento (default) ou emissão.
   dateField?: 'due_date' | 'issue_date';
   // Filtro por mês/ano (0-indexed). Ambos presentes → range do mês na coluna dateField.
   // null/ausente → escopo "todas" (cai no range explícito dateFrom/dateTo, ou nada).
   month?: number | null;
   year?: number | null;
+  // Coluna de data do INTERVALO explícito De/Até — INDEPENDENTE de `dateField` (seletor
+  // próprio ao lado dos campos). Aceita `payment_date`, que o período não oferece.
+  rangeDateField?: 'due_date' | 'issue_date' | 'payment_date';
   dateFrom?: string;
   dateTo?: string;
   // ── Classificação contábil (2ª linha de filtros de /consulta) ────────────────
@@ -440,6 +443,60 @@ async function resolveSearchIds(term: string | undefined): Promise<SearchIds> {
 
 const EMPTY_SEARCH_IDS: SearchIds = { supplierIds: [], costCenterIds: [], chartAccountIds: [] };
 
+// ── Planos de contas EM USO (opções do filtro de /consulta) ───────────────────
+// O filtro passou a oferecer só as descrições que REALMENTE aparecem em
+// financial_account_control. Antes ele listava o cadastro inteiro (611 linhas), e escolher
+// um plano sem conta nenhuma devolvia grid vazio — indistinguível de filtro quebrado.
+// Medido: 611 planos cadastrados × **84 descrições distintas** de fato em uso.
+//
+// A consulta é pelo lado do CADASTRO com embed reverso `!inner`, não pelo lado do fato:
+//   financial_chart_of_account?select=account_description,financial_account_control!inner(id)
+// O `!inner` mantém só os planos com ao menos uma conta VISÍVEL ao usuário — a RLS vale
+// dentro do embed, então um usuário de grupo restrito (`sees_only_own_accounts`) recebe
+// exatamente as opções que o grid dele consegue mostrar. Por isso a consulta vive AQUI e
+// não na Next API: lá a leitura é `service_role`, que ignora RLS e ofereceria ao usuário
+// restrito filtros que não produzem linha alguma.
+//
+// O GRÃO é o que importa para o volume: 85 linhas (teto = as 611 do cadastro) contra 724
+// pelo caminho direto no fato, que cresce a cada conta lançada. `financial_account_control
+// .limit=1` corta o array de filhos, que não é usado — 7,6 KB no total.
+//
+// `account_description=not.is.null` descarta o sentinela id 0 ("não informado"): ele tem
+// descrição NULL e não é filtrável, coerente com os outros três filtros contábeis.
+const USED_CHART_ACCOUNTS_PAGE = 1000;
+const USED_CHART_ACCOUNTS_MAX_PAGES = 5;
+
+// ts-prune-ignore-next
+export async function listUsedChartAccountDescriptions(): Promise<string[]> {
+  const seen = new Set<string>();
+  // Pagina mesmo com o teto estrutural em 611: a consulta DECIDE o que o usuário consegue
+  // filtrar, e o corte do PostgREST em "Max rows" volta HTTP 200 — sumiria opção sem erro
+  // nenhum. É a mesma armadilha já registrada nos scripts de manutenção; aqui ela custa
+  // uma condição de laço. O teto de páginas evita laço infinito se o servidor ignorar o
+  // offset (mesma defesa de scripts/supabase_rest.py).
+  for (let page = 0; page < USED_CHART_ACCOUNTS_MAX_PAGES; page++) {
+    const rows = await query<{ account_description: string | null }[]>('financial_chart_of_account', {
+      select: 'account_description,financial_account_control!inner(id)',
+      'financial_account_control.limit': 1,
+      'account_description': 'not.is.null',
+      // Desempate pela PK (ver lib/stableOrder.ts): `account_description` NÃO é única — a
+      // mesma descrição existe em vários centros de custo, e é justamente por isso que a
+      // função deduplica. Sem a PK no `order`, a ordem não é total e a paginação por offset
+      // pode PULAR uma linha entre páginas; sendo ela a única portadora de uma descrição, a
+      // opção some do filtro sem erro nenhum — a mesma falha silenciosa que a paginação
+      // existe para evitar.
+      order: stableOrder({ fallback: 'account_description.asc', tiebreak: 'chart_account_id' }),
+      limit: USED_CHART_ACCOUNTS_PAGE,
+      offset: page * USED_CHART_ACCOUNTS_PAGE,
+    });
+    for (const r of rows) if (r.account_description) seen.add(r.account_description);
+    if (rows.length < USED_CHART_ACCOUNTS_PAGE) break;
+  }
+  // A mesma descrição existe em vários centros de custo — a dedup é o que transforma as
+  // 85 linhas do cadastro nas 84 opções que o usuário vê.
+  return [...seen].sort((a, b) => a.localeCompare(b, 'pt-BR'));
+}
+
 // ── Filtro por classificação contábil: plano / grupo / subgrupo ────────────────
 // Descrição do plano, GRUPO e SUBGRUPO não são colunas de financial_account_control:
 // vivem em financial_chart_of_account, alcançada pela FK chart_account_id. O PostgREST
@@ -490,7 +547,8 @@ export function withChartAccountJoin(select: string): string {
 export function applyFinancialFilters(
   params: URLSearchParams,
   {
-    supplier, docType, statusId, skCompany, paymentMethod, dateField, month, year, dateFrom, dateTo,
+    supplier, docType, statusId, skCompany, paymentMethod,
+    dateField, month, year, rangeDateField, dateFrom, dateTo,
     costCenterId, chartAccountDescription, chartAccountGroupId, chartAccountSubgroupId,
   }: FinancialAccountControlFilters,
   searchIds: SearchIds = EMPTY_SEARCH_IDS,
@@ -556,20 +614,28 @@ export function applyFinancialFilters(
     params.set('select', withChartAccountJoin(params.get('select') ?? ''));
     for (const [key, value] of chartFilters) params.set(key, value);
   }
-  // Filtro de data na coluna escolhida (vencimento por padrão):
-  //  1) Intervalo explícito dateFrom/dateTo (busca global por range OU card "7 dias")
-  //     tem PRECEDÊNCIA — quando presente, vence o mês/ano.
-  //  2) Senão, mês/ano (navegação por período) monta o range do mês [01, último dia].
+  // Filtro de data, em DOIS ramos mutuamente exclusivos e com colunas INDEPENDENTES:
+  //  1) Intervalo explícito dateFrom/dateTo (seletor próprio ao lado dos campos De/Até,
+  //     OU card "7 dias") tem PRECEDÊNCIA — quando presente, vence o mês/ano.
+  //  2) Senão, mês/ano (botões de período) monta o range do mês [01, último dia] na
+  //     coluna do seletor da linha dos meses.
   //  3) Sem nada, não filtra por data.
-  const col = dateField ?? 'due_date';
+  //
+  // As duas colunas são separadas de propósito: o usuário pode navegar o período por
+  // vencimento e, ao mesmo tempo, pesquisar um intervalo por data de pagamento. NÃO
+  // colapsar num `rangeDateField ?? dateField` — é o mutante que preserva todas as
+  // referências, passa em typecheck/lint e só se manifesta quando os dois divergem
+  // (guardas em supabase.test.ts, "coluna de data do intervalo × do período").
+  const rangeCol = rangeDateField ?? 'due_date';
+  const periodCol = dateField ?? 'due_date';
   if (dateFrom || dateTo) {
-    if (dateFrom) params.append(col, `gte.${dateFrom}`);
-    if (dateTo) params.append(col, `lte.${dateTo}`);
+    if (dateFrom) params.append(rangeCol, `gte.${dateFrom}`);
+    if (dateTo) params.append(rangeCol, `lte.${dateTo}`);
   } else if (month != null && year != null) {
     const first = new Date(Date.UTC(year, month, 1)).toISOString().slice(0, 10);
     const last = new Date(Date.UTC(year, month + 1, 0)).toISOString().slice(0, 10);
-    params.append(col, `gte.${first}`);
-    params.append(col, `lte.${last}`);
+    params.append(periodCol, `gte.${first}`);
+    params.append(periodCol, `lte.${last}`);
   }
 }
 

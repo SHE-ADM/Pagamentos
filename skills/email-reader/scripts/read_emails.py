@@ -913,9 +913,13 @@ class SupabaseControl:
     def resolve_user(self, sender_email: str | None) -> str | None:
         """Resolve o UUID do usuario dono da conta a partir do e-mail do remetente,
         via RPC resolve_user_for_account (migration 076). A RPC ja devolve o usuario-
-        padrao (teste@otimotex.com.br) quando o e-mail nao casa nenhum usuario — mantem
-        100% do relacionamento. Em erro/sem e-mail retorna None (o DEFAULT da coluna
-        created_by assume o sentinela).
+        SENTINELA (financeiro@otimotex.com.br desde a migration 110; era teste@otimotex.com.br)
+        quando o e-mail nao casa nenhum usuario — mantem 100% do relacionamento. Em erro/sem
+        e-mail retorna None (o DEFAULT da coluna created_by assume o mesmo sentinela).
+
+        NAO ha UUID embutido aqui, e e' deliberado: o fallback vive na RPC e no DEFAULT da
+        coluna, do lado do banco. Trocar a identidade do sentinela e' migration, sem deploy
+        do pipeline.
 
         CACHEADO por e-mail (case-insensitive) dentro da instancia: a mesma caixa repete
         muito o remetente, e o resultado nao muda durante um run. Sem o cache, cada conta

@@ -1,4 +1,11 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+
+// Só `listUsedChartAccountDescriptions` vai à rede; as demais funções deste arquivo são
+// puras. O mock existe para o `authHeaders` não precisar de sessão real.
+vi.mock('../lib/supabaseClient', () => ({
+  supabase: { auth: { getSession: () => Promise.resolve({ data: { session: { access_token: 'tok' } } }) } },
+}));
+
 import {
   parsePaginationTotal,
   parseBrlAmount,
@@ -7,6 +14,7 @@ import {
   groupDocumentTypeLabel,
   isTaxDocumentType,
   withChartAccountJoin,
+  listUsedChartAccountDescriptions,
   SELECT_WITH_EMBEDS,
 } from './supabase';
 
@@ -346,6 +354,160 @@ describe('applyFinancialFilters — classificação contábil', () => {
     applyFinancialFilters(params, { costCenterId: 0, chartAccountGroupId: 0 });
     expect(params.get('cost_center_id')).toBe('eq.0');
     expect(params.get('chart_account.chart_account_group_id')).toBe('eq.0');
+  });
+});
+
+// ── Colunas de data: o INTERVALO e o PERÍODO são independentes ────────────────
+// `rangeDateField` (seletor ao lado dos campos De/Até) governa o intervalo explícito;
+// `dateField` (seletor da linha dos meses) governa o range derivado de mês/ano. Antes
+// de 2026-08-05 havia UMA variável servindo aos dois ramos — os testes abaixo são o que
+// impede a volta desse acoplamento, que não produz erro nenhum: a consulta responde 200
+// filtrando pela coluna errada, e a tela mostra um conjunto plausível.
+describe('applyFinancialFilters — coluna de data do intervalo × do período', () => {
+  it('o intervalo De/Até usa rangeDateField, não a coluna do período', () => {
+    const params = new URLSearchParams();
+    applyFinancialFilters(params, {
+      dateFrom: '2026-07-01',
+      dateTo: '2026-07-31',
+      rangeDateField: 'payment_date',
+      dateField: 'due_date',
+    });
+    expect(params.getAll('payment_date')).toEqual(['gte.2026-07-01', 'lte.2026-07-31']);
+    expect(params.has('due_date')).toBe(false);
+  });
+
+  // Espelho do anterior — é este par que prova a INDEPENDÊNCIA. Um teste de mão única
+  // continuaria verde se um dos seletores escrevesse nos dois campos.
+  it('o range de mês/ano usa dateField, sem contaminação do rangeDateField', () => {
+    const params = new URLSearchParams();
+    applyFinancialFilters(params, {
+      month: 6, // julho (0-indexed)
+      year: 2026,
+      dateField: 'issue_date',
+      rangeDateField: 'payment_date',
+    });
+    expect(params.getAll('issue_date')).toEqual(['gte.2026-07-01', 'lte.2026-07-31']);
+    expect(params.has('payment_date')).toBe(false);
+  });
+
+  // A precedência é o que mantém os dois ramos mutuamente exclusivos. Trocar o `else if`
+  // por `if` faria as duas colunas serem filtradas ao mesmo tempo (AND), devolvendo um
+  // conjunto quase sempre vazio — sem erro.
+  it('com intervalo E mês/ano preenchidos, só o intervalo filtra', () => {
+    const params = new URLSearchParams();
+    applyFinancialFilters(params, {
+      dateFrom: '2026-07-10',
+      dateTo: '2026-07-20',
+      rangeDateField: 'issue_date',
+      month: 0,
+      year: 2026,
+      dateField: 'due_date',
+    });
+    expect(params.getAll('issue_date')).toEqual(['gte.2026-07-10', 'lte.2026-07-20']);
+    expect(params.has('due_date')).toBe(false);
+  });
+
+  // O mutante mais provável de acontecer sem querer é `rangeDateField ?? dateField`:
+  // preserva todas as referências, passa no typecheck e no lint, e só se manifesta
+  // quando os dois seletores divergem.
+  it('sem rangeDateField, o intervalo cai em due_date — NUNCA no dateField', () => {
+    const params = new URLSearchParams();
+    applyFinancialFilters(params, { dateFrom: '2026-07-01', dateField: 'issue_date' });
+    expect(params.getAll('due_date')).toEqual(['gte.2026-07-01']);
+    expect(params.has('issue_date')).toBe(false);
+  });
+
+  // Documenta o no-op inerente ao pedido: sem datas preenchidas o seletor do intervalo
+  // não tem sobre o que agir.
+  it('rangeDateField sem intervalo preenchido não filtra data nenhuma', () => {
+    const params = new URLSearchParams();
+    applyFinancialFilters(params, { rangeDateField: 'payment_date' });
+    expect(params.has('payment_date')).toBe(false);
+    expect(params.has('due_date')).toBe(false);
+    expect(params.has('issue_date')).toBe(false);
+  });
+
+  it('só data inicial ou só final aplica um dos limites', () => {
+    const somenteAte = new URLSearchParams();
+    applyFinancialFilters(somenteAte, { dateTo: '2026-07-31', rangeDateField: 'issue_date' });
+    expect(somenteAte.getAll('issue_date')).toEqual(['lte.2026-07-31']);
+  });
+});
+
+// ── Opções do filtro de plano de contas: só o que EXISTE em contas ────────────
+// O filtro listava o cadastro inteiro (611 linhas) e escolher um plano sem conta nenhuma
+// devolvia grid vazio — indistinguível de filtro quebrado. Medido no banco real: 611
+// planos cadastrados contra 84 descrições distintas de fato em uso.
+describe('listUsedChartAccountDescriptions', () => {
+  const chamadas: string[] = [];
+
+  const responderCom = (paginas: { account_description: string | null }[][]) => {
+    let i = 0;
+    vi.stubGlobal('fetch', vi.fn((url: string) => {
+      chamadas.push(String(url));
+      const corpo = paginas[i] ?? [];
+      i++;
+      return Promise.resolve({ ok: true, json: () => Promise.resolve(corpo) } as Response);
+    }));
+  };
+
+  beforeEach(() => { chamadas.length = 0; });
+  afterEach(() => { vi.unstubAllGlobals(); });
+
+  // 🔴 O `!inner` é o coração: sem ele o embed vira LEFT JOIN e a consulta devolve o
+  // cadastro INTEIRO com HTTP 200 — o filtro voltaria a oferecer planos sem conta e nada
+  // acusaria. É a mesma armadilha silenciosa já registrada em applyFinancialFilters.
+  it('consulta pelo CADASTRO com embed !inner, e não pelo fato', async () => {
+    responderCom([[{ account_description: 'Aluguel' }]]);
+    await listUsedChartAccountDescriptions();
+
+    const url = new URL(chamadas[0]);
+    expect(url.pathname).toContain('/financial_chart_of_account');
+    expect(url.searchParams.get('select')).toBe('account_description,financial_account_control!inner(id)');
+    // O sentinela id 0 tem descrição NULL — não é opção de filtro.
+    expect(url.searchParams.get('account_description')).toBe('not.is.null');
+    // Desempate pela PK — obrigatório em TODA listagem paginada por offset (lib/stableOrder.ts).
+    // `account_description` não é única (é o que o caso de dedup abaixo exercita), então sem a
+    // PK a ordem não é total e a página seguinte pode pular uma linha: a opção sumiria do
+    // filtro com HTTP 200 e sem erro. Asserção sobre o valor INTEIRO, não `toContain`: um
+    // `order` que perdesse a coluna primária também passaria num `toContain('chart_account_id')`.
+    expect(url.searchParams.get('order')).toBe('account_description.asc,chart_account_id.asc');
+    // Sem recorte de período/situação: a lista é a mesma independentemente dos filtros
+    // em tela, que é o que o requisito pede ("busca geral independente do filtro").
+    expect(url.searchParams.has('due_date')).toBe(false);
+    expect(url.searchParams.has('status_id')).toBe(false);
+  });
+
+  it('deduplica a descrição repetida entre centros de custo e ordena em pt-BR', async () => {
+    responderCom([[
+      { account_description: 'Órgãos Públicos' },
+      { account_description: 'Aluguel' },
+      { account_description: 'Aluguel' }, // mesma descrição, outro centro
+      { account_description: null },
+    ]]);
+
+    expect(await listUsedChartAccountDescriptions()).toEqual(['Aluguel', 'Órgãos Públicos']);
+  });
+
+  // O teto do PostgREST ("Max rows") corta a resposta e devolve HTTP 200 — sumiria opção
+  // do filtro sem erro nenhum. Hoje o grão é o cadastro (611 linhas, teto estrutural), mas
+  // a consulta DECIDE o que o usuário consegue filtrar; a paginação custa uma condição.
+  it('pagina enquanto a página vier cheia', async () => {
+    const cheia = Array.from({ length: 1000 }, (_, i) => ({ account_description: `P${i}` }));
+    responderCom([cheia, [{ account_description: 'Ultimo' }]]);
+
+    const out = await listUsedChartAccountDescriptions();
+
+    expect(chamadas).toHaveLength(2);
+    expect(new URL(chamadas[0]).searchParams.get('offset')).toBe('0');
+    expect(new URL(chamadas[1]).searchParams.get('offset')).toBe('1000');
+    expect(out).toHaveLength(1001);
+  });
+
+  it('para na primeira página incompleta (não pagina à toa)', async () => {
+    responderCom([[{ account_description: 'Aluguel' }]]);
+    await listUsedChartAccountDescriptions();
+    expect(chamadas).toHaveLength(1);
   });
 });
 

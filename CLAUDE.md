@@ -591,8 +591,20 @@ Alvo: **WCAG 2.1 Nível AA** em todas as telas. Regras práticas:
   specs **não** rodam no `npm test` (runner separado, fora do `tsconfig`/ESLint — `e2e/` está nos
   `ignores`). Ver `e2e/README.md`. O **workflow `.github/workflows/a11y.yml`** roda a camada a cada
   PR/push na `Features` (runner `ubuntu-latest`, Chromium provisionado), com os 4 secrets cadastrados
-  (`VITE_SUPABASE_URL`/`ANON_KEY` + `A11Y_TEST_EMAIL`/`PASSWORD`, este último um usuário de teste
-  só-leitura no Supabase). **Não rodar `npm run test:e2e` no sandbox do
+  (`VITE_SUPABASE_URL`/`ANON_KEY` + `A11Y_TEST_EMAIL`/`PASSWORD`). O usuário do CI é
+  **`teste-a11y@sheild.app.br`** (grupo 0), dedicado — trocado em 2026-08-07, quando o anterior
+  (`teste@otimotex.com.br`) foi removido. **Não é "só-leitura"**, como este parágrafo já afirmou:
+  o app não tem papel de leitura, e um usuário autenticado qualquer pode curar NF/Boleto e situação
+  em `/consulta`. O que protege é o spec, que só varre — não a permissão.
+  🔴 **Usuário de CI PRECISA de `app_metadata.password_changed = true`.** Criá-lo pelo Dashboard
+  **não** define a marca, e sem ela o `ProtectedRoute` manda o 1º login para
+  `/auth/change-password`: os specs protegidos nunca chegam a `/consulta` e falham por um motivo
+  que não tem nada a ver com acessibilidade. Criar pela **Admin API** já com a marca e **provar o
+  login antes de cadastrar o secret** (`POST /auth/v1/token?grant_type=password` com a anon key —
+  criar o usuário não prova que ele loga). Receita em `e2e/README.md`.
+  ⚠️ **O workflow não tem `workflow_dispatch`** (só `pull_request` e `push` na `Features`), então
+  não há como forçar uma execução de verificação: uma troca de credencial do CI só é exercitada de
+  fato no PR seguinte. **Não rodar `npm run test:e2e` no sandbox do
   agente** — o renderer do Chromium crasha ao montar a SPA completa (limite de recursos do ambiente,
   não do código); validar na máquina do usuário ou no CI. A camada já **pegou e corrigiu 45 violações
   de contraste** nas páginas protegidas (sidebar/cabeçalhos/grid/toolbar) que os guardas por token e o
@@ -1395,8 +1407,10 @@ npm run test:e2e -- public-auth      # só login/forgot/reset (sem login)
 npm run test:e2e:headed              # com janela do navegador
 ```
 
-Para escanear as rotas protegidas, exporte `A11Y_TEST_EMAIL`/`A11Y_TEST_PASSWORD` (usuário de
-teste no Supabase). No CI, o workflow `.github/workflows/a11y.yml` roda isso a cada PR/push na
+Para escanear as rotas protegidas, exporte `A11Y_TEST_EMAIL`/`A11Y_TEST_PASSWORD` — hoje o
+usuário dedicado `teste-a11y@sheild.app.br` (exige `app_metadata.password_changed = true`; ver
+o bloco do workflow a11y em "Regras mandatórias · Acessibilidade" e a receita em
+`e2e/README.md`). No CI, o workflow `.github/workflows/a11y.yml` roda isso a cada PR/push na
 `Features`. **Não executar daqui (sandbox do agente)** — o renderer crasha na SPA completa.
 
 **Scripts de manutenção do pipeline — use a skill `scripts-manutencao`**
@@ -2736,12 +2750,173 @@ e-mails `status='falha'`, rebusca o corpo no IMAP, baixa o boleto pelo link e gr
   (conta) quanto em `findSupplierIdsByTerm` (fornecedor). Índices de performance da busca em
   `financial_account_control` (migration **060**): GIN trigram em `invoice_number`/`subject`/
   `sender_email` (para `ilike '%termo%'`), btree em `amount` e em `created_at DESC`.
+- **BARRA DE FILTROS de `/consulta` — GRADE ÚNICA de 8 colunas (2026-08-05):** as duas
+  linhas (busca/selects e classificação contábil) vivem num **único `grid`** com o template
+  declarado uma vez (`grid-cols-[minmax(25rem,1fr)_16.5rem_11rem_10rem_10rem_8.5rem_8.5rem_8.5rem]`),
+  para as colunas se alinharem: **Empresa↔plano de contas · Tipo Documento↔Sub grupo · Tipo
+  Pagamento↔Grupo · Situação↔Centro de custo · data final↔Buscar · seletor da coluna de
+  data↔Limpar**. A coluna 2 é a mais larga depois da busca (**16,5rem**, pedido do dono do
+  produto em 2026-08-05) porque Empresa e plano de contas carregam os textos mais longos; as
+  colunas **6, 7 e 8 são iguais (8,5rem)** para que os campos De/Até, o seletor de data e os
+  dois botões casem entre si — é o que mantém "Buscar" com a largura de "data final" e
+  "Limpar" com a de "Vencimento". A linha de mês/ano fica **fora** da grade, intocada.
+  - 🔴 **A sobra da direita é absorvida pela BUSCA — `w-full min-w-max` + `minmax(25rem,1fr)`
+    na coluna 1** (2026-08-05). Com `w-max` puro a grade tinha a largura exata dos tracks e
+    deixava espaço em branco à direita em qualquer tela maior; agora ela ocupa o contêiner, o
+    `1fr` come a folga e todo o resto encosta à direita. O **par é obrigatório**: sem
+    `min-w-max` o `w-full` deixaria a grade encolher abaixo dos tracks em tela estreita, em vez
+    de rolar no `overflow-x-auto`. É o caso previsto na regra do `1fr` logo abaixo — mínimo
+    explícito, nunca `1fr` cru.
+  - 🔴 **Piso das colunas 3 e 4 = 11rem/10rem.** Uma tentativa de encolher as duas para 9rem
+    (2026-08-05) **cortou os placeholders** "Tipo Documento" e "Tipo Pagamento" no estado
+    vazio — que é justamente quando o rótulo é a única pista do que o campo faz. A estimativa
+    de 9rem ≈ o texto a `text-sm` ficou curta na medida real do navegador; não repetir sem
+    conferir em tela.
+
+  Disposição (2026-08-06): **1ª linha** = busca · Empresa · Tipo Documento · Tipo Pagamento ·
+  Situação · data inicial · data final · **seletor da coluna de data**; **2ª linha** =
+  **controles do grid** · plano · sub grupo · grupo · centro de custo · _(vazia)_ ·
+  **Buscar** · **Limpar**. Os dois botões ficam lado a lado, no fim da 2ª linha.
+  - 🔴 **Os controles da toolbar do grid (densidade · colunas · restaurar) ocupam a coluna 1
+    da 2ª linha, sob a busca — e chegam lá por PORTAL** (`toolbarControlsTarget` no
+    `DataGrid` → `controlsPortalTarget` no `GridToolbar`, 2026-08-06). Portal e não elevação
+    de estado: o layout do grid vive no `useGridPreferences` do próprio `DataGrid`, e subi-lo
+    para a página tocaria **todas** as telas com grid para atender só a `/consulta`. A prop
+    tem **três** valores com semânticas distintas — **ausente** = inline acima do grid (o que
+    as demais telas continuam fazendo), **elemento** = portal, e **`null`** = portal pedido
+    com o nó ainda não montado, que **não renderiza nada naquele quadro**; sem esse terceiro
+    caso os botões apareceriam acima do grid no 1º render e pulariam para o slot no seguinte,
+    porque o callback ref do destino só resolve depois do primeiro render da página.
+    O slot é `<div>` **vazio**, logo **sem `aria-hidden`** (o conteúdo que chega nele é
+    interativo).
+  - 🔴 **A barra de SELEÇÃO (N selecionadas · situação em lote · exportar · limpar) mora no
+    CABEÇALHO DA PÁGINA, por um SEGUNDO portal** (`toolbarSelectionTarget` no `DataGrid` →
+    `selectionPortalTarget` no `GridToolbar`, 2026-08-07) — mesmo contrato de três valores.
+    **Com esse portal a faixa acima do grid NÃO é emitida**, e é daí que vêm os 48px extras
+    de linhas de dado.
+    **O histórico é o que impede reverter por engano.** A barra ficava numa faixa logo acima
+    do cabeçalho do grid, e essa faixa precisava reservar **48px (`min-h-12`) mesmo VAZIA**:
+    emiti-la só quando havia seleção fazia o grid inteiro **descer ~48px ao marcar a primeira
+    linha**, e selecionar várias contas em sequência (baixa em lote) é o uso normal — o
+    conteúdo saltando sob o ponteiro faz o clique seguinte cair na linha errada. Ou seja,
+    pagava-se altura de grid em **toda sessão** para proteger **um** clique.
+    O cabeçalho resolve os dois lados porque **já tem altura própria**: o bloco do título mede
+    38px (`text-sm` 20 + `text-xs` 16 + `mt-0.5`), e é por isso que a barra leva **`py-0.5` no
+    modo portal** (34px do `.btn` + 4 = **exatos 38px**) em vez do `py-1.5` do modo inline —
+    com o padding inline ela mediria 46px e o cabeçalho **cresceria 8px** ao marcar a primeira
+    conta, reintroduzindo em miniatura o salto que a mudança existe para eliminar. **De
+    brinde:** o cabeçalho está FORA do `overflow-y-auto`, então as ações em lote continuam
+    alcançáveis com o grid rolado — o que a faixa antiga não dava.
+    🔴 **A altura só fica estável porque NADA naquela linha pode quebrar** *(achado do code
+    review de 2026-08-07)*. O `py-0.5` resolve a barra em isolamento; sob pressão
+    **horizontal**, porém, o texto quebra e o cabeçalho cresce assim mesmo. Medido por
+    aritmética de classes (**não em navegador**): num notebook 1366×768 com a sidebar aberta
+    são ~1.110px úteis, contra ~1.170px de título (~190) + barra (~580) + botões (~330) +
+    gaps/padding. Por isso o título leva **`truncate` no `<h1>` E no `<p>`** e o rótulo
+    "N selecionadas" leva **`whitespace-nowrap`**: o bloco encolhe com reticências em vez de
+    virar duas linhas. ⚠️ O `min-w-0` do bloco do título é **necessário e insuficiente** —
+    sozinho ele só remove o piso `min-content` e deixa o texto quebrar mais cedo; é o par
+    `min-w-0` + `truncate` que dá "encolhe sem crescer". Travado em `Consulta.test.tsx`
+    ("o título do cabeçalho encolhe sem quebrar linha").
+    Travado também em `GridToolbar.test.tsx` (barra no slot **e** ausência do `min-h-12`; o
+    padding compacto) e em `Consulta.test.tsx` (POSIÇÃO: dentro do cabeçalho, fora da área
+    rolável) — todos validados por mutante, com o mutante **sutil**: manter o portal E
+    continuar emitindo a faixa. Esse é o defeito a temer, porque a barra apareceria no lugar
+    certo com os 48px ainda perdidos, e o único sintoma seria o espaço em branco na tela.
+    ⚠️ **`getByText('N selecionadas')` NÃO é guarda suficiente** — com portal ele acha a barra
+    em qualquer lugar do DOM. O que precisa ser observado é a posição, como já valia para os
+    controles.
+    ⚠️ **O estado COM seleção precisa de varredura a11y própria** — ele só existe depois de um
+    clique, então os casos de página em repouso não o alcançam: cinco controles entraram numa
+    linha que antes tinha só título + 2 botões. `Consulta.a11y.test.tsx` marca uma linha e roda
+    o axe; validado pelo mutante que remove o `aria-label` do ✕ (→ `button-name`). Mesmo
+    princípio de `DashboardHeader.a11y.test.tsx`, que varre os dois estados que mudam a árvore
+    acessível.
+    ⚠️ **Uma barra flutuante (`fixed`) foi considerada e DESCARTADA:** o rodapé de `/consulta`
+    ("N de M registros · Carregar mais") fica logo abaixo do card, em fluxo, e uma barra presa
+    ao rodapé da viewport o cobriria — trocaria um defeito por outro.
+  - 🔴 **A coluna 1 subiu de 22,5rem para 25rem por causa desses botões** — Confortável ·
+    Compacto · Colunas · Restaurar somam **~24,5rem** (estimativa da soma das classes, **não
+    medida em tela** — conferir no navegador antes de tratar como fato), e em 22,5rem
+    invadiriam a coluna 2 na largura mínima da grade. O bloco de controles leva `flex-wrap`
+    como rede: se faltar espaço (fonte maior, zoom), ele quebra a linha em vez de sobrepor a
+    vizinha.
+  - 🔴 **O painel do `ColumnVisibilityMenu` também saiu por PORTAL** (`createPortal` no body +
+    `position: fixed` medido do botão, 2026-08-06) — **pelo mesmo motivo do menu do
+    `ChartAccountSelect`, e descoberto porque a mudança acima o recolocou dentro do
+    `overflow-x-auto`**. Era `absolute right-0`: ancorado num botão da 2ª (e última) linha da
+    grade, nascia clipado e a gestão de colunas ficava inutilizável na tela, sem erro nenhum.
+    **A regra é do MECANISMO, não do componente:** todo popover/menu que passar a viver dentro
+    daquele contêiner precisa de portal. **CINCO** detalhes que o portal obriga e que já
+    morderam:
+    (1) o **clique-fora passa a olhar DOIS nós** (wrapper + painel) — com o painel fora da
+    subárvore, o `!contains` do wrapper fecharia o menu no primeiro checkbox marcado;
+    (2) o menu **fecha ao rolar/redimensionar** (um `fixed` descolaria do botão), mas o
+    listener usa `capture` e por isso **precisa ignorar a rolagem da própria lista**
+    (`max-h-72 overflow-y-auto`, que é o uso normal com ~14 colunas) — sem essa guarda o
+    painel se fechava no meio da rolagem; (3) a posição é medida do **botão**
+    (`e.currentTarget`), não do wrapper `div.relative`, que é block-level e, fora de um flex,
+    esticaria e jogaria o alinhamento pela direita para a borda do contêiner;
+    (4) 🔴 **o clamp precisa ser dos DOIS eixos — a assimetria era o defeito** *(achado do
+    code review de 2026-08-07)*. Só `left` era contido contra `window.innerWidth`; `top` era
+    `r.bottom + 4` puro. Num viewport de 768px (≈678 de `innerHeight`) o painel de ~332px
+    aberto a partir de `bottom ≈ 350` terminava em ~686 e **perdia os últimos itens sem
+    nenhuma indicação** — e, sendo `fixed`, rolar a página não os traz (pior: a rolagem fecha o
+    menu, pelo item 2). Hoje `measure()` devolve também `maxHeight`, abre **acima** do botão
+    quando embaixo não cabe e em cima cabe mais, e o painel é `flex flex-col overflow-hidden`
+    com a lista em `flex-1`, para o limite virar rolagem interna em vez de conteúdo cortado;
+    (5) 🔴 **a LARGURA sai do `style`, a partir da mesma constante que alinha o painel**
+    (`PANEL_WIDTH`), e **não** de uma classe `w-*`. Com a largura numa classe e o alinhamento
+    numa constante, trocar `w-72` por `w-80` desalinharia o painel em 32px **sem erro e sem
+    teste vermelho**, porque o cálculo continuaria subtraindo 288 — dois lugares para um número
+    só. O guarda observa a amarração, não o valor: `left + width === r.right` do botão, mais a
+    proibição de `w-\d` na classe.
+    Os cinco estão travados em `ColumnVisibilityMenu.test.tsx` + o guarda estrutural em
+    `Consulta.test.tsx` (o painel não pode ter ancestral `.overflow-x-auto`), todos validados
+    por mutante.
+  - 🔴 **QUATRO âncoras explícitas, e nenhuma é estilo:** `col-start-8` (seletor de data,
+    fechando a 1ª linha), `col-start-2` (plano, abrindo a 2ª), `col-start-7` (Buscar) e
+    `col-start-8` (Limpar). O cursor do auto-placement **nunca anda para trás**, então cada
+    posição depende da anterior — e mexer numa desloca as seguintes em silêncio. Já aconteceu
+    duas vezes: quando o seletor de data deixou de ocupar duas colunas, o "Limpar" caiu na 7;
+    quando o seletor subiu para a 1ª linha, os dois botões escorregaram para a 6. As quatro
+    estão travadas no mesmo teste, junto do template — validadas por mutante.
+  - 🔴 **Os FILTROS CONTÁBEIS começam na COLUNA 2** (`col-start-2` no wrapper do plano —
+    pedido do dono do produto, 2026-08-05): cada um herda a largura do controle acima. Desde
+    2026-08-06 o slot da toolbar ocupa a coluna 1 e já deixaria o cursor na 2, mas a âncora
+    fica **explícita** — remover ou mover o slot puxaria os quatro filtros uma coluna à
+    esquerda em silêncio. **Só o primeiro item é posicionado à mão**; sub grupo,
+    grupo e centro de custo caem em 3, 4 e 5 pelo auto-placement, que nunca anda para trás.
+    Consequência aceita: o plano passou de 22,5rem para **11rem**, então descrição longa
+    ("Mercadorias para Revenda") trunca com reticências — é o preço de casar as larguras.
+    Travado em `Consulta.test.tsx` (template de tracks **+** ancoragem em `col-start-2`;
+    validado por mutante) — sem as duas asserções, mexer numa das pontas quebra o alinhamento
+    com o teste verde.
+  - 🔴 **Os controles NÃO levam `w-*`** — o `w-full` do `@utility input` preenche a célula e
+    os `.btn` são esticados pelo grid. "Mesma largura" é **estrutural** (uma declaração de
+    tracks), não dois `w-*` mantidos à mão em pontos distantes do arquivo.
+  - 🔴 **Tracks em comprimento explícito, NUNCA `1fr` cru:** `fr` tem mínimo `min-content`, e
+    o `min-content` de um `<select>` é a opção mais longa — as descrições de centro de custo
+    estourariam a coluna. Se precisar de `fr`, tem de ser `minmax(0, 1fr)`.
+  - 🔴 **O `overflow-x-auto` + `w-max` do wrapper não é cosmético:** grid não quebra,
+    transborda. Confinar o overflow ali faz as duas linhas rolarem JUNTAS (o alinhamento
+    sobrevive em tela estreita, ao contrário do `flex-wrap` anterior, que o destruía) e
+    impede que o scroll lateral vaze para a página — o container externo é `overflow-y-auto`,
+    cujo `overflow-x` computa para `auto`, e arrastar o `DataGrid` junto quebraria as colunas
+    fixadas (`position: sticky`). **Medido:** a grade pede no MÍNIMO **1672 px** (98rem de
+    tracks + 3,5rem de gaps + o `px-6` da página) — ou **~1880 px de viewport** com a sidebar
+    de 208 px; abaixo disso ela rola, acima ela preenche. As colunas 1 (busca/toolbar) e 2
+    (Empresa/plano) somam **42% da barra** e é nelas que está a folga, se um dia for preciso
+    caber em tela menor.
+  - **A célula vazia da coluna 6 da 2ª linha (sob "data inicial") NÃO tem spacer** — o
+    posicionamento é explícito pelas quatro âncoras acima. Spacer decorativo exigiria
+    `aria-hidden`, que vira violação `aria-hidden-focus` se um dia envolver algo focável.
+    (A da coluna 1 deixou de existir: é onde vivem os controles do grid.)
 - **FILTROS DEDICADOS de classificação contábil — 2ª linha da barra de `/consulta`
   (2026-08-04):** Plano de contas (por **descrição**, busca digitável), Sub grupo, Grupo e
-  Centro de custo. **Independentes** (combinados por AND, sem cascata) e aplicados no
-  **"Buscar"/Enter**, como Empresa/Tipo Documento/Situação. Entram em `ConsultaFilters` **e
-  em `BASE_FILTERS`** — é isso que faz "Limpar" e os cards de KPI zerá-los sem código
-  dedicado. A 1ª linha fica intacta: a busca genérica segue sendo o 1º e mais largo controle.
+  Centro de custo. **Independentes** (combinados por AND, sem cascata). Entram em
+  `ConsultaFilters` **e em `BASE_FILTERS`** — é isso que faz "Limpar" e os cards de KPI
+  zerá-los sem código dedicado. A busca genérica segue sendo o 1º e mais largo controle.
   - **Centro de custo é FK DIRETA** da fato (`cost_center_id=eq.N`, sem join). **Plano,
     grupo e subgrupo NÃO são colunas de `financial_account_control`** — vivem em
     `financial_chart_of_account`, e o filtro é em **recurso EMBUTIDO** do PostgREST
@@ -2785,6 +2960,185 @@ e-mails `status='falha'`, rebusca o corpo no IMAP, baixa o boleto pelo link e gr
   - **Limitação conhecida:** o sentinela id 0 ("não informado") **não é filtrável** — os três
     lookups o excluem. O código já o suporta (`!= null`, não truthy), então oferecê-lo é só
     mudar os lookups.
+  - 🔴 **O menu do `ChartAccountSelect` (variante filtro) sai por PORTAL** (`menuPortalTarget=
+    document.body`, 2026-08-05). A grade única acima vive num `overflow-x-auto`, e pelo CSS
+    `overflow-x: auto` com `overflow-y: visible` faz o **Y computar para `auto` também** — o
+    contêiner corta na vertical. O react-select renderiza o menu **inline**, logo abaixo do
+    controle, então ele nascia CLIPADO: nenhuma opção aparecia. Digitar o texto exato
+    "funcionava" apenas porque a opção invisível ficava focada e o Enter a escolhia — daí o
+    relato "só acha com o texto inteiro, e o grid não filtra". ⚠️ **Portal SÓ na variante
+    `filter`**: no `form` o select vive dentro de um `<dialog>` aberto por `showModal()`, que
+    pinta na **top layer** — portal para o body ficaria ATRÁS do modal, trocando um sumiço por
+    outro. **Nenhum teste de dado pega isto** (jsdom não faz layout); o guarda em
+    `Consulta.test.tsx` é ESTRUTURAL — a opção renderizada não pode ter ancestral
+    `.overflow-x-auto` —, com asserção de sanidade de que o contêiner existe na tela.
+  - 🔴 **O FILTRO oferece só os planos EM USO; o FORMULÁRIO, o cadastro inteiro**
+    (2026-08-05). São **fontes distintas por variante**, e não unificar é o ponto:
+    `variant='filter'` chama `listUsedChartAccountDescriptions` (`services/supabase.ts`) e
+    `variant='form'` segue em `listPlanoDescriptions` (Next API) — restringir o formulário ao
+    que já foi usado impediria justamente a PRIMEIRA conta de um plano novo. Medido: **611
+    planos cadastrados × 84 descrições distintas de fato em uso**; oferecer os outros 527 era
+    o que produzia grid vazio ao escolher um plano sem conta nenhuma.
+    - **A consulta é pelo lado do CADASTRO, com embed reverso `!inner`**
+      (`financial_chart_of_account?select=account_description,financial_account_control!inner(id)`),
+      nunca pelo lado do fato. O grão decide o volume: **85 linhas** (teto estrutural = as 611
+      do cadastro) contra **724** pelo caminho direto, que cresce a cada conta lançada.
+      `financial_account_control.limit=1` corta o array de filhos, que não é usado — 7,6 KB.
+    - 🔴 **Sem o `!inner` o embed vira LEFT JOIN e a consulta devolve o cadastro INTEIRO com
+      HTTP 200** — o filtro volta a oferecer plano sem conta e nada acusa. Mesma armadilha
+      silenciosa do filtro de classificação; travada por teste + mutante.
+    - 🔴 **Vive em `services/supabase.ts` (Supabase REST com o token do usuário), NÃO na Next
+      API:** lá a leitura é `service_role`, que ignora RLS — um usuário de grupo restrito
+      (`sees_only_own_accounts`) receberia opções que o grid dele não consegue mostrar. Com a
+      RLS valendo dentro do embed, o `!inner` recorta sozinho.
+    - **Busca GERAL, independente dos filtros em tela** (requisito): a consulta não leva
+      período nem situação, então a lista é a mesma em qualquer estado da barra. É paginada
+      (página de 1000, teto de 5) — o corte por "Max rows" volta 200 e sumiria opção sem erro.
+    - O sentinela id 0 continua fora (`account_description=not.is.null`), coerente com os
+      outros três filtros contábeis.
+  - 🔴 **A DIGITAÇÃO no `ChartAccountSelect` filtra em MEMÓRIA, não no servidor** (2026-08-05).
+    O catálogo inteiro (~610 linhas postáveis) vem numa requisição só, guardada num
+    `catalogRef` **por instância** (ref, não estado: a atribuição imediata faz duas chamadas
+    concorrentes — abrir o menu e já digitar — compartilharem a MESMA promessa). Antes cada
+    tecla disparava `?search=<termo>`: medido no dev server contra o cadastro real, **420 a
+    1160 ms por requisição, uma por caractere, com respostas fora de ordem** — e o react-select
+    descarta todas menos a da última emitida, então a lista só assentava quando o usuário
+    **parava** de digitar. Era o sintoma "o filtro não oferece os planos conforme digito; só
+    achando o texto inteiro". Ganho de brinde: o filtro local **ignora acento** (`\p{Diacritic}`),
+    o que o `ilike` do PostgreSQL não faz — "servicos" passa a achar "Serviços". **Trade-off
+    deliberado:** a busca por **código** do plano deixou de existir (o `or` do servidor casava
+    `account_code`); o código não é exibido na opção, então casar por ele devolvia uma
+    descrição que o usuário não tinha como conferir. A falha do carregamento **não** é
+    memoizada (mesma lição do `filterDefaults`). Guardas em `ChartAccountSelect.test.tsx`
+    travam a CONTAGEM (1 requisição, sem argumento) — `toHaveBeenCalled()` continuaria verde
+    com o defeito.
+  - 🔴 **O grid vazio NOMEIA o período em vigor** (`emptyGridMessage`). A mensagem antiga
+    ("ajuste os filtros e clique em Buscar") passou a mentir duas vezes com a aplicação
+    automática: o filtro **já** foi aplicado, e "Buscar" agora **alarga** o período. Como o
+    filtro auto-aplicado RESTRINGE dentro do mês em tela, um plano que existe no cadastro mas
+    não tem conta naquele mês devolve zero linhas — e sem nomear o período isso é
+    indistinguível de filtro quebrado. Medido: "Mercadorias para Revenda" tem **192** contas no
+    total e **60** em agosto/2026; "Cursos Profissionalizantes" existe no cadastro e **não tem
+    conta alguma**.
+- **DOIS seletores de data INDEPENDENTES em `/consulta` (2026-08-05):** `dateField` (linha
+  dos meses, 2 opções) governa **só** os botões de mês/ano; **`rangeDateField`** (seletor
+  próprio na grade, 3 opções — Emissão/Vencimento/**Pagamento**, default vencimento) governa
+  **só** o intervalo De/Até. Antes havia UMA variável servindo aos dois.
+  - 🔴 **`applyFinancialFilters` tem `rangeCol` e `periodCol` separados — não colapsar num
+    `rangeDateField ?? dateField`.** É o mutante que preserva todas as referências, passa em
+    typecheck e lint, e só se manifesta quando os dois divergem: a consulta responde **200
+    filtrando pela coluna errada** e a tela mostra um conjunto plausível. Travado pelo par de
+    testes de mão dupla em `supabase.test.ts` ("coluna de data do intervalo × do período") —
+    um teste de mão única continuaria verde.
+  - 🔴 **O `else if` mantém os dois ramos MUTUAMENTE EXCLUSIVOS** (intervalo tem precedência
+    sobre mês/ano). Virar `if` filtraria as duas colunas por AND, devolvendo quase sempre
+    vazio, sem erro.
+  - 🔴 **Com intervalo preenchido o seletor do PERÍODO fica SUSPENSO — e NÃO se desabilita
+    por isso** *(decidido no code review de 2026-08-07)*. Pela precedência acima, trocar
+    `dateField` com De/Até preenchidos não muda a consulta na hora, o que parece controle
+    quebrado. Desabilitá-lo foi a correção **considerada e rejeitada**: os botões de mês
+    **limpam `dateFrom`/`dateTo`** ao serem clicados, então `dateField` não é inútil, é
+    **diferido** — é a coluna que passa a valer no MESMO clique que limpa o intervalo, e
+    bloquear o seletor obrigaria a apagar as datas antes de poder escolher a coluna. A saída
+    foi de LEGIBILIDADE: nome acessível "Tipo de data **do período**" +
+    `aria-describedby` (`PERIOD_DATE_FIELD_HINT`) explicando a suspensão, mesmo padrão do
+    seletor do intervalo. Antes de "consertar" um controle que parece inerte nesta tela,
+    verifique se ele é inútil ou apenas diferido.
+  - 🔴 **`rangeDateField` mora em `BASE_FILTERS`**, não só em `initialFilters()` — é o que
+    mantém o card "A vencer em 7 dias" sobre **vencimento** mesmo com "Pagamento" escolhido
+    antes do clique (o spread de `allPeriodFilters()` reseta primeiro).
+  - 🔴 **O `aria-label`/`title` dos campos De/Até deriva de `rangeDateField`**, via
+    `RANGE_DATE_FIELD_LABEL` (um `Record`, não ternário: com 3 valores, um ternário rotularia
+    `payment_date` como "Emissão"). Derivá-lo de `dateField` faria o leitor de tela anunciar
+    "Vencimento — data inicial" com a consulta usando `payment_date` — erro mudo que nenhuma
+    asserção de dado pega.
+  - **Ressalvas de DADO expostas ao usuário:** `payment_date` é NULL em toda conta não paga (o
+    intervalo por pagamento descarta o que está em aberto — combinado com Situação "a vencer" dá
+    **0 linhas sem erro**), e nas contas pagas antes da migration 096 o backfill gravou o
+    VENCIMENTO. Não há dado real alternativo no banco.
+    - 🔴 **A ressalva vive em `aria-describedby` + `<span class="sr-only">`, não só no `title`**
+      (2026-08-05). `title` não aparece no toque, não é focável e, com `aria-label` presente,
+      não é anunciado de forma confiável — a informação que explica as 0 linhas ficava invisível
+      para teclado e leitor de tela. ⚠️ **`toHaveAccessibleDescription` NÃO trava isso**: sem
+      `aria-describedby`, o próprio `title` vira a descrição acessível computada, e a asserção
+      segue **verde com a ligação removida** (medido por mutante). O guarda tem de ler o
+      ATRIBUTO, resolver o id e conferir o texto do elemento apontado — é o que
+      `Consulta.a11y.test.tsx` faz.
+  - **Sem De/Até preenchidos o seletor é um no-op** — consequência inerente de o intervalo só
+    existir quando há datas. É deliberado, não defeito.
+- **BUSCA AUTOMÁTICA: portão único de aplicação em `/consulta` (2026-08-05).** Todo filtro
+  aplica sozinho, sem clicar em "Buscar" — via `queueApply(patch)`, que escreve em `f` na hora
+  e acumula o patch num **estado** `pendingApply`, descarregado em `applied` por um efeito com
+  janela de **300 ms**.
+  - 🔴 **Aplicar direto no `onChange` de cada controle é a regressão a evitar:** um apply
+    dispara 3 requisições (grid + "Valor total" + contagem), então compor um filtro de 7
+    controles daria ~21; e `<select>` nativo no Firefox/Windows emite `change` a **cada opção
+    percorrida com as setas**, multiplicando por opção. Travado por
+    `toHaveBeenCalledTimes(1)` para 3 mudanças rápidas (validado por mutante: sem a janela,
+    3 consultas). O guarda usa **`fireEvent`, não `userEvent`**: `selectOptions` custa ~90 ms
+    e a janela é de 300 ms, então com `userEvent` o teste dependia de vencer uma corrida
+    contra tempo real — vermelho espúrio sob carga, medindo velocidade em vez de coalescência.
+  - **Trocar `rangeDateField` com De/Até vazios refaz as 3 requisições para o mesmo conjunto —
+    e isso fica assim DE PROPÓSITO.** Evitar exigiria não agendar o apply e deixar
+    `applied.rangeDateField` **atrasado** em relação a `f.rangeDateField`, caindo em sincronia
+    só quando o intervalo fosse preenchido. É inobservável hoje (com o intervalo vazio a coluna
+    nunca é lida), mas cria um invariante de estado defasado que morde o primeiro consumidor
+    futuro de `applied.rangeDateField` — rótulo de cabeçalho, coluna de CSV. Três requisições
+    num controle pouco tocado não pagam esse risco.
+  - 🔴 **O pendente é ESTADO, não ref** — com refs, a leitura dentro dos handlers entrava na
+    cadeia `cards → onCardClick` construída no render e caía em `react-hooks/refs`. O timer é
+    propriedade do efeito, cujo cleanup o cancela no desmonte **e** quando um caminho síncrono
+    (Buscar/Limpar/card/período) zera o pendente.
+  - **Auto-aplicar RESTRINGE dentro do período em tela**; só o "Buscar" alarga — um botão
+    "Buscar" que troca "Junho" por "todas as datas" sem avisar seria surpreendente. O rótulo
+    visível segue **"Buscar"** (copy de produto) e o **nome acessível o CONTÉM**, como exige a
+    **WCAG 2.5.3 (Label in Name)**; só o `title` deixava a mudança de escopo invisível para
+    teclado e leitor de tela. O Enter foi **removido dos campos de data**, onde passaria a
+    significar "alargar o período"; segue só na busca textual.
+    - 🔴 **O nome acessível é DINÂMICO (`searchButtonName`), porque o efeito é** *(achado do
+      code review de 2026-08-07)*. Sem intervalo → **"Buscar em todos os meses e anos"** (o
+      clique zera mês/ano). **Com** intervalo De/Até preenchido → **"Buscar mantendo o
+      intervalo de datas"**: o período já está global (defini-lo zera mês/ano) e o intervalo é
+      **preservado**, então a frase antiga — "em todos os períodos" — era **falsa** justamente
+      nesse estado, com a consulta seguindo restrita às datas digitadas. Limpar o intervalo no
+      clique foi a alternativa **descartada**: seria perda silenciosa de entrada do usuário, e
+      quem digitou datas e clica em "Buscar" por hábito perderia o recorte. O guarda a11y cobre
+      **os dois estados** — um caso só deixaria a metade não exercitada livre para mentir.
+  - 🔴 **Instrução na tela e nome acessível do botão citam a MESMA ação, e há guarda cruzada.**
+    A mensagem do grid vazio manda "usar Buscar para procurar em todos os meses e anos", que é
+    o nome acessível do botão sem o verbo — se os dois divergirem, a instrução aponta para um
+    botão que "diz" outra coisa a quem usa leitor de tela. O teste do grid vazio **compara a
+    mensagem com o `aria-label` do próprio botão** em vez de repetir a frase.
+    ⚠️ **Foi aqui que um teste verde escondeu a divergência** *(lição de 2026-08-07)*: o caso
+    se chamava "nomeia o mês em vigor **e aponta o caminho de alargar**" e asseverava só a
+    primeira metade — reescrever a segunda frase da mensagem passava com a suíte inteira verde.
+    É exatamente o defeito da Regra 2; a pergunta que o encontra continua sendo *"o que
+    aconteceria se eu quebrasse isto de propósito?"*.
+  - **Definir De/Até limpa mês/ano** (a precedência do serviço os ignoraria, e o mês aceso
+    mentiria); **apagar as duas datas DESFAZ isso**, devolvendo o período que estava
+    selecionado — sem esse caminho de volta o usuário fica preso em escopo global, com toda a
+    base e nenhum mês em destaque.
+    - 🔴 **O caminho de volta guarda o VALOR anterior (`periodBeforeRange`), não um booleano
+      nem um default fixo** (2026-08-05). Duas coisas dependem disso, e as duas foram defeito
+      real durante a implementação: (1) restaurar `nowRef` mandava para o mês CORRENTE quem
+      navegava em Março — o desfazer tem de devolver o que havia; (2) condicionar o restauro ao
+      **estado** do período (`month == null`) e não ao **fato** de o intervalo o ter zerado fazia
+      quem chegou ao escopo global de propósito (card de KPI, "Buscar") ter a consulta
+      **estreitada em silêncio ao mês corrente, com o card ainda aceso** — bastava digitar e
+      apagar uma data. `periodBeforeRange` nulo = "não fui eu que zerei" e é o que impede o
+      restauro; `resetFilterGate` o zera nos quatro caminhos síncronos. Travado por dois testes
+      em `Consulta.test.tsx` (mês distinto do corrente por deslocamento; card ativo), ambos
+      validados por mutante.
+  - **`activeCard`** é preservado quando o filtro apenas restringe e limpo quando o usuário
+    mexe no campo que o card possui (`statusId`; e o intervalo quando o card é `avencer7`).
+  - **`refreshStats` saiu do efeito de `applied`**: `getFinancialStats()` é global por design
+    (não lê filtro) e puxa até 1000 linhas — refazê-lo a cada apply era desperdício, e com a
+    aplicação automática seria desperdício multiplicado. Os pontos que MUDAM dado já o chamam.
+  > ⚠️ **Teste de "não consulta" com `flush()` (0 ms) é falso guarda** — foi o que aconteceu
+  > aqui: o caso "escolher o filtro NÃO consulta antes do Buscar" continuou **VERDE** depois
+  > de a aplicação automática entrar, porque `flush()` não alcança a janela de 300 ms; ele
+  > media "ainda não consultou NESTE instante". Guarda de ausência com debounce no meio exige
+  > avançar o tempo, não um tick.
 - **`/consulta` — `cancelado` aparece no GRID, mas NÃO nos KPIs (mudança 2026-06-25):** a regra
   antiga ocultava cancelado em tudo; agora o **grid mostra canceladas** por padrão e os **KPIs as
   excluem** (para o "Valor total"/"Total de registros" não somar cancelado e gerar confusão). Como
@@ -2949,8 +3303,67 @@ local/agendada (ver flag `EMAIL_READER_ENABLED` acima e memória [[vercel-deploy
 ## Banco de dados (Supabase)
 
 Migrations em `supabase/migrations/`, aplicadas **manualmente no SQL Editor** (ou via Supabase
-MCP — ver a nota de cada uma) em ordem numérica (`001` → `109`). **Próxima migration = `110`**
+MCP — ver a nota de cada uma) em ordem numérica (`001` → `110`). **Próxima migration = `111`**
 (verificar sempre antes de criar nova).
+
+**A `110` troca a IDENTIDADE do SENTINELA de autoria** — `teste@otimotex.com.br` →
+`financeiro@otimotex.com.br` (aplicada via Supabase MCP em 2026-08-07, idempotente). Ver
+"Substituição do sentinela de autoria" abaixo. Reescreve os **4 DEFAULT** (`created_by`,
+`updated_by`, `status_changed_by` e `financial_account_attachment.uploaded_by`) e o **fallback
+embutido em `resolve_user_for_account()`**. 🔴 **Os quatro DEFAULT e a RPC são independentes:
+trocar só um deixa o sistema meio-migrado sem nenhum erro.** A RPC é a mais perigosa — ela
+devolve o UUID do sentinela quando o remetente não casa usuário, e o reader grava esse retorno
+em `created_by`; com o usuário antigo apagado e a RPC intocada, **todo INSERT de conta de
+remetente desconhecido violaria a FK** e o pipeline pararia de gravar, com o sintoma longe da
+causa.
+
+> **Substituição do sentinela de autoria (2026-08-07) — o mapa completo.** A identidade aparece
+> em **cinco** camadas independentes; migrar uma e esquecer outra não gera erro:
+>
+> | # | Onde | Como foi tratado |
+> |---|---|---|
+> | 1 | 3 DEFAULT em `financial_account_control` | migration 110 |
+> | 2 | DEFAULT de `financial_account_attachment.uploaded_by` | migration 110 — **é o que quase passou batido**: o inventário inicial contou 3 defaults, não 4 |
+> | 3 | fallback de `resolve_user_for_account()` | migration 110 |
+> | 4 | `SENTINEL_AUTHOR_ID`/`_EMAIL` no frontend | `src/lib/sentinelAuthor.ts` (extraído de `Consulta.tsx`, que exporta componente e dispararia `react-refresh/only-export-components`) |
+> | 5 | os DADOS já gravados | UPDATE à parte, fora da migration |
+>
+> 🔴 **O guarda que impede a 4 divergir da 1/2/3 é `src/lib/sentinelAuthor.test.ts`** — ele lê a
+> **migration mais recente** que define o DEFAULT (não uma constante repetida) e compara com a
+> do bundle, mais os 4 DEFAULT entre si e o fallback da RPC. Divergir não quebra nada: a tela
+> só deixa de reconhecer o sentinela e passa a exibir "Última edição por: &lt;e-mail&gt;" em
+> centenas de contas que ninguém editou — erro de dado plausível e silencioso. Validado por
+> mutante (constante de volta ao UUID antigo → 3 vermelhos).
+>
+> 🔴 **Migração de DADOS de autoria roda com as triggers CONTIDAS e prova por HASH.** Um
+> `UPDATE` comum dispara `trg_fe_updated_at`, que grava `updated_at = NOW()`
+> **incondicionalmente** — 293 contas apareceriam como editadas naquele dia. O procedimento:
+> `ALTER TABLE … DISABLE TRIGGER USER` → UPDATE → `ENABLE` → comparar `md5` do conteúdo (todas
+> as colunas **menos** a que se migra), tudo num `DO` block **atômico** que levanta exceção se
+> os hashes diferirem (rollback devolve as triggers). Congele o conjunto por **id** quando o
+> predicado de destino não reproduzir as mesmas linhas depois do UPDATE. As outras 4 triggers
+> foram medidas como no-op para o conjunto (`status_id`, `sk_company`, `payment_date`), mas
+> desligar todas remove a dependência de a medição seguir válida no instante da escrita.
+>
+> ✅ **CONCLUÍDO em 2026-08-07: o `teste@otimotex.com.br` foi APAGADO.** A ordem foi o que
+> tornou isso seguro, e ela vale como receita para o próximo caso:
+>
+> 1. **A dependência não-óbvia era o CI.** O secret `A11Y_TEST_EMAIL` logava com esse usuário
+>    a cada PR — correlação medida: login em 2026-08-05 09:13 UTC, 8 min antes do merge do PR
+>    #217. Apagar antes de trocar o secret derrubaria o `a11y.yml` em todo PR seguinte.
+>    ⚠️ **O `financeiro@` NÃO servia de substituto no CI**: tinha `password_changed = null`, e o
+>    1º login cairia em `/auth/change-password` — teria trocado uma quebra por outra. Foi criado
+>    o usuário dedicado `teste-a11y@sheild.app.br` (ver o bloco do workflow a11y acima).
+> 2. **Exclusão pela Admin API** (`DELETE /auth/v1/admin/users/{id}`), nunca `DELETE` em
+>    `auth.users`: é o caminho suportado e o que mantém `auth.identities`/`sessions`
+>    consistentes — mesma razão da regra de troca de e-mail. Verificado depois: 0 identities e
+>    0 sessions órfãs; a linha em `user_profile` sumiu sozinha (`ON DELETE CASCADE`).
+> 3. 🔴 **A prova que vale é FUNCIONAL, não a contagem de referências.** Zerar os `count(*)`
+>    não demonstra que o pipeline continua gravando. O teste decisivo foi abrir transação,
+>    inserir uma conta com `created_by = resolve_user_for_account('<remetente desconhecido>')`
+>    — exatamente o caminho que cai no sentinela e que violaria a FK se a RPC ainda apontasse
+>    para o usuário apagado — e desfazer com `ROLLBACK`. **Repita esse ensaio** antes de dar
+>    por concluída qualquer remoção de usuário referenciado por DEFAULT ou por função.
 
 **A `109` impede o E-MAIL de SEQUESTRAR o fornecedor** (aplicada via Supabase MCP em 2026-08-03,
 idempotente) — ver "E-mail de PLATAFORMA não identifica fornecedor" em "Auto-resolução de
@@ -3240,7 +3653,8 @@ trigger `trg_fac_authorship` (`fn_stamp_account_authorship`, SECURITY DEFINER �
 exibir o autor. A **076**
 (**Etapa 1 — visibilidade de contas por DONO, por grupo** — ver "Visibilidade de contas por dono"):
 adiciona `financial_account_control.created_by` (UUID → `auth.users`, NOT NULL DEFAULT sentinela
-`teste@otimotex.com.br`, FK `ON DELETE SET DEFAULT`) + backfill via `sender_email`; flag
+— `teste@otimotex.com.br` à época; **hoje `financeiro@otimotex.com.br`, ver migration 110** —,
+FK `ON DELETE SET DEFAULT`) + backfill via `sender_email`; flag
 `user_group.sees_only_own_accounts` (Comercial=6 → true); RPC `resolve_user_for_account(p_email)`
 (service_role); helper `auth_group_sees_only_own()`; e troca a policy SELECT de
 `financial_account_control` para `NOT auth_group_sees_only_own() OR created_by = auth.uid()`
@@ -3382,7 +3796,7 @@ internet` ao CHECK de `document_type` e faz backfill — ver "Normalização de 
 | Tabela | Propósito |
 |---|---|
 | `email_control` | Dedup/controle. `status` ∈ (`extraído`, `recebido`, `pendente`, `falha`, `ignorado`, `duplicidade`) — **migrations 022/031**. `extraído`=PDF extraído (CSV gerado); `recebido`=sem PDF, conta via corpo; `pendente`=PDF salvo sem CSV (substitui `baixado`); `falha`=casou keyword mas sem PDF e sem conta no corpo; `ignorado`=não-financeiro (sem keyword) **ou NF-e pura sem conta a pagar** (`subject_is_pure_nfe`); `duplicidade`=pagável do corpo duplica conta já registrada por outro e-mail (**migration 031**; card/filtro próprios em `/emails`). O status é calculado em `process_message` pelo resultado real (conta/CSV/corpo/duplicata), não por `pdf_extracted`. **Visibilidade por REMETENTE (migration 078):** a policy SELECT (`authenticated`) filtra por `lower(sender_email)=lower(auth.email())` quando o grupo do usuário tem `sees_only_own_accounts` (Comercial) — `/emails` mostra só os e-mails de que o usuário é remetente; demais grupos veem tudo; `service_role` com bypass. **Corpo (migrations 105/106 — Onda 2):** `body_preview` segue TRUNCADO em 500 chars (é o preview da tela) e **`body_full`** guarda o corpo INTEIRO — não unificar os dois. **`body_search`** é `tsvector` GERADO de assunto+corpo (`to_tsvector('portuguese'::regconfig, left(…, 100000))` — regconfig explícito porque a versão de 1 argumento é STABLE; o `left` é teto contra o limite de 1 MB do tsvector, que **quebraria o INSERT**), com índice GIN e a tool `analytics.buscar_emails`. `body_full` **NULL significa "ainda não temos o corpo"** (e-mail antigo com preview truncado, ou sem keyword — que nem tem o corpo baixado), distinto de string vazia. **A Onda 4 recuperou 70 dos 506 candidatos (2026-08-03); os 436 restantes são IRRECUPERÁVEIS** — os e-mails já não estão na INBOX, e não há segunda passada que os traga. `authenticated` NÃO grava nessas colunas (o UPDATE dele é restrito a `reviewed_at`) |
-| `financial_account_control` | Tabela principal de contas a pagar — uma linha por documento; alimentada pelo pipeline de e-mail **e** por CRUD manual (baixas, consolidações, dashboards). Substitui a antiga `financial_emails` (dropada na migration 020). O fornecedor é referenciado **só pela FK `sk_supplier`** (surrogate key snowflake, NOT NULL — **migration 042**, antes era `supplier_id`) — nome/CNPJ vêm do JOIN com `supplier` (colunas denormalizadas dropadas na **migration 041**). Tem `sender_email` (migration 023; backfill em 025) usado na resolução p/ alinhar `supplier.email`, e `subject` (migration 025) — exibidos/buscados em `/consulta`. **Classificação contábil** (migrations 047/048): `cost_center_id`/`chart_account_id` SMALLINT, NOT NULL DEFAULT 0 (FKs para os cadastros; id 0 = "não informado") — preenchidos no CRUD manual (cascata centro→plano). **Autoria** (migrations 076/077): `created_by` (DONO — base da visibilidade por dono), `updated_by`, `status_changed_by`, `status_changed_at` — UUID → `auth.users`, NOT NULL DEFAULT sentinela `teste@otimotex.com.br`, carimbados pelo servidor/trigger `trg_fac_authorship` (ver "Visibilidade de contas por dono" / "Auditoria de autor"). **`payment_date`** (DATE, migration 096): **a data de pagamento da conta** — carimbada pela trigger `trg_fac_payment_date` ao entrar em `status_id = 8` e limpa ao sair; escrita SÓ pela trigger (fora do grant de coluna de `authenticated` e do schema Zod de escrita). Usar como data de pagamento sem ressalva; a auditoria estrutural e o limite do histórico (backfill da 096 = vencimento) estão no bloco da 096 acima. 🔴 **`competence_date` é TEXT no formato `YYYY-MM` (mês de competência) e NUNCA deve ser convertida para DATE** — `'2026-06'::date` é erro de sintaxe, e o formato é contrato de 3 camadas (prompt do Claude em `extract_pdf.py`, template do CSV, schema Zod); converter faria **todo INSERT do reader falhar**. A coluna derivada `competence_month` está planejada na Onda 6 do roadmap de enriquecimento, com `to_date` blindado por regex |
+| `financial_account_control` | Tabela principal de contas a pagar — uma linha por documento; alimentada pelo pipeline de e-mail **e** por CRUD manual (baixas, consolidações, dashboards). Substitui a antiga `financial_emails` (dropada na migration 020). O fornecedor é referenciado **só pela FK `sk_supplier`** (surrogate key snowflake, NOT NULL — **migration 042**, antes era `supplier_id`) — nome/CNPJ vêm do JOIN com `supplier` (colunas denormalizadas dropadas na **migration 041**). Tem `sender_email` (migration 023; backfill em 025) usado na resolução p/ alinhar `supplier.email`, e `subject` (migration 025) — exibidos/buscados em `/consulta`. **Classificação contábil** (migrations 047/048): `cost_center_id`/`chart_account_id` SMALLINT, NOT NULL DEFAULT 0 (FKs para os cadastros; id 0 = "não informado") — preenchidos no CRUD manual (cascata centro→plano). **Autoria** (migrations 076/077): `created_by` (DONO — base da visibilidade por dono), `updated_by`, `status_changed_by`, `status_changed_at` — UUID → `auth.users`, NOT NULL DEFAULT sentinela (hoje `financeiro@otimotex.com.br` — migration 110), carimbados pelo servidor/trigger `trg_fac_authorship` (ver "Visibilidade de contas por dono" / "Auditoria de autor"). **`payment_date`** (DATE, migration 096): **a data de pagamento da conta** — carimbada pela trigger `trg_fac_payment_date` ao entrar em `status_id = 8` e limpa ao sair; escrita SÓ pela trigger (fora do grant de coluna de `authenticated` e do schema Zod de escrita). Usar como data de pagamento sem ressalva; a auditoria estrutural e o limite do histórico (backfill da 096 = vencimento) estão no bloco da 096 acima. 🔴 **`competence_date` é TEXT no formato `YYYY-MM` (mês de competência) e NUNCA deve ser convertida para DATE** — `'2026-06'::date` é erro de sintaxe, e o formato é contrato de 3 camadas (prompt do Claude em `extract_pdf.py`, template do CSV, schema Zod); converter faria **todo INSERT do reader falhar**. A coluna derivada `competence_month` está planejada na Onda 6 do roadmap de enriquecimento, com `to_date` blindado por regex |
 | `financial_cost_center` / `financial_chart_of_account` | **Cadastros de classificação contábil** (pré-existentes, **preservados em limpezas**) usados como lookup no modal de contas. `financial_cost_center` é **gerenciado pelo CRUD de centros de custo** (`/tabelas/centros-de-custo` — PK `cost_center_id` SMALLINT IDENTITY ALWAYS; id 0 = sentinela "não informado", fora do CRUD; ver "CRUD de centros de custo"). `financial_chart_of_account` (também gerenciado pelo **CRUD de Plano de contas** — `/tabelas/plano-de-contas`) tem `cost_center_id` (relaciona o plano ao centro — base da CASCATA), `chart_account_subgroup_id` (FK → subgrupo) e `is_postable` (só os postáveis são lançáveis). Os cadastros `financial_bank`, `financial_account`, `financial_chart_of_account_group` e `financial_chart_of_account_subgroup` também ganharam CRUD próprio (grupo Tabelas — ver "CRUDs dos demais cadastros contábeis"). Lidos via `lib/lookups.ts` (service_role) **e** pelo frontend via embed REST (papel `authenticated`); RLS habilitado com policy de SELECT `TO authenticated` (migration 049 — sem ela o embed voltava null e a UI mostrava `#id`) |
 | `email_processing_errors` | Log de falhas com `raw_payload` JSON. **Visibilidade por REMETENTE (migration 078):** policy SELECT (`authenticated`) filtra por `lower(sender_email)=lower(auth.email())` para grupo com `sees_only_own_accounts` (Comercial) — `/erros` mostra só os erros de que o usuário é remetente; demais veem tudo; `service_role` com bypass |
 | `financial_account_attachment` | **Anexos (N) de uma conta** (migration 079) — PADRÃO ÚNICO das duas origens: `origin='pipeline'` (documento do e-mail; espelha `financial_account_control.source_file`, gravado pelo reader) e `origin='manual'` (upload do usuário no cadastro/edição). `storage_key` = chave CRUA do objeto no bucket `attachments` (pipeline: nome flat; manual: `manual/{conta}/…`). **Soft delete** (`deleted_at`/`deleted_by`) — o objeto FICA no bucket; anexo `pipeline` é irremovível (auditoria → 403). UNIQUE `(account_id, storage_key)`; **não** UNIQUE global (um PDF com N boletos gera N contas que COMPARTILHAM o objeto). RLS SELECT herda a visibilidade da conta pai (076) via `EXISTS`; escrita só `service_role`. Ver "Anexos de conta" |

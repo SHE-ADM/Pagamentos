@@ -598,7 +598,7 @@ vincular por usuário. Hoje o único vínculo do usuário é `user_profile.group
 **Visibilidade de contas por DONO, por grupo (Etapa 1 APLICADA — migration 076):** primeira
 dimensão de visibilidade por linha efetivamente em produção (independente do blueprint acima, que é
 por empresa/centro/plano). Cada `financial_account_control` tem **`created_by`** (UUID → `auth.users`,
-NOT NULL DEFAULT sentinela `teste@otimotex.com.br` `fe8d268d-…`, FK `ON DELETE SET DEFAULT`) = o DONO.
+NOT NULL DEFAULT sentinela `financeiro@otimotex.com.br` `89ce3055-…` (era `teste@otimotex.com.br` até a migration 110), FK `ON DELETE SET DEFAULT`) = o DONO.
 **Preenchimento (server-side, nunca do corpo do cliente):** UI nova conta → Next API carimba o
 usuário logado (`getAuthenticatedUser(req).id`, `contaService.create(raw, userId)` em `lib/contas.ts`;
 POST usa `getAuthenticatedUser`, não `requireAuth`); extração → `SupabaseControl.resolve_user(sender_email)`
@@ -669,7 +669,7 @@ id→e-mail, grant de **SELECT** para `authenticated`, usuários internos; a ESC
 `auth.users`: ver "ESCALADA DE PRIVILÉGIO pela view `app_user`"). `created_by`/`updated_by`/
 `status_changed_by`/`status_changed_at` estão no schema de LEITURA de `@sheild/shared` (nunca no
 input — carimbados pelo servidor/trigger). **"Última edição por" e "Situação alterada por" são
-OMITIDOS quando o autor é o SENTINELA** (`teste@otimotex.com.br` / UUID `fe8d268d-…`, o DEFAULT de
+OMITIDOS quando o autor é o SENTINELA** (`financeiro@otimotex.com.br` / UUID `89ce3055-…` desde a migration 110, o DEFAULT de
 `updated_by`/`status_changed_by`) — não representam uma edição de um usuário real (`isSentinelAuthor`
 em `Consulta.tsx`, checa por UUID e por e-mail resolvido). "Criado por" permanece sempre.
 
