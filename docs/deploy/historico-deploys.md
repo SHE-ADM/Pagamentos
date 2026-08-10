@@ -21,6 +21,21 @@ ausente, ela recai nas impressões 2/3 (documento+valor, valor+vencimento), que 
 **Sem** `.env` obrigatório (`VISION_MAX_TOKENS` tem default 8000), **sem** dependência nova,
 **sem** migration, **sem** `setup-*-task.ps1`.
 
+**Implantado em produção em 2026-08-10** (informado pelo operador), a partir do merge do PR #219
+em `main` (`3f9e87c`). O que foi para a máquina inclui uma **terceira** correção da mesma onda, que
+não estava na entrega original de 07/08 e veio do code review: o `EXTRACTION_PROMPT` é
+**compartilhado** pelos dois caminhos, então o modelo passou a devolver ARRAY também no `pdf_text`
+— onde ele caía num `except` genérico e virava **1 conta de regex marcada como sucesso**, perdendo
+os demais pagáveis. Ou seja, a correção do multi-boleto reintroduziu, pela outra porta, exatamente
+a perda silenciosa que existia para matar. Hoje `_build_records_text` detecta ≥2 itens e devolve
+`_failure_record`, que cai no fallback tier-2 (Vision). **Lição:** ao ensinar UM caminho a consumir
+um formato novo de resposta, verifique quem mais recebe o mesmo prompt.
+
+SHA-256 dos três arquivos nesta versão (conferíveis na máquina de produção):
+`read_emails.py` `bc7c89a1…76aa0a7` · `extract_pdf.py` `0b3afd8f…602654586` ·
+`febraban.py` `1ccb90f8…4666bcb1ce`. A fonte da verdade do estado continua sendo
+`py -3 scheduler\check_deploy_parity.py` **executado em produção** (exit 0 = paridade).
+
 **Lições não-óbvias:**
 
 - **`stop_reason` ignorado torna o truncamento invisível.** A resposta cortada no teto de tokens
