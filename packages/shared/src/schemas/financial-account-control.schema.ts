@@ -68,6 +68,30 @@ export const EXTRACTION_SOURCES = [
   'falha',
 ] as const;
 
+/**
+ * Confiança ORDINAL da extração, derivada de `extraction_source` pela coluna gerada
+ * `extraction_confidence` (migration 112). O eixo é PROVENIÊNCIA, não probabilidade:
+ *
+ *   alta         `pdf_text`      — texto digital do PDF, determinístico, sem OCR no caminho
+ *   media        `email_body`    — parsing de texto livre; o layout varia por remetente
+ *   baixa        `pdf_vision` / `image_vision` — leitura VISUAL (origem dos 18 barcodes
+ *                                corrompidos achados em 2026-08-07)
+ *   manual       `extraction_source` NULL — digitado por pessoa no CRUD
+ *   desconhecida `falha` e qualquer valor futuro que o CASE da 112 não mapeie
+ *
+ * Nunca virar número: um `0.85` sugeriria uma calibração que ninguém mediu e convidaria a
+ * tirar média de uma escala inventada. `desconhecida` acima de zero significa que
+ * `EXTRACTION_SOURCES` ganhou valor novo e o CASE da migration não acompanhou — a guarda G5
+ * de tests/test_onda6_campos_derivados.py trava essa correspondência.
+ */
+export const EXTRACTION_CONFIDENCES = [
+  'alta',
+  'media',
+  'baixa',
+  'manual',
+  'desconhecida',
+] as const;
+
 export const PAYMENT_METHODS = [
   'boleto',
   'pix',
@@ -108,6 +132,7 @@ export const ACCOUNT_STATUSES = [
 
 export const documentTypeSchema = z.enum(DOCUMENT_TYPES);
 export const extractionSourceSchema = z.enum(EXTRACTION_SOURCES);
+export const extractionConfidenceSchema = z.enum(EXTRACTION_CONFIDENCES);
 export const paymentMethodSchema = z.enum(PAYMENT_METHODS);
 // ACCOUNT_STATUSES/AccountStatus (nomes) seguem para labels/mapa id↔nome; a situação da
 // conta é gravada/lida por status_id (fonte única — a coluna `status` texto foi removida
@@ -246,6 +271,35 @@ export const financialAccountControlSchema = z.object({
   // semânticas no CLAUDE.md antes de usá-la como caixa realizado.
   payment_date: z.string().nullable(),
 
+  // ── Derivadas (Onda 6) — colunas GERADAS no banco, SÓ LEITURA ───────────────────
+  // Todas são `GENERATED ALWAYS AS ... STORED`: o PostgreSQL RECUSA qualquer INSERT/UPDATE
+  // que as cite (SQLSTATE 428C9). Por isso estão no .omit() do inputSchema — ali não é
+  // higiene, é o que impede um write path futuro de quebrar a gravação. A guarda G1 de
+  // tests/test_onda6_campos_derivados.py trava essa correspondência lendo as migrations.
+
+  // Primeiro dia do mês de competência, derivado de competence_date (TEXT 'YYYY-MM',
+  // migration 112). NULL quando a competência é nula ou não casa o padrão — hoje ~13% das
+  // contas têm competência preenchida. NUNCA cai para due_date: competência é declaração
+  // contábil, vencimento é caixa.
+  competence_month: z.string().nullable(), // DATE (ISO)
+
+  // payment_date - due_date, em dias (migration 112). NULL enquanto não paga. NEGATIVO é
+  // pagamento antecipado — 13 contas na medição de 2026-08-10 — e não deve ser normalizado
+  // para zero. NÃO é DPO: nas contas pagas antes da 096 o payment_date veio do backfill
+  // (= vencimento) e produz 0 artificial.
+  days_late: z.number().int().nullable(),
+
+  // Confiança ORDINAL derivada de extraction_source (migration 112). Texto, nunca número:
+  // o eixo é proveniência, não probabilidade calibrada.
+  extraction_confidence: extractionConfidenceSchema,
+
+  // Ordinal da parcela e documento-base do carnê (migrations 113/114). NULL quando o
+  // invoice_number não é INEQUIVOCAMENTE parcela — 21 dos 40 candidatos da base são
+  // nosso-número. NÃO existe "total de parcelas": o total não está na origem; para isso
+  // use analytics.parcelamentos(), que devolve o observado e as parcelas faltando.
+  installment_number: z.number().int().nullable(),
+  installment_base: z.string().nullable(),
+
   // Financeiro
   amount: money.nullable(),
   currency: z.string().default('BRL'),
@@ -361,6 +415,15 @@ export const financialAccountControlInputSchema = financialAccountControlSchema.
   // aqui garante que ela siga não-gravável em qualquer write path futuro que use este
   // schema direto. `authenticated` também não tem grant de coluna nela.
   payment_date: true,
+  // Derivadas da Onda 6 (migrations 112/114). Aqui o omit NÃO é só higiene: as cinco são
+  // colunas GENERATED, e o PostgreSQL RECUSA com 428C9 qualquer INSERT/UPDATE que as cite.
+  // O .pick() de manualEdit já as deixaria de fora, mas quem gravar por este schema direto
+  // no futuro quebraria a escrita — inclusive a do pipeline.
+  competence_month: true,
+  days_late: true,
+  extraction_confidence: true,
+  installment_number: true,
+  installment_base: true,
   supplier: true,
   company: true,
   cost_center: true,
@@ -438,5 +501,7 @@ export type FinancialAccountControlCreate = z.infer<typeof financialAccountContr
 export type FinancialAccountControlUpdate = z.infer<typeof financialAccountControlUpdateSchema>;
 export type DocumentType = (typeof DOCUMENT_TYPES)[number];
 export type ExtractionSource = (typeof EXTRACTION_SOURCES)[number];
+// ts-prune-ignore-next
+export type ExtractionConfidence = (typeof EXTRACTION_CONFIDENCES)[number];
 export type PaymentMethod = (typeof PAYMENT_METHODS)[number];
 export type AccountStatus = (typeof ACCOUNT_STATUSES)[number];

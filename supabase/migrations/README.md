@@ -164,3 +164,15 @@ As migrations `001 → 061` são aplicadas **manualmente no SQL Editor do Supaba
    (047) e `fk_supplier_cost_center`/`fk_supplier_chart_account` (052) não declaram `ON DELETE`
    → `NO ACTION`, cujo efeito **equivale a RESTRICT** (sem deferição): bloqueiam excluir um
    cadastro em uso. O backend também valida e devolve `409`. Documentado via `COMMENT ON` na `055`.
+
+5. **Onda 6 — migrations 111 a 115 (campos derivados).** Todas idempotentes; as **111 e 113 têm
+   bloco `DO $$` que ABORTA** se a própria regra que elas definem não reproduzir os vetores de
+   conferência (Páscoa/feriados na 111; a amostra real de `invoice_number` na 113). Reaplicá-las é
+   no-op, mas uma reaplicação que falhe no `DO $$` significa que o dado ou a regra mudaram — não
+   remover a guarda para "fazer passar". A numeração real é **111–115**, não 112–116 como o roadmap
+   previa: as 109/110 foram consumidas por trabalho não relacionado antes da onda começar.
+
+   🔴 **Coluna gerada tem duas armadilhas que estas migrations documentam no corpo:**
+   `to_date` é **STABLE** e o PostgreSQL a recusa (usar `make_date`), e substituir a função de uma
+   coluna gerada **não recalcula** os valores STORED — para corrigir a regra, `DROP COLUMN` +
+   `ADD COLUMN`, nunca `UPDATE ... SET x = x` (dispararia as triggers da tabela).

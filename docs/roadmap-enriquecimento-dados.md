@@ -565,12 +565,19 @@ identificação estiver estável e alguém estiver de fato consultando os docume
 
 | Item | O quê | Migration | Nota |
 |---|---|---|---|
-| 6.1 | **`competence_month` DATE — coluna NOVA e derivada** (`competence_date` permanece TEXT) + trigger de default | 112 | 🔴 ver o alerta abaixo — **não converter o tipo** |
-| 6.2 | **`dim_date` + feriados nacionais** | 113 | 100% gerável, risco zero |
-| 6.3 | **`installment_number` / `installment_total`** — parse do `invoice_number` | 114 | o pipeline já gera `doc/parcela`, só não estrutura |
-| 6.4 | **`days_late`** como **coluna gerada** (`GENERATED ALWAYS AS STORED`) | 115 | depende só da própria linha |
-| 6.5 | **`extraction_confidence`** derivado de `extraction_source` | 115 | permite o chat qualificar ("veio de OCR") |
-| 6.6 | **Recorrência por cadência** — função/tabela auxiliar | 116 | ⚠️ **por cadência, não por valor** — só 3 de 11 têm valor estável |
+| 6.1 | **`competence_month` DATE — coluna NOVA e derivada** (`competence_date` permanece TEXT) | **112** | ✅ aplicada — mas com **`make_date`**, não `to_date` (ver 7.5) |
+| 6.2 | **`dim_date` + feriados nacionais** | **111** | ✅ aplicada — 11.323 dias, calendário BANCÁRIO |
+| 6.3 | **`installment_number` / ~~`installment_total`~~ → `installment_base`** | **113/114** | ✅ aplicada — o **total NÃO existe na origem** (ver 7.5) |
+| 6.4 | **`days_late`** como **coluna gerada** (`GENERATED ALWAYS AS STORED`) | **112** | ✅ aplicada — só `payment_date - due_date` |
+| 6.5 | **`extraction_confidence`** derivado de `extraction_source` | **112** | ✅ aplicada — ordinal textual, nunca numérico |
+| 6.6 | **Recorrência por cadência** — **função** em `analytics` | **115** | ✅ aplicada — por cadência, nunca por valor |
+| 6.7 | Expor no schema Zod e na `vw_payables` | **115** | ✅ aplicada — view de 35 → 40 colunas |
+
+> **Numeração real: 111–115**, não 112–116. As migrations 109 e 110 foram consumidas por trabalho
+> não relacionado (e-mail de plataforma; sentinela de autoria) antes desta onda começar; deixar a
+> 111 vazia só para casar com o número escrito aqui seria pior. A **116** corrigiu a truncagem
+> silenciosa das duas funções da 115 (achado B1 do review de 2026-08-10), então a Onda 7 desloca
+> para 117–118.
 
 #### 🔴 `competence_date` NÃO pode ser convertida para DATE (achado da auditoria de 2026-07-31)
 
@@ -1082,6 +1089,90 @@ chave, 7 novas) → `--limit 50` real conferindo `count(*)`/`max(id)` de
 > **A lição vale além da purga:** a afirmação "está liberada" era uma **inferência** — os objetos
 > novos estavam protegidos, logo o resto também estaria. Medir custou dois minutos e revelou o
 > contrário. Conclusão sobre efeito colateral de rotina destrutiva se **mede**, não se deduz.
+
+---
+
+### 7.5 Onda 6 — executada em 2026-08-10 · duas premissas do plano caíram
+
+| Medida | Resultado |
+|---|---|
+| Migrations | **111–115**, todas idempotentes, aplicadas por psql |
+| Colunas novas | 5 geradas em `financial_account_control` + tabela `dim_date` (11.323 dias) |
+| Funções novas | `br_easter`, `br_holiday_name`, `dias_uteis`, `fac_installment_number`, `fac_installment_base`, `analytics.fornecedores_recorrentes`, `analytics.parcelamentos` |
+| Guardas | `tests/test_onda6_campos_derivados.py` — **40 casos**, validados contra **12 mutantes** |
+| Gates | pytest **1.186** · frontend-vite **847** · api-backend **527** · lint 0/0 · typecheck 0 · prune 0 |
+
+#### 🔴 O roadmap mandava usar `to_date`, e `to_date` é STABLE
+
+Este documento afirmava, no item 6.1, que *"`to_date` com máscara explícita é IMMUTABLE"*. **É
+falso.** A primeira tentativa da migration 112, escrita ao pé da letra, morreu com
+`ERROR: generation expression is not immutable`. Conferido em `pg_proc` desta base:
+
+| função | `provolatile` | serve em coluna gerada? |
+|---|---|---|
+| `to_date(text, text)` | `s` (STABLE) | ❌ |
+| `make_date(int, int, int)` | `i` (IMMUTABLE) | ✅ |
+
+É a **mesma classe de erro** que o alerta do 6.1 existia para evitar (`::date` é STABLE) — o plano
+só errou qual função escapa dela. `to_date` aceita padrões dependentes de sessão (era, timezone), e
+isso a marca STABLE inteira, independentemente da máscara que o call site usa.
+
+> **Lição:** volatilidade se confere em `pg_proc`, não se deduz de "tem máscara explícita, logo é
+> determinística". Custou uma migration recusada; poderia ter custado a descoberta em produção.
+
+#### 🔴 `installment_total` não existe — o sufixo é o ORDINAL
+
+O item 6.3 pedia `installment_number` / `installment_total`. Verificado em
+`skills/email-reader/scripts/read_emails.py:5289`: o reader monta `f"{doc}/{parcela}"`, onde
+`parcela` vem da coluna "Parcela" da tabela do corpo — é `1`, `2`, `3`. Os dados confirmam:
+`19019 / 1`, `19019 / 2` e `19019 / 3` são **três contas do mesmo documento**.
+
+Criar a coluna escreveria "3 de 3" num carnê de 12. Entrou no lugar `installment_base` (o documento,
+que permite agrupar) + `analytics.parcelamentos()`, que devolve `parcelas_observadas` e
+**`parcelas_faltando`** — e já achou **5 carnês com as parcelas 1 e 2 sem conta cadastrada**, um
+passivo invisível que o "total" inventado jamais mostraria.
+
+#### O portão de plausibilidade da parcela funcionou
+
+Separar 113 (funções) de 114 (colunas) transformou o dry-run em degrau estrutural: a regra foi
+medida sobre os **762 `invoice_number` reais** antes de qualquer coluna existir. Resultado: **19 de
+40** candidatos aceitos (banda exigida 8–25; previsão 12–20), com as 40 linhas lidas à mão. Os 21
+rejeitados são nosso-número (`09/00018287242`, `109/09116046`, `112/250207258`). Conferido também
+que não há formato de parcela **fora** do conjunto candidato.
+
+#### 🔴 Cadência entre CONTAS produzia resposta absurda — e só rodar mostrou
+
+A primeira versão de `fornecedores_recorrentes` media o intervalo entre contas consecutivas.
+Executada contra o dado real, devolveu *"HYOSUNG SC — cadência semanal, confiança provável"* com
+mediana de **2 dias**. Duas causas, ambas invisíveis na revisão do código:
+
+1. **Várias contas no mesmo vencimento.** OTIMOTEX tem **53 contas em 21 datas**; FEDEX, 35 em 17.
+   Os intervalos vinham cheios de zeros. Corrigido agrupando por **data distinta**.
+2. **Bandas derivadas da tolerância.** Com tolerância de 5 dias, "semanal" virava `[2,12]` e
+   "quinzenal" `[10,20]` — faixas **sobrepostas**. Hoje as bandas são fixas e disjuntas, e a
+   tolerância governa só a dispersão (`regular`).
+
+Depois da correção: `BRASPRESS` (mediana 7, min 7, max 7) → semanal/provável; `SIEG` (mediana 31) →
+mensal/provável, batendo com o baseline; `ARLETE` (mediana 7, máximo 64) → rebaixada a
+`insuficiente` pela checagem de extremos.
+
+> **Lição:** revisão de código não pega classificador mal calibrado. Só executar contra o dado real
+> mostra que a saída é absurda — e a saída absurda era plausível o bastante para passar despercebida
+> num relatório.
+
+#### As guardas que sobreviveram ao mutante — e as três que não
+
+Dos 12 mutantes, **3 sobreviveram na primeira rodada**, cada um denunciando uma guarda que lia a
+coisa errada:
+
+| Mutante sobrevivente | Por que a guarda não pegou |
+|---|---|
+| apagar a coluna do schema de leitura | procurava no arquivo inteiro, e a entrada `coluna: true` do `.omit()` casava o mesmo regex |
+| remover o descascamento do sufixo `(N)` | as duas funções usam o mesmo `regexp_replace`; removê-lo de uma deixava o texto na outra |
+| trocar o vetor de Páscoa | a mensagem do `RAISE EXCEPTION` repete a data esperada, e a guarda achava o texto ali |
+
+As três foram corrigidas por **escopo**: bloco do schema de leitura, corpo da função, e a
+**comparação** em vez da mensagem. Todas as 12 são pegas hoje.
 
 ---
 
