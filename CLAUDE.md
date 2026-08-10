@@ -199,8 +199,9 @@ Estas regras se aplicam a **todo** código novo ou alterado neste projeto, sem e
   pipeline de extração; rodar após mexer em `read_emails.py`/`extract_pdf.py` ou nos
   scripts de reprocessamento. Não é incluída no `npm test` (que soma **1.376** no Node —
   frontend-vite 847 · api-backend 527 · portal-next 2, medidos em 2026-08-10). A suíte
-  Python está em **1.146** (medida em 2026-08-10; os 46 novos desde 1.100 cobrem a leitura
-  Vision de carnê escaneado, o barcode refutado pelo próprio código e a assinatura de e-mail).
+  Python está em **1.193** (medida em 2026-08-10; os 47 novos desde 1.146 são as guardas da Onda 6
+  — 40 da onda + 7 do achado B1 do review —, e os 46 anteriores cobrem a leitura Vision de carnê
+  escaneado, o barcode refutado pelo próprio código e a assinatura de e-mail).
   > ⚠️ **Medir o `frontend-vite` com `--maxWorkers=1`.** Em paralelo, o sandbox do agente
   > derruba ~9 casos de a11y (`StatusBadge.a11y`, `DashboardHeader.a11y`) por esgotamento de
   > recursos — eles passam isolados e em série. É a mesma classe de falso alarme já
@@ -996,7 +997,10 @@ Plano completo em **[docs/roadmap-enriquecimento-dados.md](docs/roadmap-enriquec
 **ler antes de mexer em qualquer item abaixo.** Objetivo: ampliar a acurácia e a gama de perguntas
 do chat **sem quebrar o pipeline de extração**. Execução **uma onda por vez**, cada uma cumprindo o
 protocolo de 5 passos da §3 do plano (baseline → migration idempotente → não regredir o pipeline →
-verificação por oráculo diferencial → fechamento). Migrations reservadas: **103–118**.
+verificação por oráculo diferencial → fechamento). Migrations reservadas: **103–118** — a Onda 6
+ocupou **111–115** (o plano dizia 112–116, mas a 109/110 foram consumidas por trabalho não
+relacionado; deixar buraco na sequência seria pior). A **116** corrigiu a truncagem silenciosa das
+duas funções da 115 (achado B1 do review de 2026-08-10), então a Onda 7 desloca para **117–118**.
 
 | # | Onda | Entrega |
 |---|---|---|
@@ -1005,8 +1009,8 @@ verificação por oráculo diferencial → fechamento). Migrations reservadas: *
 | 3 | ✅ **CONCLUÍDA** (migrations **107/108**) | `fiscal_document` pela **chave de acesso** (CT-e 57 · NF-e 55 · CF-e 59 · NFC-e 65), sem LLM · `fiscal_key.py` · gancho no Passo 1 · purga preservando o PDF fiscal · backfill de 172 documentos · **9ª tool `documentos_fiscais`** — deploy **APLICADO e verificado em prod** (27/27, 2026-08-01) |
 | 4 | ✅ **CONCLUÍDA** (sem migration, sem deploy) | `scripts/varredura_historica.py` — passada única e estritamente aditiva na caixa postal: **+70 corpos · +7 chaves fiscais · +4 objetos**, 0 falhas, contas intocadas. 🔴 **A premissa caiu: a INBOX tinha 264 de 1.166 e-mails — 0 CT-e recuperados** |
 | 5 | Fiscais camada 2 | itens de NF-e / peso-rota-frete do CT-e (via LLM) |
-| 6 | Campos derivados | `competence_month`, `dim_date`, parcelamento, `days_late`, recorrência |
-| 7 | Governança | popular `audit_log` (existe com **0 linhas**) |
+| 6 | ✅ **CONCLUÍDA** (migrations **111–116**) | `dim_date` + feriados · `competence_month` · `days_late` · `extraction_confidence` · `installment_number`/`installment_base` (o **`installment_total` do plano NÃO existe na origem**) · `analytics.fornecedores_recorrentes` e `analytics.parcelamentos` · 5 colunas novas na `vw_payables` · **116** = correção do achado B1 (truncagem silenciosa) |
+| 7 | Governança (migrations **117–118**) | popular `audit_log` (existe com **0 linhas**) |
 | 8 | Hardening do chat | few-shot + **gate de uso por usuário (último item de todos)** |
 | 9 | Condicional | receitas p/ DRE · NFS-e · CF-e · DPO · agregados |
 
@@ -1203,18 +1207,124 @@ verificação por oráculo diferencial → fechamento). Migrations reservadas: *
 - **Limitação conhecida: PDF cifrado não entrega chave** — `_pdf_text` roda antes do
   `run_extraction`, que é quem descriptografa (boletos OBER/Amil). Não é regressão (antes não se
   capturava nada).
-- **`documentos_fiscais` devolve `total_encontrado` em toda linha** (`count(*) OVER ()`, avaliado
-  antes do LIMIT) — mesma armadilha do `gasto_por_fornecedor`: deixar o modelo contar as linhas
-  truncadas produziria número errado com cara de certo.
+- **`documentos_fiscais` devolve `total_encontrado`** — 2ª ocorrência da armadilha da truncagem
+  silenciosa; a regra geral está no bloco da Onda 6 ("Toda função com `LIMIT` DECLARA o total").
+
+**O que a Onda 6 entregou e os invariantes que ela criou (não regredir):**
+
+- **5 colunas GERADAS** em `financial_account_control` (`competence_month`, `days_late`,
+  `extraction_confidence`, `installment_number`, `installment_base`) + **`public.dim_date`**
+  (2015–2045, com feriados) + **2 funções de análise** em `analytics`. Guardas em
+  `tests/test_onda6_campos_derivados.py` (**47 casos**, validados contra **18 mutantes**).
+  A migration **116** fechou o achado B1 do code review (ver os 3 itens 🔴 abaixo).
+- 🔴 **TODA FUNÇÃO COM `LIMIT` DECLARA O TOTAL** — `total_encontrado` via
+  `(count(*) OVER ())::integer`, que o PostgreSQL avalia **antes** do `ORDER BY`/`LIMIT`. Sem ele,
+  truncar é **indistinguível de "acabou"**: `fornecedores_recorrentes` devolvia **50 de 63** com
+  HTTP 200 e nenhum sinal, e quem contasse as linhas responderia "50 fornecedores recorrentes".
+  **É a 3ª ocorrência da mesma armadilha** (`gasto_por_fornecedor` na Onda 1, `documentos_fiscais`
+  na Onda 3) — por isso virou regra, não mais um caso. Vale para função nova em `analytics` **e**
+  para qualquer leitura cujo resultado o modelo possa contar ou somar. Guarda **G9**.
+  ⚠️ Tem de ser **janela**, nunca subconsulta que repita o corpo: a subconsulta herdaria o `LIMIT`
+  e devolveria o total **truncado** — o mesmo bug com cara de correção (mutante M2).
+- 🔴 **`ORDER BY` + `LIMIT` exige ordem TOTAL também dentro do SQL.** `ocorrencias, supplier_name`
+  empata (fornecedor homônimo existe; o nome pode ser NULL) e, sem desempate único, **o conjunto
+  truncado varia com o plano de execução** — a mesma chamada devolve fornecedores diferentes entre
+  execuções, sem erro. É a lição de `lib/stableOrder.ts`/`applyOrder` **estendida ao lado do
+  banco**, onde ela ainda não estava registrada; o sintoma aqui seria "o ranking mudou sozinho".
+  As duas funções terminam o `ORDER BY` na chave do agrupamento.
+- 🔴 **`DROP FUNCTION` APAGA OS GRANTS.** Acrescentar coluna ao `RETURNS TABLE` muda o tipo de
+  retorno, então `CREATE OR REPLACE` é recusado (**42P13**) e o par DROP+CREATE é obrigatório —
+  e recriar sem reemitir `GRANT`/`REVOKE` deixa a função **executável por `PUBLIC`** (default do
+  PostgreSQL) e **inexecutável por `authenticated`**: aberta para quem não deve, quebrada para
+  quem deve. `LIMIT` também ganhou `GREATEST(COALESCE(p_limit, 50), 0)` — negativo levanta
+  **2201W** em runtime, e `p_limit` vem de parâmetro de tool/LLM.
+- ⚠️ **Guarda que localiza migration por CONTEÚDO segue a definição VIGENTE (a última), nunca "a
+  única".** `_migration_que_contem` exigia `len(alvos) == 1` e ficou vermelha assim que a 116
+  redefiniu `analytics.fornecedores_recorrentes` — dois arquivos passaram a casar. O erro aponta
+  para ambiguidade do localizador, não para defeito no código, e a "correção" natural é afrouxar a
+  guarda. Seguir a última também é o que faz as invariantes de G7 (SECURITY INVOKER, `search_path`,
+  bandas disjuntas, `anon` sem EXECUTE) valerem sobre o que está **no banco**: travá-las na 115
+  deixaria a 116 livre para regredir qualquer uma com a suíte verde. Efeito colateral tratado: o
+  marcador da 115 em G8 passou a ser a **view** (único a ela) e G8 exige marcadores **distintos** —
+  sem isso, dois colapsando na mesma migration deixariam outra sem verificação, em silêncio.
+- 🔴 **Coluna GERADA tem de entrar no `.omit()` do `financialAccountControlInputSchema`.** O
+  PostgreSQL recusa com **428C9** qualquer INSERT/UPDATE que cite coluna gerada — o `.pick()` de
+  `manualEditSchema` já as excluiria, mas um write path futuro que use o InputSchema direto
+  quebraria a gravação. É a guarda **G1**, que também fecha uma lacuna antiga: **não existia nada**
+  comparando as colunas das migrations com o schema Zod, então uma coluna podia nascer no banco e
+  ficar invisível para a API, o frontend e todo consumidor de tipo, sem nenhum teste vermelho.
+- 🔴 **`to_date` é STABLE — o roadmap estava ERRADO.** Ele prescrevia `to_date(...)` afirmando que
+  "com máscara explícita é IMMUTABLE"; conferido em `pg_proc` desta base, `to_date(text,text)` tem
+  `provolatile = 's'` e o PostgreSQL **recusa** a coluna gerada (`generation expression is not
+  immutable`). Quem serve é **`make_date`** (`'i'`). Foi a mesma classe de erro que o roadmap
+  tentava evitar (`::date` é STABLE) — ele só errou qual função escapa dela. **Volatilidade se
+  confere no catálogo, não se deduz da assinatura.**
+- 🔴 **`days_late` é `payment_date - due_date` e nada mais.** `CURRENT_DATE` ali nem seria aceito
+  (não é IMMUTABLE), e seria o bug da migration 095 de novo: coluna que passa a mentir com o tempo
+  sem nenhum UPDATE. **Negativo é pagamento antecipado** — 13 contas na medição — e não deve ser
+  normalizado para zero. **Não agregar como DPO:** nas contas pagas antes da 096 o `payment_date`
+  veio do backfill (= vencimento) e produz 0 artificial.
+- 🔴 **`installment_total` NÃO existe e não deve ser criada.** O reader monta `doc/ORDINAL`
+  (`read_emails.py:5289`); o total não está na origem. Criar a coluna escreveria "3 de 3" num carnê
+  de 12. O substituto é `analytics.parcelamentos()`, com `parcelas_observadas` e
+  **`parcelas_faltando`** — que já achou **5 carnês com as parcelas 1 e 2 sem conta cadastrada**,
+  um passivo que o "total" inventado jamais mostraria. A guarda G4 falha se alguém criar a coluna.
+- 🔴 **Função usada em coluna gerada precisa de `GRANT EXECUTE` a `authenticated`.** A expressão é
+  avaliada com o privilégio de **quem escreve a linha**, e `authenticated` escreve aqui
+  (`has_invoice`/`has_bank_slip` por grant de coluna, `status_id`). Sem o grant, marcar "Tem NF" em
+  `/consulta` devolveria **42501** — num lugar sem relação nenhuma com parcela.
+- **A regra de parcela rejeita mais do que aceita, de propósito:** **19 de 40** candidatos, com as
+  40 linhas lidas à mão. Os 21 rejeitados são nosso-número (`09/00018287242`, `109/09116046`,
+  `112/250207258`). NULL é preferível a dado inventado — parcela ausente é pergunta sem resposta;
+  parcela errada é resposta errada.
+- 🔴 **Cadência se mede entre DATAS DISTINTAS, não entre contas** *(defeito achado ao RODAR a
+  função, não ao revisá-la)*. OTIMOTEX tem **53 contas em 21 datas**; medindo entre contas, os
+  intervalos vêm cheios de zeros, a mediana desaba e sai "cadência semanal, confiança provável"
+  para série sem cadência nenhuma. E as **bandas são fixas e disjuntas**: derivá-las de uma
+  tolerância de 5 dias fazia "semanal" virar `[2,12]` e "quinzenal" `[10,20]` — faixas sobrepostas.
+  A tolerância governa a **dispersão** (`regular`), que é outra pergunta.
+- **A saída da recorrência carrega a própria ressalva:** `ocorrencias`, `intervalo_min/max`,
+  `regular` e `confianca` vêm ao lado de `cadencia`, então quem quiser só a palavra "mensal" tem de
+  ignorar ativamente os campos que a contradizem. Com ≤5 meses de histórico, **só mensal/quinzenal/
+  semanal é detectável**; bimestral sai `insuficiente` e trimestral/anual não é detectável.
+  `parcelamento_provavel` separa **carnê** (um contrato) de fornecedor recorrente — sem ele, um
+  carnê de 5 parcelas produz cadência mensal perfeita e seria contado como recorrência.
+- **Classificar por CADÊNCIA, nunca por valor:** só 3 de 11 recorrentes têm valor estável;
+  `valor_mediano`/`valor_variacao_pct` são saída informativa, jamais critério.
+- **`parcelamentos()` não vive na view** — um `count(*) OVER (PARTITION BY ...)` dentro de
+  `vw_payables` (que é `security_invoker`) seria calculado **depois** do filtro de RLS, e um usuário
+  restrito veria "3 de 3" onde existem 5.
+- 🔴 **GRANT SOZINHO NÃO BASTA em tabela nova do `public`: sem POLICY, o papel lê ZERO linhas.**
+  O Supabase **habilita RLS automaticamente** em toda tabela nova do schema `public`, e RLS ligado
+  com zero policies é **deny por default**. A 1ª versão da 111 concedeu `SELECT` a `authenticated`
+  e não criou policy: medido com `SET ROLE authenticated`, **0 dias visíveis** e
+  `dias_uteis('2026-01-01','2026-02-01')` devolvendo **0** em vez de 21 — sem erro, sem exceção, só
+  o calendário respondendo que nenhum dia é útil, para todos os usuários do app.
+  ⚠️ **E escapou da primeira verificação porque `psql` conecta como `postgres`**, que ignora RLS:
+  os `GRANT`/`has_table_privilege` do checklist deram tudo certo. **Conferir tabela nova com
+  `BEGIN; SET LOCAL ROLE authenticated; SELECT …; ROLLBACK;`** — privilégio concedido e linha
+  visível são duas perguntas diferentes.
+- **`dim_date` segue o calendário BANCÁRIO**, não a letra da lei: Carnaval e Corpus Christi são
+  ponto facultativo, mas o banco fecha — e o que importa para conta a pagar é se o dinheiro anda.
+  `holiday_kind` distingue `'nacional'` de `'bancario'`. Consciência Negra só é nacional a partir de
+  **2024** (Lei 14.759/2023); marcá-la antes diria "banco fechado" num dia em que ele operou.
+  A migration **aborta** se a tabela divergir das funções que a semearam.
+- ⚠️ **Corrigir a regra de uma coluna gerada exige `DROP COLUMN` + `ADD COLUMN`.** Substituir a
+  função com `CREATE OR REPLACE` **não recalcula** os valores STORED — a coluna fica com o
+  resultado da regra antiga, em silêncio. E **nunca** forçar recálculo com `UPDATE ... SET x = x`:
+  dispara `trg_fe_status_vencimento` em todas as linhas e pode reescrever situações.
+- **Esta onda não tocou `skills/`** ⇒ **sem deploy em produção** e o `deploy-manifest.json` não
+  mudou.
 
 **Dois invariantes que a auditoria do plano descobriu (não regredir):**
 
 1. 🔴 **`competence_date` NUNCA pode virar DATE.** Contém **`YYYY-MM`** (mês), não data —
    `'2026-06'::date` é erro de sintaxe. O formato é contrato de **3 camadas**: prompt do Claude
    (`extract_pdf.py`), template do CSV e schema Zod. Converter faria **todo INSERT do reader
-   falhar**. A Onda 6 acrescenta a coluna derivada `competence_month`, com o `to_date`
-   **blindado por regex** (`CASE WHEN competence_date ~ '^\d{4}-(0[1-9]|1[0-2])$'`) — sem a
-   guarda, um `'2026-13'` vindo do LLM lança `22008` e para a extração.
+   falhar**. A Onda 6 **acrescentou** (migration 112) a coluna derivada `competence_month`,
+   **blindada por regex** (`CASE WHEN competence_date ~ '^\d{4}-(0[1-9]|1[0-2])$'`) — sem a
+   guarda, um `'2026-13'` vindo do LLM lança `22008` e para a extração. ⚠️ A conversão é por
+   **`make_date`**, não `to_date`: ver o item de volatilidade em "O que a Onda 6 entregou".
 2. 🔴 **Função nova/recriada em `analytics` exige `GRANT` para `authenticated` E `REVOKE EXECUTE
    FROM PUBLIC, anon` — os DOIS, explícitos.** Medido na Onda 1: as 4 funções recriadas pela
    migration 104 nasceram **executáveis por `anon`** (chamáveis com a anon key pública, sem login),
@@ -3358,8 +3468,17 @@ local/agendada (ver flag `EMAIL_READER_ENABLED` acima e memória [[vercel-deploy
 ## Banco de dados (Supabase)
 
 Migrations em `supabase/migrations/`, aplicadas **manualmente no SQL Editor** (ou via Supabase
-MCP — ver a nota de cada uma) em ordem numérica (`001` → `110`). **Próxima migration = `111`**
+MCP — ver a nota de cada uma) em ordem numérica (`001` → `116`). **Próxima migration = `117`**
 (verificar sempre antes de criar nova).
+
+**A `116` faz as duas funções de `analytics` DECLARAREM a truncagem** (aplicada via Supabase MCP em
+2026-08-10, idempotente) — correção do achado B1 do code review da Onda 6. `fornecedores_recorrentes`
+devolvia **50 de 63** fornecedores com HTTP 200 e nenhum sinal do corte. Acrescenta
+`total_encontrado`, fecha o `ORDER BY` na chave do agrupamento (sem ordem total, o recorte do
+`LIMIT` varia com o plano) e protege o `LIMIT` contra negativo. 🔴 **Exige `DROP`+`CREATE`** (mudar
+o `RETURNS TABLE` é mudar o tipo de retorno) e **reemite os `GRANT`/`REVOKE`**, que o `DROP` apaga.
+Traz `DO $$` que **aborta** comparando o total declarado com o real. Detalhe em
+[docs/review/2026-08-10-Features-light-onda6.md](docs/review/2026-08-10-Features-light-onda6.md).
 
 **A `110` troca a IDENTIDADE do SENTINELA de autoria** — `teste@otimotex.com.br` →
 `financeiro@otimotex.com.br` (aplicada via Supabase MCP em 2026-08-07, idempotente). Ver
@@ -3851,10 +3970,11 @@ internet` ao CHECK de `document_type` e faz backfill — ver "Normalização de 
 | Tabela | Propósito |
 |---|---|
 | `email_control` | Dedup/controle. `status` ∈ (`extraído`, `recebido`, `pendente`, `falha`, `ignorado`, `duplicidade`) — **migrations 022/031**. `extraído`=PDF extraído (CSV gerado); `recebido`=sem PDF, conta via corpo; `pendente`=PDF salvo sem CSV (substitui `baixado`); `falha`=casou keyword mas sem PDF e sem conta no corpo; `ignorado`=não-financeiro (sem keyword) **ou NF-e pura sem conta a pagar** (`subject_is_pure_nfe`); `duplicidade`=pagável do corpo duplica conta já registrada por outro e-mail (**migration 031**; card/filtro próprios em `/emails`). O status é calculado em `process_message` pelo resultado real (conta/CSV/corpo/duplicata), não por `pdf_extracted`. **Visibilidade por REMETENTE (migration 078):** a policy SELECT (`authenticated`) filtra por `lower(sender_email)=lower(auth.email())` quando o grupo do usuário tem `sees_only_own_accounts` (Comercial) — `/emails` mostra só os e-mails de que o usuário é remetente; demais grupos veem tudo; `service_role` com bypass. **Corpo (migrations 105/106 — Onda 2):** `body_preview` segue TRUNCADO em 500 chars (é o preview da tela) e **`body_full`** guarda o corpo INTEIRO — não unificar os dois. **`body_search`** é `tsvector` GERADO de assunto+corpo (`to_tsvector('portuguese'::regconfig, left(…, 100000))` — regconfig explícito porque a versão de 1 argumento é STABLE; o `left` é teto contra o limite de 1 MB do tsvector, que **quebraria o INSERT**), com índice GIN e a tool `analytics.buscar_emails`. `body_full` **NULL significa "ainda não temos o corpo"** (e-mail antigo com preview truncado, ou sem keyword — que nem tem o corpo baixado), distinto de string vazia. **A Onda 4 recuperou 70 dos 506 candidatos (2026-08-03); os 436 restantes são IRRECUPERÁVEIS** — os e-mails já não estão na INBOX, e não há segunda passada que os traga. `authenticated` NÃO grava nessas colunas (o UPDATE dele é restrito a `reviewed_at`) |
-| `financial_account_control` | Tabela principal de contas a pagar — uma linha por documento; alimentada pelo pipeline de e-mail **e** por CRUD manual (baixas, consolidações, dashboards). Substitui a antiga `financial_emails` (dropada na migration 020). O fornecedor é referenciado **só pela FK `sk_supplier`** (surrogate key snowflake, NOT NULL — **migration 042**, antes era `supplier_id`) — nome/CNPJ vêm do JOIN com `supplier` (colunas denormalizadas dropadas na **migration 041**). Tem `sender_email` (migration 023; backfill em 025) usado na resolução p/ alinhar `supplier.email`, e `subject` (migration 025) — exibidos/buscados em `/consulta`. **Classificação contábil** (migrations 047/048): `cost_center_id`/`chart_account_id` SMALLINT, NOT NULL DEFAULT 0 (FKs para os cadastros; id 0 = "não informado") — preenchidos no CRUD manual (cascata centro→plano). **Autoria** (migrations 076/077): `created_by` (DONO — base da visibilidade por dono), `updated_by`, `status_changed_by`, `status_changed_at` — UUID → `auth.users`, NOT NULL DEFAULT sentinela (hoje `financeiro@otimotex.com.br` — migration 110), carimbados pelo servidor/trigger `trg_fac_authorship` (ver "Visibilidade de contas por dono" / "Auditoria de autor"). **`payment_date`** (DATE, migration 096): **a data de pagamento da conta** — carimbada pela trigger `trg_fac_payment_date` ao entrar em `status_id = 8` e limpa ao sair; escrita SÓ pela trigger (fora do grant de coluna de `authenticated` e do schema Zod de escrita). Usar como data de pagamento sem ressalva; a auditoria estrutural e o limite do histórico (backfill da 096 = vencimento) estão no bloco da 096 acima. 🔴 **`competence_date` é TEXT no formato `YYYY-MM` (mês de competência) e NUNCA deve ser convertida para DATE** — `'2026-06'::date` é erro de sintaxe, e o formato é contrato de 3 camadas (prompt do Claude em `extract_pdf.py`, template do CSV, schema Zod); converter faria **todo INSERT do reader falhar**. A coluna derivada `competence_month` está planejada na Onda 6 do roadmap de enriquecimento, com `to_date` blindado por regex |
+| `financial_account_control` | Tabela principal de contas a pagar — uma linha por documento; alimentada pelo pipeline de e-mail **e** por CRUD manual (baixas, consolidações, dashboards). Substitui a antiga `financial_emails` (dropada na migration 020). O fornecedor é referenciado **só pela FK `sk_supplier`** (surrogate key snowflake, NOT NULL — **migration 042**, antes era `supplier_id`) — nome/CNPJ vêm do JOIN com `supplier` (colunas denormalizadas dropadas na **migration 041**). Tem `sender_email` (migration 023; backfill em 025) usado na resolução p/ alinhar `supplier.email`, e `subject` (migration 025) — exibidos/buscados em `/consulta`. **Classificação contábil** (migrations 047/048): `cost_center_id`/`chart_account_id` SMALLINT, NOT NULL DEFAULT 0 (FKs para os cadastros; id 0 = "não informado") — preenchidos no CRUD manual (cascata centro→plano). **Autoria** (migrations 076/077): `created_by` (DONO — base da visibilidade por dono), `updated_by`, `status_changed_by`, `status_changed_at` — UUID → `auth.users`, NOT NULL DEFAULT sentinela (hoje `financeiro@otimotex.com.br` — migration 110), carimbados pelo servidor/trigger `trg_fac_authorship` (ver "Visibilidade de contas por dono" / "Auditoria de autor"). **`payment_date`** (DATE, migration 096): **a data de pagamento da conta** — carimbada pela trigger `trg_fac_payment_date` ao entrar em `status_id = 8` e limpa ao sair; escrita SÓ pela trigger (fora do grant de coluna de `authenticated` e do schema Zod de escrita). Usar como data de pagamento sem ressalva; a auditoria estrutural e o limite do histórico (backfill da 096 = vencimento) estão no bloco da 096 acima. 🔴 **`competence_date` é TEXT no formato `YYYY-MM` (mês de competência) e NUNCA deve ser convertida para DATE** — `'2026-06'::date` é erro de sintaxe, e o formato é contrato de 3 camadas (prompt do Claude em `extract_pdf.py`, template do CSV, schema Zod); converter faria **todo INSERT do reader falhar**. **Colunas DERIVADAS (Onda 6, migrations 112/114 — todas `GENERATED ALWAYS ... STORED`, só leitura, no `.omit()` do schema Zod):** `competence_month` (1º dia do mês de competência, via **`make_date`** — `to_date` é STABLE e o PostgreSQL a recusa), `days_late` (`payment_date - due_date`; negativo = antecipado; **não é DPO**), `extraction_confidence` (alta/media/baixa/manual/desconhecida), `installment_number`/`installment_base` (ordinal da parcela e documento do carnê; **não existe total** — use `analytics.parcelamentos()`) |
 | `financial_cost_center` / `financial_chart_of_account` | **Cadastros de classificação contábil** (pré-existentes, **preservados em limpezas**) usados como lookup no modal de contas. `financial_cost_center` é **gerenciado pelo CRUD de centros de custo** (`/tabelas/centros-de-custo` — PK `cost_center_id` SMALLINT IDENTITY ALWAYS; id 0 = sentinela "não informado", fora do CRUD; ver "CRUD de centros de custo"). `financial_chart_of_account` (também gerenciado pelo **CRUD de Plano de contas** — `/tabelas/plano-de-contas`) tem `cost_center_id` (relaciona o plano ao centro — base da CASCATA), `chart_account_subgroup_id` (FK → subgrupo) e `is_postable` (só os postáveis são lançáveis). Os cadastros `financial_bank`, `financial_account`, `financial_chart_of_account_group` e `financial_chart_of_account_subgroup` também ganharam CRUD próprio (grupo Tabelas — ver "CRUDs dos demais cadastros contábeis"). Lidos via `lib/lookups.ts` (service_role) **e** pelo frontend via embed REST (papel `authenticated`); RLS habilitado com policy de SELECT `TO authenticated` (migration 049 — sem ela o embed voltava null e a UI mostrava `#id`) |
 | `email_processing_errors` | Log de falhas com `raw_payload` JSON. **Visibilidade por REMETENTE (migration 078):** policy SELECT (`authenticated`) filtra por `lower(sender_email)=lower(auth.email())` para grupo com `sees_only_own_accounts` (Comercial) — `/erros` mostra só os erros de que o usuário é remetente; demais veem tudo; `service_role` com bypass |
 | `financial_account_attachment` | **Anexos (N) de uma conta** (migration 079) — PADRÃO ÚNICO das duas origens: `origin='pipeline'` (documento do e-mail; espelha `financial_account_control.source_file`, gravado pelo reader) e `origin='manual'` (upload do usuário no cadastro/edição). `storage_key` = chave CRUA do objeto no bucket `attachments` (pipeline: nome flat; manual: `manual/{conta}/…`). **Soft delete** (`deleted_at`/`deleted_by`) — o objeto FICA no bucket; anexo `pipeline` é irremovível (auditoria → 403). UNIQUE `(account_id, storage_key)`; **não** UNIQUE global (um PDF com N boletos gera N contas que COMPARTILHAM o objeto). RLS SELECT herda a visibilidade da conta pai (076) via `EXISTS`; escrita só `service_role`. Ver "Anexos de conta" |
+| `dim_date` | **Calendário 2015-2045** (11.323 dias, migration 111 — Onda 6). Semeada PELAS funções `br_easter`/`br_holiday_name` (IMMUTABLE), com oráculo diferencial embutido na migration: ela **aborta** se a tabela divergir das funções. `is_business_day` segue o calendário **BANCÁRIO** (Febraban), não a letra da lei — Carnaval e Corpus Christi são ponto facultativo, mas o banco fecha, e o que importa para conta a pagar é se o dinheiro anda; `holiday_kind` distingue `'nacional'` de `'bancario'`. Consciência Negra só é nacional a partir de **2024** (Lei 14.759/2023). Dado de REFERÊNCIA: `authenticated` lê tudo (policy permissiva de SELECT — 🔴 obrigatória, ver a lição do GRANT sem policy), `anon` não lê, ninguém escreve pelo app. Consultada por `public.dias_uteis(de, ate)` (intervalo SEMIABERTO; **STABLE**, logo NÃO usável em coluna gerada). **Cadastro/configuração — preservar em limpezas** |
 | `fiscal_document` | **Documento fiscal eletrônico** identificado pela chave de acesso de 44 dígitos (migration 107 — Onda 3): NF-e 55 · CT-e 57 · CF-e 59 · NFC-e 65. Tabela de **PROVENIÊNCIA, append-only** — `access_key` UNIQUE (dedup natural do reenvio), campos derivados da própria chave, `storage_key` (🔴 é o que faz a purga PRESERVAR o PDF) e a origem do e-mail (`gmail_message_id`/`sender_email`/`subject`/`received_at`, sem FK — o registro é não-fatal). **NÃO tem valor monetário, e isso é a barreira**: documento fiscal nunca soma em relatório financeiro (o frete já entra como boleto). RLS SELECT reusa o recorte por REMETENTE da 078; escrita só `service_role`. Ver "O que a Onda 3 entregou" |
 | `supplier` | Fornecedores. PK = `sk_supplier` (surrogate key snowflake auto-incremental — **migration 042**); `supplier_id` é **chave de negócio** (NOT NULL UNIQUE, só nesta tabela; = `sk_supplier` nos fornecedores criados pela extração, via trigger de espelho `trg_supplier_mirror_id`, podendo divergir em cargas externas). Auto-criados pelo trigger de resolução, mas **cadastro PRESERVADO** (curadoria manual de `email`/`email2`/`email3`/`email4`) — **nunca truncar** em limpezas (ver "Limpeza / reset de dados"). Reconhecimento por **e-mail** em `email`/`email2`/`email3`/`email4` (migrations 023/027/028) — ver "Auto-resolução de fornecedor". **Soft delete** via `deleted_at` (migration 045) — a baixa pelo CRUD da Next API marca `deleted_at` (nunca hard delete) e é bloqueada quando há contas vinculadas; ver "CRUD de fornecedores (Next API)". **Classificação default** `cost_center_id`/`chart_account_id` (SMALLINT NOT NULL DEFAULT 0 + FKs — migration 052): semeia o lançamento de novas contas e é atualizada pelo write-back do modal; ver "Classificação default do fornecedor — sync bidirecional". **Contatos** (migration 082): `phone_ddd1`/`phone1`/`phone_ddd2`/`phone2` (char(2)/varchar(9)), `whatsapp1`/`whatsapp2` (varchar(11)), `pix_key1`/`pix_key2` (varchar(77)) — 2 slots por tipo, preenchidos pelo form e pela extração (write-back com lógica de 2 slots); ver "Contato do fornecedor" |
 | `company` | Empresa pagadora (**cadastro**, tem campo `email`). PK = **`sk_company`** (surrogate key snowflake `GENERATED ALWAYS AS IDENTITY` — migration 083, chave única de relacionamento); `company_id` é **campo de origem** (NOT NULL UNIQUE, do sistema maior). Hoje há DUAS: OTIMOTEX (sk 1) e LEBIANCO (sk 2). A empresa da conta (`financial_account_control.sk_company`) tem DUAS origens, ambas explícitas: a **regra LEBIANCO** no pipeline e o **select "Empresa" do `ContaForm`** no CRUD manual (default OTIMOTEX) — ver "Empresa pagadora (`sk_company`) — regra LEBIANCO". O trigger `trg_fe_resolve_company()` → **`resolve_company_sk`** (`payer_cnpj`/`payer_name`) ficou como **fallback residual** (migration 084): só atuaria num INSERT que omitisse `sk_company`. O lookup do select é `GET /api/companies` (`companyService`). **Preservada em limpezas** (ver abaixo) |
@@ -4081,6 +4201,7 @@ cadastro/configuração** — não são alimentadas pelo pipeline e nunca devem 
 - `financial_chart_of_account_subgroup`
 - `financial_cost_center`
 - `user_group` (catálogo de grupos de usuário — migration 063; id 0 = sentinela "não informado". A atribuição por usuário vive no claim `app_metadata.group_id`, não aqui. Truncar destruiria as definições de grupo/permissão)
+- `dim_date` (calendário 2015-2045 — migration 111; não tem relação com o pipeline. Truncar não perde dado de negócio, mas quebra `dias_uteis()` até alguém reexecutar a 111 — e o sintoma seria "0 dias úteis", silencioso)
 
 **Alvos da limpeza** (truncar com `RESTART IDENTITY CASCADE`): `email_control`,
 `financial_account_control`, `email_processing_errors`, `audit_log` — e, para os testes da
