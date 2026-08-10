@@ -983,7 +983,7 @@ das duas camadas sabotadas.
 > tratada e o teste falha exibindo a mensagem do erro, não uma asserção. Hook de reset sempre em
 > **bloco**.
 
-## Roadmap de enriquecimento de dados — 9 ONDAS (1, 2 e 3 CONCLUÍDAS; 4 com o script PRONTO, não executado)
+## Roadmap de enriquecimento de dados — 9 ONDAS (1 a 4 CONCLUÍDAS; próxima é a 5)
 
 Plano completo em **[docs/roadmap-enriquecimento-dados.md](docs/roadmap-enriquecimento-dados.md)** —
 **ler antes de mexer em qualquer item abaixo.** Objetivo: ampliar a acurácia e a gama de perguntas
@@ -1187,7 +1187,8 @@ verificação por oráculo diferencial → fechamento). Migrations reservadas: *
   (92 NF-e + 80 CT-e) de 511 objetos do bucket. Ganho não previsto: o DACTE referencia a **NF-e
   da mercadoria transportada**, então vieram 92 NF-e "de brinde" — inclusive emitidas pela
   própria OTIMOTEX. Escopo deliberado: só o bucket; os ~115 CT-e cujo PDF a purga já levou
-  ficam para a **Onda 4** (IMAP).
+  ficavam para a **Onda 4** (IMAP) — que rodou em 2026-08-03 e recuperou **0 deles**: aqueles
+  e-mails não estão mais na INBOX. São **irrecuperáveis**, não pendentes.
 - **Grupo restrito vê ZERO documentos fiscais** — a policy reusa o recorte da 078 (por
   remetente) e quem envia CT-e é a transportadora. Verificado com o papel real: ester
   (Comercial) **0**, barbara (Financeiro) **172**. É consequência da regra existente, não
