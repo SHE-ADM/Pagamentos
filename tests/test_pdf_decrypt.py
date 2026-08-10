@@ -106,9 +106,9 @@ class TestEncryptedOwnerOnlyFallback(unittest.TestCase):
                  mock.patch.object(extract_pdf, "_decrypt_pdf", return_value=None), \
                  mock.patch.object(extract_pdf, "_pdf_text_readable", return_value=True), \
                  mock.patch.object(extract_pdf, "_payable_pages", return_value=[]), \
-                 mock.patch.object(extract_pdf, "_extract_single",
-                                   return_value={"amount": 8615.64,
-                                                 "document_type": "boleto"}) as m_extract:
+                 mock.patch.object(extract_pdf, "_extract_records",
+                                   return_value=[{"amount": 8615.64,
+                                                  "document_type": "boleto"}]) as m_extract:
                 recs = extract_pdf.process_pdf(plain)
             self.assertEqual(len(recs), 1)
             self.assertEqual(recs[0]["document_type"], "boleto")  # nao e failure_record

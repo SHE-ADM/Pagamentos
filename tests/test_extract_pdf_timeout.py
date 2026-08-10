@@ -30,7 +30,8 @@ class ClaudeApiTimeoutTest(unittest.TestCase):
     def test_extract_fields_with_claude_passa_timeout(self):
         """A extracao por texto cria o client com timeout explicito."""
         fake_resp = mock.MagicMock()
-        fake_resp.content = [mock.MagicMock(text='{"amount": 10}')]
+        fake_resp.stop_reason = "end_turn"
+        fake_resp.content = [mock.MagicMock(type="text", text='{"amount": 10}')]
 
         with mock.patch.dict("os.environ", {"ANTHROPIC_API_KEY": "sk-test"}), \
                 mock.patch("anthropic.Anthropic") as Anthropic:
@@ -43,7 +44,8 @@ class ClaudeApiTimeoutTest(unittest.TestCase):
     def test_extract_with_vision_passa_timeout(self):
         """A extracao por visao (PDF base64) cria o client com timeout explicito."""
         fake_resp = mock.MagicMock()
-        fake_resp.content = [mock.MagicMock(text="texto extraido")]
+        fake_resp.stop_reason = "end_turn"
+        fake_resp.content = [mock.MagicMock(type="text", text="texto extraido")]
 
         with mock.patch.dict("os.environ", {"ANTHROPIC_API_KEY": "sk-test"}), \
                 mock.patch("anthropic.Anthropic") as Anthropic, \

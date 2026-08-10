@@ -86,7 +86,7 @@ class PageHasPayableTest(unittest.TestCase):
 
 class ProcessPdfSplitTest(unittest.TestCase):
     """O split ≥2 (carnê/multi-guia) — hoje SEM cobertura direta. Mocka _payable_pages e
-    _extract_single para não depender de PDF real nem de rede."""
+    _extract_records para não depender de PDF real nem de rede."""
 
     def _run(self, pages, per_page_recs):
         it = iter(per_page_recs)
@@ -97,7 +97,7 @@ class ProcessPdfSplitTest(unittest.TestCase):
              mock.patch.object(E, "_payable_pages", return_value=pages), \
              mock.patch.object(E, "_write_single_page", side_effect=lambda p, i: Path(f"page-stub-{i}.pdf")), \
              mock.patch.object(Path, "unlink", return_value=None), \
-             mock.patch.object(E, "_extract_single", side_effect=lambda p, **k: next(it)):
+             mock.patch.object(E, "_extract_records", side_effect=lambda p, **k: [next(it)]):
             return E.process_pdf(Path("multi_guias_fgts.pdf"))
 
     def test_dois_pagaveis_geram_dois_registros(self):

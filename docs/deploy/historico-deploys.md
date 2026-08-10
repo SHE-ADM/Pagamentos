@@ -1,4 +1,41 @@
-# Histórico de deploys do pipeline Python (produção)
+# Histórico de deploys
+
+## 2026-08-07 — Vision multi-boleto: carnê escaneado deixava de virar conta
+
+**Sintoma:** e-mail com boletos escaneados ficava `extraído` com **0 contas** e uma linha
+`sem_valor` em `/erros`. Medido: 3 e-mails do dia, **21 boletos, R$ 315.556,57**, recuperados por
+`scripts/reprocess_message.py` depois da correção.
+
+**Arquivos:** `skills/pdf-contas-pagar/scripts/extract_pdf.py` (núcleo) ·
+`skills/pdf-contas-pagar/scripts/febraban.py` (`barcode_self_refuted`) ·
+`skills/email-reader/scripts/read_emails.py` (assinatura de e-mail) · `deploy-manifest.json`.
+
+**Segunda entrega do mesmo dia — barcode corrompido pelo OCR:** auditadas as 442 contas com
+código de barras, **18 estavam corrompidas** (valor 10×, fator impossível), todas `pdf_vision`
+— fecha em 442 com 349 consistentes + 68 não-boleto + 7 em que só o valor diverge (preservados).
+Foram limpas (`barcode = NULL`) com prova por hash — 784 contas antes e depois, conteúdo idêntico.
+O gate `barcode_self_refuted` impede novas. **Contraintuitivo, mas é o ponto:** apagar o código
+REDUZ duplicata — corrompido, ele não casa o boleto real na 2ª via e a dedup cria conta nova;
+ausente, ela recai nas impressões 2/3 (documento+valor, valor+vencimento), que funcionam.
+
+**Sem** `.env` obrigatório (`VISION_MAX_TOKENS` tem default 8000), **sem** dependência nova,
+**sem** migration, **sem** `setup-*-task.ps1`.
+
+**Lições não-óbvias:**
+
+- **`stop_reason` ignorado torna o truncamento invisível.** A resposta cortada no teto de tokens
+  não gera erro nenhum: o JSON pela metade só "não parseia", e o registro vazio resultante era
+  logado contra o DOCUMENTO (`sem_valor`) em vez de contra o EXTRATOR. Todo teto de tokens precisa
+  de uma checagem do motivo de parada — o número sozinho não avisa quando é atingido.
+- **O split por página não cobre o que mais precisa dele.** `_payable_pages` lê TEXTO; o carnê
+  escaneado não tem nenhum. Justamente o arquivo com N boletos era o que ia inteiro numa leitura só.
+  A saída foi aceitar **N registros por leitura**, não melhorar a detecção de páginas.
+- **Ao conferir o resultado, `gmail_message_id` casa com `LIKE '<id>#%'`.** A igualdade simples
+  mostrou "1 conta" logo após o pipeline gravar 6 — quase virou um diagnóstico de perda inexistente.
+
+---
+
+## Deploys anteriores do pipeline Python (produção)
 
 Registro condensado dos deploys manuais para `C:\Sheild\API\Pagamentos`. Extraído do `CLAUDE.md`
 em 2026-08-04, quando os blocos somavam ~490 linhas de passo-a-passo **já cumprido**.

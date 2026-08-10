@@ -3,6 +3,7 @@ import { render, screen, waitFor, within, fireEvent } from '@testing-library/rea
 import userEvent from '@testing-library/user-event';
 import type { FinancialAccountControl } from '@sheild/shared';
 import { SENTINEL_AUTHOR_ID } from '../lib/sentinelAuthor';
+import { isoDaysFromToday } from '../lib/format';
 import { STATUS_ID_PAGO, STATUS_ID_A_VENCER, STATUS_ID_CANCELADO, STATUS_ID_VENCIDO } from '@sheild/shared';
 
 // Flush de microtasks — garante que o .then da persistência da flag (e a checagem de
@@ -12,8 +13,6 @@ const flush = () => new Promise((r) => setTimeout(r, 0));
 // Mocka o serviço de dados — o teste cobre o layout/interação, não a rede.
 const getFinancialAccountControl = vi.fn();
 const getFinancialStats = vi.fn();
-const getFinancialAccountTotalValue = vi.fn();
-const getFinancialAccountCount = vi.fn();
 const setFinancialAccountFlag = vi.fn();
 const setFinancialAccountStatus = vi.fn();
 const setFinancialAccountStatusBulk = vi.fn();
@@ -22,8 +21,6 @@ const getAppUsers = vi.fn();
 vi.mock('../services/supabase', () => ({
   getFinancialAccountControl: (...args: unknown[]) => getFinancialAccountControl(...args),
   getFinancialStats: (...args: unknown[]) => getFinancialStats(...args),
-  getFinancialAccountTotalValue: (...args: unknown[]) => getFinancialAccountTotalValue(...args),
-  getFinancialAccountCount: (...args: unknown[]) => getFinancialAccountCount(...args),
   setFinancialAccountFlag: (...args: unknown[]) => setFinancialAccountFlag(...args),
   setFinancialAccountStatus: (...args: unknown[]) => setFinancialAccountStatus(...args),
   setFinancialAccountStatusBulk: (...args: unknown[]) => setFinancialAccountStatusBulk(...args),
@@ -138,8 +135,6 @@ describe('Consulta', () => {
       vencidas: 0,
       vencidasValue: 0,
     });
-    getFinancialAccountTotalValue.mockResolvedValue(0);
-    getFinancialAccountCount.mockResolvedValue(0);
     getAppUsers.mockReset().mockResolvedValue({});
     setFinancialAccountFlag.mockReset().mockResolvedValue(undefined);
     setFinancialAccountStatus.mockReset().mockResolvedValue(undefined);
@@ -375,25 +370,36 @@ describe('Consulta', () => {
     expect(screen.queryByRole('button', { name: 'Limpar busca' })).not.toBeInTheDocument();
   });
 
-  it('atualiza o card "Valor total" conforme o filtro do card "A vencer"', async () => {
+  it('atualiza o card "Total de registros" (valor E contagem) conforme o filtro do card "A vencer"', async () => {
     const user = userEvent.setup();
-    // 1ª soma (sem filtro) = global; após clicar "A vencer" = subconjunto filtrado.
-    getFinancialAccountTotalValue.mockResolvedValueOnce(5000).mockResolvedValueOnce(1234);
+    // O defeito de 2026-08-08: o VALOR seguia o filtro e a CONTAGEM vinha dos KPIs globais,
+    // então o card mostrava "R$ 3,7 mi / 742 contas" para um mês de 211. Por isso as duas
+    // metades são asseridas juntas — um teste só do R$ passaria com o defeito de volta.
+    const kpis = (totalRecords: number, totalValue: number) => ({
+      totalRecords, totalValue,
+      pago: 0, pagoValue: 0, aVencer: 0, aVencerValue: 0,
+      vencendo: 0, vencendoValue: 0, vencidas: 0, vencidasValue: 0,
+    });
+    getFinancialStats
+      .mockResolvedValueOnce(kpis(742, 5000))   // sem filtro
+      .mockResolvedValue(kpis(211, 1234));      // após clicar "A vencer"
     render(<Consulta />);
 
-    // valor global é exibido no card (match exato — o valor também aparece no rodapé)
     await waitFor(() => expect(screen.getByText('R$ 5.000,00')).toBeInTheDocument());
+    expect(screen.getByText('742')).toBeInTheDocument();
 
     await user.click(screen.getByText('A vencer'));
 
-    // a soma é refeita com o filtro do card...
+    // os KPIs são refeitos COM o filtro do card...
     await waitFor(() =>
-      expect(getFinancialAccountTotalValue).toHaveBeenLastCalledWith(
+      expect(getFinancialStats).toHaveBeenLastCalledWith(
         expect.objectContaining({ statusId: STATUS_ID_A_VENCER }),
       ),
     );
-    // ...e o card passa a refletir o valor filtrado (match exato — também no rodapé)
+    // ...e o card reflete o subconjunto nas DUAS metades.
     await waitFor(() => expect(screen.getByText('R$ 1.234,00')).toBeInTheDocument());
+    expect(screen.getByText('211')).toBeInTheDocument();
+    expect(screen.queryByText('742')).not.toBeInTheDocument();
   });
 
   it('abre filtrado no mês/ano corrente por vencimento', async () => {
@@ -464,22 +470,20 @@ describe('Consulta', () => {
     expect(getFinancialAccountControl.mock.calls[0][0]).toMatchObject({ skCompany: undefined });
   });
 
-  it('o filtro de empresa alcança os cards "Valor total"/"Total de registros"', async () => {
+  it('o filtro de empresa alcança os KPIs', async () => {
     const user = userEvent.setup();
     render(<Consulta />);
     await screen.findByRole('option', { name: 'LEBIANCO' });
-    getFinancialAccountTotalValue.mockClear();
-    getFinancialAccountCount.mockClear();
+    getFinancialStats.mockClear();
 
     await user.selectOptions(screen.getByLabelText('Filtrar por empresa'), '2');
     await user.click(screen.getByRole('button', { name: /^Buscar/ }));
 
     await waitFor(() =>
-      expect(getFinancialAccountTotalValue).toHaveBeenLastCalledWith(
+      expect(getFinancialStats).toHaveBeenLastCalledWith(
         expect.objectContaining({ skCompany: 2 }),
       ),
     );
-    expect(getFinancialAccountCount).toHaveBeenLastCalledWith(expect.objectContaining({ skCompany: 2 }));
   });
 
   // SEM clicar em "Buscar": preencher o intervalo aplica sozinho e zera o período, porque
@@ -729,6 +733,29 @@ describe('Consulta', () => {
     await waitFor(() =>
       expect(getFinancialAccountControl).toHaveBeenLastCalledWith(
         expect.objectContaining({ rangeDateField: 'due_date' }),
+      ),
+    );
+  });
+
+  // 🔴 O número do card e o filtro do clique TÊM de usar o mesmo predicado. O KPI conta
+  // `status_id = a vencer` E vencimento na janela; o clique aplicava só o intervalo de
+  // datas, e como BASE_FILTERS.statusId é undefined o grid voltava com QUALQUER situação
+  // não-cancelada. Medido no banco em 2026-08-08: o card dizia 68 e o clique trazia 69
+  // (uma conta já paga vencendo na janela) — e a diferença cresce com a operação normal.
+  it('o card "A vencer em 7 dias" filtra por situação, não só pelo intervalo', async () => {
+    const user = userEvent.setup();
+    render(<Consulta />);
+    await waitFor(() => expect(getFinancialAccountControl).toHaveBeenCalled());
+
+    await user.click(screen.getByText('A vencer em 7 dias'));
+
+    await waitFor(() =>
+      expect(getFinancialAccountControl).toHaveBeenLastCalledWith(
+        expect.objectContaining({
+          statusId: STATUS_ID_A_VENCER,
+          dateFrom: isoDaysFromToday(0),
+          dateTo: isoDaysFromToday(7),
+        }),
       ),
     );
   });
@@ -1102,22 +1129,20 @@ describe('Consulta', () => {
     );
   });
 
-  it('os filtros contábeis alcançam os cards "Valor total"/"Total de registros"', async () => {
+  it('os filtros contábeis alcançam os KPIs', async () => {
     const user = userEvent.setup();
     render(<Consulta />);
     await screen.findByRole('option', { name: '004 — Logística' });
-    getFinancialAccountTotalValue.mockClear();
-    getFinancialAccountCount.mockClear();
+    getFinancialStats.mockClear();
 
     await user.selectOptions(screen.getByLabelText('Filtrar por centro de custo'), '4');
     await user.click(screen.getByRole('button', { name: /^Buscar/ }));
 
     await waitFor(() =>
-      expect(getFinancialAccountTotalValue).toHaveBeenLastCalledWith(
+      expect(getFinancialStats).toHaveBeenLastCalledWith(
         expect.objectContaining({ costCenterId: 4 }),
       ),
     );
-    expect(getFinancialAccountCount).toHaveBeenLastCalledWith(expect.objectContaining({ costCenterId: 4 }));
   });
 
   // "Limpar" e os cards derivam de BASE_FILTERS — é isso que zera os 4 campos novos

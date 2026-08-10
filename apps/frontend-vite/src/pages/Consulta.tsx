@@ -30,8 +30,6 @@ import type { FinancialAccountControl, FinancialAccountControlCreate } from '@sh
 import {
   getFinancialAccountControl,
   getFinancialStats,
-  getFinancialAccountTotalValue,
-  getFinancialAccountCount,
   setFinancialAccountFlag,
   setFinancialAccountStatus,
   setFinancialAccountStatusBulk,
@@ -55,7 +53,7 @@ import { getConsultaColumns, STATUS_OPTIONS, type ToggleFlag, type StatusChangeC
 import { useCompanyOptions } from '../hooks/useCompanyOptions';
 import { useClassificationFilterOptions } from '../hooks/useClassificationFilterOptions';
 import ChartAccountSelect from '../components/molecules/ChartAccountSelect';
-import { fmtDate, fmtDateTime, fmtMoney, fmtCnpj, fmtCostCenter, fmtChartAccount, fmtSupplierName } from '../lib/format';
+import { fmtDate, fmtDateTime, fmtMoney, fmtCnpj, fmtCostCenter, fmtChartAccount, fmtSupplierName, isoDaysFromToday } from '../lib/format';
 import { nextPaymentDate } from '../lib/paymentDate';
 import { csvCell } from '../lib/csv';
 import { appendUniqueById } from '../lib/appendUniqueById';
@@ -79,10 +77,20 @@ const CONSULTA_DEFAULT_PINNING = { left: ['invoice_number', 'issue_date', 'suppl
 // Intervalo [hoje, hoje+7d] em YYYY-MM-DD. Função de MÓDULO (fora do componente) para
 // não disparar a regra de pureza do React Compiler — Date.now/new Date são impuros e não
 // podem ser chamados no escopo de render do componente.
-function next7DaysRange(): { dateFrom: string; dateTo: string } {
+// Filtro do card "A vencer em 7 dias". Precisa reproduzir EXATAMENTE o predicado que
+// produziu o número — `status_id = a vencer` E vencimento na janela (ver
+// aggregateFinancialStats). Sem o `statusId`, o clique caía no `BASE_FILTERS.statusId =
+// undefined` e o grid voltava com QUALQUER situação não-cancelada: medido em 2026-08-08,
+// o card dizia 68 e o clique trazia 69 (uma conta já paga vencendo na janela). A
+// divergência cresce com a operação normal — é a contagem de pagas dentro da janela.
+//
+// Datas em `isoDaysFromToday` (LOCAL): com `toISOString()` (UTC) a janela andava um dia
+// das 21h à meia-noite em UTC−3, e o card discordava do grid — ver lib/format.ts.
+function next7DaysRange(): { dateFrom: string; dateTo: string; statusId: number } {
   return {
-    dateFrom: new Date().toISOString().slice(0, 10),
-    dateTo: new Date(Date.now() + 7 * 86400000).toISOString().slice(0, 10),
+    dateFrom: isoDaysFromToday(0),
+    dateTo: isoDaysFromToday(7),
+    statusId: STATUS_ID_A_VENCER,
   };
 }
 
@@ -347,11 +355,8 @@ export default function Consulta() {
   // via requireAdminGroup — o gate de UI é cosmético). Ver "Hard delete" no CLAUDE.md.
   const { isAdminGroup } = useAuth();
   const [rows, setRows] = useState<FinancialAccountControl[]>([]);
+  // KPIs do filtro aplicado — fonte ÚNICA dos 5 cards E do rodapé (contagem + valor).
   const [stats, setStats] = useState<Partial<FinancialStats>>({});
-  // Soma de "Valor total" para o filtro aplicado (cards/filtros). null = sem dado ainda.
-  const [filteredValue, setFilteredValue] = useState<number | null>(null);
-  // Contagem de documentos NÃO cancelados para o filtro aplicado (rodapé). null = sem dado.
-  const [filteredCount, setFilteredCount] = useState<number | null>(null);
   const [sel, setSel] = useState<FinancialAccountControl | null>(null);
   // Diretório id→e-mail (view app_user) para exibir o AUTOR no detalhe (migration 077).
   const [appUsers, setAppUsers] = useState<Record<string, string>>({});
@@ -432,11 +437,31 @@ export default function Consulta() {
   // appends entre si, não append × replace.
   const requestSeq = useRef(0);
 
-  // Recarrega os KPIs (independente da paginação do grid).
+  // Busca os KPIs do filtro APLICADO — `applied`, não `f`: o card tem de refletir a
+  // consulta que o grid está mostrando, não o que ainda está sendo digitado na barra.
+  // NUNCA rejeita: é chamada em ~8 pontos com `void` e o KPI é acessório — uma falha aqui
+  // não pode derrubar o grid nem virar unhandled rejection. Falhou, devolve null, os cards
+  // mantêm o último valor bom e o erro vai ao console (não silenciar sem log).
+  //
+  // A guarda de resposta obsoleta é o `cancelled` do efeito abaixo, e NÃO um ref de
+  // geração: um ref lido aqui entraria na cadeia `handleStatusChange → getConsultaColumns`,
+  // montada no render, e cairia em `react-hooks/refs` (mesma razão de `pendingApply` ser
+  // estado e não ref).
+  const fetchStats = useCallback(async (): Promise<FinancialStats | null> => {
+    try {
+      return await getFinancialStats(applied);
+    } catch (e) {
+      console.error('Falha ao atualizar os KPIs de /consulta:', e);
+      return null;
+    }
+  }, [applied]);
+
+  // Recarrega os KPIs sob demanda (após curadoria, mudança de situação, exclusão, leitura
+  // de e-mails) — sempre com o filtro corrente.
   const refreshStats = useCallback(async () => {
-    const st = await getFinancialStats();
-    setStats(st);
-  }, []);
+    const st = await fetchStats();
+    if (st) setStats(st);
+  }, [fetchStats]);
 
   // Busca uma página de contas e a aplica: `replace` (1ª página / reset de filtro/sort)
   // ou `append` (scroll infinito). `loadingMoreRef` evita disparos concorrentes no append.
@@ -502,14 +527,21 @@ export default function Consulta() {
     void load(1, 'replace');
   }, [load]);
 
-  // KPIs no MOUNT, não a cada filtro: getFinancialStats() é GLOBAL por design (não lê
-  // filtro nenhum) e puxa até 1000 linhas — refazê-lo a cada apply era desperdício puro,
-  // e com a aplicação automática seria desperdício multiplicado. Os pontos que MUDAM
-  // dado (curadoria, situação, exclusão, leitura de e-mails) já chamam refreshStats().
+  // KPIs a cada mudança de filtro: desde 2026-08-08 os CINCO cards refletem o filtro
+  // aplicado (decisão do dono do produto). Antes eram globais e só o VALOR do 1º card era
+  // filtrado — o card dizia "R$ 3,7 mi / 742 contas" para um agosto de 211.
+  //
+  // `cancelled` descarta a resposta de um filtro já trocado: a varredura dos KPIs pagina,
+  // então é a chamada mais lenta da página e a resposta ANTIGA pode chegar depois da nova.
   useEffect(() => {
-    // eslint-disable-next-line react-hooks/set-state-in-effect
-    void refreshStats();
-  }, [refreshStats]);
+    let cancelled = false;
+    void fetchStats().then((st) => {
+      if (!cancelled && st) setStats(st);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [fetchStats]);
 
   // Diretório de usuários (id→e-mail) para o detalhe — busca única no mount. Falha é
   // silenciosa (o detalhe cai no fallback do UUID). void: fire-and-forget idiomático.
@@ -531,33 +563,11 @@ export default function Consulta() {
     return () => clearTimeout(t);
   }, [pendingApply]);
 
-  // "Valor total" e "Total de registros" (ambos SEM cancelado) refletem o filtro
-  // aplicado (cards ou filtros manuais). Dependem só de `applied` — não re-somam ao
-  // paginar/ordenar. O flag `cancelled` descarta respostas de filtros já trocados.
-  useEffect(() => {
-    let cancelled = false;
-    const run = async () => {
-      try {
-        const [v, c] = await Promise.all([
-          getFinancialAccountTotalValue(applied),
-          getFinancialAccountCount(applied),
-        ]);
-        if (!cancelled) {
-          setFilteredValue(v);
-          setFilteredCount(c);
-        }
-      } catch {
-        if (!cancelled) {
-          setFilteredValue(null);
-          setFilteredCount(null);
-        }
-      }
-    };
-    void run();
-    return () => {
-      cancelled = true;
-    };
-  }, [applied]);
+  // O efeito que buscava "Valor total" + "Total de registros" em DUAS consultas paralelas
+  // saiu daqui em 2026-08-08: `getFinancialStats(applied)` já devolve os dois campos, e
+  // pelo MESMO recorte dos outros 4 cards. Manter as três consultas significaria três
+  // fontes por apply para números que precisam concordar — e era exatamente dessa divisão
+  // que nascia o defeito relatado (valor filtrado ao lado de contagem global).
 
   // Marca/desmarca uma flag de curadoria ("Tem NF" / "Tem Boleto") com update
   // otimista no estado local + persistência via REST; reverte se a gravação falhar.
@@ -665,11 +675,14 @@ export default function Consulta() {
     setSel((s) => (s && s.id === id ? { ...s, attachments } : s));
   };
 
-  // Hard delete FÍSICO da conta (grupo Administrador). Remove a linha, ajusta os totais
-  // localmente e recarrega os KPIs de situação. Irreversível — só é chamado após a
-  // confirmação inline. Recebe a conta (não só o id) para ajustar "Valor total"/"Total
-  // de registros" com precisão (esses cards EXCLUEM cancelado; a trigger já mantém o
-  // status, então basta olhar o status_id da conta removida).
+  // Hard delete FÍSICO da conta (grupo Administrador). Remove a linha e recarrega os KPIs.
+  // Irreversível — só é chamado após a confirmação inline.
+  //
+  // O ajuste LOCAL de "Valor total"/"Total de registros" saiu daqui em 2026-08-08: com os 5
+  // cards vindo de `stats`, decrementar só esses dois deixaria o painel meio atualizado (o
+  // total cairia, mas "Pagos"/"Vencidas" continuariam contando a conta removida) até o
+  // refresh responder. `refreshStats()` logo abaixo já corrige TODOS de uma vez, a partir
+  // do servidor.
   const handleDelete = async (conta: FinancialAccountControl) => {
     setDeleting(true);
     setDeleteError(null);
@@ -677,10 +690,6 @@ export default function Consulta() {
       await deleteConta(conta.id);
       setRows((prev) => prev.filter((r) => r.id !== conta.id));
       setTotal((t) => Math.max(0, t - 1));
-      if (conta.status_id !== STATUS_ID_CANCELADO) {
-        setFilteredCount((c) => (c == null ? c : Math.max(0, c - 1)));
-        setFilteredValue((v) => (v == null ? v : v - (conta.amount ?? 0)));
-      }
       setSel((s) => (s && s.id === conta.id ? null : s));
       setConfirmDelete(null);
       void refreshStats();
@@ -939,9 +948,12 @@ export default function Consulta() {
     {
       icon: FileText,
       label: 'Total de registros',
+      // Contagem e valor saem da MESMA consulta filtrada. Antes o valor vinha do filtro e
+      // a contagem dos KPIs globais: com "Ago/2026" o card dizia "R$ 3.766.725,46 / 742
+      // conta(s)" quando agosto tinha 211 — o R$ certo sobre a contagem da base inteira.
       value: stats.totalRecords ?? 0,
       fmt: (v) => v,
-      amount: filteredValue ?? stats.totalValue ?? null,
+      amount: stats.totalValue ?? null,
     },
     {
       icon: CheckCircle2,
@@ -1647,8 +1659,10 @@ export default function Consulta() {
             + `pr-20` na mesma lista dependeria da ordem do CSS gerado para decidir o vencedor. */}
         <div className="flex items-center justify-between py-2 pl-1 pr-20 mb-4">
           <span className="text-xs text-slate-500">
-            {loadedNonCancelled} de {filteredCount ?? loadedNonCancelled} registros
-            {filteredValue != null && ` · Valor total: ${fmtMoney(filteredValue)}`}
+            {/* Mesma fonte do card "Total de registros" — a página exibia dois números sob
+                o mesmo nome (o rodapé filtrado, o card global) e eles discordavam. */}
+            {loadedNonCancelled} de {stats.totalRecords ?? loadedNonCancelled} registros
+            {stats.totalValue != null && ` · Valor total: ${fmtMoney(stats.totalValue)}`}
           </span>
           {rows.length < total && (
             <button

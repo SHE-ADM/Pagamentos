@@ -356,6 +356,51 @@ def due_date_from_barcode(barcode, ref_date=None) -> "str | None":
     return min(plausible, key=lambda c: abs((c - ref).days)).isoformat()
 
 
+def barcode_self_refuted(barcode, amount, ref_date=None) -> bool:
+    """O codigo de barras se REFUTA a si mesmo? (True = comprovadamente corrompido.)
+
+    Existe para o OCR de boleto ESCANEADO, que insere/desloca digitos: o codigo continua
+    com 44 digitos — passa no filtro de COMPRIMENTO — mas os campos saem deslocados. Sinal
+    medido nos dados reais: valor exatamente 10x o do documento e fator de vencimento
+    impossivel (5370, 5380, 5420) onde o correto era 1537.
+
+    Dois testes INDEPENDENTES, e so refuta quando os DOIS falham:
+      1. **valor** embutido (posicoes 10-19) confere com o `amount` lido do documento;
+      2. **fator de vencimento** decodifica numa data plausivel (`due_date_from_barcode`,
+         que ja trata o reset FEBRABAN e a distancia maxima do `ref_date`).
+
+    A conjuncao e deliberada: um boleto legitimo cujo `amount` o extrator leu errado ainda
+    tem fator plausivel, e um boleto sem valor no codigo ainda tem o valor conferindo por
+    outra via. Exigir os dois evita apagar codigo bom — medido: dos 442 barcodes gravados,
+    isto refuta 18 (todos `pdf_vision`) e preserva os 7 em que so o valor diverge
+    (349 consistentes + 68 nao-boleto + 7 so-valor + 18 refutados = 442).
+
+    Por que APAGAR e melhor que manter: o barcode e a impressao digital 1 da deduplicacao,
+    a mais forte. Um codigo corrompido nao casa o boleto REAL quando ele chega pela 2a via
+    — a dedup falha e nasce uma conta DUPLICADA. Sem barcode, a dedup cai nas impressoes 2
+    e 3 (documento+valor, valor+vencimento), que funcionam. Codigo errado e pior que ausente.
+
+    Retorna False quando a regra nao se aplica (chave NF-e/CT-e, arrecadacao de 48,
+    comprimento invalido, None): nao ha o que refutar.
+    """
+    d = re.sub(r"\D", "", str(barcode or ""))
+    if len(d) != 44 or d[3] != "9" or d[:3] == "000":
+        return False                      # nao e boleto bancario FEBRABAN
+    if amount not in (None, ""):
+        try:
+            valor = amount_from_barcode(d)
+            if valor is not None and abs(valor - float(amount)) <= 0.01:
+                return False              # o valor confirma o codigo
+        except (TypeError, ValueError):
+            pass                          # amount ilegivel: decide so pelo fator
+    # Fator 0 = boleto A VISTA (sem vencimento embutido): legitimo, nao ha fator a
+    # conferir. Sem esta saida o gate leria "ausencia de prova" como "prova de erro" e
+    # apagaria o codigo de todo boleto a vista.
+    if int(d[5:9]) == 0:
+        return False
+    return due_date_from_barcode(d, ref_date) is None
+
+
 def authoritative_barcode_due_date(barcode, amount, ref_date=None,
                                    issue_date=None) -> "str | None":
     """Vencimento derivado do FATOR do barcode, mas SO quando o barcode e CONFIAVEL. Dois gates:

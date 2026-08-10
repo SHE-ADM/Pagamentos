@@ -7,10 +7,17 @@ vi.mock('../lib/supabaseClient', () => ({
 }));
 
 import {
+  STATUS_ID_A_VENCER,
+  STATUS_ID_CANCELADO,
+  STATUS_ID_PAGO,
+} from '@sheild/shared';
+import { todayISO, isoDaysFromToday } from '../lib/format';
+import {
   parsePaginationTotal,
   parseBrlAmount,
   isCurrencyValueSearch,
   applyFinancialFilters,
+  getFinancialStats,
   groupDocumentTypeLabel,
   isTaxDocumentType,
   withChartAccountJoin,
@@ -508,6 +515,92 @@ describe('listUsedChartAccountDescriptions', () => {
     responderCom([[{ account_description: 'Aluguel' }]]);
     await listUsedChartAccountDescriptions();
     expect(chamadas).toHaveLength(1);
+  });
+});
+
+describe('getFinancialStats', () => {
+  const chamadas: string[] = [];
+
+  const responderCom = (paginas: { amount: number; status_id: number; due_date: string | null }[][]) => {
+    let i = 0;
+    vi.stubGlobal('fetch', vi.fn((url: string) => {
+      chamadas.push(String(url));
+      const corpo = paginas[i] ?? [];
+      i++;
+      return Promise.resolve({ ok: true, json: () => Promise.resolve(corpo) } as Response);
+    }));
+  };
+  const linha = (over = {}) => ({ amount: 10, status_id: STATUS_ID_A_VENCER, due_date: null, ...over });
+
+  beforeEach(() => { chamadas.length = 0; });
+  afterEach(() => { vi.unstubAllGlobals(); });
+
+  // 🔴 O defeito que este bloco trava: a versão anterior pedia `limit: 1000` e contava
+  // `all.length`. Medido por HTTP em 2026-08-08, o PostgREST desta instalação corta em
+  // 1.000 e devolve **HTTP 200** (email_control: 1.303 linhas, `limit=10000` → 1.000).
+  // Com 742 contas e ~22/dia, os CINCO cards passariam a subnotificar em ~12 dias, sem
+  // erro nenhum. Não é hipótese: é o mesmo teto que a Onda 3 já mediu nos scripts Python.
+  it('pagina enquanto a página vier cheia (o teto de 1.000 corta sem erro)', async () => {
+    const cheia = Array.from({ length: 1000 }, () => linha());
+    responderCom([cheia, [linha(), linha()]]);
+
+    const st = await getFinancialStats();
+
+    expect(chamadas).toHaveLength(2);
+    expect(new URL(chamadas[0]).searchParams.get('offset')).toBe('0');
+    expect(new URL(chamadas[1]).searchParams.get('offset')).toBe('1000');
+    // 1002, não 1000: é a asserção que falha se alguém voltar ao fetch único.
+    expect(st.totalRecords).toBe(1002);
+    expect(st.totalValue).toBe(10020);
+  });
+
+  it('para na primeira página incompleta (não pagina à toa)', async () => {
+    responderCom([[linha()]]);
+    await getFinancialStats();
+    expect(chamadas).toHaveLength(1);
+  });
+
+  // Desempate determinístico: sem `order`, o PostgREST não garante a mesma ordem entre
+  // requisições e o offset PULA linha — a conta sumiria do KPI com HTTP 200 (mesma causa
+  // do scroll infinito duplicando linha, ver lib/stableOrder.ts).
+  it('ordena por id para a paginação por offset ser determinística', async () => {
+    responderCom([[linha()]]);
+    await getFinancialStats();
+    expect(new URL(chamadas[0]).searchParams.get('order')).toBe('id.asc');
+  });
+
+  it('repassa o filtro recebido para a consulta dos KPIs', async () => {
+    responderCom([[linha()]]);
+    await getFinancialStats({ skCompany: 2, costCenterId: 4 });
+
+    const p = new URL(chamadas[0]).searchParams;
+    expect(p.get('sk_company')).toBe('eq.2');
+    expect(p.get('cost_center_id')).toBe('eq.4');
+  });
+
+  // Sem filtro explícito de situação, cancelado fica fora dos KPIs (como o "Valor total").
+  it('exclui cancelado por padrão', async () => {
+    responderCom([[linha()]]);
+    await getFinancialStats();
+    expect(new URL(chamadas[0]).searchParams.get('status_id')).toBe(`neq.${STATUS_ID_CANCELADO}`);
+  });
+
+  // "A vencer em 7 dias" conta só o que está EM ABERTO na janela — é o predicado que o
+  // clique no card precisa reproduzir (ver next7DaysRange em Consulta.tsx).
+  it('conta em "vencendo" apenas as a-vencer dentro da janela de 7 dias', async () => {
+    const hoje = todayISO();
+    responderCom([[
+      linha({ due_date: hoje }),                                    // dentro
+      linha({ due_date: isoDaysFromToday(7) }),                     // borda: dentro
+      linha({ due_date: isoDaysFromToday(8) }),                     // fora
+      linha({ due_date: isoDaysFromToday(-1) }),                    // fora (passado)
+      linha({ due_date: hoje, status_id: STATUS_ID_PAGO }),         // fora (já paga)
+      linha({ due_date: null }),                                    // fora (sem vencimento)
+    ]]);
+
+    const st = await getFinancialStats();
+    expect(st.vencendo).toBe(2);
+    expect(st.aVencer).toBe(5);
   });
 });
 

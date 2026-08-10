@@ -59,6 +59,31 @@ CLAUDE_MODEL = "claude-sonnet-4-6"
 # travado congela o pipeline inteiro — mesma falha ja resolvida no IMAP.
 CLAUDE_API_TIMEOUT_SECONDS = int(os.getenv("CLAUDE_API_TIMEOUT", "90"))
 
+# Teto de tokens da RESPOSTA de extracao (texto e visao usam o mesmo).
+#
+# Um carne ESCANEADO chega como um PDF unico de N boletos e o split por pagina
+# NAO o alcanca: `_payable_pages` depende de TEXTO e devolve 0 num PDF de imagem.
+# O documento inteiro vai numa chamada so e o modelo responde um ARRAY com um
+# objeto por boleto. Com o teto antigo (1200) a resposta era CORTADA no meio:
+# stop_reason='max_tokens' -> JSON invalido -> registro vazio -> o e-mail era
+# logado como 'sem_valor'. Ou seja: o modelo LIA os boletos corretamente e o
+# pipeline descartava o resultado, culpando o documento.
+# Medido em 07/08/2026 nos 3 PDFs "BOLETOS SAMUEL - SHADOW" (6 a 8 paginas):
+# ~330 tokens por boleto, 1200 tokens consumidos antes do 3o boleto fechar.
+VISION_MAX_TOKENS = int(os.getenv("VISION_MAX_TOKENS", "8000"))
+
+
+class VisionTruncatedError(Exception):
+    """Resposta do modelo cortada pelo teto de tokens (stop_reason='max_tokens').
+
+    NAO e falha de API (nao dispara o circuit breaker do lote) NEM documento sem
+    valor: e uma extracao INCOMPLETA de UM documento. Vira falha EXPLICITA em vez
+    de registro vazio — aproveitar o pedaco parcial gravaria alguns boletos e
+    perderia os demais em silencio, que e exatamente o defeito que esta classe
+    existe para impedir. O e-mail cai em 'pendente' e reaparece para reprocesso.
+    """
+
+
 # Campos de valor que, em branco no boleto, sao gravados como 0.
 VALUE_FIELDS_ZERO = [
     "discount", "other_deductions", "fine_interest",
@@ -91,6 +116,12 @@ def _is_api_unavailable(exc: Exception) -> bool:
     """
     if isinstance(exc, ApiUnavailableError):
         return True
+    # A truncagem carrega o NOME DO ARQUIVO na mensagem, e a heuristica abaixo casa por
+    # SUBSTRING: um PDF chamado "Quota_Condominial.pdf"/"Permissionaria.pdf"/"Billing.pdf"
+    # seria lido como API fora do ar, disparando o circuit breaker e culpando a Anthropic
+    # por um documento grande. A classe e a resposta exata — nunca o texto.
+    if isinstance(exc, VisionTruncatedError):
+        return False
     try:
         import anthropic
         if isinstance(exc, anthropic.APIError):
@@ -122,8 +153,13 @@ def _api_error_record(pdf_path, message: str) -> dict:
 # Schema unico de extracao (texto e visao usam o mesmo).
 EXTRACTION_PROMPT = (
     "Analise este documento financeiro brasileiro (normalmente um boleto) e "
-    "retorne APENAS um JSON valido, sem markdown e sem explicacoes, com "
-    "EXATAMENTE estes campos:\n"
+    "retorne APENAS um JSON valido, sem markdown e sem explicacoes.\n"
+    "FORMATO DA RESPOSTA: se o arquivo contiver UM unico pagavel, retorne UM OBJETO "
+    "JSON. Se contiver VARIOS pagaveis (carne, lote de boletos escaneados, uma "
+    "pagina por boleto), retorne um ARRAY JSON com UM OBJETO POR PAGAVEL — nunca "
+    "resuma varios boletos num objeto so e nunca some os valores deles. Paginas de "
+    "instrucoes/demonstrativo, sem valor e sem linha digitavel, NAO entram no array.\n"
+    "Cada objeto tem EXATAMENTE estes campos:\n"
     "- document_type: identifique o tipo EXATO do documento. Use um dos valores abaixo.\n"
     "  Tipos gerais: boleto (cobrancas bancarias, carnes, faturas de servico avulso) | "
     "seguro (apolices, premios de seguro) | fechamento (extrato mensal, fatura de fechamento) | "
@@ -387,8 +423,9 @@ from febraban import (  # noqa: F401 — reexport intencional
     _coerce_date, _due_date_plausible, _normalize_barcode_format,
     amount_from_arrecadacao, amount_from_barcode, arrecadacao_44,
     arrecadacao_dv_refuted, authoritative_barcode_due_date, barcode_dv_refuted,
-    due_date_from_barcode, extract_barcode, extract_linha_digitavel,
-    is_boleto_barcode, normalize_barcode, normalize_barcode_allow_misread,
+    barcode_self_refuted, due_date_from_barcode, extract_barcode,
+    extract_linha_digitavel, is_boleto_barcode, normalize_barcode,
+    normalize_barcode_allow_misread,
 )
 
 # Chave de acesso SEFAZ (NF-e/CT-e/CF-e/NFC-e): mesmo padrao do `febraban` — modulo sem
@@ -875,13 +912,38 @@ def extract_with_vision(pdf_path):
     block, src = _vision_source_block(Path(pdf_path))
     client = anthropic.Anthropic(api_key=api_key, timeout=CLAUDE_API_TIMEOUT_SECONDS)
     resp = client.messages.create(
-        model=CLAUDE_MODEL, max_tokens=1200, temperature=0,
+        model=CLAUDE_MODEL, max_tokens=VISION_MAX_TOKENS, temperature=0,
         messages=[{"role":"user","content":[
             block,
             {"type":"text","text":EXTRACTION_PROMPT}
         ]}]
     )
-    return resp.content[0].text.strip(), src
+    return _response_text(resp, f"Vision ({Path(pdf_path).name})"), src
+
+
+def _response_text(resp, origem: str) -> str:
+    """Texto da resposta do modelo — concatena os blocos de texto e recusa truncagem.
+
+    Duas armadilhas que `resp.content[0].text` escondia:
+      - resposta CORTADA no teto de tokens (stop_reason='max_tokens'): o JSON sai
+        pela metade e o `json.loads` falha; sem checar o stop_reason isso virava
+        "documento sem valor". E a causa real dos 3 e-mails de 07/08/2026.
+      - `content` vazio ou primeiro bloco nao-textual: IndexError/AttributeError
+        engolidos pelo `except` do chamador como se o PDF fosse ruim.
+    """
+    if getattr(resp, "stop_reason", None) == "max_tokens":
+        raise VisionTruncatedError(
+            f"resposta de {origem} cortada no teto de {VISION_MAX_TOKENS} tokens — "
+            f"documento com pagaveis demais para uma unica leitura"
+        )
+    # `type` com default 'text': exclui bloco declaradamente nao-textual (ex.:
+    # 'thinking') sem descartar um bloco que so exponha `.text` — descartar o
+    # texto inteiro por causa de um atributo ausente reintroduziria, calado, o
+    # mesmo "documento sem valor" que esta funcao existe para eliminar.
+    return "".join(
+        b.text for b in (getattr(resp, "content", None) or [])
+        if getattr(b, "type", "text") == "text" and isinstance(getattr(b, "text", None), str)
+    ).strip()
 
 
 # --- Extração de campos via Claude (texto do PDF) ---
@@ -898,12 +960,12 @@ def extract_fields_with_claude(text: str) -> dict:
 
     client = anthropic.Anthropic(api_key=api_key, timeout=CLAUDE_API_TIMEOUT_SECONDS)
     resp = client.messages.create(
-        model=CLAUDE_MODEL, max_tokens=1200, temperature=0,
+        model=CLAUDE_MODEL, max_tokens=VISION_MAX_TOKENS, temperature=0,
         messages=[{"role":"user","content":
             f"{EXTRACTION_PROMPT}\n\nTEXTO DO DOCUMENTO:\n{text[:12000]}"
         }]
     )
-    return json.loads(_strip_json_fences(resp.content[0].text))
+    return _parse_json_payload(_response_text(resp, "Claude (texto)"))
 
 # --- Helpers de normalizacao ---
 def _strip_json_fences(text: str) -> str:
@@ -912,6 +974,44 @@ def _strip_json_fences(text: str) -> str:
     t = re.sub(r"^```(?:json)?\s*", "", t)
     t = re.sub(r"\s*```$", "", t)
     return t.strip()
+
+
+def _parse_json_payload(text: str):
+    """Primeiro valor JSON da resposta — dict ou list. Levanta JSONDecodeError.
+
+    `_strip_json_fences` so remove cerca no INICIO e no FIM da string, entao uma
+    resposta valida precedida de prosa ("Segue o JSON extraido:") nao era parseada
+    e um documento perfeitamente lido virava 'sem_valor'. Aqui, se o parse direto
+    falhar, procuramos o primeiro '{' ou '[' e decodificamos o valor BALANCEADO a
+    partir dali, ignorando o que houver em volta.
+    """
+    t = _strip_json_fences(text)
+    try:
+        return json.loads(t)
+    except json.JSONDecodeError:
+        pass
+    candidatos = [i for i in (t.find("{"), t.find("[")) if i >= 0]
+    if not candidatos:
+        raise json.JSONDecodeError("nenhum JSON na resposta do modelo", t or "", 0)
+    # raw_decode le UM valor e ignora o resto; propaga JSONDecodeError se truncado.
+    obj, _fim = json.JSONDecoder().raw_decode(t[min(candidatos):])
+    return obj
+
+
+def _json_records(data) -> list:
+    """Normaliza o payload do modelo em LISTA de documentos (dicts).
+
+    Um PDF com N pagaveis (carne escaneado) faz o modelo responder um ARRAY, e
+    `build_record_from_json` espera dict — mesmo com o JSON integro o array
+    quebraria com AttributeError. Aceitar os dois formatos e o que transforma
+    "1 leitura Vision = 1 conta" em "1 leitura Vision = N contas", cobrindo o
+    carne ESCANEADO, que o split por pagina (dependente de texto) nunca alcanca.
+    """
+    if isinstance(data, dict):
+        return [data]
+    if isinstance(data, list):
+        return [d for d in data if isinstance(d, dict)]
+    return []
 
 
 def _to_decimal(value, default=None):
@@ -1069,6 +1169,20 @@ def build_record_from_json(pdf_path, data: dict, source: str) -> dict:
     rec["amount_charged"] = resolve_amount_charged(rec)
     if cnpj and len(cnpj) != 14:
         notes.append("CNPJ do beneficiario invalido")
+    # Boleto ESCANEADO: o OCR desloca digitos e o codigo, ainda com 44, fica corrompido
+    # (valor 10x, fator impossivel). Descartado AQUI, antes de qualquer uso — abaixo ele
+    # alimentaria o vencimento e, em `build_records`, o proprio VALOR da conta via
+    # `apply_barcode_amount`. So no caminho VISUAL: no `pdf_text` os digitos vem do texto
+    # do PDF e conferem (228/228 medidos), e o gate custaria barcodes bons.
+    # `ref_date` = a data LIDA do documento, nunca "hoje": num reprocessamento historico
+    # (varredura de meses atras) o fator legitimo ficaria a mais de 2 anos de hoje e o
+    # gate apagaria codigo bom. O vencimento do documento e exatamente o que o fator
+    # deveria reproduzir — e a referencia certa para julga-lo.
+    if source in ("pdf_vision", "image_vision") and barcode_self_refuted(
+            rec["barcode"], rec.get("amount"),
+            rec.get("due_date") or rec.get("issue_date")):
+        rec["barcode"] = None
+        notes.append("Código de barras descartado — leitura visual refutada pelo próprio código")
     apply_boleto_barcode_override(rec)
     apply_barcode_due_date(rec)   # vencimento AUTORITATIVO = fator do barcode (corrige inversao dia/mes)
     ensure_due_date(rec, notes)
@@ -1122,24 +1236,68 @@ def build_record_regex(pdf_path, raw: str, source: str) -> dict:
 
 
 # --- Montar registro (dispatcher) ---
-def build_record(pdf_path, raw, source):
+def build_records(pdf_path, raw, source) -> list:
+    """Registros de um arquivo — UM por pagavel (carne escaneado devolve N).
+
+    `process_pdf` ja devolve lista, entao N registros aqui viram N contas sem
+    nenhuma mudanca a jusante. Fonte unica: `build_record` e um wrapper desta.
+    """
     if source in ("pdf_vision", "image_vision"):
         try:
-            data = json.loads(_strip_json_fences(raw))
+            data = _parse_json_payload(raw)
         except json.JSONDecodeError:
-            rec = build_record_from_json(pdf_path, {}, source)
-            rec["processing_notes"] = "Vision retornou resposta não-JSON"
-            return rec
-        rec = build_record_from_json(pdf_path, data, source)
-        apply_barcode_amount(rec)  # tier 1: valor via codigo de barras
-        return rec
+            # Falha de EXTRACAO, nao documento sem valor. Como registro de falha,
+            # nao entra no CSV: o e-mail fica 'pendente' (visivel, reprocessavel)
+            # e cai no fallback do corpo, em vez de virar 'extraído' com 0 contas
+            # e uma linha 'sem_valor' que culpa o documento pelo erro do extrator.
+            return [_failure_record(pdf_path, "Vision retornou resposta não-JSON")]
+        recs = []
+        for item in _json_records(data):
+            rec = build_record_from_json(pdf_path, item, source)
+            apply_barcode_amount(rec)  # tier 1: valor via codigo de barras
+            recs.append(rec)
+        if not recs:
+            return [_failure_record(
+                pdf_path, "Vision retornou JSON sem nenhum documento reconhecível")]
+        return recs
 
+    return _build_records_text(pdf_path, raw, source)
+
+
+def _build_records_text(pdf_path, raw, source) -> list:
     # pdf_text: tenta Claude e cai para regex APENAS em falhas de documento.
     # Erro de API (credito/auth/rate-limit) propaga como ApiUnavailableError —
     # o fallback regex gravaria fornecedor vazio e valor errado como sucesso.
     try:
         data = extract_fields_with_claude(raw)
-        rec = build_record_from_json(pdf_path, data, source)
+        itens = _json_records(data)
+        if len(itens) > 1:
+            # N pagaveis num PDF de TEXTO que `_payable_pages` nao separou (linha digitavel
+            # quebrada — caso id 473/474). O EXTRACTION_PROMPT e compartilhado com o Vision e
+            # pede ARRAY, entao o modelo responde N aqui tambem. Gravar os N neste ponto NAO
+            # da: o pos-processamento abaixo (`extract_linha_digitavel(raw)`, `apply_*`) e do
+            # documento INTEIRO e daria a TODOS o barcode do PRIMEIRO — colisao na dedup, que
+            # faz os demais sumirem. Devolver FALHA aqui e melhor que 1 conta de regex
+            # "bem-sucedida" com os outros pagaveis perdidos em silencio — e, na pratica,
+            # RECUPERA o documento: sem `amount`, o `_extract_records` cai no fallback tier-2,
+            # que manda o PDF inteiro ao Vision — o caminho que ACEITA array e devolve os N
+            # com o barcode de CADA item. So se o Vision tambem falhar a falha persiste, e ai
+            # o e-mail fica 'pendente' (visivel, reprocessavel) em vez de 'extraído' com 1
+            # conta errada.
+            log.warning(f"  {len(itens)} pagáveis num único PDF de texto — split por página "
+                        f"não separou; registro de falha (reprocessável)")
+            return [_failure_record(
+                pdf_path,
+                f"{len(itens)} pagáveis num único PDF de texto — split por página não separou")]
+        if not itens:
+            raise ValueError("resposta do modelo sem nenhum documento reconhecível")
+        rec = build_record_from_json(pdf_path, itens[0], source)
+    except VisionTruncatedError as e:
+        # Truncagem NAO e "documento ruim": o modelo leu, nos cortamos. Cair no regex gravaria
+        # UMA conta de qualidade regex marcada como SUCESSO — o mesmo defeito que o teto de
+        # tokens existe para matar, so que pela porta do texto. Precede o `except Exception`.
+        log.warning(f"  Extração via Claude (texto) truncada — registro de falha ({e})")
+        return [_failure_record(pdf_path, f"Resposta do modelo truncada: {e}")]
     except Exception as e:
         if _is_api_unavailable(e):
             raise ApiUnavailableError(str(e)) from e
@@ -1178,7 +1336,7 @@ def build_record(pdf_path, raw, source):
     # Beneficiário Final vence Beneficiário/Cedente (boleto securitizado): override
     # determinístico do fornecedor a partir do TEXTO do PDF (imune à escolha do LLM).
     apply_beneficiario_final(rec, raw)
-    return rec
+    return [rec]
 
 # --- Falha genérica (registro de erro) ---
 def _failure_record(pdf_path, note: str) -> dict:
@@ -1329,9 +1487,10 @@ def process_pdf(pdf_path, force_vision=False, pdf_passwords=None):
     # Anexo de IMAGEM (jpg/png/...): vai direto ao Claude Vision. Não passa por
     # pdfplumber/descriptografia/carnê (todos abrem o arquivo como PDF e quebrariam).
     if _is_image_file(pdf_path):
-        rec = _extract_image(pdf_path)
-        rec["source_file"] = pdf_path.name
-        return [rec]
+        recs = _extract_image(pdf_path)
+        for rec in recs:
+            rec["source_file"] = pdf_path.name
+        return recs
 
     tmps: list[Path] = []
     work = pdf_path
@@ -1358,16 +1517,21 @@ def process_pdf(pdf_path, force_vision=False, pdf_passwords=None):
             for idx in payable_pages:
                 page_pdf = _write_single_page(work, idx)
                 tmps.append(page_pdf)
-                rec = _extract_single(page_pdf, force_vision=force_vision)
-                rec["source_file"] = pdf_path.name  # preserva o nome do arquivo original
-                recs.append(rec)
-                if rec.get("extraction_source") == "erro_api":
+                page_recs = _extract_records(page_pdf, force_vision=force_vision)
+                for rec in page_recs:
+                    rec["source_file"] = pdf_path.name  # preserva o nome do arquivo original
+                recs.extend(page_recs)
+                if any(r.get("extraction_source") == "erro_api" for r in page_recs):
                     break  # circuit breaker: não gasta chamadas nos demais pagáveis
             return recs
 
-        rec = _extract_single(work, force_vision=force_vision)
-        rec["source_file"] = pdf_path.name
-        return [rec]
+        # Documento único OU carnê ESCANEADO: sem texto, `_payable_pages` devolve 0 e
+        # o PDF inteiro vai numa leitura só — o modelo responde um array e cada
+        # pagável vira um registro aqui.
+        recs = _extract_records(work, force_vision=force_vision)
+        for rec in recs:
+            rec["source_file"] = pdf_path.name
+        return recs
     finally:
         for t in tmps:
             try:
@@ -1376,8 +1540,9 @@ def process_pdf(pdf_path, force_vision=False, pdf_passwords=None):
                 pass
 
 
-# --- Extrair UM documento de um PDF (uma página/boleto) ---
-def _extract_single(pdf_path, force_vision=False):
+# --- Extrair os documentos de um PDF (1+ pagáveis) ---
+def _extract_records(pdf_path, force_vision=False) -> list:
+    """Registros de um PDF — 1 por pagável. Nunca levanta: falha vira registro."""
     log.info(f"Processando: {pdf_path.name}")
     try:
         if force_vision or is_scanned_pdf(pdf_path):
@@ -1396,34 +1561,39 @@ def _extract_single(pdf_path, force_vision=False):
                 # regex. O Vision lê a página renderizada, que é visualmente correta.
                 log.info("  → Texto espelhado (página invertida) — fallback Vision")
                 raw, src = extract_with_vision(pdf_path)
-        rec = build_record(pdf_path, raw, src)
+        recs = build_records(pdf_path, raw, src)
+        if len(recs) > 1:
+            log.info(f"  → {len(recs)} pagáveis lidos do documento")
         # Tier 2: texto extraiu o documento mas sem valor, e o codigo de barras
         # nao resolveu (sem barcode bancario). Tenta Vision para ler o valor
         # visualmente. Erro de API propaga; outras falhas mantem o rec de texto.
-        if not rec.get("amount") and src == "pdf_text":
+        # So se aplica ao documento UNICO: com varios pagaveis, "o valor" nao e
+        # um valor so e trocar a lista inteira pela leitura Vision perderia itens.
+        if len(recs) == 1 and not recs[0].get("amount") and src == "pdf_text":
             log.info("  → valor ausente após texto/barcode — fallback Vision para valor")
             try:
                 vraw, vsrc = extract_with_vision(pdf_path)
-                vrec = build_record(pdf_path, vraw, vsrc)
-                if vrec.get("amount"):
-                    log.info(f"  → valor recuperado via Vision: {vrec.get('amount')}")
-                    return vrec
+                vrecs = build_records(pdf_path, vraw, vsrc)
+                if any(v.get("amount") for v in vrecs):
+                    log.info(f"  → valor recuperado via Vision ({len(vrecs)} registro(s))")
+                    return vrecs
             except Exception as ve:
                 if _is_api_unavailable(ve):
                     raise
                 log.warning(f"  → Vision para valor falhou ({ve}) — mantendo extração de texto")
-        return rec
+        return recs
     except Exception as e:
         # Erro de API (credito/auth/rate-limit) — falha dura, sem regex.
         if _is_api_unavailable(e):
             log.exception(f"  ✗ API Anthropic indisponível ({pdf_path.name}): {e}")
-            return _api_error_record(pdf_path, str(e))
+            return [_api_error_record(pdf_path, str(e))]
         log.exception(f"  ✗ {pdf_path.name}: {e}")
-        return _failure_record(pdf_path, str(e))
+        return [_failure_record(pdf_path, str(e))]
 
-# --- Extrair UM documento de uma IMAGEM (foto/scan de recibo) ---
-def _extract_image(img_path):
-    """Processa um anexo de imagem via Claude Vision → registro único.
+
+# --- Extrair os documentos de uma IMAGEM (foto/scan de recibo) ---
+def _extract_image(img_path) -> list:
+    """Processa um anexo de imagem via Claude Vision → 1+ registros.
 
     Mesma classificação de falha do caminho de PDF: erro de API (crédito/auth/
     rate-limit) vira registro erro_api (circuit breaker); demais falhas viram
@@ -1432,13 +1602,13 @@ def _extract_image(img_path):
     log.info(f"Processando imagem: {img_path.name}")
     try:
         raw, src = extract_with_vision(img_path)
-        return build_record(img_path, raw, src)
+        return build_records(img_path, raw, src)
     except Exception as e:
         if _is_api_unavailable(e):
             log.exception(f"  ✗ API Anthropic indisponível ({img_path.name}): {e}")
-            return _api_error_record(img_path, str(e))
+            return [_api_error_record(img_path, str(e))]
         log.exception(f"  ✗ {img_path.name}: {e}")
-        return _failure_record(img_path, str(e))
+        return [_failure_record(img_path, str(e))]
 
 
 # --- Núcleo reutilizável (CLI + in-process) ---

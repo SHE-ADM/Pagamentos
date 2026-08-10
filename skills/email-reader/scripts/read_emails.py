@@ -4654,6 +4654,38 @@ _MARKETING_DESC_RE = re.compile(
 )
 
 
+# Bloco de CONTATO (assinatura/rodape de e-mail) descrito pelo CONTEUDO. O Vision
+# quase sempre descreve a image001.png colada no corpo pelo que ela MOSTRA — "Rua
+# do Horto, 940 | CEP: 35681-779 | (37) 3249-4200 | www.peripan.com.br" — em vez de
+# chama-la de "assinatura de e-mail". Por isso o _SIGNATURE_DESC_RE nao casava e a
+# assinatura virava 'sem_valor', culpando o documento por um valor que ele nunca
+# teve e poluindo /erros (5 das 13 linhas 'sem_valor' medidas em 07/08/2026).
+_CONTACT_SIGNAL_RES = (
+    re.compile(r"\b\d{5}-?\d{3}\b"),                                  # CEP
+    re.compile(r"\(?\d{2}\)?\s?9?\d{4}[-\s]?\d{4}\b"),                # telefone
+    re.compile(r"www\.|\.com\.br|\bsite:"),                           # site
+    re.compile(r"\b(rua|avenida|av|alameda|rodovia|distrito industrial)\b"),
+)
+# Qualquer sinal de documento financeiro DESQUALIFICA o descarte: preferimos uma
+# linha a revisar em /erros a perder um recibo em silencio.
+_FINANCIAL_TERM_RE = re.compile(
+    r"\bvalor\b|r\$|\bvencimento\b|\bboleto\b|\bpagamento\b|\bpagar\b|\bfatura\b|"
+    r"\bnota fiscal\b|\brecibo\b|\bpix\b|\bcodigo de barras\b|\blinha digitavel\b|"
+    r"\bnosso numero\b|\bbeneficiario\b|\bcedente\b|\btotal\b"
+)
+
+
+def _is_contact_block(description: str | None) -> bool:
+    """True se a descricao e um bloco de contato (assinatura/rodape), nao um documento.
+
+    Exige >=2 sinais de contato E nenhum termo financeiro — conservador de proposito.
+    """
+    desc = _strip_accents_lower(description or "")
+    if not desc or _FINANCIAL_TERM_RE.search(desc):
+        return False
+    return sum(bool(r.search(desc)) for r in _CONTACT_SIGNAL_RES) >= 2
+
+
 def _nonpayable_visual_amount(value) -> float:
     """Converte o amount (string do CSV, decimal com ponto) em float; 0.0 se invalido."""
     try:
@@ -4671,7 +4703,9 @@ def _is_nonpayable_visual(row: dict) -> bool:
     if _is_boleto_barcode(row.get("barcode")):
         return False
     desc = _strip_accents_lower(row.get("description") or "")
-    return bool(_SIGNATURE_DESC_RE.search(desc) or _MARKETING_DESC_RE.search(desc))
+    if _SIGNATURE_DESC_RE.search(desc) or _MARKETING_DESC_RE.search(desc):
+        return True
+    return _is_contact_block(row.get("description"))
 
 
 def extract_and_store_accounts(saved_pdfs: list, message_id: str,
