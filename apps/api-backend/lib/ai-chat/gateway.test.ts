@@ -83,16 +83,22 @@ const replyAlways = (r: unknown) => {
   repeat = r;
 };
 
+/**
+ * As fixtures padrão trazem `cache_read_input_tokens` porque é assim que um turno REAL se parece:
+ * o `cache_control` no bloco estável faz a API sempre criar ou ler o prefixo. Sem isso, todo caso
+ * do arquivo exercitaria o caminho de falha de `warnIfCachingDisabled` e o aviso viraria ruído
+ * constante na saída — o jeito mais rápido de ensinar que ele pode ser ignorado.
+ */
 const textReply = (text: string) => ({
   content: [{ type: 'text', text }],
   stop_reason: 'end_turn',
-  usage: { input_tokens: 10, output_tokens: 5 },
+  usage: { input_tokens: 10, output_tokens: 5, cache_read_input_tokens: 3000 },
 });
 
 const toolReply = (calls: { id: string; name: string; input: unknown }[]) => ({
   content: calls.map((c) => ({ type: 'tool_use', id: c.id, name: c.name, input: c.input })),
   stop_reason: 'tool_use',
-  usage: { input_tokens: 20, output_tokens: 8 },
+  usage: { input_tokens: 20, output_tokens: 8, cache_read_input_tokens: 3000 },
 });
 
 beforeEach(() => {
@@ -247,7 +253,7 @@ describe('runChat — resposta cortada por max_tokens', () => {
     reply({
       content: [{ type: 'text', text: 'O total em aberto é de R$ 8.33' }],
       stop_reason: 'max_tokens',
-      usage: { input_tokens: 10, output_tokens: 8192 },
+      usage: { input_tokens: 10, output_tokens: 8192, cache_read_input_tokens: 3000 },
     });
 
     const r = await runChat(supabase, TOKEN, { question: 'x' });
@@ -257,7 +263,11 @@ describe('runChat — resposta cortada por max_tokens', () => {
   });
 
   it('turno sem bloco de texto devolve aviso, não string vazia', async () => {
-    reply({ content: [], stop_reason: 'max_tokens', usage: { input_tokens: 10, output_tokens: 1 } });
+    reply({
+      content: [],
+      stop_reason: 'max_tokens',
+      usage: { input_tokens: 10, output_tokens: 1, cache_read_input_tokens: 3000 },
+    });
     const r = await runChat(supabase, TOKEN, { question: 'x' });
     expect(r.answer).toMatch(/reformular/i);
   });
@@ -398,10 +408,87 @@ describe('runChat — contabilidade de tokens', () => {
   });
 
   it('trata usage sem os campos de cache (turno sem cache) como zero', async () => {
-    reply(textReply('ok'));
+    // O aviso de caching desligado é esperado aqui (é o caminho sob teste); silenciado para não
+    // poluir a saída, já que quem o verifica é o describe dedicado abaixo.
+    const err = vi.spyOn(console, 'error').mockImplementation(() => {});
+    // Reply explícito SEM os campos: as fixtures padrão agora trazem cache (turno saudável), e é
+    // exatamente a ausência que este caso testa — o `?? 0` do acumulador.
+    reply({
+      content: [{ type: 'text', text: 'ok' }],
+      stop_reason: 'end_turn',
+      usage: { input_tokens: 10, output_tokens: 5 },
+    });
     const r = await runChat(supabase, TOKEN, { question: 'x' });
     expect(r.cacheReadTokens).toBe(0);
     expect(r.cacheCreationTokens).toBe(0);
+    err.mockRestore();
+  });
+
+  /**
+   * O prefixo cacheável CRESCE a cada tool (3.653 tokens com 6 tools em 30/07/2026 → 7.408 com 9
+   * em 10/08/2026), então documentar o número não protege: ele envelhece, e o modo de falha —
+   * prefixo abaixo do mínimo do modelo — não produz erro nenhum, só custo. Estes casos travam a
+   * detecção em runtime, que é o que substitui a conferência manual da coluna.
+   */
+  describe('detecção de prompt caching desligado', () => {
+    const semCache = (stop: string) => ({
+      content: [{ type: 'text', text: 'ok' }],
+      stop_reason: stop,
+      usage: { input_tokens: 4000, output_tokens: 5 },
+    });
+
+    it('avisa quando cache_read E cache_creation vêm zerados', async () => {
+      const err = vi.spyOn(console, 'error').mockImplementation(() => {});
+      reply(semCache('end_turn'));
+
+      await runChat(supabase, TOKEN, { question: 'x' });
+
+      expect(err).toHaveBeenCalledTimes(1);
+      expect(err.mock.calls[0][0]).toContain('prompt caching NÃO ocorreu');
+      // O modelo em vigor precisa aparecer: sem ele o aviso não diz o que trocar de volta.
+      expect(err.mock.calls[0][0]).toContain('claude-opus-5');
+      err.mockRestore();
+    });
+
+    it('NÃO avisa quando o prefixo foi lido do cache', async () => {
+      const err = vi.spyOn(console, 'error').mockImplementation(() => {});
+      reply(textReply('ok')); // fixture padrão = turno saudável
+      await runChat(supabase, TOKEN, { question: 'x' });
+      expect(err).not.toHaveBeenCalled();
+      err.mockRestore();
+    });
+
+    it('NÃO avisa quando o prefixo foi CRIADO neste turno (1ª chamada / TTL expirado)', async () => {
+      const err = vi.spyOn(console, 'error').mockImplementation(() => {});
+      reply({
+        content: [{ type: 'text', text: 'ok' }],
+        stop_reason: 'end_turn',
+        // Criação sem leitura é o turno que ESTREIA o prefixo — saudável, e o caso que um
+        // detector escrito como `cacheRead === 0` sozinho acusaria por engano.
+        usage: { input_tokens: 10, output_tokens: 5, cache_creation_input_tokens: 7408 },
+      });
+      await runChat(supabase, TOKEN, { question: 'x' });
+      expect(err).not.toHaveBeenCalled();
+      err.mockRestore();
+    });
+
+    it('também cobre o caminho de FECHAMENTO (teto de iterações)', async () => {
+      const err = vi.spyOn(console, 'error').mockImplementation(() => {});
+      // Sem cache em nenhuma chamada: o turno estoura o teto e sai pelo fechamento, o outro
+      // ponto de retorno. Antes do `finish` único, a checagem valeria só para o primeiro.
+      replyAlways({
+        content: [{ type: 'tool_use', id: 't', name: 'resumo_situacao', input: {} }],
+        stop_reason: 'tool_use',
+        usage: { input_tokens: 1, output_tokens: 2 },
+      });
+      runToolMock.mockResolvedValue([]);
+
+      const r = await runChat(supabase, TOKEN, { question: 'x' });
+
+      expect(r.truncated).toBe(true); // provou que saiu pelo fechamento
+      expect(err).toHaveBeenCalledWith(expect.stringContaining('prompt caching NÃO ocorreu'));
+      err.mockRestore();
+    });
   });
 
   it('acumula ao longo das iterações, incluindo o fechamento', async () => {

@@ -1130,21 +1130,56 @@ O prompt caching tem um **tamanho mínimo de prefixo** que varia por modelo; aba
 
 | | |
 |---|---|
-| `SYSTEM_PROMPT` | 1.977 chars |
-| definição das 6 tools | ~5.200 chars |
-| **prefixo cacheado** | ~7.177 chars ≈ ~~2.175~~ → **3.653 tokens** (medido) |
+| Medição | Contexto | Prefixo cacheado |
+|---|---|---|
+| 29/07 (estimativa) | contagem de chars: `SYSTEM_PROMPT` 1.977 + 6 tools ~5.200 | ~2.175 tokens — **68% baixa** |
+| 30/07 (medido, §20.9) | 6 tools | **3.653 tokens** |
+| 10/08 (medido) | **9 tools** (Ondas 1–3) | **7.408 tokens** |
 
-> **Corrigido em 30/07/2026 pela primeira execução real (§20.9).** A estimativa de 2.175 tokens
-> vinha de contagem de caracteres e era **68% baixa**. O número real aparece sozinho no
-> `cache_read_input_tokens` das 5 primeiras interações: **7306 = 2 × 3653** e **10959 = 3 × 3653**
-> — múltiplos exatos, porque o gateway soma o usage de todas as chamadas do turno. A conclusão do
-> parágrafo abaixo **não muda, fica mais firme**: 3.653 continua ABAIXO dos 4.096 exigidos pelo
-> Opus 4.6 e pelo Haiku 4.5.
+> **Corrigido em 30/07/2026 pela primeira execução real (§20.9).** A estimativa vinha de contagem
+> de caracteres. O número real aparece sozinho no `cache_read_input_tokens` das 5 primeiras
+> interações: **7306 = 2 × 3653** e **10959 = 3 × 3653** — múltiplos exatos, porque o gateway soma
+> o usage de todas as chamadas do turno.
+
+> 🔴 **Re-medido em 10/08/2026: 7.408 tokens — o prefixo DOBROU, e a conclusão INVERTEU.** A
+> interação daquele dia registrou `cache_creation = cache_read = 7.408` (2 iterações: a 1ª criou o
+> prefixo, a 2ª o leu). A causa é estrutural: **as definições de tool fazem parte do bloco
+> cacheado**, e entraram três tools desde 30/07 (`demonstrativo_despesas`, `buscar_emails`,
+> `documentos_fiscais`, das Ondas 1–3) — ~1,2k tokens cada. É o outro lado da regra "acrescentar
+> tool invalida os 3 níveis de cache": além de invalidar, **engorda o prefixo permanentemente**.
+> Com 7.408 o prefixo passou **acima** dos 4.096, então trocar para Opus 4.6/Haiku 4.5 **já não**
+> desligaria o cache. Ressalva: 1 interação, contra as 5 da medição de 30/07.
+>
+> **A lição é sobre o método, não sobre o número:** um valor medido de algo que cresce com o
+> desenvolvimento tem prazo de validade, e a ressalva "medido em 1 interação" não se resolve
+> medindo mais vezes — se resolve **deixando de depender da medição**.
+
+**Resolvido em código (10/08/2026):** `warnIfCachingDisabled` (`lib/ai-chat/gateway.ts`) verifica a
+saúde do cache a **cada turno** e emite `console.error` quando `cache_read` e `cache_creation` vêm
+os **dois** zerados. Com `cache_control` no bloco estável, um turno saudável ou **cria** o prefixo
+(1ª chamada, ou TTL expirado) ou o **lê** — zerar os dois só acontece se a API ignorou o
+`cache_control`. É sinal seguro, não heurística.
+
+Três decisões dessa checagem, cada uma com um modo de falha atrás:
+
+| Decisão | Por quê |
+|---|---|
+| Testa `read` **ou** `creation`, nunca só `read` | o turno que ESTREIA o prefixo (ou depois do TTL) tem `creation > 0` e `read = 0` — um detector só de `read` acusaria o caso saudável. Travado por teste e validado por mutante |
+| Roda num `finish()` único | havia **dois** pontos de retorno (resposta no loop e chamada de fechamento); a checagem duplicada passaria a valer só para um deles no primeiro retorno novo. Mesmo motivo do acumulador único de `usage` |
+| `console.error`, não exceção | é **aviso**: o usuário recebeu a resposta certa, o que está errado é o custo. Quem age lê o log da plataforma |
+
+As fixtures padrão de `gateway.test.ts` passaram a trazer `cache_read_input_tokens` — um turno real
+sempre cacheia, e sem isso todo caso do arquivo dispararia o aviso, que é a forma mais rápida de
+ensinar que ele pode ser ignorado.
+
+> Continue não decidindo troca de modelo pelo número escrito aqui — mas agora, se a troca desligar
+> o cache, o log avisa sozinho.
 
 Confortável para o mínimo do **Opus 5 (512)**. Mas `MODEL` é configurável por
 `ANTHROPIC_MODEL`, e o mínimo **não é monotônico entre gerações**: Opus 4.6 e Haiku 4.5 exigem
-**4.096**. Trocar o modelo por um desses desligaria o cache **sem nenhum sintoma além do custo** —
-o mesmo modo de falha silenciosa de §19.2 e §19.4, agora por configuração em vez de código.
+**4.096**. Enquanto o prefixo estiver abaixo desse valor, trocar o modelo por um desses desligaria
+o cache **sem nenhum sintoma além do custo** — o mesmo modo de falha silenciosa de §19.2 e §19.4,
+agora por configuração em vez de código.
 
 Registrado como comentário na constante `MODEL` (onde quem troca o modelo vai olhar), e a
 verificação é a coluna criada em §19.4: conferir `cache_read_input_tokens` em `analytics.ai_chat_log`
@@ -1382,9 +1417,11 @@ Cinco perguntas reais, dois usuários, 11:06–11:16. Lido de `analytics.ai_chat
 | Latência | 8,3 s a 30,1 s (teto de 300 s do plano Pro) |
 | Volume | 61.416 tokens de prompt, **65% servidos do cache**; 4.892 de saída |
 
-**O prefixo cacheável real é 3.653 tokens** — ver a correção no §19.10. Não foi preciso instrumentar
-nada para descobrir: os valores de `cache_read` são múltiplos exatos dele, porque o gateway soma o
-usage das chamadas de um mesmo turno. É o tipo de número que só a execução real entrega.
+**O prefixo cacheável real era, NESTA data, 3.653 tokens** — ver §19.10, onde a re-medição de
+10/08 registra **7.408** (o prefixo cresce a cada tool acrescentada; use sempre o valor mais
+recente). Não foi preciso instrumentar nada para descobrir: os valores de `cache_read` são
+múltiplos exatos dele, porque o gateway soma o usage das chamadas de um mesmo turno. É o tipo de
+número que só a execução real entrega.
 
 #### O que a execução revelou — auditoria cega para o teto de iterações
 
