@@ -197,8 +197,8 @@ Estas regras se aplicam a **todo** código novo ou alterado neste projeto, sem e
   `test_vision_multi_boleto.py`, `test_barcode_self_refuted.py`,
   `test_contact_block_nonpayable.py`, `test_is_processed.py`). Cobre o
   pipeline de extração; rodar após mexer em `read_emails.py`/`extract_pdf.py` ou nos
-  scripts de reprocessamento. Não é incluída no `npm test` (que soma **1.372** no Node —
-  frontend-vite 847 · api-backend 523 · portal-next 2, medidos em 2026-08-10). A suíte
+  scripts de reprocessamento. Não é incluída no `npm test` (que soma **1.376** no Node —
+  frontend-vite 847 · api-backend 527 · portal-next 2, medidos em 2026-08-10). A suíte
   Python está em **1.146** (medida em 2026-08-10; os 46 novos desde 1.100 cobrem a leitura
   Vision de carnê escaneado, o barcode refutado pelo próprio código e a assinatura de e-mail).
   > ⚠️ **Medir o `frontend-vite` com `--maxWorkers=1`.** Em paralelo, o sandbox do agente
@@ -876,11 +876,18 @@ perguntas reais, 2 usuários, `error IS NULL` em todas, 4 tools distintas exerci
   auditoria parcial, nunca o erro.
 - 🔴 **TROCAR `ANTHROPIC_MODEL` pode desligar o prompt caching EM SILÊNCIO.** O mínimo de prefixo
   cacheável varia por modelo e **não é monotônico entre gerações**: 512 no Opus 5, mas **4.096** no
-  Opus 4.6 e no Haiku 4.5. **Medido em produção: 3.653 tokens/chamada** (§20.9 — a estimativa
-  anterior de ~2.175 era 68% baixa), ou seja, folgado para o Opus 5 e **abaixo do mínimo daqueles
-  dois**: o risco é real, não teórico. Abaixo do mínimo o `cache_control` é ignorado sem erro — só
+  Opus 4.6 e no Haiku 4.5. Abaixo do mínimo o `cache_control` é ignorado sem erro — só
   `cache_read_input_tokens` zerado e a conta subindo. **Depois de qualquer troca de modelo, conferir
   essa coluna em `analytics.ai_chat_log`.**
+  ⚠️ **O prefixo NÃO é constante: cresce a cada tool** (as definições entram no bloco cacheado —
+  ~1,2k tokens por tool; é o outro lado de "acrescentar tool invalida os 3 níveis de cache").
+  Medido: **3.653** com 6 tools (30/07) → **7.408** com 9 tools (10/08) — dobrou em 11 dias e
+  **inverteu a conclusão** sobre o risco de trocar de modelo. Por isso **não há número a decorar
+  aqui**: quem vigia é **`warnIfCachingDisabled` (`lib/ai-chat/gateway.ts`)**, que roda a **cada
+  turno** e emite `console.error` quando `cache_read` e `cache_creation` vêm os DOIS zerados —
+  sinal seguro de que a API ignorou o `cache_control`. É aviso, não erro: a resposta ao usuário
+  está certa; o que está errado é o custo. Série histórica e o raciocínio em
+  [docs/arquitetura-chat-ia-pagamentos.md](docs/arquitetura-chat-ia-pagamentos.md) §19.10.
 
 **Invariantes da camada `analytics` (não regredir):**
 

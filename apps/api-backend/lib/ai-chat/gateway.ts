@@ -16,15 +16,16 @@ import type { LoggedToolCall } from './log';
 /**
  * O modelo padrão do projeto. Configurável por env para permitir troca sem deploy de código.
  *
- * ATENÇÃO AO TROCAR: o prompt caching tem um tamanho MÍNIMO de prefixo que varia por modelo, e
- * abaixo dele o `cache_control` é ignorado **em silêncio** — sem erro, só `cache_read` zerado e a
- * conta subindo. Prefixo (system + tools) MEDIDO EM PRODUÇÃO em 30/07/2026: **3.653 tokens** — o
- * `cache_read_input_tokens` das 5 primeiras interações reais é sempre múltiplo exato desse valor
- * (7306 = 2x, 10959 = 3x), porque o usage é somado entre as chamadas do turno. A estimativa
- * anterior (~2.175, derivada de contagem de caracteres) era 68% baixa. Confortável para o mínimo de
- * 512 do Opus 5 e ainda ABAIXO do mínimo de 4.096 do Opus 4.6 e do Haiku 4.5 — ou seja, o risco de
- * trocar para um desses é REAL, agora com número medido. Confira `cache_read_input_tokens` em
- * `analytics.ai_chat_log` depois de qualquer troca de modelo.
+ * ATENÇÃO AO TROCAR: o prompt caching tem um tamanho MÍNIMO de prefixo que varia por modelo e
+ * **não é monotônico entre gerações** (512 no Opus 5; 4.096 no Opus 4.6 e no Haiku 4.5). Abaixo do
+ * mínimo o `cache_control` é ignorado **em silêncio** — sem erro, só a conta subindo.
+ *
+ * NÃO há número a decorar aqui, e isso é deliberado: o prefixo (system + tools) **cresce a cada
+ * tool acrescentada** — medido 3.653 tokens com 6 tools (30/07/2026) e 7.408 com 9 tools
+ * (10/08/2026), o que inverteu a conclusão sobre o risco em 11 dias. Valor anotado em comentário
+ * envelhece e, pior, dá a impressão de que alguém está conferindo. Quem confere é
+ * `warnIfCachingDisabled`, a cada turno. Série histórica em
+ * `docs/arquitetura-chat-ia-pagamentos.md` §19.10.
  */
 const MODEL = process.env.ANTHROPIC_MODEL ?? 'claude-opus-5';
 
@@ -273,6 +274,24 @@ export async function runChat(
   };
   let rowCount = 0;
 
+  /**
+   * Único ponto de montagem do `ChatResult`. Os DOIS caminhos de saída — resposta dentro do loop e
+   * chamada de fechamento — montavam o objeto cada um por si; com a verificação de saúde do cache
+   * isso viraria duas cópias da mesma checagem, e bastaria acrescentar um terceiro retorno para ela
+   * passar a valer só para dois deles. Mesmo motivo do acumulador único de `usage`.
+   */
+  const finish = (texto: string, foiTruncado: boolean): ChatResult => {
+    warnIfCachingDisabled(usage);
+    return {
+      answer: texto || SEM_RESPOSTA,
+      toolCalls,
+      rowCount,
+      ...usage,
+      truncated: foiTruncado,
+      iterations,
+    };
+  };
+
   // A data corrente vai AQUI (na mensagem), não no system prompt — ver SYSTEM_PROMPT.
   const hoje = new Date().toISOString().slice(0, 10);
 
@@ -333,14 +352,7 @@ export async function runChat(
       if (response.stop_reason !== 'tool_use') {
         // `max_tokens` também cai aqui: o turno terminou, mas o texto foi CORTADO no meio. Tratá-lo
         // como resposta completa entregaria uma frase pela metade sem nenhum sinal ao usuário.
-        return {
-          answer: extractText(response.content) || SEM_RESPOSTA,
-          toolCalls,
-          rowCount,
-          ...usage,
-          truncated: response.stop_reason === 'max_tokens',
-          iterations,
-        };
+        return finish(extractText(response.content), response.stop_reason === 'max_tokens');
       }
 
       // Tool calls PARALELOS voltam em UMA única mensagem user (§17.6). Dividi-los em mensagens
@@ -420,14 +432,7 @@ export async function runChat(
       .finalMessage();
     accumulate(fechamento.usage);
 
-    return {
-      answer: extractText(fechamento.content) || SEM_RESPOSTA,
-      toolCalls,
-      rowCount,
-      ...usage,
-      truncated,
-      iterations,
-    };
+    return finish(extractText(fechamento.content), truncated);
   } catch (e) {
     // Anexa o que JÁ foi gasto e apurado. Sem isso, uma falha na 5ª iteração é auditada como
     // "0 tokens, 0 tools" — some justamente o registro das perguntas caras que falharam, que é a
@@ -454,6 +459,36 @@ export async function runChat(
  */
 function throwIfAborted(signal: AbortSignal | undefined): void {
   if (signal?.aborted) throw new AiChatAbortedError();
+}
+
+/**
+ * Detecta EM RUNTIME o modo de falha descrito no comentário de `MODEL`: prefixo abaixo do mínimo do
+ * modelo faz a API ignorar o `cache_control` **sem erro nenhum** — o turno responde normalmente e
+ * só a fatura acusa.
+ *
+ * Por que em código, e não como número na documentação: o prefixo não é constante — ele cresce a
+ * cada tool acrescentada, e entre 30/07 e 10/08/2026 dobrou (3.653 → 7.408), invertendo a
+ * conclusão sobre o risco. Documentar um valor exige que alguém se lembre de re-medi-lo depois de
+ * cada tool nova e de cada troca de modelo; esta checagem roda sozinha, em todo turno, e não tem
+ * como ficar desatualizada.
+ *
+ * `cacheRead === 0 && cacheCreation === 0` é sinal SEGURO, não heurística: com `cache_control` no
+ * bloco estável, um turno saudável ou **cria** o prefixo (1ª chamada, ou TTL expirado) ou o **lê**
+ * (chamadas seguintes). Zerar os dois só acontece se a API ignorou o `cache_control`. Não há
+ * guarda para "nenhuma chamada feita" porque não existe caminho até aqui sem ao menos um
+ * `accumulate`: o teto de iterações é 6, então o laço roda no mínimo uma vez.
+ *
+ * É aviso, não erro: o usuário recebeu a resposta certa. O que está errado é o CUSTO, e quem age
+ * sobre isso lê o log da plataforma — por isso `console.error` (o canal que a Vercel coleta) em vez
+ * de lançar.
+ */
+function warnIfCachingDisabled(u: { cacheReadTokens: number; cacheCreationTokens: number }): void {
+  if (u.cacheReadTokens > 0 || u.cacheCreationTokens > 0) return;
+  console.error(
+    `[ai-chat] prompt caching NÃO ocorreu (modelo ${MODEL}): cache_read e cache_creation zerados. `
+    + 'O prefixo system+tools provavelmente está abaixo do mínimo deste modelo — o cache_control é '
+    + 'ignorado sem erro e o custo por pergunta sobe. Confira ANTHROPIC_MODEL.',
+  );
 }
 
 function errorResult(id: string, message: string): Anthropic.ToolResultBlockParam {
