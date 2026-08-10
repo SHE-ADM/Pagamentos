@@ -20,6 +20,7 @@ FONTES = [
     RAIZ / "CLAUDE.md",
     RAIZ / "docs" / "knowledge" / "pipeline-extracao.md",
     RAIZ / "docs" / "knowledge" / "api-crud.md",
+    RAIZ / "docs" / "knowledge" / "dashboards.md",
     RAIZ / "docs" / "deploy" / "historico-deploys.md",
 ]
 
@@ -28,6 +29,7 @@ FONTES = [
 EXTRAIDOS = [
     "docs/knowledge/pipeline-extracao.md",
     "docs/knowledge/api-crud.md",
+    "docs/knowledge/dashboards.md",
     "docs/deploy/historico-deploys.md",
 ]
 

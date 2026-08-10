@@ -14,6 +14,7 @@ histórico.
 | Regras mandatórias, invariantes 🔴, arquitetura, banco, comandos | **este arquivo** |
 | Detalhe das regras de extração (tipos de documento, fornecedor, corpo, dedup, filtros) | [docs/knowledge/pipeline-extracao.md](docs/knowledge/pipeline-extracao.md) |
 | Catálogo dos CRUDs da Next API, auth, papéis, anexos | [docs/knowledge/api-crud.md](docs/knowledge/api-crud.md) |
+| Detalhe dos dois dashboards (escopo, donuts, rankings, drill-down) | [docs/knowledge/dashboards.md](docs/knowledge/dashboards.md) |
 | O que cada deploy fez e a lição de cada um | [docs/deploy/historico-deploys.md](docs/deploy/historico-deploys.md) |
 | Deploy para produção · scripts de manutenção (reprocessar, backfill, purga) | skills **`deploy-producao`** e **`scripts-manutencao`** (`.claude/skills/`) |
 | Gate de qualidade por stack | [docs/padrao-execucao.md](docs/padrao-execucao.md) |
@@ -788,39 +789,30 @@ Supabase (PostgreSQL)  ── financial_account_control (dados extraídos)
 > (`PYTHON_BRIDGE_TIMEOUT_MS`, a leitura síncrona real leva minutos) e **5s** no health; o timeout
 > vira `PythonBridgeError(504)` (indisponível segue `502`). Teste em `lib/python-bridge.test.ts`.
 
-## Chat de IA (Fases 1–3 APLICADAS — endpoint + UI prontos; falta a primeira chamada REAL)
+## Chat de IA (Fases 0–3 APLICADAS e validadas em produção)
 
 Chat conversacional embarcado no app para análise **read-only** dos dados de contas a pagar
-(perguntas em linguagem natural → texto + tabela). Desenho completo em
-**[docs/arquitetura-chat-ia-pagamentos.md](docs/arquitetura-chat-ia-pagamentos.md)** — ler antes
-de implementar qualquer parte (§18 = Fase 2 · §19 = code review · §20 = Fase 3).
+(perguntas em linguagem natural → texto + tabela). **Desenho, histórico de cada fase, os code
+reviews e as medições estão em
+[docs/arquitetura-chat-ia-pagamentos.md](docs/arquitetura-chat-ia-pagamentos.md)** — §13 Fase 0 ·
+§16 Fase 1 · §18 Fase 2 · §19 code review · §20 Fase 3 e a primeira execução real. **Ler antes de
+implementar qualquer parte.** Aqui ficam só os invariantes.
 
-**Status: Fases 0–3 aplicadas (2026-07-28 → 07-30).** A **migration 098** criou o schema
-**`analytics`**: 2 views (`vw_payables`, `vw_aging_vencidos`), as **6 funções** de tool calling,
-`ai_chat_log` com RLS e os GRANT/REVOKE.
+**Estado:** a migration **098** criou o schema `analytics` (2 views, funções de tool calling,
+`ai_chat_log` com RLS); o gateway vive em `apps/api-backend/lib/ai-chat/`
+(`tools.ts` · `errors.ts` · `gateway.ts` · `log.ts` · `rate-limit.ts`) + `app/api/ai-chat/route.ts`;
+a UI é o widget global do `frontend-vite`. **Validado em produção em 30/07/2026** (§20.9): 5
+perguntas reais, 2 usuários, `error IS NULL` em todas, 4 tools distintas exercitadas e
+`cache_read_input_tokens > 0` em 5 de 5. Pilares: **nunca `service_role` no caminho de leitura** ·
+**tool calling** sobre funções de negócio como via primária · log de toda interação para auditoria.
 
-> ⚠️ **Hoje são 9 tools, não 6** — as 6 desta fase mais `demonstrativo_despesas` (migration 104,
-> Onda 1), `buscar_emails` (migration 106, Onda 2) e `documentos_fiscais` (migration 108,
-> Onda 3). Toda menção a "6 funções/tools" neste
-> documento descreve o estado da **Fase 1** e permanece correta como histórico; a lista viva está
-> em `apps/api-backend/lib/ai-chat/tools.ts`, travada por teste. Ver "Roadmap de enriquecimento". A **Fase 2** entregou o gateway —
-`apps/api-backend/lib/ai-chat/` (`tools.ts` · `errors.ts` · `gateway.ts` · `log.ts`) +
-`app/api/ai-chat/route.ts`, com `@anthropic-ai/sdk` e **73 testes**. A **Fase 3** entregou a **UI**
-(widget flutuante global — ver "Widget do assistente" abaixo) e a configuração da chave em
-`apps/api-backend/.env.local`. **VALIDADO EM PRODUÇÃO em 30/07/2026** (§20.9): 5 perguntas
-reais, 2 usuários, `error IS NULL` em todas, 4 tools distintas exercitadas e
-**`cache_read_input_tokens > 0` em 5 de 5** — o que fecha o único item ⏳ do §18.5. A chave já está
-no Vercel. **Prefixo cacheável real: 3.653 tokens/chamada** (a estimativa de ~2.175 do §19.10 era
-68% baixa; segue ABAIXO dos 4.096 do Opus 4.6/Haiku 4.5, então o risco de trocar de modelo é real).
-Confirmado por **três vias independentes**: os `cache_read` das 5 primeiras interações são múltiplos
-exatos de 3.653 (7306 = 2×, 10959 = 3×), e a interação seguinte — 2,5 h depois, com o cache já
-expirado pelo TTL de 5 min — registrou `cache_creation = cache_read = 3.653`, ou seja, a 1ª chamada
-criou o prefixo e a 2ª o leu, no mesmo turno.
-**Em aberto por DECISÃO, não esquecimento:** a prova do recorte da RLS com um usuário do grupo
-Comercial foi adiada — a direção provável é **limitar o uso da IA por usuário**, o que muda a
-pergunta a responder. O mecanismo (`security_invoker` + JWT) já fora validado na Fase 1 (§16.3). Pilares que permanecem:
-**nunca usar `service_role`** no caminho de leitura · **tool calling** sobre funções de negócio como
-via primária · log de toda interação para auditoria.
+> ⚠️ **São 9 tools, não 6.** As 6 da Fase 1 + `demonstrativo_despesas` (104) + `buscar_emails`
+> (106) + `documentos_fiscais` (108). Menções a "6 funções" no doc de arquitetura descrevem a Fase
+> 1 e valem como histórico; a lista viva é `lib/ai-chat/tools.ts`, travada por teste.
+
+> **Em aberto por DECISÃO, não esquecimento:** a prova do recorte da RLS com um usuário do grupo
+> Comercial foi adiada — a direção provável é limitar o uso da IA por usuário, o que muda a
+> pergunta a responder. O mecanismo (`security_invoker` + JWT) já foi validado na Fase 1 (§16.3).
 
 > **A `ANTHROPIC_API_KEY` do `.env` da RAIZ NÃO vale para a Next API (não regredir):** o Next
 > carrega env do diretório do próprio app, então a chave tem de estar em
@@ -828,75 +820,9 @@ via primária · log de toda interação para auditoria.
 > existia na raiz — e por isso a rota devolvia **500 em dev também**, não apenas na Vercel. O
 > `.env.example` do app documenta a chave + `ANTHROPIC_MODEL`/`ANTHROPIC_TIMEOUT_MS`.
 
-**Widget do assistente (frontend-vite — Fase 3):** `organisms/AiChatWidget.tsx` (botão flutuante +
-**o estado da conversa**) montado **uma vez no `Layout`**, logo presente em TODAS as telas
-protegidas e em nenhuma de auth; `organisms/AiChatPanel.tsx` (side sheet apresentacional, carregado
-por `lazy()`) usa `<dialog>` + `showModal()` — role/aria-modal, trap de foco, Esc e retorno de foco
-nativos, mesmo padrão de `AttachmentViewer`/`ExpenseDetailModal`. A resposta é markdown renderizado
-por `lib/markdownLite.ts` + `molecules/MarkdownMessage.tsx` (parágrafo · lista · tabela GFM ·
-negrito · código), **JSX puro, sem `dangerouslySetInnerHTML`** e sem dependência nova: o
-`SYSTEM_PROMPT` pede tabela markdown e o backend devolve **só texto** (`tool_calls` traz a
-CONTAGEM de linhas, não as linhas — não há `chart_spec`). Cliente em `services/aiChat.ts`
-(`dataApiCall('/ai-chat')` + timeout de 180 s traduzido para pt-BR).
-**`buildHistory` só envia PARES completos** (máx. 8 mensagens): a rota **rejeita com 422**
-histórico ímpar ou fora da alternância, e a conversa em tela termina em `user` em dois estados
-normais (aguardando resposta e após falha) — daí o widget poder passar a lista inteira, que a
-pergunta sem par é descartada sozinha. É isso que faz o **"Tentar novamente"** (reenvia a mesma
-pergunta sem duplicá-la na tela) não virar 422. **`buildHistory` também NORMALIZA** para
-`{role, content}` — sem isso, `toolCalls`/`truncated` das respostas viajariam dentro de cada item de
-`history` (o Zod da rota os descarta, mas o payload deve ser o que o contrato declara), e é o que
-permite o widget entregar as próprias entradas sem um `map`. **`ChatEntry` mora no SERVIÇO**
-(`extends AiChatMessage`), não no componente: é o modelo do domínio, e no painel obrigaria o widget
-a importar tipo de um chunk que ele carrega sob demanda.
-
-> **CANCELAMENTO É PONTA A PONTA — não regredir (§20.8):** o botão **"Parar"** (e o "Nova
-> conversa") aborta um `AbortController` do widget; `askAiChat` combina esse signal com o teto de
-> tempo via **`AbortSignal.any`** (preserva o `reason`, que é o que distingue cancelamento de
-> timeout); a rota repassa **`request.signal`** ao gateway, que checa `throwIfAborted` no **limite de
-> cada iteração** e manda `{ signal }` na chamada ao modelo. Sem isso, desistir era só fechar o
-> painel — e o servidor seguia gastando tokens até o fim. **Quem decide se foi aborto é o SIGNAL, não
-> o tipo do erro:** medido no SDK 0.115.0, `APIUserAbortError` tem `name === 'Error'` (checar por
-> nome não pega) e `instanceof` num membro do namespace **lança** se a classe não existir — dentro de
-> um `catch`, essa exceção substituiria o erro real. Cancelamento é **aviso, não erro**: no cliente
-> vira `Alert variant="info"` (daí o painel receber `feedback: {variant,text}`, não `error: string`);
-> no servidor, `AiChatAbortedError` (**499**) é logado como **`'cancelado pelo cliente'`** COM o custo
-> parcial — os tokens gastos não voltam, e omiti-los subestimaria o custo e contaminaria a busca por
-> falhas reais. O signal **não** vai às RPCs de `runTool` (a falha de tool virá como `tool_result
-> is_error` e seguiria o loop — a checagem de iteração pega o abort logo depois).
-
-> **NÃO existe trava de reentrância no widget — é intencional (§20.8b):** enquanto `loading` é
-> `true` o painel desabilita campo, envio e "Tentar novamente" e nem renderiza as sugestões, e o
-> React libera eventos discretos já com o estado aplicado — a exclusão mútua é **estrutural**. Uma
-> trava adicional seria código que nenhum caminho alcança e que daria a impressão de garantir um
-> invariante mantido pelo `loading`. Ao criar um call site novo de envio (atalho de teclado, deep
-> link), respeite o `loading`.
-
-> **Os DOIS caminhos de fechamento do painel são fiação não-óbvia — têm teste, mantenha:** Esc vem
-> do evento **`cancel`** do `<dialog>` (`onCancel={onClose}`), e o clique no backdrop vem de um
-> listener **NATIVO** que compara `e.target === dialog` — não `onClick` no `<dialog>`, que é o smell
-> S1082 do SonarCloud e ainda fecharia ao clicar no conteúdo. Os dois não apareciam em teste nenhum
-> até 2026-07-30 (um refactor quebraria "fechar o chat" sem nada ficar vermelho); hoje há um
-> `it.each` para eles **mais** o caso complementar de que clicar DENTRO do painel NÃO fecha.
-
-> **GUARDA DE GERAÇÃO no `AiChatWidget` — não regredir (achado do code review §20.6):** o widget
-> mantém um `generationRef` incrementado em "Nova conversa"; resposta de geração anterior é
-> **descartada** ao chegar. Sem ela, resetar a conversa com uma requisição em voo faz o `setEntries`
-> anexar a resposta a uma conversa **vazia** — balão de resposta sem pergunta e histórico começando
-> em `assistant`, sem erro nenhum. Uma requisição leva dezenas de segundos, então a janela é larga.
-> O `setLoading(false)` fica **fora** da guarda, senão o painel trava em "Consultando…". O teste
-> `AiChatWidget.test.tsx` foi validado contra o mutante (removida a linha da guarda, ele falha).
-
-**Trade-off assumido:** o `showModal()` deixa a
-página de fundo inerte — não se consulta o grid de `/consulta` com o chat aberto; é o preço do trap
-de foco/Esc nativos, e trocar para painel não-modal é mudança contida ao `AiChatPanel`. O footer de
-`/consulta` leva `pl-1 pr-20` (não `px-1`) para o botão flutuante não cobrir o "Carregar mais" — o
-único controle no canto inferior direito do app.
-
 **`analytics` está EXPOSTO no PostgREST** (Data API → Settings → Exposed schemas: `public`,
-`graphql_public`, `analytics`) — passo de dashboard, feito em 2026-07-29. Conferido por HTTP com a
-anon key real: `POST /rest/v1/rpc/resumo_situacao` devolve `42501 permission denied for schema
-analytics` para `anon` (correto — roteia para o schema **e** barra o papel anônimo). Se algum dia
-voltar `PGRST106 Invalid schema`, a exposição foi desfeita.
+`graphql_public`, `analytics`) — passo de dashboard, feito em 2026-07-29. Se algum dia voltar
+`PGRST106 Invalid schema`, a exposição foi desfeita.
 
 > **`Content-Profile`, NÃO `Accept-Profile`, seleciona o schema em RPC (não regredir):** para
 > **POST** (que é como o PostgREST expõe função), o header é **`Content-Profile: analytics`**. Com
@@ -913,55 +839,46 @@ voltar `PGRST106 Invalid schema`, a exposição foi desfeita.
 - **Log gravado ANTES de responder e aguardado.** Em serverless a function é **congelada** no
   `return`, então `void gravarLog()` depois dele simplesmente não roda — e nada acusaria a perda.
   A pergunta que **falhou** também é auditada: é dela que sai "quais tools faltam" (§11).
-  **O mapeamento de colunas é travado por teste (`lib/ai-chat/log.test.ts` — achado nº 8, §20.7):**
-  como `logInteraction` **nunca lança**, um nome de coluna errado deixaria a auditoria **morta em
-  produção** sem erro, sem teste vermelho e sem log. O caso central compara o payload com as colunas
-  declaradas nas **migrations 098/101** (guarda cross-layer, no molde de
-  `test_doc_type_domain_consistency.py`), tem asserção de sanidade do parser e é ancorado em
+  **O mapeamento de colunas é travado por teste (`lib/ai-chat/log.test.ts`):** como `logInteraction`
+  **nunca lança**, um nome de coluna errado deixaria a auditoria **morta em produção** sem erro, sem
+  teste vermelho e sem log. O caso central compara o payload com as colunas declaradas nas
+  **migrations 098/101** (guarda cross-layer), tem asserção de sanidade do parser e é ancorado em
   `import.meta.dirname` (não `process.cwd()`, que muda conforme o vitest é invocado). Ao acrescentar
-  campo ao log, a migration e este teste andam juntos — foi o que a **102** fez ao trazer
-  `truncated`/`iterations`.
+  campo ao log, migration e teste andam juntos — foi o que a **102** fez com `truncated`/`iterations`.
 - **`export const maxDuration = 300` na rota.** O default da Vercel (10–15 s) mata um loop de 2–3
   iterações que funciona perfeitamente em dev.
 - **Teto de 6 iterações**, e ao atingi-lo uma chamada final que **não pode usar tools**
-  (`tool_choice: none`, com as tools ainda presentes — ver o bullet do fechamento abaixo) — o
-  usuário recebe o que já foi apurado com `truncated: true`, em vez de um erro seco.
+  (`tool_choice: none`, com as tools ainda presentes — ver o bullet do fechamento) — o usuário
+  recebe o que já foi apurado com `truncated: true`, em vez de um erro seco.
 - **Tool calls paralelos voltam em UMA mensagem `user`**; falha de tool vira `tool_result` com
-  `is_error` (nunca bloco omitido, que quebraria o pareamento), com o detalhe no log, não no
-  modelo.
+  `is_error` (nunca bloco omitido, que quebraria o pareamento), com o detalhe no log, não no modelo.
 - **A data de hoje vai na MENSAGEM, não no system prompt.** No bloco cacheado, o prefixo mudaria a
   cada requisição e o prompt caching nunca acertaria — silenciosamente, sem erro.
-- **`stop_reason: 'max_tokens'` marca `truncated`** (o turno terminou, mas o texto foi cortado ao
-  meio) e o resultado de tool tem **teto de 60 KB**, cortado **por registro** — JSON partido ao meio
-  é ilegível para o modelo.
+- **`stop_reason: 'max_tokens'` marca `truncated`** e o resultado de tool tem **teto de 60 KB**,
+  cortado **por registro** — JSON partido ao meio é ilegível para o modelo. Quando UM registro
+  estoura sozinho (`additional_info` é TEXT sem limite), corta a string e **DECLARA** o corte
+  (`JSON CORTADO`): cortar sem avisar faria o modelo ler o fragmento final como dado.
 - **Streaming (`.stream().finalMessage()`)**, não `.create()`: a resposta ao cliente é a mesma, o
-  ganho é o socket não ficar ocioso num turno longo (timeout de proxy) — e é de onde a Fase 3
-  puxará o texto parcial.
+  ganho é o socket não ficar ocioso num turno longo (timeout de proxy).
 - **401/400 do SDK NÃO são traduzidos** (viram 500 + log): são erro de configuração/payload
   **nosso**; dizer "sessão expirada" mandaria o usuário deslogar sem efeito. Só se traduz o que o
-  usuário pode **agir** — 429 (`RateLimitError`), **qualquer 5xx do provedor** (→ 503
-  "indisponível") e timeout.
+  usuário pode **agir** — 429 (`RateLimitError`), **qualquer 5xx do provedor** (→ 503) e timeout.
 - **A chamada de FECHAMENTO manda as MESMAS `tools` + `tool_choice: {type:'none'}`** — não basta
   omitir o array. Remover `tools` é mudança de DEFINIÇÃO de tool, que invalida os três níveis de
-  cache (tools + system + messages) justamente na chamada de histórico mais longo; trocar só o
-  `tool_choice` preserva o cache. Achado do review — ver §19.2.
+  cache (tools + system + messages) justamente na chamada de histórico mais longo.
 - **O log registra os QUATRO campos de token.** `usage.input_tokens` é só o **resto não-cacheado**;
   sem `cache_read_input_tokens` não há como estimar custo nem **notar um invalidador silencioso do
   cache**, que não gera erro — só zera o número e aumenta a fatura (migration 101).
-- **A falha leva o estado parcial até a auditoria.** O gateway anexa ao erro o que já gastou e
-  apurou; sem isso, a falha de uma pergunta que custou 5 iterações era logada como "0 tokens, 0
-  tools" — e some o registro que revela quais tools faltam (§11). O `attachPartialRun` **engole a
-  própria falha** (`try/catch` + log): `defineProperty` lança em erro não-extensível, e como ele é
-  chamado DENTRO do `throw`, essa exceção substituiria o erro traduzido (429 → `TypeError`
-  genérico). Perde-se a auditoria parcial, nunca o erro.
-- **Teto do resultado de tool corta por REGISTRO — e, quando UM registro estoura sozinho
-  (`additional_info` é TEXT sem limite), corta a string e DECLARA o corte** (`JSON CORTADO`).
-  Devolver o registro inteiro furaria o teto que protege o contexto; cortar sem avisar faria o
-  modelo ler o fragmento final como dado.
-- **TROCAR `ANTHROPIC_MODEL` pode desligar o prompt caching EM SILÊNCIO.** O mínimo de prefixo
+- **A falha leva o estado parcial até a auditoria.** Sem isso, a falha de uma pergunta que custou 5
+  iterações era logada como "0 tokens, 0 tools". O `attachPartialRun` **engole a própria falha**
+  (`try/catch` + log): `defineProperty` lança em erro não-extensível e, como é chamado DENTRO do
+  `throw`, essa exceção substituiria o erro traduzido (429 → `TypeError` genérico). Perde-se a
+  auditoria parcial, nunca o erro.
+- 🔴 **TROCAR `ANTHROPIC_MODEL` pode desligar o prompt caching EM SILÊNCIO.** O mínimo de prefixo
   cacheável varia por modelo e **não é monotônico entre gerações**: 512 no Opus 5, mas **4.096** no
-  Opus 4.6 e no Haiku 4.5. Medido aqui: system + tools ≈ **2.175 tokens** — folgado para o Opus 5,
-  abaixo do mínimo daqueles dois. Abaixo do mínimo o `cache_control` é ignorado sem erro: só
+  Opus 4.6 e no Haiku 4.5. **Medido em produção: 3.653 tokens/chamada** (§20.9 — a estimativa
+  anterior de ~2.175 era 68% baixa), ou seja, folgado para o Opus 5 e **abaixo do mínimo daqueles
+  dois**: o risco é real, não teórico. Abaixo do mínimo o `cache_control` é ignorado sem erro — só
   `cache_read_input_tokens` zerado e a conta subindo. **Depois de qualquer troca de modelo, conferir
   essa coluna em `analytics.ai_chat_log`.**
 
@@ -981,110 +898,70 @@ voltar `PGRST106 Invalid schema`, a exposição foi desfeita.
 - **`cancelado` (id 9) fica fora dos totais por padrão**; "em aberto" é o set explícito
   `status_id IN (1,2,3)` (as flags `has_opened`/`has_closed` da dimensão `status` estão todas
   `false`); e **aging é por `due_date < CURRENT_DATE`, nunca pelo rótulo `status_name`** — que é
-  defasado pela trigger + batch diário (6 rotuladas `vencido` contra 100+ em atraso real).
+  defasado pela trigger + batch diário.
 - **Âncora de teste NÃO pode ser número absoluto** — o dado deriva em 24 h (574→578 contas entre
   28 e 29/07). Usar oráculo diferencial (tool × query de controle) ou janela histórica fechada.
-- **O `service_role` PRECISA de GRANT explícito para gravar `ai_chat_log` (migration 101 — não
-  regredir):** a 098 concedeu tudo a `authenticated` e **nada** ao `service_role`, que é quem
-  escreve a trilha. Ele burla RLS (`rolbypassrls`) mas **não é superuser** — sem `USAGE` no schema
-  e `INSERT` na tabela o write falha com `42501`, e como `logInteraction` **nunca lança**, o pilar
-  de auditoria ficaria **morto em produção sem nenhum sintoma**. A 101 concede `USAGE` + `SELECT,
-  INSERT` **só no log** — e **nada** nas 6 funções nem nas views: o caminho de dados tem de passar
-  pelo JWT do usuário, senão é escalada de privilégio silenciosa. Verificado com o papel real:
-  INSERT ok · `EXECUTE` nas tools = false · `SELECT` nas views = false · `UPDATE` no log = false
-  (grava a trilha, não a adultera). **Toda tabela nova em `analytics` repete esse cuidado.**
+- **O `service_role` PRECISA de GRANT explícito para gravar `ai_chat_log` (migration 101):** a 098
+  concedeu tudo a `authenticated` e **nada** ao `service_role`, que é quem escreve a trilha. Ele
+  burla RLS (`rolbypassrls`) mas **não é superuser** — sem `USAGE` no schema e `INSERT` na tabela o
+  write falha com `42501`, e como `logInteraction` **nunca lança**, o pilar de auditoria ficaria
+  **morto em produção sem nenhum sintoma**. A 101 concede `USAGE` + `SELECT, INSERT` **só no log** —
+  e **nada** nas funções nem nas views: o caminho de dados tem de passar pelo JWT do usuário.
+  **Toda tabela nova em `analytics` repete esse cuidado.**
 
-**O documento JÁ FOI REVISADO** com o resultado da Fase 0 (views validadas contra o banco, 6 tools,
-roadmap re-baselinado, §13 substituída pelos achados). O resumo abaixo é o essencial; o documento é
-a fonte completa.
+**Decisões de arquitetura que não devem ser reabertas** (fundamentação em §13/§15 do doc):
 
-**As 4 decisões fechadas na Fase 0:**
+- **Acesso a dados = PostgREST + JWT do usuário, NÃO uma role `ai_readonly`** — role dedicada não
+  casa policy alguma (elas são `TO authenticated` + `auth.uid()`) e cairia no default-deny, vendo
+  **0 linhas**.
+- **Tools são FUNÇÕES SQL (RPC) `SECURITY INVOKER`, não views filtradas** — o PostgREST só agrega
+  com `db-aggregates-enabled`, **desligado por padrão no Supabase**.
+- **`generate_sql` (text-to-SQL) ADIADO** — não roda por PostgREST e é o maior vetor de risco. Foi
+  essa análise que expôs o resíduo de grants da **097** (`TRUNCATE` ignora RLS e estava concedido a
+  `anon`/`authenticated`); já revogado, então o pré-requisito está pronto se o fallback voltar.
+- **ADR-001 — sem vetores/RAG no núcleo analítico:** o cálculo é determinístico sobre linhas, então
+  nada de pgvector/embeddings no caminho do número; casamento aproximado de nome de fornecedor/
+  empresa usa `unaccent` + `pg_trgm` (os índices trigram já existem).
+- **`payment_date` responde caixa realizado direto** (`date_field: 'pagamento'`), por decisão do
+  dono do produto — ver o bloco da migration 096 na seção de banco.
 
-1. **Acesso a dados = PostgREST + JWT do usuário, NÃO uma role `ai_readonly`.** A role dedicada do
-   desenho original veria **0 linhas**: as policies de `financial_account_control` são `TO
-   authenticated` e dependem de `auth.uid()` (via `auth_group_sees_only_own()`), que só existe
-   porque o PostgREST popula `request.jwt.claims` a cada request — uma role nova não casa policy
-   alguma e cai no default-deny. O caminho correto é o que `canSeeConta` (`lib/auth.ts`) já usa:
-   `getAnonClient()` + `.setHeader('Authorization', 'Bearer <token do usuário>')`.
-2. **Tools são FUNÇÕES SQL (RPC) `SECURITY INVOKER`, não views consultadas por filtro.** O PostgREST
-   só agrega (`sum()`/`count()`) com `db-aggregates-enabled`, **desligado por padrão no Supabase**.
-   Como função, a agregação roda no banco, os parâmetros viajam como **bind** (o gateway nunca
-   interpola string do modelo em SQL) e a RLS das tabelas base continua valendo dentro dela.
-3. **`generate_sql` (text-to-SQL) ADIADO** para depois da v1 — não roda por PostgREST e é o maior
-   vetor de risco. Foi essa análise que expôs o resíduo de grants corrigido pela **migration 097**:
-   **`TRUNCATE` ignora RLS** e estava concedido a `anon` e `authenticated` em quase todo o `public`
-   — inalcançável enquanto não existe caminho de SQL arbitrário, mas um text-to-SQL com conexão
-   direta criaria esse caminho. **Já revogado**; se o fallback voltar, o pré-requisito está pronto.
-4. **Camada semântica no schema `analytics`**, exposto no PostgREST (Settings → API → Exposed
-   schemas) com `GRANT USAGE/SELECT/EXECUTE` a `authenticated` e `REVOKE` do resto.
+**Widget do assistente (`frontend-vite`):** `organisms/AiChatWidget.tsx` (botão flutuante + **o
+estado da conversa**) montado **uma vez no `Layout`** — presente em todas as telas protegidas e em
+nenhuma de auth; `organisms/AiChatPanel.tsx` (side sheet apresentacional, `lazy()`) usa `<dialog>` +
+`showModal()`, herdando role/aria-modal, trap de foco, Esc e retorno de foco nativos. A resposta é
+markdown renderizado por `lib/markdownLite.ts` + `molecules/MarkdownMessage.tsx`, **JSX puro, sem
+`dangerouslySetInnerHTML`** e sem dependência nova. Cliente em `services/aiChat.ts`.
 
-**ADR-001 (§15 do documento) — sem vetores/RAG no núcleo analítico:** o cálculo é determinístico
-sobre linhas, então nada de pgvector/embeddings no caminho do número; casamento aproximado de nome
-de fornecedor/empresa usa `unaccent` + `pg_trgm` (os índices trigram já existem). A decisão 3 acima
-**não conflita** com ela: adiar o text-to-SQL é sobre *quando* implementar o fallback, não sobre
-trocá-lo por recuperação semântica.
-
-**`payment_date` responde caixa realizado direto** (`date_field: 'pagamento'`), por decisão do dono
-do produto — ver o bloco da migration 096 na seção de banco.
-
-**Armadilhas de schema que a Fase 0 corrigiu (já aplicadas ao §7 do documento — não reintroduzir):**
-não existem `dim_company`/`dim_supplier`/`dim_status` (são `company`/`supplier`/`status`); a FK é
-**`sk_supplier`**, não `supplier_id`; o nome do fornecedor é `trade_name` (fallback `legal_name`), o
-da empresa é `company.trade_name`; **o aging não pode filtrar `status_name = 'vencido'`** (só 1 conta
-de 574 está nesse status — vencido de fato é `due_date < CURRENT_DATE AND status_id IN (1,2,3)`, pois
-a trigger só reclassifica em INSERT/UPDATE e o batch roda 1x/dia); as flags
-`has_opened`/`has_closed`/`has_invoiced` da dimensão `status` estão **todas `false`**, então "em
-aberto" só se obtém pelo set explícito `{1,2,3}`; o fact precisa da classificação contábil (centro,
-plano, grupo, subgrupo) com o sentinela id 0 → "não informado"; e **não usar materialized view**
-(574 linhas, 19 índices).
-
-**Fase 2 — APLICADA (2026-07-29).** Os arquivos e a contagem de testes estão no bloco de status no
-topo desta seção (fonte única — não repetir aqui, foi o que já divergiu uma vez). Os três itens que
-o §17 apontou como quebrados em produção estão endereçados (`maxDuration`, teto de iterações, log
-síncrono) — ver os invariantes acima e o §18 do doc.
-
-**Defeitos que a autorrevisão pegou depois de tudo verde (§18.4 — não reintroduzir):** comentário
-prometendo teto de tamanho que **não existia** no resultado de tool; `max_tokens` tratado como
-resposta completa; chamada de fechamento **fora do `try`** (um 429 ali virava 500 genérico); e
-histórico sem alternância user/assistant, que vira 400 do provedor mascarado em 500. Todos
-corrigidos e travados por teste.
-
-**Code review posterior (§19 do doc) — 7 achados, NENHUM produzia erro visível:** (1) **CRÍTICO** —
-`service_role` sem GRANT no `analytics`: a auditoria inteira falharia em silêncio (migration 101);
-(2) o fechamento omitia `tools` e **destruía o prompt cache** na chamada mais cara; (3) o teste de
-concorrência do JWT cobria só `from()`, não o `.schema().rpc()` do chat (estendido e validado com
-mutante de 4 camadas); (4) tokens de cache não registrados, tornando o caching inverificável;
-(5) falha auditada como "0 tokens, 0 tools"; (6) só o 529 traduzido entre os 5xx do provedor;
-(7) `sk_company`/`nature_ids` aceitos no Zod fora do domínio do JSON Schema.
-
-**Segunda passada — 2 defeitos nas PRÓPRIAS correções (§19.9):** `attachPartialRun` lançava em erro
-não-extensível, o que **substituiria o erro traduzido dentro do `throw`** (429 → `TypeError`
-genérico, causa real perdida — a auditoria apagando a informação que existe para preservar); e o
-teto de resultado não segurava **um** registro grande (`additional_info` é TEXT sem limite: 200 KB
-saíam inteiros **e** rotulados "truncado"). Os dois estão em código **defensivo** — a categoria que
-menos aparece em teste, porque só roda quando algo já deu errado. **Todo `catch`/teto/fallback novo
-merece uma sonda que force o caminho ruim** — os dez achados das duas passadas foram encontrados
-conferindo o código contra o SISTEMA REAL (catálogo do Postgres, tabela de invalidação de cache da
-API, mutantes no SDK instalado), não relendo o código.
-
-**Fase 3 — aplicada em 2026-07-30 (§20 do doc):** UI entregue (widget global — ver o bloco de status
-no topo desta seção) e chave configurada em `apps/api-backend/.env.local`. **O que resta é
-verificação, não código:** a **primeira chamada real** (o usuário pergunta logado no navegador) e a
-leitura da trilha para conferir `cache_read_input_tokens > 0`, `error IS NULL`, `tool_calls` não
-vazio e `row_count` DIFERENTE entre dois usuários de grupos distintos:
-
-```sql
-SELECT created_at, user_id, left(question, 40) AS pergunta, row_count,
-       input_tokens, cache_read_input_tokens, cache_creation_input_tokens,
-       latency_ms, jsonb_path_query_array(tool_calls, '$[*].name') AS tools, error
-FROM analytics.ai_chat_log ORDER BY created_at DESC LIMIT 10;
-```
-
-Mais a `ANTHROPIC_API_KEY` na Vercel (passo do usuário). **Armadilha de teste encontrada aqui (não
-repetir):** `beforeEach(() => mock.mockReset())` **com corpo de expressão** — `mockReset()` devolve o
-próprio mock, e o Vitest trata retorno de função num hook como **teardown**, chamando o mock ao fim
-do teste; com `mockRejectedValue` ativo isso gera rejeição não tratada e o teste falha exibindo a
-mensagem do erro, não uma asserção. Hook de reset sempre em **bloco**.
+- 🔴 **CANCELAMENTO É PONTA A PONTA (§20.8).** "Parar"/"Nova conversa" abortam um `AbortController`;
+  `askAiChat` combina esse signal com o teto de tempo via **`AbortSignal.any`** (preserva o `reason`,
+  que distingue cancelamento de timeout); a rota repassa **`request.signal`** ao gateway, que checa
+  `throwIfAborted` no limite de cada iteração e manda `{ signal }` ao modelo. Sem isso, desistir era
+  só fechar o painel — e o servidor seguia gastando tokens. **Quem decide se foi aborto é o SIGNAL,
+  não o tipo do erro:** no SDK 0.115.0 `APIUserAbortError` tem `name === 'Error'`, e `instanceof` num
+  membro do namespace **lança** se a classe não existir — dentro de um `catch`, essa exceção
+  substituiria o erro real. Cancelamento é **aviso, não erro**: vira `Alert variant="info"` no
+  cliente (daí `feedback: {variant,text}`, não `error: string`) e `AiChatAbortedError` (**499**) no
+  servidor, logado COM o custo parcial — os tokens gastos não voltam.
+- 🔴 **GUARDA DE GERAÇÃO (`generationRef`)** — incrementada em "Nova conversa"; resposta de geração
+  anterior é **descartada**. Sem ela, resetar a conversa com requisição em voo anexa a resposta a
+  uma conversa **vazia** (balão sem pergunta, histórico começando em `assistant`, sem erro nenhum), e
+  a janela é larga porque a requisição leva dezenas de segundos. O `setLoading(false)` fica **fora**
+  da guarda, senão o painel trava em "Consultando…". Validado contra mutante.
+- **`buildHistory` só envia PARES completos** (máx. 8 mensagens) e **NORMALIZA** para
+  `{role, content}`: a rota rejeita com **422** histórico ímpar ou fora da alternância, e a conversa
+  em tela termina em `user` em dois estados normais (aguardando resposta e após falha). É isso que
+  faz o "Tentar novamente" não virar 422. **`ChatEntry` mora no SERVIÇO** (`extends AiChatMessage`),
+  não no painel — senão o widget importaria tipo de um chunk que ele carrega sob demanda.
+- **NÃO existe trava de reentrância — é intencional (§20.8b):** com `loading` o painel desabilita
+  campo, envio e "Tentar novamente" e nem renderiza as sugestões; a exclusão mútua é **estrutural**.
+  Ao criar um call site novo de envio (atalho, deep link), respeite o `loading`.
+- **Os DOIS caminhos de fechamento são fiação não-óbvia — têm teste, mantenha:** Esc vem do evento
+  **`cancel`** do `<dialog>`; o clique no backdrop vem de um listener **NATIVO** que compara
+  `e.target === dialog` — não `onClick` no `<dialog>`, que é o smell S1082 e ainda fecharia ao
+  clicar no conteúdo.
+- **Trade-off assumido:** o `showModal()` deixa a página de fundo inerte — não se consulta o grid de
+  `/consulta` com o chat aberto; é o preço do trap de foco/Esc nativos. O footer de `/consulta` leva
+  `pl-1 pr-20` (não `px-1`) para o botão flutuante não cobrir o "Carregar mais".
 
 **Alicerce verificado (não regredir):** `canSeeConta` — e o gateway, que reusa o padrão — chama
 `.setHeader()` sobre o **singleton** `getAnonClient()`. O postgrest-js isola as requisições por
@@ -1092,8 +969,19 @@ mensagem do erro, não uma asserção. Hook de reset sempre em **bloco**.
 de token entre requisições concorrentes. Isso é garantia da **versão instalada**, não do contrato
 público, e a falha seria silenciosa (um usuário lendo a conta de outro, sem erro) — por isso o
 invariante está travado em `apps/api-backend/lib/auth.concurrency.test.ts`, em arquivo separado de
-`auth.test.ts` (que mocka o SDK inteiro e portanto **não** cobre isto). O teste foi validado contra
-o mutante das duas camadas sabotadas: ele falha quando o defeito existe.
+`auth.test.ts` (que mocka o SDK inteiro e portanto **não** cobre isto). Validado contra o mutante
+das duas camadas sabotadas.
+
+> **Duas lições de método que saíram deste módulo e valem para o projeto todo:**
+> **(1)** os dez achados dos dois code reviews foram encontrados conferindo o código contra o
+> SISTEMA REAL (catálogo do Postgres, tabela de invalidação de cache da API, mutantes no SDK
+> instalado), **não** relendo o código; e **todo `catch`/teto/fallback novo merece uma sonda que
+> force o caminho ruim** — código defensivo é a categoria que menos aparece em teste, porque só roda
+> quando algo já deu errado. **(2)** `beforeEach(() => mock.mockReset())` **com corpo de expressão**
+> é armadilha: `mockReset()` devolve o próprio mock, o Vitest trata retorno de função num hook como
+> **teardown** e chama o mock ao fim do teste; com `mockRejectedValue` ativo isso vira rejeição não
+> tratada e o teste falha exibindo a mensagem do erro, não uma asserção. Hook de reset sempre em
+> **bloco**.
 
 ## Roadmap de enriquecimento de dados — 9 ONDAS (1, 2 e 3 CONCLUÍDAS; 4 com o script PRONTO, não executado)
 
@@ -2709,10 +2597,26 @@ e-mails `status='falha'`, rebusca o corpo no IMAP, baixa o boleto pelo link e gr
 | `/tabelas/plano-de-contas` | `ChartAccountsPage.tsx` | `financial_chart_of_account` (CRUD via Next API) |
 | `/tabelas/grupos-plano-de-contas` | `ChartAccountGroupsPage.tsx` | `financial_chart_of_account_group` (CRUD via Next API) |
 | `/tabelas/subgrupos-plano-de-contas` | `ChartAccountSubgroupsPage.tsx` | `financial_chart_of_account_subgroup` (CRUD via Next API) |
-| `/dashboard_vencimentos` | `Dashboard.tsx` | `financial_account_control` (KPIs/gráficos por mês ou geral; `getDashboardData`). **Filtro por EMPRESA** (`<select>` "Empresa", 1º dos controles; vazio = TODAS; hook `useCompanyOptions`): 5º parâmetro `skCompany` de `getDashboardData`, aplicado nas **DUAS** leituras (escopo + ano — senão o gráfico anual mostraria as duas empresas). Aqui ele escopa **TUDO** (KPIs, donuts e gráfico anual), porque no dashboard todo indicador deriva do escopo; e **aplica na hora** (não há "Buscar"). *(Até 2026-08-08 este parênteses dizia "diferente de `/consulta`, cujos KPIs gerais são globais" — `/consulta` passou a filtrar os 5 KPIs também, então o contraste não existe mais.)* Convive com o filtro de KPI. **Cards de KPI clicáveis = filtro** (Total/Pagos/A vencer/A vencer em 7 dias/Vencidas): clicar aplica o filtro (`KpiFilter`) a TODOS os gráficos; os KPIs seguem com os totais completos. **4 donuts** (situação · tipos de conta · **Tributos** = só guias tributárias detalhadas · formas de pagamento; tipos de conta colapsa os tributários numa fatia "Tributos" via `groupDocumentTypeLabel`/`isTaxDocumentType`). Todos os donuts (aqui e no financeiro) têm arcos + % + ORDEM por **VALOR (R$)** desc, legenda com R$ **sem contagem de contas** e furo central com o **total em R$** — ver `BreakdownDonut`; os de vencimentos usam `size="sm"` (4 na mesma linha no `xl`; só o círculo é menor — 108px). Abre em `total` (sem card marcado), diferente do financeiro |
-| `/dashboard_despesas` | `DashboardFinanceiro.tsx` | `financial_account_control` **escopado a DESPESAS + CUSTO** (`getFinancialDashboardData`) — conta cujo plano de contas tem grupo com Natureza "Despesas" OU "Custo" (`chart_account.group.type_group_id ∈ {TYPE_GROUP_ID_DESPESAS=2, TYPE_GROUP_ID_CUSTO=8}`, migration 094; decisão do usuário 2026-07-22 — custo de mercadoria é conta a pagar e entra em toda métrica; conta sem classificação é excluída). **Mantém** os 5 KPIs, filtro de EMPRESA, mês/ano e escopo (todos só do escopo 2+8). **INVARIANTE — dashboard EXCLUSIVO do escopo Despesas+Custo (não regredir):** TODA métrica (os 5 KPIs valor+contagem, o card de total, os 4 donuts e os 2 rankings) é computada ÚNICA e EXCLUSIVAMENTE sobre linhas do escopo. O recorte é feito por `isExpenseRow` (grupo com `type_group_id` 2 OU 8) **ANTES de qualquer agregação** (`monthRows = monthRowsAll.filter(isExpenseRow)`; KPIs sobre `monthRows`, gráficos/rankings sobre `fMonth` derivado dele). A página consome **um ÚNICO serviço** (`getFinancialDashboardData`) — **NÃO há busca paralela de totais globais**. *(O contraste com `/consulta` que este trecho citava caiu em 2026-08-08: lá os totais paralelos também foram unificados numa fonte só.)* Conta **SEM classificação** (ou de outra natureza, ex. Passivo) fica FORA de tudo — não soma nem conta. **ABRE FILTRADO no KPI "A vencer"** (`useState<KpiFilter>('aVencer')` — pedido do usuário): os CARDS seguem com os totais completos do mês e só os gráficos filtram, então o card "Despesas no mês" e o furo dos donuts mostram números diferentes de propósito; o card "A vencer" já abre com o destaque de selecionado (ver "Destaque dos cards de KPI") e o ✕ do cabeçalho (ou clicar no card) limpa para `total`. **NÃO tem o gráfico "Movimentações mês a mês"** (removido a pedido do usuário) — por isso faz **leitura ÚNICA** (só o mês; o read do ANO existia apenas para alimentar aquele gráfico e foi eliminado junto, com `monthlyFlow` fora de `FinancialDashboardData`). **Gráficos**: **4 donuts `size="sm"` + `dense` em 2 LINHAS de 2** (`grid-cols-1 sm:grid-cols-2 gap-2 mb-2`, **sem** override no xl — o fluxo natural do grid já põe a 3ª/4ª posição na linha de baixo, sem reordenar o DOM; `dense` reduz o padding do card — mesmo padrão já usado pelos 4 donuts do `/dashboard_vencimentos`). Compactos DE PROPÓSITO (decisão do usuário 2026-07-22, revertendo o `size="lg"` de uma iteração anterior no mesmo dia): sobrar altura de viewport para os **rankings abaixo**, que não têm scroll próprio e mostram até 12 linhas cada — donut menor = menos scroll até ver a lista inteira. **Diâmetro do anel DINÂMICO, mas ÚNICO entre os 4 donuts (não regredir)** (`diameterPx` em `BreakdownDonut`/`DonutCard`, prop opcional que SOBREPÕE o token de `size` via inline style — nenhum outro call site usa; decisão do usuário 2026-07-22): a página calcula `sumSliceValues`/`scaledDonutDiameter` (helpers locais, não exportados) e usa o MAIOR total (R$) do conjunto (`maxDonutTotal`) para gerar **um único `donutDiameter`** (`scaledDonutDiameter(maxDonutTotal, maxDonutTotal)`, que por ratio=1 sempre cai no `DONUT_MAX_PX`=124), reaplicado IGUAL nos 4 donuts. **Correção da 1ª versão** (escalava CADA donut proporcionalmente ao seu PRÓPRIO total, entre `DONUT_MIN_PX`=84 e `DONUT_MAX_PX`=124): com totais próximos entre si (ex.: Despesas Fixas R$340k vs Custos de Mercadorias R$324k) a diferença de diâmetro ficava de ~1px — visualmente incoerente, nem proporcional de forma perceptível nem igual. `scaledDonutDiameter` continua genérico (aceita `value`≠`maxValue` para outros usos futuros); a POLÍTICA "um valor só para todos" está no call site, não na função. Inline style (não classe Tailwind) porque é um número CONTÍNUO computado do dado em runtime — mesma exceção já adotada no gradiente cônico e nas barras do `RankingList`; o furo acompanha a mesma razão do preset "sm" (`DYNAMIC_HOLE_RATIO=0.11`). Sem `diameterPx`, o componente se comporta 100% como antes (token `size` fixo — vencimentos inalterado). **Fonte do valor central SEM negrito** (`font-sans font-normal`, não mais `font-mono font-semibold` — decisão do usuário 2026-07-22): escopo é só o número dentro do furo (`fmtMoneyCompact`); o `font-mono` da legenda (valor por fatia) e do `RankingList` NÃO mudou. Ordem **"Classificação Financeira"** (rótulo do card; Fixa/Variável/**Custos de Mercadorias**, `tipoBreakdown` pela descrição do `type_group` do SUBGRUPO — do catálogo, sem literal), **"Custos de Mercadorias"**, **"Despesas Fixas"** e **"Despesas Variáveis"** (por GRUPO — `group_description` — particionados pelo Tipo do subgrupo via `type_group_id` 7/5/6: `custoMercadoriasBreakdown`/`despesaFixaBreakdown`/`despesaVariavelBreakdown`; conta com subgrupo não classificado não entra em nenhum dos três — sem balde residual, por decisão de produto); e **DOIS rankings por VALOR (R$)** — **centros de custo** (`costCenterRanking`) e **subgrupo de plano de contas** (`subgroupRanking`, card rotulado "Ranking de contas") —, ambos **top 12** (`RANKING_TOP_N`, aproveitando o espaço do gráfico removido) via os helpers únicos `rankBy` (agrega + desambigua rótulo) e `rankEntry` (monta a entrada / corta o sentinela). **Célula da direita = % do total de contas do escopo, não a contagem crua (pedido do usuário 2026-07-22 — só estes dois rankings):** `rankBy` calcula `pct = count / fMonth.length * 100` para CADA balde (inclusive os fora do top-12 exibido — o denominador é o total do escopo, não a soma dos 12 exibidos, então as % somam 100% entre TODOS os baldes, não necessariamente entre as linhas visíveis) e o grava em `SupplierRank.pct` (campo opcional, novo). O `RankingList` troca a célula automaticamente: **com `pct`** mostra `Math.round(pct)}%`; **sem `pct`** (ranking de fornecedores de `/dashboard_vencimentos`, que não passa o campo) mantém `"N conta(s)"` — nenhuma mudança nesse outro call site. **Linhas um pouco mais compactas (`dense`, prop nova do `RankingList`, opt-in — só aqui, não no de fornecedores):** padding vertical e margem antes da barrinha reduzidos a 1px (`py-px`/`mb-px`, era `py-0.5`/`mb-0.5`) — cabe mais das 12 linhas na mesma altura de card, sem remover nenhuma informação (nome, valor, badge, barra e agora %/contagem continuam todos presentes). **O badge de posição NÃO encolhe** (`h-5 w-5` nos dois modos) e a 1ª versão (`py-0`/`mb-0`, sem padding/margem algum, + badge `h-4 w-4`) foi revertida para esta intermediária a pedido do usuário (2026-07-22: "ficou muito compactado") — o padding zerado ganhava pouca altura extra (a linha de texto+barra já domina a altura sobre o badge nos dois casos) e o resultado visual ficou apertado demais. Testes: `RankingList.test.tsx` (pct vs. contagem, `dense` vs. normal — trava `py-px`, não `py-0`), `financialDashboard.test.ts` (pct calculado sobre o total do escopo), `DashboardFinanceiro.test.tsx` (integração — % renderizado + classe `py-px` nos dois cards). **A agregação é pela IDENTIDADE (o id da FK), NUNCA pelo texto** (`rankEntry`/`rankBy`): nem `financial_cost_center` nem `financial_chart_of_account` têm UNIQUE em descrição — só a PK (o CRUD valida o CÓDIGO, e só na aplicação) —, então agregar por texto fundiria dois cadastros homônimos numa linha somada, em silêncio. O texto é só RÓTULO: centro de custo mostra **a descrição** (as 14 são distintas hoje), com o **código prefixado apenas se dois ids tiverem o mesmo rótulo**; o **ranking de contas** agrega pelo **SUBGRUPO** do plano (`subgroupRanking`; o CARD mantém o rótulo "Ranking de contas") e mostra a **descrição do subgrupo**, com o código prefixado só quando dois subgrupos forem homônimos (mesmo tratamento do centro de custo). A agregação é pela IDENTIDADE do subgrupo (`chart_account_subgroup_id`), NUNCA pelo texto (o cadastro `financial_chart_of_account_subgroup` não tem UNIQUE em descrição). **O sentinela id 0 EXISTE nos dois cadastros com descrição NULL**, logo o embed vem PREENCHIDO — por isso `rankEntry` corta por `id > 0` **e** descrição não vazia, senão a linha apareceria como um rótulo técnico (`#0`) em vez de cair no balde "não informado". O centro vem da **própria conta** (`cost_center_id` + embed `cost_center`), não do plano: é a coluna que o CRUD grava e que `/consulta` exibe. **NÃO tem "Contas críticas e prioritárias"** (removido — segue só no de vencimentos; `PriorityList`/`classifyPriority`/`priorityAccounts` permanecem intactos lá). **Read do mês** traz os DOIS embeds de classificação — `cost_center` (código+descrição, do `cost_center_id` da CONTA) e `chart_account → group/subgroup → type_group` (+ `account_code`/`account_description`) — espelhando os aliases/FKs do `SELECT_WITH_EMBEDS`, mais os ids `cost_center_id`/`chart_account_id`, que são a chave dos rankings. `ExpenseMonthRow` **não herda `MonthRow`**: faz `Pick` de `id`/`amount`/`status_id`/`due_date`/`cost_center_id` + `supplier(trade_name,legal_name)` + os embeds de classificação (o `id`/`supplier` alimentam o **card de detalhe** — ver drill-down abaixo). Do subgrupo vêm a identidade/rótulo (`chart_account_subgroup_id`/`subgroup_code`/`subgroup_description`, base do ranking de contas) e a folha `type_group`; `ExpenseDetailRow` é o alias público de `ExpenseMonthRow`. Os primitivos de gráfico (`BreakdownDonut`/`KpiCard`/`RankingList` + cores) ficam em `components/dashboard/`, compartilhados com o de vencimentos (só o donut de situação `StatusDonut` é local em `Dashboard.tsx`). **Card de DETALHE (drill-down) — clicar num registro dos gráficos (não regredir):** clicar numa **fatia da legenda** de qualquer donut ou numa **linha** de qualquer ranking abre o **`ExpenseDetailModal`** (modal centralizado `<dialog>`) com um `DataGrid` enxuto (`getExpenseDetailColumns` — colunas **Fornecedor · Plano de conta · Vencimento · Valor · Situação**, Situação por último como badge read-only via `StatusBadge`+`STATUS_NAME_BY_ID[status_id]`) das contas daquele agregado, **ordenadas por VENCIMENTO ascendente** (mais próximas primeiro; sem vencimento vai ao fim — decisão do usuário 2026-07-23, substituiu a ordem por valor desc). **Estratégia EM MEMÓRIA (sem leitura extra por clique):** o read do dashboard passou a trazer `id` + `supplier`, e `getFinancialDashboardData` retorna **`detailRows` (= `fMonth`, o MESMO conjunto que gerou os gráficos)**; o clique filtra via **`filterExpenseDetailRows(rows, target)`** (puro/testável), que reproduz EXATAMENTE o balde de cada gráfico → o detalhe é sempre subconjunto consistente do que a fatia/linha contou (inclusive sob truncagem). **Identidade do balde:** donuts casam pelo **rótulo** (`topBucketLabels` — mesma seleção top-N que o `breakdownBy` agora USA; a fatia "outros" = complemento do top-N; "não informado" = `pick(r) ?? 'não informado'`). **O top-N é por VALOR (R$), NUNCA por contagem de linhas (bug real corrigido em 2026-07-22 — não regredir):** o donut exibe arco/%/ordem por valor, então a SELEÇão do top-N precisa usar o MESMO critério — senão um grupo com POUCAS contas de valor ALTO (ex.: "Serviços Gerais": 2 contas, R$20 mil) perde para um grupo com MUITAS contas de valor BAIXO (ex.: "Despesas com Utilidades": 5 contas, R$8 mil) e cai em "outros" apesar de valer mais. Caso de origem: conta da PANIFICADORA BELGA (R$20.100,80, grupo "Serviços Gerais" / subgrupo "Copa e Cozinha", corretamente classificado como Despesas Fixas — FK direta e FK via subgrupo do `chart_account` CONSISTENTES, verificado no banco: não era erro de relacionamento/join) aparecia em "outros" do donut "Despesas Fixas" só por causa do critério errado. Testes: `services/supabaseDrill.test.ts` (describe "seleção é por VALOR..."). Os donuts por-grupo usam o alvo genérico **`chart:'grupoTipo'` + `typeGroupId`** (5/6/7 — pré-filtra pelo Tipo do subgrupo antes do grupo; substituiu os antigos cases `'fixa'`/`'variavel'`); rankings casam pela **`SupplierRank.key`** (a `RankPick.key` `cc:<id>`/`sg:<id>`/`∅` — NUNCA o `name`, homônimo/prefixável; `∅` = sentinela id 0 / sem descrição). **Acessibilidade/não regredir:** as fatias (`BreakdownDonut.onSelect`) e as linhas (`RankingList.onSelect`) só viram `<button>` reais quando o callback é passado — os call sites do **/dashboard_vencimentos NÃO passam** e seguem não-interativos (travado por teste; evita S1082). `SupplierRank.key` virou **obrigatório** → o ranking de fornecedores do vencimentos (map inline) grava `sup:<nome>`. Modal = padrão `<dialog>`+`showModal()` do `/consulta` (Esc/foco/backdrop; fallback `el.open=true` no jsdom). **Robustez (não regredir — code review):** o `DataGrid` do modal liga **`enableRowVirtualization`** (um balde grande no escopo "Todas as contas", cap 20 000, montaria milhares de `<tr>` e travaria a aba); o total/ordenação do modal coagem `amount` por **`Number(x)||0`** (o front NÃO roda Zod — `numeric` pode chegar como STRING; espelha o `num()` do serviço, senão o total concatenaria strings); `openDrill` **não abre com 0 linhas** (guarda contra `bucketKey` inválido) e `load` faz **`setDrill(null)`** (fecha o snapshot obsoleto em qualquer recarga — hoje defensivo, pois o `<dialog>` modal deixa os controles inertes); o case `'grupoTipo'` tem **guarda `typeGroupId == null → []`** (sem ela, `tipoOf(r) === undefined` CASARIA linha sem embed de subgrupo — `undefined === undefined` — e o ramo "outros" devolveria as não-classificadas; travado por teste com fixture `subgroup: null`); o top-N do donut é a constante única **`DONUT_TOP_N=6`** (acopla `breakdownBy` + `topBucketLabels`) — top-6 categorias + a fatia sintética "outros" (quando houver sobra) = **no máximo 7 linhas visíveis** por donut (decisão do usuário 2026-07-22: "outros" CONTA como um dos 7). Os rótulos de tipo vêm do CATÁLOGO (id 7 = **"Custos de Mercadorias"**, plural — fixtures/comentários alinhados ao texto real do banco). **Limitação conhecida (pré-existente):** se um `group_description` REAL for literalmente "outros"/"não informado" E estiver no top-N, o `breakdownBy` emite fatia duplicada e o detalhe casaria só a real (o donut "Classificação Financeira" é seguro — vem do catálogo). Testes: `services/supabaseDrill.test.ts`, `ExpenseDetailModal.test.tsx`(+`.a11y`), extensões em `BreakdownDonut`/`RankingList`/`DashboardFinanceiro` |
+| `/dashboard_vencimentos` | `Dashboard.tsx` | `financial_account_control` — KPIs/gráficos por mês ou geral (`getDashboardData`), filtro de EMPRESA aplicado nas DUAS leituras, 5 cards de KPI clicáveis (= filtro dos gráficos), 4 donuts, "Movimentações mês a mês" e "Contas críticas e prioritárias" (exclusivos desta tela). Abre em `total`, sem card marcado. Detalhe: [docs/knowledge/dashboards.md](docs/knowledge/dashboards.md) |
+| `/dashboard_despesas` | `DashboardFinanceiro.tsx` | `financial_account_control` **escopado a DESPESAS + CUSTO** (`getFinancialDashboardData`; grupo com `type_group_id ∈ {2,8}`, migration 094) — 5 KPIs, 4 donuts, 2 rankings (top 12) e **drill-down** por clique na fatia/linha (`ExpenseDetailModal`). Abre filtrado em "A vencer". Detalhe: [docs/knowledge/dashboards.md](docs/knowledge/dashboards.md) |
 | `/cobranca/envios` | `cobranca/CobrancaEnvios.tsx` | `cobranca_envios_log` (ver "Pipeline de cobrança de vencidos") |
 | `/cobranca/erros` | `cobranca/CobrancaErros.tsx` | `cobranca_erros_log` |
+
+**Invariantes dos dashboards (o porquê e as medições ficam em
+[docs/knowledge/dashboards.md](docs/knowledge/dashboards.md) — leia antes de mexer):**
+
+- 🔴 **`/dashboard_despesas` é EXCLUSIVO do escopo Despesas+Custo.** TODA métrica (5 KPIs, card de
+  total, 4 donuts, 2 rankings) sai de `isExpenseRow` aplicado **antes de qualquer agregação**.
+  Conta sem classificação, ou de outra natureza, fica FORA de tudo.
+- 🔴 **Top-N de donut é por VALOR (R$), nunca por contagem de linhas** — o donut ordena por valor,
+  então selecionar por contagem joga em "outros" um grupo que vale mais (bug real de 2026-07-22).
+- 🔴 **Ranking agrega pela IDENTIDADE (id da FK), nunca pelo texto** — os cadastros não têm UNIQUE
+  em descrição, e agregar por texto fundiria homônimos numa linha somada, em silêncio. O sentinela
+  id 0 tem descrição NULL: `rankEntry` corta por `id > 0` **e** descrição não vazia.
+- 🔴 **Fatia/linha só vira `<button>` quando recebe `onSelect`** — `/dashboard_vencimentos` não
+  passa e segue não-interativo (travado por teste; evita S1082).
+- **`diameterPx` é UM valor para os 4 donuts**, não um por donut (a versão proporcional dava ~1px
+  de diferença entre totais próximos — nem igual, nem perceptivelmente proporcional).
 
 - `services/supabase.ts` — fetch direto REST, `Prefer: count=exact` + `Content-Range` para paginação.
   O total é parseado por `parsePaginationTotal` (resiliente): quando o PostgREST devolve a contagem
