@@ -1087,7 +1087,7 @@ Testes: `tests/test_body_invoice_table.py`.
 > `run_extraction`→`extract_to_csv(pdf_passwords=...)`), gravando uma cópia descriptografada
 > temporária; (2) **multi-pagável** (`_payable_pages` acha ≥2 páginas com instrumento de pagamento
 > — ver "Split multi-pagável por INSTRUMENTO DE PAGAMENTO") → divide em
-> 1 PDF por página (`_write_single_page`) e roda `_extract_single` em cada um → **1 registro por
+> 1 PDF por página (`_write_single_page`) e roda `_extract_records` em cada um → **1 registro por
 > pagável** (com a linha digitável/PIX de cada). `process_pdf` agora devolve **lista** de registros;
 > `extract_to_csv` itera, e o loop de `extract_and_store_accounts` (que já cria 1 conta por linha
 > do CSV) gera as contas individuais com código de barras. **Esgotadas as senhas** → registro de

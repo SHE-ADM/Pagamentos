@@ -71,15 +71,19 @@ class IsMirroredTextTest(unittest.TestCase):
 
 
 class ExtractSingleRoteiaParaVisionTest(unittest.TestCase):
-    """_extract_single manda ao Vision quando o texto sai espelhado."""
+    """_extract_records manda ao Vision quando o texto sai espelhado."""
 
     def _run(self, raw):
+        # O mock precisa ser de `build_records` (o que o codigo chama): mockar o antigo
+        # `build_record` nao teria efeito nenhum e o teste passaria a exercitar o extrator
+        # REAL — o `call_count` abaixo mediria o fallback tier-2 "valor ausente", nao o
+        # espelhamento. O `amount` preenchido e o que mantem esse tier-2 fora do caminho.
         with patch.object(E, "is_scanned_pdf", return_value=False), \
              patch.object(E, "extract_with_pdfplumber", return_value=(raw, "pdf_text")), \
              patch.object(E, "extract_with_vision",
                           return_value=("{}", "pdf_vision")) as vision, \
-             patch.object(E, "build_record", return_value={"amount": "133.94"}):
-            E._extract_single(Path("boleto.pdf"))
+             patch.object(E, "build_records", return_value=[{"amount": "133.94"}]):
+            E._extract_records(Path("boleto.pdf"))
         return vision
 
     def test_texto_espelhado_chama_vision(self):

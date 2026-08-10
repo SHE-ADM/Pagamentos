@@ -97,11 +97,13 @@ class ImageAttachmentVisionTest(unittest.TestCase):
             self.assertEqual(block["source"]["media_type"], "application/pdf")
 
     def test_build_record_dispatch_image_vision(self):
-        # build_record com source=image_vision usa o caminho JSON (sem rede) e
+        # build_records com source=image_vision usa o caminho JSON (sem rede) e
         # preserva extraction_source — mesma rota do pdf_vision.
         raw = ('{"document_type":"recibo","amount":"172,39",'
                '"supplier_name":"CORREIOS","payment_method":"pix"}')
-        rec = e.build_record(Path("recibo.jpg"), raw, "image_vision")
+        recs = e.build_records(Path("recibo.jpg"), raw, "image_vision")
+        self.assertEqual(len(recs), 1)
+        rec = recs[0]
         self.assertEqual(rec["extraction_source"], "image_vision")
         self.assertEqual(rec["amount"], 172.39)
         self.assertEqual(rec["supplier_name"], "CORREIOS")
