@@ -436,7 +436,14 @@ tudo no index (foi o que aconteceu; desfeito com `git reset`).
   NÃO tem `prune`**: sendo um pacote de barrel (biblioteca pura cuja API é consumida
   cross-package via `@sheild/shared`), o ts-prune isolado reportaria **toda** export pública
   como órfã (falso positivo). A cobertura de uso real vem do `prune` dos apps consumidores;
-  no shared fica só `lint` + `typecheck`. Export público intencional **sem
+  no shared fica só `lint` + `typecheck`. 🔴 **Pelo mesmo motivo ele está em
+  `sonar.coverage.exclusions`** (desde o PR #223): sem suíte própria não há lcov, então os 7
+  arquivos do pacote eram medidos em **0,0%** e **qualquer PR que acrescentasse uma linha
+  EXECUTÁVEL ali reprovava o quality gate** por `new_coverage` — o #223 foi barrado por **duas**
+  linhas (uma constante e um `z.enum`), com 0 bug, 0 duplicação e 0 achado de segurança. Ausência
+  de relatório estava sendo lida como ausência de teste. Se o shared um dia ganhar suíte, **remova
+  a exclusão e acrescente o lcov dele** a `sonar.javascript.lcov.reportPaths` — nunca os dois.
+  Export público intencional **sem
   consumidor** (scaffolding da camada CRUD ou contrato de tipo consumido por inferência —
   `getSupabaseAdmin`, `ApiResponse`/`ApiResponseMeta`, `ReaderSummary`/`TriggerReaderOptions`)
   leva `// ts-prune-ignore-next` na linha acima, documentando a intenção. Não deixar export
