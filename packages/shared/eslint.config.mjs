@@ -7,7 +7,11 @@ import tseslint from 'typescript-eslint';
 // pacote (evita "No tsconfigRootDir was set"). O glob restringe a `**/*.ts`, então
 // o próprio `eslint.config.mjs` não entra no lint type-aware (não está no tsconfig).
 export default tseslint.config(
-  { ignores: ['dist'] },
+  // `coverage` é obrigatório aqui: o lcov-report do istanbul traz `/* eslint-disable */` no topo
+  // dos arquivos GERADOS, e o `reportUnusedDisableDirectives` (ligado por padrão no ESLint 9+) os
+  // acusa como diretiva inútil — derrubando a regra de "0 erros e 0 warnings". Não some apagando
+  // a pasta: o workflow do SonarCloud roda `--coverage` a cada PR e a recria.
+  { ignores: ['dist', 'coverage'] },
   {
     files: ['**/*.ts'],
     extends: [js.configs.recommended, ...tseslint.configs.recommendedTypeChecked],

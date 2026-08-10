@@ -57,12 +57,16 @@ jobs:
           echo "VITE_SUPABASE_URL=${{ secrets.VITE_SUPABASE_URL || 'https://placeholder.supabase.co' }}" >> .env
           echo "VITE_SUPABASE_ANON_KEY=${{ secrets.VITE_SUPABASE_ANON_KEY || 'anon-key-placeholder' }}" >> .env
 
-      # lcov por workspace → apps/<x>/coverage/lcov.info (ver sonar-project.properties).
+      # lcov por workspace → <workspace>/coverage/lcov.info (ver sonar-project.properties).
+      # packages/shared entra aqui desde que ganhou suíte própria: sem o lcov dele, os 14 arquivos
+      # do pacote de contratos eram medidos em 0% e QUALQUER PR que lhes acrescentasse uma linha
+      # executável reprovava o quality gate por new_coverage (aconteceu no PR #223).
       - name: Cobertura JS (Vitest → lcov)
         run: |
           npm run test --workspace=apps/frontend-vite -- --coverage --coverage.provider=v8 --coverage.reporter=lcov
           npm run test --workspace=apps/api-backend  -- --coverage --coverage.provider=v8 --coverage.reporter=lcov
           npm run test --workspace=apps/portal-next   -- --coverage --coverage.provider=v8 --coverage.reporter=lcov
+          npm run test --workspace=packages/shared    -- --coverage --coverage.provider=v8 --coverage.reporter=lcov
 
       - name: Configurar Python
         uses: actions/setup-python@v5

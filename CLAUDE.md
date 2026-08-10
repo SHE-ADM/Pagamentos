@@ -180,12 +180,24 @@ Estas regras se aplicam a **todo** código novo ou alterado neste projeto, sem e
   > observar um estado transitório e concluir o oposto do que o repositório contém (aconteceu: um
   > verificador reportou que a coluna não usava o helper, com o arquivo íntegro e o lint em exit 0).
   > Validação por mutante roda **isolada**: em série, ou sobre cópia do arquivo.
-- **Suíte configurada (Vitest):** `apps/frontend-vite` (jsdom + Testing Library) e
-  `apps/api-backend` (env node). Rode `npm test` na raiz (roda todos os workspaces) ou
-  `npm run test --workspace=apps/<app>`. No `api-backend`, o `vitest.config.ts` resolve o
-  alias `@` (espelhando `@/*`→`./*` do tsconfig) e coleta testes em `lib/**` **e** `app/**`
-  (`*.test.ts`) — rotas têm teste co-locado (ex.: `app/api/emails/read/route.test.ts`
-  cobre 422/200/502 mockando `triggerReader`).
+- **Suíte configurada (Vitest):** `apps/frontend-vite` (jsdom + Testing Library),
+  `apps/api-backend` (env node) e **`packages/shared`** (env node, desde o PR #224). Rode
+  `npm test` na raiz (roda todos os workspaces) ou `npm run test --workspace=<ws>`. No
+  `api-backend`, o `vitest.config.ts` resolve o alias `@` (espelhando `@/*`→`./*` do tsconfig) e
+  coleta testes em `lib/**` **e** `app/**` (`*.test.ts`) — rotas têm teste co-locado (ex.:
+  `app/api/emails/read/route.test.ts` cobre 422/200/502 mockando `triggerReader`).
+- 🔴 **`packages/shared` NÃO tem `vitest.config.ts`, e isso é deliberado:** os defaults já servem
+  (env node, `**/*.test.ts`), e um `.ts` na raiz do pacote ficaria FORA do `include: ["src"]` do
+  tsconfig, quebrando o lint type-aware — cujo glob é `**/*.ts`. Os testes importam
+  `{ describe, it, expect }` de `vitest` explicitamente, porque o tsconfig tem `types: []` e não
+  há globals. O `coverage/` entrou nos `ignores` do ESLint pelo motivo de sempre (o lcov-report do
+  istanbul traz `/* eslint-disable */` e derruba o "0 warnings").
+- 🔴 **`src/index.test.ts` existe por DOIS motivos, e o segundo não é óbvio.** Ele valida o barrel
+  (um `export *` esquecido não quebra a compilação DESTE pacote, só a do consumidor) **e** é o que
+  faz a COBERTURA enxergar o pacote inteiro: o v8 só reporta arquivo efetivamente carregado, então
+  sem ele os schemas sem teste próprio ficariam fora do lcov e o Sonar os leria como 0% — que foi
+  a armadilha do PR #223. Medido: 5 de 14 arquivos no lcov sem o teste do barrel, **14 de 14** com
+  ele. Ao criar schema novo, basta que o barrel o reexporte; não há include a manter.
 - **Suíte Python (pytest):** `py -3 -m pytest tests/` — **1.146 testes** (ex.:
   `test_link_extraction.py`, `test_email_body_extraction.py`, `test_body_amount.py`,
   `test_body_invoice_table.py`, `test_body_platform_invoice.py`,
@@ -197,8 +209,9 @@ Estas regras se aplicam a **todo** código novo ou alterado neste projeto, sem e
   `test_vision_multi_boleto.py`, `test_barcode_self_refuted.py`,
   `test_contact_block_nonpayable.py`, `test_is_processed.py`). Cobre o
   pipeline de extração; rodar após mexer em `read_emails.py`/`extract_pdf.py` ou nos
-  scripts de reprocessamento. Não é incluída no `npm test` (que soma **1.376** no Node —
-  frontend-vite 847 · api-backend 527 · portal-next 2, medidos em 2026-08-10). A suíte
+  scripts de reprocessamento. Não é incluída no `npm test` (que soma **1.408** no Node —
+  frontend-vite 847 · api-backend 527 · packages/shared 32 · portal-next 2, medidos em
+  2026-08-10). A suíte
   Python está em **1.193** (medida em 2026-08-10; os 47 novos desde 1.146 são as guardas da Onda 6
   — 40 da onda + 7 do achado B1 do review —, e os 46 anteriores cobrem a leitura Vision de carnê
   escaneado, o barcode refutado pelo próprio código e a assinatura de e-mail).
@@ -436,14 +449,8 @@ tudo no index (foi o que aconteceu; desfeito com `git reset`).
   NÃO tem `prune`**: sendo um pacote de barrel (biblioteca pura cuja API é consumida
   cross-package via `@sheild/shared`), o ts-prune isolado reportaria **toda** export pública
   como órfã (falso positivo). A cobertura de uso real vem do `prune` dos apps consumidores;
-  no shared fica só `lint` + `typecheck`. 🔴 **Pelo mesmo motivo ele está em
-  `sonar.coverage.exclusions`** (desde o PR #223): sem suíte própria não há lcov, então os 7
-  arquivos do pacote eram medidos em **0,0%** e **qualquer PR que acrescentasse uma linha
-  EXECUTÁVEL ali reprovava o quality gate** por `new_coverage` — o #223 foi barrado por **duas**
-  linhas (uma constante e um `z.enum`), com 0 bug, 0 duplicação e 0 achado de segurança. Ausência
-  de relatório estava sendo lida como ausência de teste. Se o shared um dia ganhar suíte, **remova
-  a exclusão e acrescente o lcov dele** a `sonar.javascript.lcov.reportPaths` — nunca os dois.
-  Export público intencional **sem
+  no shared fica só `lint` + `typecheck` — **mas ele TEM suíte** (`vitest run`), acrescentada no
+  PR #224; o que ele não tem é `prune`. Export público intencional **sem
   consumidor** (scaffolding da camada CRUD ou contrato de tipo consumido por inferência —
   `getSupabaseAdmin`, `ApiResponse`/`ApiResponseMeta`, `ReaderSummary`/`TriggerReaderOptions`)
   leva `// ts-prune-ignore-next` na linha acima, documentando a intenção. Não deixar export
