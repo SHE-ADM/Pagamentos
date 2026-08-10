@@ -9,17 +9,30 @@ export const fmtDate = (d: string | null): string =>
   d ? new Date(d + 'T00:00:00').toLocaleDateString('pt-BR') : '—';
 
 /**
+ * Data LOCAL deslocada de `dias`, em YYYY-MM-DD. Base de TODA data derivada de "hoje" no
+ * app — os KPIs de /consulta e a janela do card "A vencer em 7 dias" usavam
+ * `toISOString()` (UTC) e, em UTC−3, das 21h à meia-noite passavam a contar a partir de
+ * AMANHÃ: o que vencia hoje sumia do KPI e o grid discordava do card.
+ *
+ * `setDate` fora da faixa do mês normaliza sozinho (31/08 + 7 → 07/09) e respeita
+ * horário de verão, porque opera no calendário local — somar `7 * 86400000` em
+ * milissegundos, não.
+ */
+export const isoDaysFromToday = (dias = 0): string => {
+  const d = new Date();
+  d.setDate(d.getDate() + dias);
+  const mm = String(d.getMonth() + 1).padStart(2, '0');
+  const dd = String(d.getDate()).padStart(2, '0');
+  return `${d.getFullYear()}-${mm}-${dd}`;
+};
+
+/**
  * Data corrente no formato YYYY-MM-DD, pela data LOCAL (não UTC) — à noite, o UTC já
  * está no dia seguinte e a data "voltaria um dia". Consumida pelo ContaForm (default de
  * emissão/vencimento na inclusão) e pelo update otimista de situação em /consulta, que
  * espelha o carimbo de `payment_date` feito pela trigger no banco.
  */
-export const todayISO = (): string => {
-  const d = new Date();
-  const mm = String(d.getMonth() + 1).padStart(2, '0');
-  const dd = String(d.getDate()).padStart(2, '0');
-  return `${d.getFullYear()}-${mm}-${dd}`;
-};
+export const todayISO = (): string => isoDaysFromToday(0);
 
 /** Data/hora ISO → dd/mm/aaaa hh:mm. '—' quando vazio. */
 export const fmtDateTime = (iso: string | null): string =>

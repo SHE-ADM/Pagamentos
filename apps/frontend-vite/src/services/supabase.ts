@@ -24,6 +24,7 @@ import {
 } from '@sheild/shared';
 import { supabase } from '../lib/supabaseClient';
 import { stableOrder } from '../lib/stableOrder';
+import { todayISO, isoDaysFromToday } from '../lib/format';
 
 // Situação é filtrada/ordenada por status_id (fonte única). Ordenar a coluna
 // "Situação" continua ALFABÉTICO pelo NOME (decisão de negócio — id ≠ ordem), via o
@@ -740,42 +741,14 @@ export async function setFinancialAccountStatusBulk(ids: number[], statusId: num
   if (!res.ok) throw new Error(`Supabase ${res.status}: ${await res.text()}`);
 }
 
-// Soma de `amount` para o filtro corrente — alimenta o card "Valor total" de
-// /consulta, que reflete o subconjunto filtrado (cards ou filtros manuais).
-// Busca só a coluna amount (sem paginar) e soma no cliente, como getFinancialStats.
-export async function getFinancialAccountTotalValue(
-  filters: FinancialAccountControlFilters = {},
-): Promise<number> {
-  const url = new URL(`${BASE_URL}/rest/v1/financial_account_control`);
-  url.searchParams.set('select', 'amount');
-  url.searchParams.set('limit', '10000');
-  const searchIds = await resolveSearchIds(filters.supplier);
-  applyFinancialFilters(url.searchParams, filters, searchIds);
-  const res = await fetch(url.toString(), { headers: await authHeaders() });
-  if (!res.ok) throw new Error(`Supabase ${res.status}: ${await res.text()}`);
-  const data = (await res.json()) as { amount: number | null }[];
-  return data.reduce((s, r) => s + (Number(r.amount) || 0), 0);
-}
-
-// Contagem EXATA de documentos NÃO cancelados para o filtro corrente — alimenta o
-// "Total de registros" do rodapé de /consulta. Cancelado nunca entra em somas
-// (includeCancelled=false, como o "Valor total"); o grid segue mostrando as linhas
-// canceladas, mas elas não são contadas aqui. Usa Prefer: count=exact + Content-Range
-// (limit 1, sem trafegar as linhas).
-export async function getFinancialAccountCount(
-  filters: FinancialAccountControlFilters = {},
-): Promise<number> {
-  const url = new URL(`${BASE_URL}/rest/v1/financial_account_control`);
-  url.searchParams.set('select', 'id');
-  url.searchParams.set('limit', '1');
-  const searchIds = await resolveSearchIds(filters.supplier);
-  applyFinancialFilters(url.searchParams, filters, searchIds);
-  const res = await fetch(url.toString(), { headers: await authHeaders({ Prefer: 'count=exact' }) });
-  if (!res.ok) throw new Error(`Supabase ${res.status}: ${await res.text()}`);
-  const cr = res.headers.get('Content-Range');
-  const data = (await res.json()) as unknown[];
-  return parsePaginationTotal(cr, 0, 1, data.length).total;
-}
+// `getFinancialAccountTotalValue` e `getFinancialAccountCount` foram REMOVIDAS em
+// 2026-08-08: com `getFinancialStats(filters)` devolvendo contagem e soma já filtradas, os
+// mesmos números passariam a vir de TRÊS consultas por apply — três fontes que precisam
+// concordar e uma requisição a mais para cada. Pior, era dessa divisão que nascia o defeito
+// relatado: o card "Total de registros" tirava o VALOR da consulta filtrada e a CONTAGEM
+// dos KPIs globais, e mostrava "R$ 3,7 mi / 742 contas" quando agosto tinha 211.
+// A soma por agregação no servidor (`sum()` do PostgREST) não é alternativa aqui:
+// `db-aggregates-enabled` vem desligado no Supabase — ver CLAUDE.md, decisão 2 da Fase 0.
 
 // ── email_processing_errors ───────────────────────────────────────────────
 
@@ -883,22 +856,32 @@ export interface FinancialStats {
   vencidasValue: number;
 }
 
-export async function getFinancialStats(): Promise<FinancialStats> {
-  // `neq.cancelado` espelha o padrão da listagem (applyFinancialFilters): contas
-  // canceladas ficam fora dos KPIs a menos que o usuário filtre explicitamente.
-  const all = await query<Pick<FinancialAccountControl, 'amount' | 'status_id' | 'due_date'>[]>(
-    'financial_account_control',
-    { select: 'amount,status_id,due_date', status_id: `neq.${STATUS_ID_CANCELADO}`, limit: 1000 },
-  );
-  const sum = (rows: typeof all) => rows.reduce((s, r) => s + (Number(r.amount) || 0), 0);
-  const today = new Date();
-  const todayStr = today.toISOString().slice(0, 10);
-  const in7 = new Date(today.getTime() + 7 * 86400000).toISOString().slice(0, 10);
+type StatsRow = Pick<FinancialAccountControl, 'amount' | 'status_id' | 'due_date'>;
+
+// Página da varredura dos KPIs. Buscar "tudo de uma vez" NÃO existe nesta instalação: o
+// PostgREST corta no "Max rows" (1.000) e devolve HTTP 200 — medido por HTTP em
+// 2026-08-08 contra `email_control` (1.303 linhas): `limit=1000`, `5000` e `10000`
+// devolvem 1.000, sempre 200, sem erro e sem sinal. A versão anterior pedia `limit: 1000`
+// e contava `all.length`, então passaria a subnotificar os CINCO cards assim que a base
+// crescesse — silenciosamente. Mesma lição da Onda 3 (ver CLAUDE.md).
+const STATS_PAGE_SIZE = 1000;
+// Teto de páginas: servidor que ignore `offset` faria o laço girar para sempre. Levanta em
+// vez de travar — 200 páginas = 200 mil contas, folga de anos sobre as ~22 contas/dia
+// medidas em 2026-08.
+const STATS_MAX_PAGES = 200;
+
+// Agregação dos 5 KPIs sobre as linhas já carregadas. Separada da busca para ser testável
+// sem rede. `todayISO`/`isoDaysFromToday` são LOCAIS de propósito: com `toISOString()`
+// (UTC) a janela de 7 dias andava um dia à noite, em UTC−3 — ver lib/format.ts.
+function aggregateFinancialStats(all: StatsRow[]): FinancialStats {
+  const sum = (rows: StatsRow[]) => rows.reduce((s, r) => s + (Number(r.amount) || 0), 0);
+  const hoje = todayISO();
+  const in7 = isoDaysFromToday(7);
 
   const pagoRows = all.filter((r) => r.status_id === STATUS_ID_PAGO);
   const aVencerRows = all.filter((r) => r.status_id === STATUS_ID_A_VENCER);
   const vencendoRows = aVencerRows.filter(
-    (r) => r.due_date !== null && r.due_date >= todayStr && r.due_date <= in7,
+    (r) => r.due_date !== null && r.due_date >= hoje && r.due_date <= in7,
   );
   const vencidasRows = all.filter((r) => r.status_id === STATUS_ID_VENCIDO);
 
@@ -914,6 +897,44 @@ export async function getFinancialStats(): Promise<FinancialStats> {
     vencidas: vencidasRows.length,
     vencidasValue: sum(vencidasRows),
   };
+}
+
+/**
+ * KPIs de /consulta para o filtro corrente. Recebe o objeto de filtros INTEIRO e o repassa
+ * a `applyFinancialFilters` — mesmo padrão de `getFinancialAccountControl`: destrinchar
+ * campo a campo faria um filtro novo ser descartado aqui em silêncio enquanto o grid o
+ * respeitasse, e o sintoma ("os KPIs estão errados") apareceria longe da causa.
+ *
+ * Sem argumento, devolve os KPIs globais (o comportamento anterior).
+ * Cancelado fica de fora por padrão (`includeCancelled` default false), como no "Valor
+ * total"; filtro explícito de situação sobrepõe.
+ */
+export async function getFinancialStats(
+  filters: FinancialAccountControlFilters = {},
+): Promise<FinancialStats> {
+  const searchIds = await resolveSearchIds(filters.supplier);
+  const all: StatsRow[] = [];
+  for (let pagina = 0; pagina < STATS_MAX_PAGES; pagina++) {
+    const url = new URL(`${BASE_URL}/rest/v1/financial_account_control`);
+    url.searchParams.set('select', 'amount,status_id,due_date');
+    // ORDER determinístico é OBRIGATÓRIO com paginação por offset: sem ele o PostgREST não
+    // garante a mesma ordem entre requisições e o offset PULA linha (a mesma causa do
+    // scroll infinito duplicando conta — ver lib/stableOrder.ts).
+    url.searchParams.set('order', 'id.asc');
+    url.searchParams.set('limit', String(STATS_PAGE_SIZE));
+    url.searchParams.set('offset', String(pagina * STATS_PAGE_SIZE));
+    // Depois do `select` (o contrato de withChartAccountJoin) e antes do fetch.
+    applyFinancialFilters(url.searchParams, filters, searchIds);
+    const res = await fetch(url.toString(), { headers: await authHeaders() });
+    if (!res.ok) throw new Error(`Supabase ${res.status}: ${await res.text()}`);
+    const lote = (await res.json()) as StatsRow[];
+    all.push(...lote);
+    if (lote.length < STATS_PAGE_SIZE) return aggregateFinancialStats(all);
+  }
+  throw new Error(
+    `getFinancialStats: paginação não convergiu em ${STATS_MAX_PAGES} páginas — ` +
+      'o servidor pode estar ignorando o offset',
+  );
 }
 
 // ============================================================================
