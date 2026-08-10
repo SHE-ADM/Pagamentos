@@ -185,7 +185,7 @@ Estas regras se aplicam a **todo** código novo ou alterado neste projeto, sem e
   alias `@` (espelhando `@/*`→`./*` do tsconfig) e coleta testes em `lib/**` **e** `app/**`
   (`*.test.ts`) — rotas têm teste co-locado (ex.: `app/api/emails/read/route.test.ts`
   cobre 422/200/502 mockando `triggerReader`).
-- **Suíte Python (pytest):** `py -3 -m pytest tests/` — **1.100 testes** (ex.:
+- **Suíte Python (pytest):** `py -3 -m pytest tests/` — **1.146 testes** (ex.:
   `test_link_extraction.py`, `test_email_body_extraction.py`, `test_body_amount.py`,
   `test_body_invoice_table.py`, `test_body_platform_invoice.py`,
   `test_body_supplier_override.py`, `test_arrecadacao_gnre.py`,
@@ -193,11 +193,13 @@ Estas regras se aplicam a **todo** código novo ou alterado neste projeto, sem e
   `test_body_resolvers.py`, `test_extract_pdf.py`, `test_body_full.py`,
   `test_fiscal_key.py`, `test_fiscal_document_hook.py`,
   `test_fiscal_document_consistency.py`, `test_varredura_historica.py`,
-  `test_is_processed.py`). Cobre o
+  `test_vision_multi_boleto.py`, `test_barcode_self_refuted.py`,
+  `test_contact_block_nonpayable.py`, `test_is_processed.py`). Cobre o
   pipeline de extração; rodar após mexer em `read_emails.py`/`extract_pdf.py` ou nos
-  scripts de reprocessamento. Não é incluída no `npm test` (que soma **1.311** no Node —
-  frontend-vite 786 · api-backend 523 · portal-next 2, medidos em 2026-08-04). A suíte
-  Python está em **1.100** na mesma medição.
+  scripts de reprocessamento. Não é incluída no `npm test` (que soma **1.372** no Node —
+  frontend-vite 847 · api-backend 523 · portal-next 2, medidos em 2026-08-10). A suíte
+  Python está em **1.146** (medida em 2026-08-10; os 46 novos desde 1.100 cobrem a leitura
+  Vision de carnê escaneado, o barcode refutado pelo próprio código e a assinatura de e-mail).
   > ⚠️ **Medir o `frontend-vite` com `--maxWorkers=1`.** Em paralelo, o sandbox do agente
   > derruba ~9 casos de a11y (`StatusBadge.a11y`, `DashboardHeader.a11y`) por esgotamento de
   > recursos — eles passam isolados e em série. É a mesma classe de falso alarme já
@@ -1612,9 +1614,10 @@ A coluna **"Empresa"** (`company.trade_name` via a FK `sk_company`, embed `compa
 **logo APÓS o Fornecedor** — mesma posição no **card de detalhe** e no **ContaForm** (pedido do
 usuário). Há também **filtro por empresa** na barra (`<select>` "Empresa", vazio = TODAS, logo após
 a busca): aplica no **"Buscar"** como os demais selects, filtra **pela FK** (`sk_company=eq.N`, não
-pelo embed) e alcança o grid **e** os cards "Valor total"/"Total de registros" (que recebem os
-mesmos filtros) — os **KPIs gerais** (`getFinancialStats`) seguem **globais por design**, como já
-acontece com todos os outros filtros. As opções vêm do hook **`useCompanyOptions`**
+pelo embed) e alcança o grid **e os 5 cards de KPI** — desde 2026-08-08 `getFinancialStats(applied)`
+recebe os mesmos filtros de todo o resto (ver "KPIs de `/consulta` seguem o filtro" abaixo); a
+frase anterior deste bloco, "os KPIs gerais seguem globais por design", **deixou de valer**. As
+opções vêm do hook **`useCompanyOptions`**
 (`hooks/useCompanyOptions.ts` → `GET /api/companies`), **compartilhado com o `ContaForm`** — sem
 duas cópias do fetch; lista vazia (falha de rede) → o select fica só com "Empresa" (= sem filtro). É ordenável server-side por `company(trade_name)` e **não se confunde com o Fornecedor**:
 pode haver conta da LEBIANCO cujo fornecedor é a OTIMOTEX. Ordem das colunas de
@@ -1639,14 +1642,23 @@ Helpers em `src/lib/`: `getErrorMessage.ts` (erro em strict mode), `format.ts` (
 de exibição — `fmtDate`/`fmtDateTime`/`fmtMoney`/`fmtMoneyCompact` (BRL compacto "R$ 12,3 mil" —
 furo central dos donuts)/`fmtCnpj`/`fmtCpf`/`fmtCostCenter`/`fmtChartAccount`/
 `fmtBytes` (tamanho de arquivo B/KB/MB, base 1024 — usado pela lista de anexos) —
-**mais `todayISO`** (data corrente `YYYY-MM-DD` pela data **LOCAL**, não UTC: à noite o UTC já
-está no dia seguinte e a data "voltaria um dia"). O `todayISO` **morava dentro do `ContaForm`** e
-foi promovido a `format.ts` quando o update otimista de `/consulta` passou a precisar dele —
-exportá-lo do arquivo do componente dispararia `react-refresh/only-export-components`, e
-duplicá-lo violaria a fonte única. Consumidores: `ContaForm` (default de emissão/vencimento na
-inclusão) e `Consulta.applyStatusId` (espelho de `payment_date`);
-**fonte única** consumida por `Consulta`/`Emails`/`Dashboard`/`useGridColumns` — não recriar cópias
-locais), `csv.ts` (`csvCell` — célula CSV segura: escapa aspas, remove CRLF e **neutraliza
+**mais `isoDaysFromToday(dias)` e `todayISO`** (data **LOCAL**, `YYYY-MM-DD`, não UTC: à noite o
+UTC já está no dia seguinte e a data "voltaria um dia"). O `todayISO` **morava dentro do
+`ContaForm`** e foi promovido a `format.ts` quando o update otimista de `/consulta` passou a
+precisar dele — exportá-lo do arquivo do componente dispararia
+`react-refresh/only-export-components`, e duplicá-lo violaria a fonte única. Consumidores:
+`ContaForm` (default de emissão/vencimento na inclusão) e `Consulta.applyStatusId` (espelho de
+`payment_date`); **fonte única** consumida por `Consulta`/`Emails`/`Dashboard`/`useGridColumns` —
+não recriar cópias locais.
+> 🔴 **TODA data derivada de "hoje" passa por `isoDaysFromToday` — inclusive as JANELAS
+> (2026-08-08).** `todayISO` virou `isoDaysFromToday(0)`; a base ganhou o deslocamento porque
+> `getFinancialStats` e o card "A vencer em 7 dias" derivavam a janela por `toISOString()` (UTC) e
+> `Date.now() + 7 * 86400000`. Em **UTC−3, das 21h à meia-noite**, o "hoje" em UTC já é o dia
+> seguinte: a janela andava um dia, o que vencia hoje sumia do KPI e **o card discordava do grid**
+> — divergência que só aparece à noite, ou seja, some quando se vai conferir de manhã. O
+> deslocamento é por **`setDate`**, não por aritmética de milissegundos: `setDate` normaliza a
+> virada de mês sozinho (31/08 + 7 → 07/09) e respeita horário de verão, porque opera no
+> calendário local; somar `7 * 86400000` erra o dia na transição de fuso), `csv.ts` (`csvCell` — célula CSV segura: escapa aspas, remove CRLF e **neutraliza
 injeção de fórmula** `= + - @` no export de `/consulta`; segurança §5 M1), `cn.ts` (merge de
 classes Tailwind — `clsx` + `tailwind-merge`, base do padrão CVA), `supabaseClient.ts`
 (SDK oficial, só para auth), `authStorage.ts` (storage híbrido da sessão +
@@ -1978,9 +1990,77 @@ Proteções aprendidas "na dor" — manter:
   re-registra com `ignore-duplicates` e cria a conta) e só então faz `PATCH` do status. Apagar
   antes arriscava perder o e-mail se a extração falhasse.
 
+- 🔴 **Resposta do modelo TRUNCADA nunca vira dado — e uma LEITURA pode devolver N pagáveis**
+  *(lição de 2026-08-07; 3 e-mails, 21 boletos, R$ 315.556,57 perdidos em silêncio)*. Boleto
+  **escaneado** chega como um PDF de 6-8 páginas **sem texto**: `_payable_pages` depende de texto,
+  devolve 0, e o arquivo inteiro vai numa única leitura Vision. O modelo lia todos os boletos e
+  respondia um **ARRAY** — cortado no teto de **1200** tokens (`stop_reason='max_tokens'`). O JSON
+  truncado não parseava, virava um registro **vazio**, e o e-mail era logado como **`sem_valor`**:
+  a falha do EXTRATOR disfarçada de "documento sem valor". Três correções, cada uma necessária:
+  1. **`VISION_MAX_TOKENS` (8000, env)** — medido ~330 tokens/boleto; 1200 cortava antes do 3º.
+  2. **`_response_text` recusa `stop_reason='max_tokens'`** (`VisionTruncatedError`) — sem checar o
+     stop_reason o corte é **invisível**. Ela **não** é "API indisponível": confundi-las abortaria o
+     LOTE por causa de um documento grande. Aproveitar o pedaço parcial foi **descartado** — gravaria
+     alguns boletos e perderia os demais calado, que é o próprio defeito.
+  3. **`build_records` aceita ARRAY → N registros** (`_json_records`). Mesmo com JSON íntegro o
+     array quebrava: `build_record_from_json` espera `dict`. É o que cobre o carnê **escaneado**,
+     que o split por página nunca alcança.
+     🔴 **N registros só no caminho VISUAL — e o `pdf_text` precisa da própria saída.** O
+     `EXTRACTION_PROMPT` é **compartilhado**, então o modelo passou a devolver ARRAY também no
+     texto; lá o array não pode virar N contas, porque o pós-processamento
+     (`extract_linha_digitavel(raw)`, `apply_*`) é do documento INTEIRO e daria a **todas** o
+     barcode da primeira — colisão na dedup, e as demais somem. Sem tratamento, o array caía no
+     `except` genérico (`AttributeError: 'list' object has no attribute 'get'`) e virava **1 conta
+     de regex marcada como `pdf_text` = sucesso**, com os outros pagáveis perdidos em silêncio —
+     o próprio defeito que este bloco existe para matar, pela outra porta. Hoje
+     `_build_records_text` detecta ≥2 itens e devolve `_failure_record`; **sem `amount`, isso cai
+     no fallback tier-2**, que manda o PDF inteiro ao Vision — o caminho que aceita array — e o
+     documento acaba virando as N contas com o barcode de CADA item. Travado em
+     `CaminhoTextoTest` (`tests/test_vision_multi_boleto.py`).
+  🔴 **Resposta não-JSON agora é `_failure_record`, não registro vazio.** É o que tira a linha do CSV
+  — e sem CSV o e-mail deixa de ser `extraído` **com 0 contas** (invisível em `/emails`, o mesmo modo
+  de falha do boleto T.R.T) e volta a `pendente`, reprocessável. `_parse_json_payload` ainda tolera
+  prosa em volta do JSON, que antes derrubava uma resposta perfeitamente válida.
+  ⚠️ **Ao contar contas de um e-mail, casar `gmail_message_id` com `LIKE '<id>#%'`** — múltiplos
+  pagáveis recebem sufixo `#N`; a igualdade simples devolve 1 e simula perda que não houve.
+- 🔴 **Barcode de scan que se REFUTA é DESCARTADO — código errado é pior que ausente**
+  (`barcode_self_refuted`, `febraban.py`; *medido em 2026-08-07 sobre as 442 contas com barcode*).
+  O OCR de boleto escaneado **desloca dígitos**: o código continua com 44 — passa no filtro de
+  COMPRIMENTO, a única validação que havia — mas os campos saem deslocados uma casa, com valor
+  exatamente **10×** o do documento e fator impossível (5370/5380/5420 onde o correto era 1537,
+  que reproduz o vencimento real). Auditoria: **349 consistentes · 68 não-boleto · 7 em que só o
+  valor diverge (preservados) · 18 corrompidos, 100% `pdf_vision`** — soma 442, e é a soma que
+  torna o número conferível: enquanto a 4ª parcela ficava de fora, "19 corrompidos · 6 só-valor"
+  fechava igualmente bem e sobreviveu em `febraban.py` e no teste até ser re-medida no banco em
+  2026-08-08. O gate exige que **os DOIS** testes falhem — valor embutido × `amount`, e
+  fator decodificável em data plausível: um `amount` mal lido ainda tem fator bom, e vice-versa;
+  a conjunção é o que preserva os casos em que só um diverge.
+  **Isto é proteção CONTRA DUPLICATA, não contra ela:** o barcode é a impressão digital 1 da dedup,
+  a mais forte. Código corrompido **não casa o boleto real** quando ele volta pela 2ª via — a dedup
+  falha e nasce conta **duplicada**. Sem barcode, a dedup cai nas impressões 2/3 (documento+valor,
+  valor+vencimento), que funcionam. Os 18 já gravados foram limpos (`barcode = NULL`) com prova por
+  **hash**: 784 contas antes e depois, conteúdo idêntico.
+  Três detalhes que o gate errou antes de acertar, e que não devem regredir:
+  1. **`ref_date` é a data LIDA DO DOCUMENTO, nunca "hoje"** — num reprocessamento histórico o
+     fator legítimo fica a mais de 2 anos de hoje e o código bom seria apagado.
+  2. **Fator 0 = boleto À VISTA, legítimo** — sem essa saída o gate lê "ausência de prova" como
+     "prova de erro".
+  3. **O descarte roda ANTES dos `apply_*`** — depois deles, `apply_barcode_amount` já teria
+     gravado o valor 10× na conta quando o documento não expõe valor legível.
+  ⚠️ **Releitura NÃO recupera** o código: o mesmo PDF relido devolveu barcodes de formato válido e
+  ainda assim 10× errados. Tentar reconstruir dígitos é adivinhação — não fazer.
+- **Assinatura de e-mail descrita pelo CONTEÚDO** (`_is_contact_block`, `read_emails.py`): o Vision
+  descreve a `image001.png` do rodapé como *"Rua do Horto, 940 | CEP … | (37) 3249-4200 |
+  www…"*, e não como "assinatura de e-mail" — único termo que `_SIGNATURE_DESC_RE` reconhecia. A
+  assinatura virava `sem_valor`. O detector exige **≥2 sinais de contato E nenhum termo financeiro**:
+  qualquer sinal de documento real (valor, vencimento, boleto, beneficiário) **desqualifica** o
+  descarte. Conservador de propósito — linha a revisar em `/erros` é melhor que recibo perdido.
+  Registro **sem descrição alguma** segue em `sem_valor`, visível: não há sinal seguro para pulá-lo.
+
 Testes: `tests/test_run_extraction.py`, `tests/test_imap_timeout.py`, `tests/test_imap_retry.py`,
 `tests/test_status_for_result.py`, `tests/test_rfc822_fetch.py`, `tests/test_extract_pdf_timeout.py`,
-`tests/test_pdf_amount_validation.py`.
+`tests/test_pdf_amount_validation.py`, `tests/test_vision_multi_boleto.py`, `tests/test_barcode_self_refuted.py`,
+`tests/test_contact_block_nonpayable.py`.
 
 ### Deduplicação por `message_id`
 
@@ -2121,7 +2201,7 @@ os caracteres invertidos**: `otnemicneV`=Vencimento, `49,331 $R`=R$ 133,94, `620
 limiar `len(raw) < 80`, então **não havia fallback** e o Claude recebia texto ilegível. Reverter
 as linhas recupera prosa/valor/data/CNPJ, mas **não a linha digitável** — ela fica fragmentada e
 intercalada entre colunas, e sem ela não há `barcode` (logo, pela regra acima, nenhuma conta de
-seguradora fecharia). `is_mirrored_text(raw)` detecta e `_extract_single` manda ao **Vision**,
+seguradora fecharia). `is_mirrored_text(raw)` detecta e `_extract_records` manda ao **Vision**,
 que lê a página **renderizada** (visualmente correta) e recupera a linha digitável.
 
 Distinto de **`fix_reversed_lines`**, que anota com `[RTL: …]` **campos isolados** (CNPJ/data/
@@ -2149,7 +2229,7 @@ de verdade** e sobrescreve o valor extraído.
   (`_FATOR_MAX_DELTA_DAYS = 730`: candidata a mais de 2 anos do ref é descartada).
 - **`apply_barcode_due_date(rec)`** (`extract_pdf.py`): override idempotente do `due_date`, com
   `processing_notes`. Aplicado em `build_record_from_json`, `build_record_regex` e no dispatcher
-  `build_record` (após o barcode ser recuperado por regex/Vision).
+  de texto `_build_records_text` (após o barcode ser recuperado por regex/Vision).
 - **Rede de segurança UNIVERSAL** — `_apply_barcode_due_date(payload)` (`read_emails.py`) roda no
   **choke point único** `register_financial` (antes de `_apply_status_id`), cobrindo TODOS os
   caminhos de gravação do pipeline Python (PDF, corpo, reprocessos). Import lazy do `extract_pdf`,
@@ -2178,9 +2258,9 @@ de verdade** e sobrescreve o valor extraído.
   **A data de vencimento IMPRESSA no TEXTO do PDF é a fonte PRIMÁRIA** (análise do PDF real >
   LLM > fator): `extract_due_date_from_text(raw)` ancora no rótulo "Vencimento" (ignora "Data do
   Documento"/"Data Movto") e, quando plausível (≥ emissão), **vence** o LLM e o barcode em
-  `build_record` (caminho `pdf_text`). O fator só volta a mandar em PDF **escaneado** (sem texto —
+  `_build_records_text` (caminho `pdf_text`). O fator só volta a mandar em PDF **escaneado** (sem texto —
   onde corrige inversão do Vision, id 435). **Coerência entre as duas camadas (não regredir):** a rede
-  universal de `register_financial` NÃO reestraga a data impressa que o `build_record` já gravou —
+  universal de `register_financial` NÃO reestraga a data impressa que o `_build_records_text` já gravou —
   para o boleto de texto, o **gate 2 (venc < emissão) rejeita** o fator stale (`None`), então a rede é
   no-op; para o escaneado, o fator consistente corrige a inversão. As duas camadas convivem sem
   conflito (verificado em payloads frescos). Dados: 473/474 (1 conta errada cada) → reprocessados em
@@ -2190,8 +2270,10 @@ de verdade** e sobrescreve o valor extraído.
   (`…630000 1` / `ITAU 341-7` / `10510000356008`) e os 3 regex falhavam → 0 páginas → **1 conta em vez
   de 4**. Um 4º padrão em `extract_linha_digitavel` (captura os 4 campos + o 1º bloco isolado de 14
   dígitos, `re.DOTALL`, ignorando ruído no meio) restaura a detecção → carnê dividido em 1 registro por
-  boleto. **Limitação:** carnê **escaneado** (sem texto) segue sem split (evolução futura: Vision
-  multi-boleto).
+  boleto. ✅ **A limitação do carnê ESCANEADO foi RESOLVIDA em 2026-08-07** — não por melhorar a
+  detecção de páginas (ela lê TEXTO, e o scan não tem nenhum), mas aceitando **N registros por
+  leitura Vision**: o modelo devolve um ARRAY com um objeto por boleto. Ver "Resposta do modelo
+  TRUNCADA nunca vira dado" em "Robustez da leitura e da extração".
 - **Split multi-pagável por INSTRUMENTO DE PAGAMENTO (id 575/593 — não regredir):** o split de
   `process_pdf` (que emite 1 registro por página → 1 conta) disparava **só** por linha digitável de
   boleto (47 díg — `_boleto_pages`/`extract_linha_digitavel`). Guia **sem** linha digitável —
@@ -2226,7 +2308,13 @@ de verdade** e sobrescreve o valor extraído.
   parcela 2 → conta **603** criada (sem colisão após corrigir a 539). Estado final: 3 parcelas distintas
   (539 venc 14/08 · 603 venc 13/09 · 538 venc 13/10). Os demais e-mails "BR Supply" com "0 contas" são
   **reenvios legítimos** (dedup correta). **Reincidência já prevenida** pelo barcode determinístico atual
-  (pendente deploy do `extract_pdf.py`).
+  (implantado em produção em 2026-08-07).
+  ⚠️ **Aquela auditoria cobriu SÓ `pdf_text` (205 contas) — e o defeito morava no outro caminho.**
+  A varredura de 2026-08-07, sobre **todas** as 442 contas com barcode, achou **18 corrompidas,
+  100% `pdf_vision`**: o OCR de scan desloca dígitos e produz código de comprimento válido com
+  valor 10× e fator impossível. Ao auditar um campo, varra **todas as origens** — restringir à
+  origem que se suspeita confirma a suspeita e deixa o resto invisível. Ver "Barcode de scan que
+  se REFUTA" em "Robustez da leitura e da extração".
 
 Testes: `tests/test_barcode_due_date.py` (fator real do id 435 → `2026-07-08`; desambiguação do
 reset; fator 0; não-boleto; correção de inversão; no-op quando já bate; **gate de consistência:
@@ -2435,8 +2523,8 @@ motivou: reembolso de postagem dos Correios com o recibo colado inline (`process
 `save_inline_images` → Vision → conta `recibo` R$ 172,39, fornecedor ECT/Correios). No `extract_pdf.py`, `process_pdf` desvia imagens **antes** de pdfplumber/
 descriptografia/carnê (que abririam o arquivo como PDF) para `_extract_image` → `extract_with_vision`,
 que monta o bloco Vision conforme o tipo (`_vision_source_block`: `type:image`+media_type para
-imagem → `image_vision`; `type:document`+`application/pdf` para PDF → `pdf_vision`). `build_record`
-trata `image_vision` pelo mesmo caminho JSON do `pdf_vision`. O prompt de `amount` inclui o rótulo
+imagem → `image_vision`; `type:document`+`application/pdf` para PDF → `pdf_vision`). `build_records`
+trata `image_vision` pelo mesmo caminho JSON do `pdf_vision` (inclusive o ARRAY de N pagáveis). O prompt de `amount` inclui o rótulo
 "Valor do porte"/"Valor total" de recibo de postagem. `upload_attachment` grava o Storage com o
 `Content-Type` por extensão (`_UPLOAD_CONTENT_TYPES`), não mais fixo em `application/pdf`. CHECK do
 banco: migration **061** (domínio `email_body`/`pdf_text`/`pdf_vision`/`image_vision`/`falha`); enum
@@ -2571,6 +2659,10 @@ e-mails `status='falha'`, rebusca o corpo no IMAP, baixa o boleto pelo link e gr
   caminhos (PDF e corpo) precisam da mesma regra. `normalize_barcode` valida por padrão;
   `normalize_barcode_allow_misread` é o opt-in explícito para dígitos de procedência confiável.
   O fallback defensivo do `read_emails` **espelha o invariante** e **avisa no log** quando degrada.
+  ⚠️ **`allow_misread` NÃO é a última palavra no caminho Vision:** ele só relaxa o **DV**, e o OCR
+  de scan produz código de comprimento válido com os campos DESLOCADOS, que nenhum DV pega. Desde
+  2026-08-07, `barcode_self_refuted` roda depois dele em `pdf_vision`/`image_vision` e descarta o
+  que o próprio código refuta (valor **e** fator). Ver "Barcode de scan que se REFUTA" acima.
 - **Corpo só-HTML** é convertido (`_html_to_text`); **corpo PLACEHOLDER** ("conteúdo disponível
   somente em HTML") também — exige o padrão do aviso **E** texto curto, porque corpo curto legítimo
   é a norma aqui.
@@ -2617,8 +2709,8 @@ e-mails `status='falha'`, rebusca o corpo no IMAP, baixa o boleto pelo link e gr
 | `/tabelas/plano-de-contas` | `ChartAccountsPage.tsx` | `financial_chart_of_account` (CRUD via Next API) |
 | `/tabelas/grupos-plano-de-contas` | `ChartAccountGroupsPage.tsx` | `financial_chart_of_account_group` (CRUD via Next API) |
 | `/tabelas/subgrupos-plano-de-contas` | `ChartAccountSubgroupsPage.tsx` | `financial_chart_of_account_subgroup` (CRUD via Next API) |
-| `/dashboard_vencimentos` | `Dashboard.tsx` | `financial_account_control` (KPIs/gráficos por mês ou geral; `getDashboardData`). **Filtro por EMPRESA** (`<select>` "Empresa", 1º dos controles; vazio = TODAS; hook `useCompanyOptions`): 5º parâmetro `skCompany` de `getDashboardData`, aplicado nas **DUAS** leituras (escopo + ano — senão o gráfico anual mostraria as duas empresas). Aqui ele escopa **TUDO** (KPIs, donuts e gráfico anual), diferente de `/consulta` (cujos KPIs gerais são globais), porque no dashboard todo indicador deriva do escopo; e **aplica na hora** (não há "Buscar"). Convive com o filtro de KPI. **Cards de KPI clicáveis = filtro** (Total/Pagos/A vencer/A vencer em 7 dias/Vencidas): clicar aplica o filtro (`KpiFilter`) a TODOS os gráficos; os KPIs seguem com os totais completos. **4 donuts** (situação · tipos de conta · **Tributos** = só guias tributárias detalhadas · formas de pagamento; tipos de conta colapsa os tributários numa fatia "Tributos" via `groupDocumentTypeLabel`/`isTaxDocumentType`). Todos os donuts (aqui e no financeiro) têm arcos + % + ORDEM por **VALOR (R$)** desc, legenda com R$ **sem contagem de contas** e furo central com o **total em R$** — ver `BreakdownDonut`; os de vencimentos usam `size="sm"` (4 na mesma linha no `xl`; só o círculo é menor — 108px). Abre em `total` (sem card marcado), diferente do financeiro |
-| `/dashboard_despesas` | `DashboardFinanceiro.tsx` | `financial_account_control` **escopado a DESPESAS + CUSTO** (`getFinancialDashboardData`) — conta cujo plano de contas tem grupo com Natureza "Despesas" OU "Custo" (`chart_account.group.type_group_id ∈ {TYPE_GROUP_ID_DESPESAS=2, TYPE_GROUP_ID_CUSTO=8}`, migration 094; decisão do usuário 2026-07-22 — custo de mercadoria é conta a pagar e entra em toda métrica; conta sem classificação é excluída). **Mantém** os 5 KPIs, filtro de EMPRESA, mês/ano e escopo (todos só do escopo 2+8). **INVARIANTE — dashboard EXCLUSIVO do escopo Despesas+Custo (não regredir):** TODA métrica (os 5 KPIs valor+contagem, o card de total, os 4 donuts e os 2 rankings) é computada ÚNICA e EXCLUSIVAMENTE sobre linhas do escopo. O recorte é feito por `isExpenseRow` (grupo com `type_group_id` 2 OU 8) **ANTES de qualquer agregação** (`monthRows = monthRowsAll.filter(isExpenseRow)`; KPIs sobre `monthRows`, gráficos/rankings sobre `fMonth` derivado dele). A página consome **um ÚNICO serviço** (`getFinancialDashboardData`) — **NÃO há busca paralela de totais globais** (ao contrário do `/consulta`, cujos KPIs gerais são globais). Conta **SEM classificação** (ou de outra natureza, ex. Passivo) fica FORA de tudo — não soma nem conta. **ABRE FILTRADO no KPI "A vencer"** (`useState<KpiFilter>('aVencer')` — pedido do usuário): os CARDS seguem com os totais completos do mês e só os gráficos filtram, então o card "Despesas no mês" e o furo dos donuts mostram números diferentes de propósito; o card "A vencer" já abre com o destaque de selecionado (ver "Destaque dos cards de KPI") e o ✕ do cabeçalho (ou clicar no card) limpa para `total`. **NÃO tem o gráfico "Movimentações mês a mês"** (removido a pedido do usuário) — por isso faz **leitura ÚNICA** (só o mês; o read do ANO existia apenas para alimentar aquele gráfico e foi eliminado junto, com `monthlyFlow` fora de `FinancialDashboardData`). **Gráficos**: **4 donuts `size="sm"` + `dense` em 2 LINHAS de 2** (`grid-cols-1 sm:grid-cols-2 gap-2 mb-2`, **sem** override no xl — o fluxo natural do grid já põe a 3ª/4ª posição na linha de baixo, sem reordenar o DOM; `dense` reduz o padding do card — mesmo padrão já usado pelos 4 donuts do `/dashboard_vencimentos`). Compactos DE PROPÓSITO (decisão do usuário 2026-07-22, revertendo o `size="lg"` de uma iteração anterior no mesmo dia): sobrar altura de viewport para os **rankings abaixo**, que não têm scroll próprio e mostram até 12 linhas cada — donut menor = menos scroll até ver a lista inteira. **Diâmetro do anel DINÂMICO, mas ÚNICO entre os 4 donuts (não regredir)** (`diameterPx` em `BreakdownDonut`/`DonutCard`, prop opcional que SOBREPÕE o token de `size` via inline style — nenhum outro call site usa; decisão do usuário 2026-07-22): a página calcula `sumSliceValues`/`scaledDonutDiameter` (helpers locais, não exportados) e usa o MAIOR total (R$) do conjunto (`maxDonutTotal`) para gerar **um único `donutDiameter`** (`scaledDonutDiameter(maxDonutTotal, maxDonutTotal)`, que por ratio=1 sempre cai no `DONUT_MAX_PX`=124), reaplicado IGUAL nos 4 donuts. **Correção da 1ª versão** (escalava CADA donut proporcionalmente ao seu PRÓPRIO total, entre `DONUT_MIN_PX`=84 e `DONUT_MAX_PX`=124): com totais próximos entre si (ex.: Despesas Fixas R$340k vs Custos de Mercadorias R$324k) a diferença de diâmetro ficava de ~1px — visualmente incoerente, nem proporcional de forma perceptível nem igual. `scaledDonutDiameter` continua genérico (aceita `value`≠`maxValue` para outros usos futuros); a POLÍTICA "um valor só para todos" está no call site, não na função. Inline style (não classe Tailwind) porque é um número CONTÍNUO computado do dado em runtime — mesma exceção já adotada no gradiente cônico e nas barras do `RankingList`; o furo acompanha a mesma razão do preset "sm" (`DYNAMIC_HOLE_RATIO=0.11`). Sem `diameterPx`, o componente se comporta 100% como antes (token `size` fixo — vencimentos inalterado). **Fonte do valor central SEM negrito** (`font-sans font-normal`, não mais `font-mono font-semibold` — decisão do usuário 2026-07-22): escopo é só o número dentro do furo (`fmtMoneyCompact`); o `font-mono` da legenda (valor por fatia) e do `RankingList` NÃO mudou. Ordem **"Classificação Financeira"** (rótulo do card; Fixa/Variável/**Custos de Mercadorias**, `tipoBreakdown` pela descrição do `type_group` do SUBGRUPO — do catálogo, sem literal), **"Custos de Mercadorias"**, **"Despesas Fixas"** e **"Despesas Variáveis"** (por GRUPO — `group_description` — particionados pelo Tipo do subgrupo via `type_group_id` 7/5/6: `custoMercadoriasBreakdown`/`despesaFixaBreakdown`/`despesaVariavelBreakdown`; conta com subgrupo não classificado não entra em nenhum dos três — sem balde residual, por decisão de produto); e **DOIS rankings por VALOR (R$)** — **centros de custo** (`costCenterRanking`) e **subgrupo de plano de contas** (`subgroupRanking`, card rotulado "Ranking de contas") —, ambos **top 12** (`RANKING_TOP_N`, aproveitando o espaço do gráfico removido) via os helpers únicos `rankBy` (agrega + desambigua rótulo) e `rankEntry` (monta a entrada / corta o sentinela). **Célula da direita = % do total de contas do escopo, não a contagem crua (pedido do usuário 2026-07-22 — só estes dois rankings):** `rankBy` calcula `pct = count / fMonth.length * 100` para CADA balde (inclusive os fora do top-12 exibido — o denominador é o total do escopo, não a soma dos 12 exibidos, então as % somam 100% entre TODOS os baldes, não necessariamente entre as linhas visíveis) e o grava em `SupplierRank.pct` (campo opcional, novo). O `RankingList` troca a célula automaticamente: **com `pct`** mostra `Math.round(pct)}%`; **sem `pct`** (ranking de fornecedores de `/dashboard_vencimentos`, que não passa o campo) mantém `"N conta(s)"` — nenhuma mudança nesse outro call site. **Linhas um pouco mais compactas (`dense`, prop nova do `RankingList`, opt-in — só aqui, não no de fornecedores):** padding vertical e margem antes da barrinha reduzidos a 1px (`py-px`/`mb-px`, era `py-0.5`/`mb-0.5`) — cabe mais das 12 linhas na mesma altura de card, sem remover nenhuma informação (nome, valor, badge, barra e agora %/contagem continuam todos presentes). **O badge de posição NÃO encolhe** (`h-5 w-5` nos dois modos) e a 1ª versão (`py-0`/`mb-0`, sem padding/margem algum, + badge `h-4 w-4`) foi revertida para esta intermediária a pedido do usuário (2026-07-22: "ficou muito compactado") — o padding zerado ganhava pouca altura extra (a linha de texto+barra já domina a altura sobre o badge nos dois casos) e o resultado visual ficou apertado demais. Testes: `RankingList.test.tsx` (pct vs. contagem, `dense` vs. normal — trava `py-px`, não `py-0`), `financialDashboard.test.ts` (pct calculado sobre o total do escopo), `DashboardFinanceiro.test.tsx` (integração — % renderizado + classe `py-px` nos dois cards). **A agregação é pela IDENTIDADE (o id da FK), NUNCA pelo texto** (`rankEntry`/`rankBy`): nem `financial_cost_center` nem `financial_chart_of_account` têm UNIQUE em descrição — só a PK (o CRUD valida o CÓDIGO, e só na aplicação) —, então agregar por texto fundiria dois cadastros homônimos numa linha somada, em silêncio. O texto é só RÓTULO: centro de custo mostra **a descrição** (as 14 são distintas hoje), com o **código prefixado apenas se dois ids tiverem o mesmo rótulo**; o **ranking de contas** agrega pelo **SUBGRUPO** do plano (`subgroupRanking`; o CARD mantém o rótulo "Ranking de contas") e mostra a **descrição do subgrupo**, com o código prefixado só quando dois subgrupos forem homônimos (mesmo tratamento do centro de custo). A agregação é pela IDENTIDADE do subgrupo (`chart_account_subgroup_id`), NUNCA pelo texto (o cadastro `financial_chart_of_account_subgroup` não tem UNIQUE em descrição). **O sentinela id 0 EXISTE nos dois cadastros com descrição NULL**, logo o embed vem PREENCHIDO — por isso `rankEntry` corta por `id > 0` **e** descrição não vazia, senão a linha apareceria como um rótulo técnico (`#0`) em vez de cair no balde "não informado". O centro vem da **própria conta** (`cost_center_id` + embed `cost_center`), não do plano: é a coluna que o CRUD grava e que `/consulta` exibe. **NÃO tem "Contas críticas e prioritárias"** (removido — segue só no de vencimentos; `PriorityList`/`classifyPriority`/`priorityAccounts` permanecem intactos lá). **Read do mês** traz os DOIS embeds de classificação — `cost_center` (código+descrição, do `cost_center_id` da CONTA) e `chart_account → group/subgroup → type_group` (+ `account_code`/`account_description`) — espelhando os aliases/FKs do `SELECT_WITH_EMBEDS`, mais os ids `cost_center_id`/`chart_account_id`, que são a chave dos rankings. `ExpenseMonthRow` **não herda `MonthRow`**: faz `Pick` de `id`/`amount`/`status_id`/`due_date`/`cost_center_id` + `supplier(trade_name,legal_name)` + os embeds de classificação (o `id`/`supplier` alimentam o **card de detalhe** — ver drill-down abaixo). Do subgrupo vêm a identidade/rótulo (`chart_account_subgroup_id`/`subgroup_code`/`subgroup_description`, base do ranking de contas) e a folha `type_group`; `ExpenseDetailRow` é o alias público de `ExpenseMonthRow`. Os primitivos de gráfico (`BreakdownDonut`/`KpiCard`/`RankingList` + cores) ficam em `components/dashboard/`, compartilhados com o de vencimentos (só o donut de situação `StatusDonut` é local em `Dashboard.tsx`). **Card de DETALHE (drill-down) — clicar num registro dos gráficos (não regredir):** clicar numa **fatia da legenda** de qualquer donut ou numa **linha** de qualquer ranking abre o **`ExpenseDetailModal`** (modal centralizado `<dialog>`) com um `DataGrid` enxuto (`getExpenseDetailColumns` — colunas **Fornecedor · Plano de conta · Vencimento · Valor · Situação**, Situação por último como badge read-only via `StatusBadge`+`STATUS_NAME_BY_ID[status_id]`) das contas daquele agregado, **ordenadas por VENCIMENTO ascendente** (mais próximas primeiro; sem vencimento vai ao fim — decisão do usuário 2026-07-23, substituiu a ordem por valor desc). **Estratégia EM MEMÓRIA (sem leitura extra por clique):** o read do dashboard passou a trazer `id` + `supplier`, e `getFinancialDashboardData` retorna **`detailRows` (= `fMonth`, o MESMO conjunto que gerou os gráficos)**; o clique filtra via **`filterExpenseDetailRows(rows, target)`** (puro/testável), que reproduz EXATAMENTE o balde de cada gráfico → o detalhe é sempre subconjunto consistente do que a fatia/linha contou (inclusive sob truncagem). **Identidade do balde:** donuts casam pelo **rótulo** (`topBucketLabels` — mesma seleção top-N que o `breakdownBy` agora USA; a fatia "outros" = complemento do top-N; "não informado" = `pick(r) ?? 'não informado'`). **O top-N é por VALOR (R$), NUNCA por contagem de linhas (bug real corrigido em 2026-07-22 — não regredir):** o donut exibe arco/%/ordem por valor, então a SELEÇão do top-N precisa usar o MESMO critério — senão um grupo com POUCAS contas de valor ALTO (ex.: "Serviços Gerais": 2 contas, R$20 mil) perde para um grupo com MUITAS contas de valor BAIXO (ex.: "Despesas com Utilidades": 5 contas, R$8 mil) e cai em "outros" apesar de valer mais. Caso de origem: conta da PANIFICADORA BELGA (R$20.100,80, grupo "Serviços Gerais" / subgrupo "Copa e Cozinha", corretamente classificado como Despesas Fixas — FK direta e FK via subgrupo do `chart_account` CONSISTENTES, verificado no banco: não era erro de relacionamento/join) aparecia em "outros" do donut "Despesas Fixas" só por causa do critério errado. Testes: `services/supabaseDrill.test.ts` (describe "seleção é por VALOR..."). Os donuts por-grupo usam o alvo genérico **`chart:'grupoTipo'` + `typeGroupId`** (5/6/7 — pré-filtra pelo Tipo do subgrupo antes do grupo; substituiu os antigos cases `'fixa'`/`'variavel'`); rankings casam pela **`SupplierRank.key`** (a `RankPick.key` `cc:<id>`/`sg:<id>`/`∅` — NUNCA o `name`, homônimo/prefixável; `∅` = sentinela id 0 / sem descrição). **Acessibilidade/não regredir:** as fatias (`BreakdownDonut.onSelect`) e as linhas (`RankingList.onSelect`) só viram `<button>` reais quando o callback é passado — os call sites do **/dashboard_vencimentos NÃO passam** e seguem não-interativos (travado por teste; evita S1082). `SupplierRank.key` virou **obrigatório** → o ranking de fornecedores do vencimentos (map inline) grava `sup:<nome>`. Modal = padrão `<dialog>`+`showModal()` do `/consulta` (Esc/foco/backdrop; fallback `el.open=true` no jsdom). **Robustez (não regredir — code review):** o `DataGrid` do modal liga **`enableRowVirtualization`** (um balde grande no escopo "Todas as contas", cap 20 000, montaria milhares de `<tr>` e travaria a aba); o total/ordenação do modal coagem `amount` por **`Number(x)||0`** (o front NÃO roda Zod — `numeric` pode chegar como STRING; espelha o `num()` do serviço, senão o total concatenaria strings); `openDrill` **não abre com 0 linhas** (guarda contra `bucketKey` inválido) e `load` faz **`setDrill(null)`** (fecha o snapshot obsoleto em qualquer recarga — hoje defensivo, pois o `<dialog>` modal deixa os controles inertes); o case `'grupoTipo'` tem **guarda `typeGroupId == null → []`** (sem ela, `tipoOf(r) === undefined` CASARIA linha sem embed de subgrupo — `undefined === undefined` — e o ramo "outros" devolveria as não-classificadas; travado por teste com fixture `subgroup: null`); o top-N do donut é a constante única **`DONUT_TOP_N=6`** (acopla `breakdownBy` + `topBucketLabels`) — top-6 categorias + a fatia sintética "outros" (quando houver sobra) = **no máximo 7 linhas visíveis** por donut (decisão do usuário 2026-07-22: "outros" CONTA como um dos 7). Os rótulos de tipo vêm do CATÁLOGO (id 7 = **"Custos de Mercadorias"**, plural — fixtures/comentários alinhados ao texto real do banco). **Limitação conhecida (pré-existente):** se um `group_description` REAL for literalmente "outros"/"não informado" E estiver no top-N, o `breakdownBy` emite fatia duplicada e o detalhe casaria só a real (o donut "Classificação Financeira" é seguro — vem do catálogo). Testes: `services/supabaseDrill.test.ts`, `ExpenseDetailModal.test.tsx`(+`.a11y`), extensões em `BreakdownDonut`/`RankingList`/`DashboardFinanceiro` |
+| `/dashboard_vencimentos` | `Dashboard.tsx` | `financial_account_control` (KPIs/gráficos por mês ou geral; `getDashboardData`). **Filtro por EMPRESA** (`<select>` "Empresa", 1º dos controles; vazio = TODAS; hook `useCompanyOptions`): 5º parâmetro `skCompany` de `getDashboardData`, aplicado nas **DUAS** leituras (escopo + ano — senão o gráfico anual mostraria as duas empresas). Aqui ele escopa **TUDO** (KPIs, donuts e gráfico anual), porque no dashboard todo indicador deriva do escopo; e **aplica na hora** (não há "Buscar"). *(Até 2026-08-08 este parênteses dizia "diferente de `/consulta`, cujos KPIs gerais são globais" — `/consulta` passou a filtrar os 5 KPIs também, então o contraste não existe mais.)* Convive com o filtro de KPI. **Cards de KPI clicáveis = filtro** (Total/Pagos/A vencer/A vencer em 7 dias/Vencidas): clicar aplica o filtro (`KpiFilter`) a TODOS os gráficos; os KPIs seguem com os totais completos. **4 donuts** (situação · tipos de conta · **Tributos** = só guias tributárias detalhadas · formas de pagamento; tipos de conta colapsa os tributários numa fatia "Tributos" via `groupDocumentTypeLabel`/`isTaxDocumentType`). Todos os donuts (aqui e no financeiro) têm arcos + % + ORDEM por **VALOR (R$)** desc, legenda com R$ **sem contagem de contas** e furo central com o **total em R$** — ver `BreakdownDonut`; os de vencimentos usam `size="sm"` (4 na mesma linha no `xl`; só o círculo é menor — 108px). Abre em `total` (sem card marcado), diferente do financeiro |
+| `/dashboard_despesas` | `DashboardFinanceiro.tsx` | `financial_account_control` **escopado a DESPESAS + CUSTO** (`getFinancialDashboardData`) — conta cujo plano de contas tem grupo com Natureza "Despesas" OU "Custo" (`chart_account.group.type_group_id ∈ {TYPE_GROUP_ID_DESPESAS=2, TYPE_GROUP_ID_CUSTO=8}`, migration 094; decisão do usuário 2026-07-22 — custo de mercadoria é conta a pagar e entra em toda métrica; conta sem classificação é excluída). **Mantém** os 5 KPIs, filtro de EMPRESA, mês/ano e escopo (todos só do escopo 2+8). **INVARIANTE — dashboard EXCLUSIVO do escopo Despesas+Custo (não regredir):** TODA métrica (os 5 KPIs valor+contagem, o card de total, os 4 donuts e os 2 rankings) é computada ÚNICA e EXCLUSIVAMENTE sobre linhas do escopo. O recorte é feito por `isExpenseRow` (grupo com `type_group_id` 2 OU 8) **ANTES de qualquer agregação** (`monthRows = monthRowsAll.filter(isExpenseRow)`; KPIs sobre `monthRows`, gráficos/rankings sobre `fMonth` derivado dele). A página consome **um ÚNICO serviço** (`getFinancialDashboardData`) — **NÃO há busca paralela de totais globais**. *(O contraste com `/consulta` que este trecho citava caiu em 2026-08-08: lá os totais paralelos também foram unificados numa fonte só.)* Conta **SEM classificação** (ou de outra natureza, ex. Passivo) fica FORA de tudo — não soma nem conta. **ABRE FILTRADO no KPI "A vencer"** (`useState<KpiFilter>('aVencer')` — pedido do usuário): os CARDS seguem com os totais completos do mês e só os gráficos filtram, então o card "Despesas no mês" e o furo dos donuts mostram números diferentes de propósito; o card "A vencer" já abre com o destaque de selecionado (ver "Destaque dos cards de KPI") e o ✕ do cabeçalho (ou clicar no card) limpa para `total`. **NÃO tem o gráfico "Movimentações mês a mês"** (removido a pedido do usuário) — por isso faz **leitura ÚNICA** (só o mês; o read do ANO existia apenas para alimentar aquele gráfico e foi eliminado junto, com `monthlyFlow` fora de `FinancialDashboardData`). **Gráficos**: **4 donuts `size="sm"` + `dense` em 2 LINHAS de 2** (`grid-cols-1 sm:grid-cols-2 gap-2 mb-2`, **sem** override no xl — o fluxo natural do grid já põe a 3ª/4ª posição na linha de baixo, sem reordenar o DOM; `dense` reduz o padding do card — mesmo padrão já usado pelos 4 donuts do `/dashboard_vencimentos`). Compactos DE PROPÓSITO (decisão do usuário 2026-07-22, revertendo o `size="lg"` de uma iteração anterior no mesmo dia): sobrar altura de viewport para os **rankings abaixo**, que não têm scroll próprio e mostram até 12 linhas cada — donut menor = menos scroll até ver a lista inteira. **Diâmetro do anel DINÂMICO, mas ÚNICO entre os 4 donuts (não regredir)** (`diameterPx` em `BreakdownDonut`/`DonutCard`, prop opcional que SOBREPÕE o token de `size` via inline style — nenhum outro call site usa; decisão do usuário 2026-07-22): a página calcula `sumSliceValues`/`scaledDonutDiameter` (helpers locais, não exportados) e usa o MAIOR total (R$) do conjunto (`maxDonutTotal`) para gerar **um único `donutDiameter`** (`scaledDonutDiameter(maxDonutTotal, maxDonutTotal)`, que por ratio=1 sempre cai no `DONUT_MAX_PX`=124), reaplicado IGUAL nos 4 donuts. **Correção da 1ª versão** (escalava CADA donut proporcionalmente ao seu PRÓPRIO total, entre `DONUT_MIN_PX`=84 e `DONUT_MAX_PX`=124): com totais próximos entre si (ex.: Despesas Fixas R$340k vs Custos de Mercadorias R$324k) a diferença de diâmetro ficava de ~1px — visualmente incoerente, nem proporcional de forma perceptível nem igual. `scaledDonutDiameter` continua genérico (aceita `value`≠`maxValue` para outros usos futuros); a POLÍTICA "um valor só para todos" está no call site, não na função. Inline style (não classe Tailwind) porque é um número CONTÍNUO computado do dado em runtime — mesma exceção já adotada no gradiente cônico e nas barras do `RankingList`; o furo acompanha a mesma razão do preset "sm" (`DYNAMIC_HOLE_RATIO=0.11`). Sem `diameterPx`, o componente se comporta 100% como antes (token `size` fixo — vencimentos inalterado). **Fonte do valor central SEM negrito** (`font-sans font-normal`, não mais `font-mono font-semibold` — decisão do usuário 2026-07-22): escopo é só o número dentro do furo (`fmtMoneyCompact`); o `font-mono` da legenda (valor por fatia) e do `RankingList` NÃO mudou. Ordem **"Classificação Financeira"** (rótulo do card; Fixa/Variável/**Custos de Mercadorias**, `tipoBreakdown` pela descrição do `type_group` do SUBGRUPO — do catálogo, sem literal), **"Custos de Mercadorias"**, **"Despesas Fixas"** e **"Despesas Variáveis"** (por GRUPO — `group_description` — particionados pelo Tipo do subgrupo via `type_group_id` 7/5/6: `custoMercadoriasBreakdown`/`despesaFixaBreakdown`/`despesaVariavelBreakdown`; conta com subgrupo não classificado não entra em nenhum dos três — sem balde residual, por decisão de produto); e **DOIS rankings por VALOR (R$)** — **centros de custo** (`costCenterRanking`) e **subgrupo de plano de contas** (`subgroupRanking`, card rotulado "Ranking de contas") —, ambos **top 12** (`RANKING_TOP_N`, aproveitando o espaço do gráfico removido) via os helpers únicos `rankBy` (agrega + desambigua rótulo) e `rankEntry` (monta a entrada / corta o sentinela). **Célula da direita = % do total de contas do escopo, não a contagem crua (pedido do usuário 2026-07-22 — só estes dois rankings):** `rankBy` calcula `pct = count / fMonth.length * 100` para CADA balde (inclusive os fora do top-12 exibido — o denominador é o total do escopo, não a soma dos 12 exibidos, então as % somam 100% entre TODOS os baldes, não necessariamente entre as linhas visíveis) e o grava em `SupplierRank.pct` (campo opcional, novo). O `RankingList` troca a célula automaticamente: **com `pct`** mostra `Math.round(pct)}%`; **sem `pct`** (ranking de fornecedores de `/dashboard_vencimentos`, que não passa o campo) mantém `"N conta(s)"` — nenhuma mudança nesse outro call site. **Linhas um pouco mais compactas (`dense`, prop nova do `RankingList`, opt-in — só aqui, não no de fornecedores):** padding vertical e margem antes da barrinha reduzidos a 1px (`py-px`/`mb-px`, era `py-0.5`/`mb-0.5`) — cabe mais das 12 linhas na mesma altura de card, sem remover nenhuma informação (nome, valor, badge, barra e agora %/contagem continuam todos presentes). **O badge de posição NÃO encolhe** (`h-5 w-5` nos dois modos) e a 1ª versão (`py-0`/`mb-0`, sem padding/margem algum, + badge `h-4 w-4`) foi revertida para esta intermediária a pedido do usuário (2026-07-22: "ficou muito compactado") — o padding zerado ganhava pouca altura extra (a linha de texto+barra já domina a altura sobre o badge nos dois casos) e o resultado visual ficou apertado demais. Testes: `RankingList.test.tsx` (pct vs. contagem, `dense` vs. normal — trava `py-px`, não `py-0`), `financialDashboard.test.ts` (pct calculado sobre o total do escopo), `DashboardFinanceiro.test.tsx` (integração — % renderizado + classe `py-px` nos dois cards). **A agregação é pela IDENTIDADE (o id da FK), NUNCA pelo texto** (`rankEntry`/`rankBy`): nem `financial_cost_center` nem `financial_chart_of_account` têm UNIQUE em descrição — só a PK (o CRUD valida o CÓDIGO, e só na aplicação) —, então agregar por texto fundiria dois cadastros homônimos numa linha somada, em silêncio. O texto é só RÓTULO: centro de custo mostra **a descrição** (as 14 são distintas hoje), com o **código prefixado apenas se dois ids tiverem o mesmo rótulo**; o **ranking de contas** agrega pelo **SUBGRUPO** do plano (`subgroupRanking`; o CARD mantém o rótulo "Ranking de contas") e mostra a **descrição do subgrupo**, com o código prefixado só quando dois subgrupos forem homônimos (mesmo tratamento do centro de custo). A agregação é pela IDENTIDADE do subgrupo (`chart_account_subgroup_id`), NUNCA pelo texto (o cadastro `financial_chart_of_account_subgroup` não tem UNIQUE em descrição). **O sentinela id 0 EXISTE nos dois cadastros com descrição NULL**, logo o embed vem PREENCHIDO — por isso `rankEntry` corta por `id > 0` **e** descrição não vazia, senão a linha apareceria como um rótulo técnico (`#0`) em vez de cair no balde "não informado". O centro vem da **própria conta** (`cost_center_id` + embed `cost_center`), não do plano: é a coluna que o CRUD grava e que `/consulta` exibe. **NÃO tem "Contas críticas e prioritárias"** (removido — segue só no de vencimentos; `PriorityList`/`classifyPriority`/`priorityAccounts` permanecem intactos lá). **Read do mês** traz os DOIS embeds de classificação — `cost_center` (código+descrição, do `cost_center_id` da CONTA) e `chart_account → group/subgroup → type_group` (+ `account_code`/`account_description`) — espelhando os aliases/FKs do `SELECT_WITH_EMBEDS`, mais os ids `cost_center_id`/`chart_account_id`, que são a chave dos rankings. `ExpenseMonthRow` **não herda `MonthRow`**: faz `Pick` de `id`/`amount`/`status_id`/`due_date`/`cost_center_id` + `supplier(trade_name,legal_name)` + os embeds de classificação (o `id`/`supplier` alimentam o **card de detalhe** — ver drill-down abaixo). Do subgrupo vêm a identidade/rótulo (`chart_account_subgroup_id`/`subgroup_code`/`subgroup_description`, base do ranking de contas) e a folha `type_group`; `ExpenseDetailRow` é o alias público de `ExpenseMonthRow`. Os primitivos de gráfico (`BreakdownDonut`/`KpiCard`/`RankingList` + cores) ficam em `components/dashboard/`, compartilhados com o de vencimentos (só o donut de situação `StatusDonut` é local em `Dashboard.tsx`). **Card de DETALHE (drill-down) — clicar num registro dos gráficos (não regredir):** clicar numa **fatia da legenda** de qualquer donut ou numa **linha** de qualquer ranking abre o **`ExpenseDetailModal`** (modal centralizado `<dialog>`) com um `DataGrid` enxuto (`getExpenseDetailColumns` — colunas **Fornecedor · Plano de conta · Vencimento · Valor · Situação**, Situação por último como badge read-only via `StatusBadge`+`STATUS_NAME_BY_ID[status_id]`) das contas daquele agregado, **ordenadas por VENCIMENTO ascendente** (mais próximas primeiro; sem vencimento vai ao fim — decisão do usuário 2026-07-23, substituiu a ordem por valor desc). **Estratégia EM MEMÓRIA (sem leitura extra por clique):** o read do dashboard passou a trazer `id` + `supplier`, e `getFinancialDashboardData` retorna **`detailRows` (= `fMonth`, o MESMO conjunto que gerou os gráficos)**; o clique filtra via **`filterExpenseDetailRows(rows, target)`** (puro/testável), que reproduz EXATAMENTE o balde de cada gráfico → o detalhe é sempre subconjunto consistente do que a fatia/linha contou (inclusive sob truncagem). **Identidade do balde:** donuts casam pelo **rótulo** (`topBucketLabels` — mesma seleção top-N que o `breakdownBy` agora USA; a fatia "outros" = complemento do top-N; "não informado" = `pick(r) ?? 'não informado'`). **O top-N é por VALOR (R$), NUNCA por contagem de linhas (bug real corrigido em 2026-07-22 — não regredir):** o donut exibe arco/%/ordem por valor, então a SELEÇão do top-N precisa usar o MESMO critério — senão um grupo com POUCAS contas de valor ALTO (ex.: "Serviços Gerais": 2 contas, R$20 mil) perde para um grupo com MUITAS contas de valor BAIXO (ex.: "Despesas com Utilidades": 5 contas, R$8 mil) e cai em "outros" apesar de valer mais. Caso de origem: conta da PANIFICADORA BELGA (R$20.100,80, grupo "Serviços Gerais" / subgrupo "Copa e Cozinha", corretamente classificado como Despesas Fixas — FK direta e FK via subgrupo do `chart_account` CONSISTENTES, verificado no banco: não era erro de relacionamento/join) aparecia em "outros" do donut "Despesas Fixas" só por causa do critério errado. Testes: `services/supabaseDrill.test.ts` (describe "seleção é por VALOR..."). Os donuts por-grupo usam o alvo genérico **`chart:'grupoTipo'` + `typeGroupId`** (5/6/7 — pré-filtra pelo Tipo do subgrupo antes do grupo; substituiu os antigos cases `'fixa'`/`'variavel'`); rankings casam pela **`SupplierRank.key`** (a `RankPick.key` `cc:<id>`/`sg:<id>`/`∅` — NUNCA o `name`, homônimo/prefixável; `∅` = sentinela id 0 / sem descrição). **Acessibilidade/não regredir:** as fatias (`BreakdownDonut.onSelect`) e as linhas (`RankingList.onSelect`) só viram `<button>` reais quando o callback é passado — os call sites do **/dashboard_vencimentos NÃO passam** e seguem não-interativos (travado por teste; evita S1082). `SupplierRank.key` virou **obrigatório** → o ranking de fornecedores do vencimentos (map inline) grava `sup:<nome>`. Modal = padrão `<dialog>`+`showModal()` do `/consulta` (Esc/foco/backdrop; fallback `el.open=true` no jsdom). **Robustez (não regredir — code review):** o `DataGrid` do modal liga **`enableRowVirtualization`** (um balde grande no escopo "Todas as contas", cap 20 000, montaria milhares de `<tr>` e travaria a aba); o total/ordenação do modal coagem `amount` por **`Number(x)||0`** (o front NÃO roda Zod — `numeric` pode chegar como STRING; espelha o `num()` do serviço, senão o total concatenaria strings); `openDrill` **não abre com 0 linhas** (guarda contra `bucketKey` inválido) e `load` faz **`setDrill(null)`** (fecha o snapshot obsoleto em qualquer recarga — hoje defensivo, pois o `<dialog>` modal deixa os controles inertes); o case `'grupoTipo'` tem **guarda `typeGroupId == null → []`** (sem ela, `tipoOf(r) === undefined` CASARIA linha sem embed de subgrupo — `undefined === undefined` — e o ramo "outros" devolveria as não-classificadas; travado por teste com fixture `subgroup: null`); o top-N do donut é a constante única **`DONUT_TOP_N=6`** (acopla `breakdownBy` + `topBucketLabels`) — top-6 categorias + a fatia sintética "outros" (quando houver sobra) = **no máximo 7 linhas visíveis** por donut (decisão do usuário 2026-07-22: "outros" CONTA como um dos 7). Os rótulos de tipo vêm do CATÁLOGO (id 7 = **"Custos de Mercadorias"**, plural — fixtures/comentários alinhados ao texto real do banco). **Limitação conhecida (pré-existente):** se um `group_description` REAL for literalmente "outros"/"não informado" E estiver no top-N, o `breakdownBy` emite fatia duplicada e o detalhe casaria só a real (o donut "Classificação Financeira" é seguro — vem do catálogo). Testes: `services/supabaseDrill.test.ts`, `ExpenseDetailModal.test.tsx`(+`.a11y`), extensões em `BreakdownDonut`/`RankingList`/`DashboardFinanceiro` |
 | `/cobranca/envios` | `cobranca/CobrancaEnvios.tsx` | `cobranca_envios_log` (ver "Pipeline de cobrança de vencidos") |
 | `/cobranca/erros` | `cobranca/CobrancaErros.tsx` | `cobranca_erros_log` |
 
@@ -3071,19 +3163,20 @@ e-mails `status='falha'`, rebusca o corpo no IMAP, baixa o boleto pelo link e gr
   e acumula o patch num **estado** `pendingApply`, descarregado em `applied` por um efeito com
   janela de **300 ms**.
   - 🔴 **Aplicar direto no `onChange` de cada controle é a regressão a evitar:** um apply
-    dispara 3 requisições (grid + "Valor total" + contagem), então compor um filtro de 7
-    controles daria ~21; e `<select>` nativo no Firefox/Windows emite `change` a **cada opção
+    dispara 2 requisições (grid + KPIs — eram 3 até 2026-08-08, quando "Valor total" e
+    contagem viraram uma consulta só), então compor um filtro de 7
+    controles daria ~14; e `<select>` nativo no Firefox/Windows emite `change` a **cada opção
     percorrida com as setas**, multiplicando por opção. Travado por
     `toHaveBeenCalledTimes(1)` para 3 mudanças rápidas (validado por mutante: sem a janela,
     3 consultas). O guarda usa **`fireEvent`, não `userEvent`**: `selectOptions` custa ~90 ms
     e a janela é de 300 ms, então com `userEvent` o teste dependia de vencer uma corrida
     contra tempo real — vermelho espúrio sob carga, medindo velocidade em vez de coalescência.
-  - **Trocar `rangeDateField` com De/Até vazios refaz as 3 requisições para o mesmo conjunto —
+  - **Trocar `rangeDateField` com De/Até vazios refaz as requisições para o mesmo conjunto —
     e isso fica assim DE PROPÓSITO.** Evitar exigiria não agendar o apply e deixar
     `applied.rangeDateField` **atrasado** em relação a `f.rangeDateField`, caindo em sincronia
     só quando o intervalo fosse preenchido. É inobservável hoje (com o intervalo vazio a coluna
     nunca é lida), mas cria um invariante de estado defasado que morde o primeiro consumidor
-    futuro de `applied.rangeDateField` — rótulo de cabeçalho, coluna de CSV. Três requisições
+    futuro de `applied.rangeDateField` — rótulo de cabeçalho, coluna de CSV. Duas requisições
     num controle pouco tocado não pagam esse risco.
   - 🔴 **O pendente é ESTADO, não ref** — com refs, a leitura dentro dos handlers entrava na
     cadeia `cards → onCardClick` construída no render e caía em `react-hooks/refs`. O timer é
@@ -3131,22 +3224,72 @@ e-mails `status='falha'`, rebusca o corpo no IMAP, baixa o boleto pelo link e gr
       validados por mutante.
   - **`activeCard`** é preservado quando o filtro apenas restringe e limpo quando o usuário
     mexe no campo que o card possui (`statusId`; e o intervalo quando o card é `avencer7`).
-  - **`refreshStats` saiu do efeito de `applied`**: `getFinancialStats()` é global por design
-    (não lê filtro) e puxa até 1000 linhas — refazê-lo a cada apply era desperdício, e com a
-    aplicação automática seria desperdício multiplicado. Os pontos que MUDAM dado já o chamam.
+  - **`refreshStats` VOLTOU ao efeito de `applied` em 2026-08-08** — a otimização anterior
+    ("KPI global não depende de filtro, então não refaz a cada apply") caiu junto com a
+    premissa: hoje os 5 cards refletem o filtro, então **têm** de ser refeitos a cada apply.
+    O que a preserva em espírito é a **janela de 300 ms**, que já coalesce os applies. Os
+    pontos que MUDAM dado (curadoria, situação, exclusão, leitura de e-mails) seguem
+    chamando `refreshStats()` sob demanda, agora com o filtro corrente.
   > ⚠️ **Teste de "não consulta" com `flush()` (0 ms) é falso guarda** — foi o que aconteceu
   > aqui: o caso "escolher o filtro NÃO consulta antes do Buscar" continuou **VERDE** depois
   > de a aplicação automática entrar, porque `flush()` não alcança a janela de 300 ms; ele
   > media "ainda não consultou NESTE instante". Guarda de ausência com debounce no meio exige
   > avançar o tempo, não um tick.
+- **KPIs de `/consulta` seguem o FILTRO — fonte ÚNICA (2026-08-08, decisão do dono do produto).**
+  Os **5 cards e o rodapé** saem de uma só chamada, `getFinancialStats(applied)`; as funções
+  `getFinancialAccountTotalValue` e `getFinancialAccountCount` foram **REMOVIDAS**.
+  - 🔴 **O defeito era a DIVISÃO, não o número.** O card "Total de registros" tirava o **valor**
+    da consulta filtrada e a **contagem** dos KPIs globais: com "Ago/2026" a tela dizia
+    `R$ 3.766.725,46 / 742 conta(s)` — o R$ certo (agosto tem 211 contas somando exatamente
+    isso) sobre a contagem da base inteira (742 = 784 − 42 canceladas), fazendo a média por
+    conta sair ~3,5× menor que a real. A mesma página exibia **dois números diferentes sob o
+    mesmo nome** (o rodapé filtrado, o card global). Três consultas por apply para valores que
+    precisam concordar é o antipadrão; unificar é o que impede a divergência de voltar.
+    ⚠️ O relato original incluía "'Todas' e '2026' dão o mesmo valor", que **não** era defeito:
+    as 742 não-canceladas vencem todas em 2026, então filtrar o ano é de fato equivalente a não
+    filtrar. Confira o dado antes de perseguir o filtro.
+  - 🔴 **A varredura dos KPIs PAGINA — e não paginar seria falha SILENCIOSA e datada.** Ela
+    conta e soma no cliente, e o PostgREST corta no **"Max rows" (1.000) devolvendo HTTP 200**:
+    medido por HTTP nesta instalação contra `email_control` (1.303 linhas), `limit=1000`, `5000`
+    e `10000` devolvem **1.000, sempre 200**, sem erro e sem sinal — ou seja, o `limit: 10000`
+    da versão antiga dava falsa sensação de folga. Com **742** não-canceladas e ritmo medido de
+    **~22 contas/dia**, os cinco cards passariam a subnotificar em **~12 dias**. É a MESMA lição
+    da Onda 3 ("consulta REST cujo resultado vira dado precisa paginar"), que estava registrada
+    só para os scripts Python enquanto o frontend repetia o padrão. `STATS_PAGE_SIZE = 1000` +
+    **`order=id.asc`** (offset sem ordem determinística PULA linha — ver `stableOrder.ts`) +
+    **`STATS_MAX_PAGES = 200`**, que **levanta** em vez de girar para sempre se o servidor
+    ignorar o `offset`.
+  - 🔴 **O card "A vencer em 7 dias" precisa FILTRAR o mesmo predicado que CONTOU** — o número
+    vem de `status_id = a vencer` **E** vencimento na janela, mas o clique aplicava só o
+    intervalo, e com `BASE_FILTERS.statusId = undefined` o grid voltava com qualquer situação
+    não-cancelada: medido, o card dizia **68** e o clique trazia **69** (uma conta já paga
+    vencendo na janela). `next7DaysRange()` passou a devolver também `statusId`. A divergência
+    **cresce com a operação normal** — é a contagem de pagas dentro da janela.
+  - **`getFinancialStats` recebe o objeto de filtros INTEIRO** e o repassa a
+    `applyFinancialFilters`, como `getFinancialAccountControl` já fazia — destrinchar campo a
+    campo faria um filtro novo ser descartado aqui **em silêncio** enquanto o grid o respeitasse,
+    e o sintoma ("os KPIs estão errados") apareceria longe da causa.
+  - **`fetchStats` NUNCA rejeita:** é chamada em ~8 pontos com `void` e o KPI é acessório —
+    falha devolve `null`, os cards mantêm o último valor bom e o erro vai ao `console.error`
+    (não silenciar sem log). A guarda de resposta obsoleta é o **`cancelled` do efeito**, não um
+    ref de geração: um ref lido ali entraria na cadeia `handleStatusChange → getConsultaColumns`
+    montada no render e cairia em `react-hooks/refs` (mesma razão de `pendingApply` ser estado).
+    A guarda importa porque a varredura pagina, então é a chamada mais lenta da página e a
+    resposta ANTIGA pode chegar depois da nova.
+  - **O ajuste LOCAL de totais no hard delete foi REMOVIDO:** decrementar só "Valor total" e
+    "Total de registros" deixaria o painel **meio atualizado** (o total cairia, mas
+    "Pagos"/"Vencidas" seguiriam contando a conta removida) até o refresh responder.
+    `refreshStats()` corrige os cinco de uma vez, a partir do servidor.
+  - **Agregação no servidor (`sum()` do PostgREST) não é alternativa aqui:**
+    `db-aggregates-enabled` vem **desligado** no Supabase — a mesma constatação da decisão 2 da
+    Fase 0 do chat de IA. Por isso a soma é no cliente, e por isso ela precisa paginar.
 - **`/consulta` — `cancelado` aparece no GRID, mas NÃO nos KPIs (mudança 2026-06-25):** a regra
   antiga ocultava cancelado em tudo; agora o **grid mostra canceladas** por padrão e os **KPIs as
   excluem** (para o "Valor total"/"Total de registros" não somar cancelado e gerar confusão). Como
   isso é implementado: `applyFinancialFilters` recebe `includeCancelled` (default **false** = exclui)
-  — o **grid** (`getFinancialAccountControl`) passa `true`; o card **"Valor total"**
-  (`getFinancialAccountTotalValue`) usa o default (exclui). O `getFinancialStats` mantém
-  `status_id=neq.<cancelado>` (KPIs gerais sem cancelado — por `STATUS_ID_CANCELADO`). Filtro
-  explícito de situação (`status_id=eq.<id>`) sobrescreve tudo nos dois caminhos. **Consequência aceita:** o rodapé do grid ("N de M") conta
+  — o **grid** (`getFinancialAccountControl`) passa `true`; os **KPIs** (`getFinancialStats`, que
+  desde 2026-08-08 alimenta os 5 cards **e** o rodapé) usam o default e portanto excluem cancelado.
+  Filtro explícito de situação (`status_id=eq.<id>`) sobrescreve tudo nos dois caminhos. **Consequência aceita:** o rodapé do grid ("N de M") conta
   canceladas e o KPI "Total de registros" não — divergência **intencional** (cancelado é visível,
   mas fora dos totais). Linha cancelada é pintada de vermelho (`bg-status-error-solid/15`, via
   `DataGrid rowClassName`), tom distinto do badge "vencido".
