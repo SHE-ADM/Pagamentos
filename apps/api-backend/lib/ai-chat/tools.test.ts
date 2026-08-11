@@ -4,7 +4,7 @@ import { TOOL_DEFINITIONS, isToolName, parseToolInput, runTool, ANALYTICS_SCHEMA
 describe('TOOL_DEFINITIONS', () => {
   // A lista é travada de propósito: acrescentar tool muda a DEFINIÇÃO enviada ao modelo, o que
   // invalida os três níveis de prompt cache (tools + system + messages). Tem de ser deliberado.
-  it('expõe exatamente as 9 tools (098 · 104 · 106 · documentos_fiscais da 108)', () => {
+  it('expõe exatamente as 11 tools (098 · 104 · 106 · 108 · auditoria da 118 — Onda 7)', () => {
     expect(TOOL_DEFINITIONS.map((t) => t.name)).toEqual([
       'resumo_situacao',
       'gasto_por_periodo',
@@ -15,6 +15,8 @@ describe('TOOL_DEFINITIONS', () => {
       'listar_contas',
       'buscar_emails',
       'documentos_fiscais',
+      'auditoria_eventos',
+      'auditoria_resumo',
     ]);
   });
 

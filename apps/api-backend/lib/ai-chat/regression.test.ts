@@ -130,6 +130,15 @@ const PERGUNTAS: ReadonlyArray<{ pergunta: string; tool: ToolName; params: Recor
     tool: 'documentos_fiscais',
     params: { tipo: ['cte'], date_from: '2026-07-01', date_to: '2026-07-31' },
   },
+
+  // ---- Auditoria (Onda 7) ----
+  // A pergunta é de VOLUME por autor, então a tool certa é o resumo, não a lista de eventos:
+  // a lista é truncada pelo LIMIT e contá-la daria número errado.
+  {
+    pergunta: 'Quem alterou o valor ou o vencimento das contas neste mês?',
+    tool: 'auditoria_resumo',
+    params: { group_by: 'usuario', apenas_sensiveis: true, date_from: '2026-08-01', date_to: '2026-08-31' },
+  },
 ];
 
 describe('bateria de regressão — perguntas sugeridas no painel', () => {
@@ -201,5 +210,25 @@ describe('bateria de regressão — perguntas sugeridas no painel', () => {
 
   it('cobre os documentos fiscais (capacidade nova da Onda 3)', () => {
     expect(PERGUNTAS.map((p) => p.tool)).toContain('documentos_fiscais');
+  });
+
+  it('cobre a trilha de auditoria (capacidade nova da Onda 7)', () => {
+    expect(PERGUNTAS.map((p) => p.tool)).toContain('auditoria_resumo');
+  });
+
+  // O eixo de agrupamento é OBRIGATÓRIO no resumo: sem ele o modelo receberia um erro do banco
+  // no meio do loop em vez de uma mensagem que consegue corrigir.
+  it('auditoria_resumo exige group_by, e rejeita eixo inventado', () => {
+    expect(parseToolInput('auditoria_resumo', {}).ok).toBe(false);
+    expect(parseToolInput('auditoria_resumo', { group_by: 'fornecedor' }).ok).toBe(false);
+    expect(parseToolInput('auditoria_resumo', { group_by: 'usuario' }).ok).toBe(true);
+  });
+
+  // Tabela fora do domínio auditado devolveria VAZIO no banco, e o modelo concluiria "não houve
+  // alteração" em vez de "essa tabela não é auditada".
+  it('auditoria_eventos aceita só as tabelas realmente auditadas', () => {
+    expect(parseToolInput('auditoria_eventos', { tabela: 'email_control' }).ok).toBe(false);
+    expect(parseToolInput('auditoria_eventos', { tabela: 'supplier' }).ok).toBe(true);
+    expect(parseToolInput('auditoria_eventos', { tabela: 'financial_account_control' }).ok).toBe(true);
   });
 });

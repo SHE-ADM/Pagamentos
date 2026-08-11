@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { NextRequest } from 'next/server';
 
-vi.mock('@/lib/auth', () => ({ requireAuth: vi.fn() }));
+vi.mock('@/lib/auth', () => ({ requireAuth: vi.fn(), getAuthenticatedUser: vi.fn() }));
 vi.mock('@/lib/suppliers', async () => {
   const { ApiServiceError } = await vi.importActual<typeof import('@/lib/api-error')>('@/lib/api-error');
   class SupplierServiceError extends ApiServiceError {
@@ -16,10 +16,12 @@ vi.mock('@/lib/suppliers', async () => {
 });
 
 import { GET, DELETE } from './route';
-import { requireAuth } from '@/lib/auth';
+import { requireAuth, getAuthenticatedUser } from '@/lib/auth';
 import { supplierService, SupplierServiceError } from '@/lib/suppliers';
 
 const requireAuthMock = vi.mocked(requireAuth);
+const getUserMock = vi.mocked(getAuthenticatedUser);
+const USER = { id: 'fe8d268d-2bc3-4418-8cae-65e426c3fb4e' };
 const getBySkMock = vi.mocked(supplierService.getBySk);
 const removeMock = vi.mocked(supplierService.remove);
 
@@ -30,7 +32,9 @@ beforeEach(() => {
   requireAuthMock.mockReset();
   getBySkMock.mockReset();
   removeMock.mockReset();
+  getUserMock.mockReset();
   requireAuthMock.mockResolvedValue(null);
+  getUserMock.mockResolvedValue(USER as never);
 });
 
 describe('GET /api/suppliers/:sk', () => {
@@ -68,5 +72,13 @@ describe('DELETE /api/suppliers/:sk', () => {
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body).toEqual({ success: true, data: { sk_supplier: 5 } });
+  });
+
+  // `supplier` NÃO tem coluna de autoria, então o header é a única via de atribuição: sem o ator
+  // aqui, a baixa de um fornecedor seria auditada sem dono. O 3º argumento é o id do usuário.
+  it('propaga o ator para a trilha de auditoria na baixa', async () => {
+    removeMock.mockResolvedValue({ sk_supplier: 5 });
+    await DELETE(req, ctx('5'));
+    expect(removeMock).toHaveBeenCalledWith(5, expect.any(String), USER.id);
   });
 });

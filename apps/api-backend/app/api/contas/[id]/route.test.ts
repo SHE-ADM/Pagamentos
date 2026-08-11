@@ -126,7 +126,9 @@ describe('DELETE /api/contas/:id (hard delete — grupo Administrador)', () => {
     removeMock.mockResolvedValue({ id: 5 } as never);
     const res = await DELETE(req, ctx('5'));
     expect(res.status).toBe(200);
-    expect(removeMock).toHaveBeenCalledWith(5);
+    // O id do usuário viaja junto: é ele que a trilha de auditoria (migration 117) grava como
+    // autor do hard delete. Sem isso o evento mais destrutivo do sistema ficaria sem dono.
+    expect(removeMock).toHaveBeenCalledWith(5, USER.id);
   });
 
   it('404 quando a conta não existe', async () => {

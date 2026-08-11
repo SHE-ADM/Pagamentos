@@ -1,7 +1,7 @@
 // lib/ai-chat/tools.ts
-// As 9 tools do chat de IA: definição enviada ao modelo + execução via RPC no schema `analytics`.
+// As 11 tools do chat de IA: definição enviada ao modelo + execução via RPC no schema `analytics`.
 // (6 da migration 098 · demonstrativo_despesas da 104 — Onda 1 · buscar_emails da 106 — Onda 2 ·
-// documentos_fiscais da 108 — Onda 3.)
+// documentos_fiscais da 108 — Onda 3 · auditoria_eventos e auditoria_resumo da 118 — Onda 7.)
 //
 // POR QUE JSON SCHEMA CRU E NÃO ZOD (§17.7 do doc de arquitetura)
 // O §6 do documento já especifica os contratos em JSON Schema, que é exatamente o formato que a
@@ -45,6 +45,12 @@ const EMAIL_STATUS_NAMES = [
 // os traduz para o número do modelo (55/57/59/65). Valor fora deste domínio devolve VAZIO no
 // banco, nunca "todos" — mas o Zod já o barra antes, com mensagem que o modelo consegue corrigir.
 const FISCAL_DOC_TYPES = ['nfe', 'cte', 'cfe', 'nfce'] as const;
+// Trilha de auditoria (migrations 117/118 — Onda 7). As tabelas auditadas são só estas duas; um
+// nome fora do domínio devolveria VAZIO no banco, e o modelo concluiria "não houve alteração"
+// em vez de "essa tabela não é auditada" — daí o enum barrar antes, com mensagem corrigível.
+const AUDIT_TABLES = ['financial_account_control', 'supplier'] as const;
+const AUDIT_OPERATIONS = ['UPDATE', 'DELETE', 'TRUNCATE'] as const;
+const AUDIT_GROUPS = ['usuario', 'campo', 'tabela', 'operacao'] as const;
 const DATE_FIELDS = ['vencimento', 'pagamento', 'emissao'] as const;
 const GRANULARITIES = ['dia', 'semana', 'mes', 'trimestre'] as const;
 const CLASSIFICATION_DIMS = ['centro_custo', 'plano_contas', 'grupo', 'subgrupo', 'tipo'] as const;
@@ -145,6 +151,24 @@ const schemas = {
     date_from: isoDate.optional(),
     date_to: isoDate.optional(),
     numero: z.number().int().min(1).optional(),
+    limit: z.number().int().min(1).max(100).optional(),
+  }),
+  auditoria_eventos: z.object({
+    date_from: isoDate.optional(),
+    date_to: isoDate.optional(),
+    tabela: z.enum(AUDIT_TABLES).optional(),
+    campo: z.string().optional(),
+    usuario: z.string().optional(),
+    operacao: z.enum(AUDIT_OPERATIONS).optional(),
+    registro_id: z.number().int().min(1).optional(),
+    limit: z.number().int().min(1).max(100).optional(),
+  }),
+  auditoria_resumo: z.object({
+    date_from: isoDate.optional(),
+    date_to: isoDate.optional(),
+    group_by: z.enum(AUDIT_GROUPS),
+    apenas_sensiveis: z.boolean().optional(),
+    tabela: z.enum(AUDIT_TABLES).optional(),
     limit: z.number().int().min(1).max(100).optional(),
   }),
 } as const;
@@ -401,6 +425,90 @@ export const TOOL_DEFINITIONS: readonly ToolDefinition[] = [
         numero: { type: 'integer', description: 'Número do documento (não a chave de acesso).' },
         limit: limitProp(DEFAULT_LIMIT),
       },
+    },
+  },
+  {
+    name: 'auditoria_eventos',
+    description:
+      'Trilha de auditoria: QUEM alterou o QUÊ, e quando, em contas a pagar e fornecedores. '
+      + 'Use para "quem mudou o valor desta conta?", "o que aconteceu com a conta 794?", '
+      + '"alguém alterou a chave PIX de algum fornecedor?", "quem excluiu contas neste mês?". '
+      + 'Devolve o DELTA de cada alteração (valor antes → depois), não a linha inteira. '
+      + '🔴 A trilha COMEÇA em 11/08/2026: não encontrar evento anterior a essa data NÃO prova '
+      + 'que nada mudou antes — antes disso o sistema só guardava o ÚLTIMO editor de cada conta. '
+      + '🔴 ator_via="servico" significa alteração de ROTINA AUTOMÁTICA (pipeline de e-mail, '
+      + 'batch diário) ou edição não atribuível — NUNCA leia como "ninguém alterou". '
+      + 'O campo `usuario` tem TRÊS formas, que não devem ser confundidas: um e-mail (a pessoa), '
+      + '"(automacao / nao atribuivel)" (rotina automática) e "(usuario removido: <id>)" — este '
+      + 'último foi uma AÇÃO HUMANA cuja conta depois foi apagada, e não uma automação. '
+      + 'O filtro por campo inclui a EXCLUSÃO do registro, porque apagar a conta destrói aquele '
+      + 'campo junto: "quem mexeu no valor?" precisa mostrar também quem excluiu a conta. '
+      + 'Cada linha traz total_encontrado com a contagem REAL do filtro (antes do limite) — use '
+      + 'esse número para contar, nunca o número de linhas devolvidas.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        date_from: { type: 'string', format: 'date' },
+        date_to: { type: 'string', format: 'date' },
+        tabela: {
+          type: 'string',
+          enum: AUDIT_TABLES,
+          description: 'financial_account_control = contas a pagar · supplier = fornecedores. '
+            + 'São as únicas tabelas auditadas.',
+        },
+        campo: {
+          type: 'string',
+          description: 'Nome da coluna alterada, ex.: amount (valor), due_date (vencimento), '
+            + 'status_id (situação), sk_supplier (fornecedor), barcode, pix_key1.',
+        },
+        usuario: {
+          type: 'string',
+          description: 'Parte do e-mail de quem fez a alteração. Casa também "removido" para '
+            + 'achar ações de usuários cuja conta foi apagada.',
+        },
+        operacao: { type: 'string', enum: AUDIT_OPERATIONS },
+        registro_id: {
+          type: 'integer',
+          description: 'Id da conta (ou sk_supplier) para ver o histórico de UM registro.',
+        },
+        limit: limitProp(DETAIL_LIMIT),
+      },
+    },
+  },
+  {
+    name: 'auditoria_resumo',
+    description:
+      'Agregado da trilha de auditoria: quantas alterações por usuário, por campo, por tabela ou '
+      + 'por operação. É a tool para "quais usuários vêm alterando campos sensíveis" '
+      + '(group_by="usuario" + apenas_sensiveis=true), "qual campo mais muda", "quem mexeu mais '
+      + 'no cadastro este mês". Prefira-a a listar eventos quando a pergunta for de VOLUME ou '
+      + 'de RANKING — a lista de eventos é truncada e contá-la daria número errado. '
+      + 'Campos sensíveis = valor, valor cobrado, vencimento, data de pagamento, situação, '
+      + 'fornecedor, empresa, código de barras, nosso número, nº do documento, flags de NF/Boleto, '
+      + 'classificação contábil e, no fornecedor, chave PIX e CNPJ/CPF. '
+      + 'Mesma ressalva de cobertura da auditoria_eventos: a trilha começa em 11/08/2026.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        date_from: { type: 'string', format: 'date' },
+        date_to: { type: 'string', format: 'date' },
+        group_by: {
+          type: 'string',
+          enum: AUDIT_GROUPS,
+          description: 'usuario = quem alterou — "(automacao / nao atribuivel)" agrupa as rotinas '
+            + 'automáticas e "(usuario removido: <id>)" é uma pessoa cuja conta foi apagada, '
+            + 'NUNCA some as duas · campo = qual coluna (só alterações de campo; a EXCLUSÃO de '
+            + 'registro não aparece neste eixo — para vê-la use group_by="operacao") · tabela.',
+        },
+        apenas_sensiveis: {
+          type: 'boolean',
+          default: false,
+          description: 'true = conta só as alterações que tocaram campo sensível.',
+        },
+        tabela: { type: 'string', enum: AUDIT_TABLES },
+        limit: limitProp(DEFAULT_LIMIT),
+      },
+      required: ['group_by'],
     },
   },
 ] as const;

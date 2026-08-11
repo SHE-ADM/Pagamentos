@@ -45,11 +45,13 @@ interface AiChatPanelProps {
  *
  * SUGESTÃO É UM CONTRATO: o usuário clica confiando que aquilo responde. Por isso a lista contém
  * SÓ perguntas cobertas por alguma tool e verificadas contra o banco — as do documento de auditoria
- * que dependiam de dado inexistente ficaram de fora, não foram "adaptadas":
+ * que dependiam de dado inexistente ficaram de fora, não foram "adaptadas".
+ *
+ * (A pergunta de auditoria SAIU dessa lista de exclusões na Onda 7: as migrations 117/118 criaram
+ * a trilha e as tools que a expõem. As demais seguem fora.)
  *
  *   - DPO / pontualidade → 97% das contas pagas têm payment_date vindo do backfill da migration
  *     096 (só 2 dias de histórico real). Responderia "atraso médio zero", que é falso.
- *   - Auditoria de quem alterou o quê → só o ÚLTIMO editor é guardado e `audit_log` está vazio.
  *   - Taxa de sucesso da extração → as falhas nem viram linha em financial_account_control; vivem
  *     em email_control, que nenhuma tool alcança (Onda 2).
  *
@@ -104,6 +106,13 @@ const SUGGESTION_GROUPS: ReadonlyArray<{ theme: string; questions: readonly stri
     // como boleto. A pergunta é sobre o que foi EMITIDO/recebido, nunca sobre quanto se gastou.
     theme: 'Documentos fiscais',
     questions: ['Quantos CT-e recebemos neste mês, e de quais transportadoras?'],
+  },
+  {
+    // Onda 7: a trilha COMEÇA em 11/08/2026 (migration 117) — antes disso o sistema só guardava o
+    // último editor de cada conta. O system prompt instrui o modelo a dizer isso em vez de
+    // concluir que nada mudou, e a distinguir alteração de rotina automática de edição humana.
+    theme: 'Auditoria',
+    questions: ['Quem alterou o valor ou o vencimento das contas neste mês?'],
   },
 ];
 

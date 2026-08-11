@@ -9,7 +9,10 @@ const builders: Record<string, ReturnType<typeof vi.fn>>[] = [];
 
 function makeBuilder(result: QueryResult) {
   const b: Record<string, ReturnType<typeof vi.fn>> & { then?: unknown } = {};
-  for (const m of ['select', 'neq', 'or', 'order', 'range', 'eq', 'is', 'maybeSingle', 'single', 'insert', 'update', 'delete', 'limit']) {
+  // `setHeader` entra na lista porque a trilha de auditoria (migration 117) propaga o ator pelo
+  // header `x-audit-actor` — ver lib/audit-actor.ts. Ele vive em `PostgrestBuilder`, a base
+  // abstrata do postgrest-js, então está disponível em update()/delete()/rpc() igualmente.
+  for (const m of ['select', 'neq', 'or', 'order', 'range', 'eq', 'is', 'maybeSingle', 'single', 'insert', 'update', 'delete', 'limit', 'setHeader']) {
     b[m] = vi.fn(() => b);
   }
   b.then = (onFulfilled: (v: QueryResult) => unknown, onRejected?: (e: unknown) => unknown) =>
@@ -207,6 +210,36 @@ describe('contaService.update', () => {
     await contaService.update(5, { amount: 200 });
     const updateArg = builders[0].update.mock.calls[0][0] as Record<string, unknown>;
     expect(updateArg).not.toHaveProperty('updated_by');
+  });
+
+  // TRILHA DE AUDITORIA (migration 117) — o header é a ÚNICA via de atribuição neste caminho:
+  // o client é service_role, então `auth.uid()` é NULL no banco. Sem ele o evento sairia como
+  // 'servico'/autor nulo, e o defeito seria invisível (a conta é gravada normalmente).
+  it('propaga o ator para a auditoria pelo header x-audit-actor no update', async () => {
+    resultQueue.push({ data: { id: 5, amount: 200 }, error: null });
+    await contaService.update(5, { amount: 200 }, 'fe8d268d-2bc3-4418-8cae-65e426c3fb4e');
+    expect(builders[0].setHeader).toHaveBeenCalledWith(
+      'x-audit-actor',
+      'fe8d268d-2bc3-4418-8cae-65e426c3fb4e',
+    );
+  });
+
+  it('sem userId NÃO manda o header — a trigger registra "servico", nunca um ator errado', async () => {
+    resultQueue.push({ data: { id: 5, amount: 200 }, error: null });
+    await contaService.update(5, { amount: 200 });
+    expect(builders[0].setHeader).not.toHaveBeenCalled();
+  });
+
+  // O hard delete é irreversível e a linha destruída só sobrevive em `audit_log` — é o evento
+  // em que perder o autor custa mais caro.
+  it('propaga o ator no hard delete', async () => {
+    resultQueue.push({ data: { id: 7 }, error: null });
+    await contaService.remove(7, 'fe8d268d-2bc3-4418-8cae-65e426c3fb4e');
+    expect(builders[0].delete).toHaveBeenCalled();
+    expect(builders[0].setHeader).toHaveBeenCalledWith(
+      'x-audit-actor',
+      'fe8d268d-2bc3-4418-8cae-65e426c3fb4e',
+    );
   });
 
   it('422 com document_type fora do enum', async () => {

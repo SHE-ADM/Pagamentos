@@ -209,12 +209,11 @@ Estas regras se aplicam a **todo** código novo ou alterado neste projeto, sem e
   `test_vision_multi_boleto.py`, `test_barcode_self_refuted.py`,
   `test_contact_block_nonpayable.py`, `test_is_processed.py`). Cobre o
   pipeline de extração; rodar após mexer em `read_emails.py`/`extract_pdf.py` ou nos
-  scripts de reprocessamento. Não é incluída no `npm test` (que soma **1.408** no Node —
-  frontend-vite 847 · api-backend 527 · packages/shared 32 · portal-next 2, medidos em
-  2026-08-10). A suíte
-  Python está em **1.193** (medida em 2026-08-10; os 47 novos desde 1.146 são as guardas da Onda 6
-  — 40 da onda + 7 do achado B1 do review —, e os 46 anteriores cobrem a leitura Vision de carnê
-  escaneado, o barcode refutado pelo próprio código e a assinatura de e-mail).
+  scripts de reprocessamento. Não é incluída no `npm test` (que soma **1.416** no Node —
+  frontend-vite 847 · api-backend 535 · packages/shared 32 · portal-next 2, medidos em
+  2026-08-11). A suíte
+  Python está em **1.227** (medida em 2026-08-11; os 34 novos desde 1.193 são as guardas da Onda 7,
+  e os 47 anteriores as da Onda 6 — 40 da onda + 7 do achado B1 do review).
   > ⚠️ **Medir o `frontend-vite` com `--maxWorkers=1`.** Em paralelo, o sandbox do agente
   > derruba ~9 casos de a11y (`StatusBadge.a11y`, `DashboardHeader.a11y`) por esgotamento de
   > recursos — eles passam isolados e em série. É a mesma classe de falso alarme já
@@ -821,9 +820,10 @@ perguntas reais, 2 usuários, `error IS NULL` em todas, 4 tools distintas exerci
 `cache_read_input_tokens > 0` em 5 de 5. Pilares: **nunca `service_role` no caminho de leitura** ·
 **tool calling** sobre funções de negócio como via primária · log de toda interação para auditoria.
 
-> ⚠️ **São 9 tools, não 6.** As 6 da Fase 1 + `demonstrativo_despesas` (104) + `buscar_emails`
-> (106) + `documentos_fiscais` (108). Menções a "6 funções" no doc de arquitetura descrevem a Fase
-> 1 e valem como histórico; a lista viva é `lib/ai-chat/tools.ts`, travada por teste.
+> ⚠️ **São 11 tools, não 6.** As 6 da Fase 1 + `demonstrativo_despesas` (104) + `buscar_emails`
+> (106) + `documentos_fiscais` (108) + `auditoria_eventos` e `auditoria_resumo` (118). Menções a
+> "6 funções" no doc de arquitetura descrevem a Fase 1 e valem como histórico; a lista viva é
+> `lib/ai-chat/tools.ts`, travada por teste.
 
 > **Em aberto por DECISÃO, não esquecimento:** a prova do recorte da RLS com um usuário do grupo
 > Comercial foi adiada — a direção provável é limitar o uso da IA por usuário, o que muda a
@@ -896,7 +896,7 @@ perguntas reais, 2 usuários, `error IS NULL` em todas, 4 tools distintas exerci
   essa coluna em `analytics.ai_chat_log`.**
   ⚠️ **O prefixo NÃO é constante: cresce a cada tool** (as definições entram no bloco cacheado —
   ~1,2k tokens por tool; é o outro lado de "acrescentar tool invalida os 3 níveis de cache").
-  Medido: **3.653** com 6 tools (30/07) → **7.408** com 9 tools (10/08) — dobrou em 11 dias e
+  Medido: **3.653** com 6 tools (30/07) → **7.408** com 9 tools (10/08) — e 11 tools desde 11/08; dobrou em 11 dias e
   **inverteu a conclusão** sobre o risco de trocar de modelo. Por isso **não há número a decorar
   aqui**: quem vigia é **`warnIfCachingDisabled` (`lib/ai-chat/gateway.ts`)**, que roda a **cada
   turno** e emite `console.error` quando `cache_read` e `cache_creation` vêm os DOIS zerados —
@@ -1005,7 +1005,7 @@ das duas camadas sabotadas.
 > tratada e o teste falha exibindo a mensagem do erro, não uma asserção. Hook de reset sempre em
 > **bloco**.
 
-## Roadmap de enriquecimento de dados — 9 ONDAS (1 a 4 CONCLUÍDAS; próxima é a 5)
+## Roadmap de enriquecimento de dados — 9 ONDAS (1–4 e 6–7 CONCLUÍDAS; próxima é a 5)
 
 Plano completo em **[docs/roadmap-enriquecimento-dados.md](docs/roadmap-enriquecimento-dados.md)** —
 **ler antes de mexer em qualquer item abaixo.** Objetivo: ampliar a acurácia e a gama de perguntas
@@ -1024,7 +1024,7 @@ duas funções da 115 (achado B1 do review de 2026-08-10), então a Onda 7 deslo
 | 4 | ✅ **CONCLUÍDA** (sem migration, sem deploy) | `scripts/varredura_historica.py` — passada única e estritamente aditiva na caixa postal: **+70 corpos · +7 chaves fiscais · +4 objetos**, 0 falhas, contas intocadas. 🔴 **A premissa caiu: a INBOX tinha 264 de 1.166 e-mails — 0 CT-e recuperados** |
 | 5 | Fiscais camada 2 | itens de NF-e / peso-rota-frete do CT-e (via LLM) |
 | 6 | ✅ **CONCLUÍDA** (migrations **111–116**) | `dim_date` + feriados · `competence_month` · `days_late` · `extraction_confidence` · `installment_number`/`installment_base` (o **`installment_total` do plano NÃO existe na origem**) · `analytics.fornecedores_recorrentes` e `analytics.parcelamentos` · 5 colunas novas na `vw_payables` · **116** = correção do achado B1 (truncagem silenciosa) |
-| 7 | Governança (migrations **117–118**) | popular `audit_log` (existe com **0 linhas**) |
+| 7 | ✅ **CONCLUÍDA** (migrations **117/118**) | trilha de auditoria: `audit_log` populada por trigger em `financial_account_control` **e `supplier`** · vazamento da tabela fechado · ator propagado por header · **10ª e 11ª tools** (`auditoria_eventos`, `auditoria_resumo`) |
 | 8 | Hardening do chat | few-shot + **gate de uso por usuário (último item de todos)** |
 | 9 | Condicional | receitas p/ DRE · NFS-e · CF-e · DPO · agregados |
 
@@ -1069,7 +1069,8 @@ duas funções da 115 (achado B1 do review de 2026-08-10), então a Onda 7 deslo
   do contador seria pior. Conta também as tentativas que falharam (elas gastaram tokens).
 - **Sugestão do painel é CONTRATO**: só entra pergunta coberta por tool e travada na bateria
   `regression.test.ts`. DPO, auditoria de autor e taxa de extração ficaram **fora** por não terem
-  dado que as sustente (voltam nas Ondas 9, 7 e 2).
+  dado que as sustente. ✅ **A auditoria de autor VOLTOU na Onda 7** (migrations 117/118 criaram a
+  trilha e as tools); DPO e taxa de extração seguem fora, aguardando as Ondas 9 e 2.
 
 **O que a Onda 2 entregou (não regredir):**
 
@@ -1329,6 +1330,147 @@ duas funções da 115 (achado B1 do review de 2026-08-10), então a Onda 7 deslo
   dispara `trg_fe_status_vencimento` em todas as linhas e pode reescrever situações.
 - **Esta onda não tocou `skills/`** ⇒ **sem deploy em produção** e o `deploy-manifest.json` não
   mudou.
+
+**O que a Onda 7 entregou e os invariantes que ela criou (não regredir):**
+
+A trilha de auditoria (`public.audit_log`, migrations **117/118**) registra **UPDATE, DELETE e
+TRUNCATE** em `financial_account_control` **e `supplier`** — INSERT fica de fora por decisão (a
+linha recém-criada já está na fato, e o pipeline insere ~17/dia). Guardas em
+`tests/test_onda7_auditoria.py` (**34 casos**, validados contra **9 mutantes**).
+
+- 🔴 **O item 7.1 do roadmap NÃO era executável como escrito, e executá-lo abriria um vazamento.**
+  Quatro achados medidos no catálogo antes de qualquer alteração: (1) `registro_id` era **uuid** e
+  a PK da fato é **bigint** — não havia onde gravar o id da conta; (2) a tabela tinha policy
+  `"Enable read access for all users"` **TO public** + `GRANT SELECT TO anon`, herdados de ter
+  sido criada pelo dashboard — popular antes de revogar publicaria valores, fornecedores e autores
+  da base inteira para quem tivesse a **anon key, que é pública**; (3) a policy de `authenticated`
+  era `USING (true)`, ignorando a RLS 076; (4) `contaService.remove(id)` não recebia ator. Por isso
+  a 117 **fecha o furo ANTES de ligar as triggers** — a ordem interna do arquivo é a correção.
+- 🔴 **A trigger de linha é AFTER; a de TRUNCATE é BEFORE.** As 5 triggers atuais da fato são
+  **todas BEFORE** e alteram `NEW` (`updated_at`, `status_id` recalculado, `payment_date`,
+  `sk_company`): auditar antes delas gravaria o valor que ainda será sobrescrito — registro
+  plausível e **falso**. Já o TRUNCATE precisa ser BEFORE, porque em AFTER a tabela já está vazia
+  e o número de linhas destruídas seria inalcançável (roda na mesma transação, então some junto se
+  o TRUNCATE abortar).
+- 🔴 **`fn_audit_row` é `SECURITY DEFINER`, e isso não é estilo.** `authenticated` teve INSERT
+  revogado em `audit_log` (056) e a RLS não tem policy de escrita: uma trigger INVOKER faria **toda
+  a curadoria de `/consulta`** (marcar NF/Boleto, trocar situação — UPDATE por `authenticated` via
+  REST direto) quebrar com `permission denied`. É a **regressão classe 074**, e a migration prova o
+  contrário na própria aplicação, com `SET LOCAL ROLE authenticated`.
+- 🔴 **`OLD.updated_by` NUNCA é fonte de ator.** Ele é o editor ANTERIOR — usá-lo numa alteração de
+  batch atribuiria a um humano uma mudança que ele não fez, que é **acusação falsa**, pior que
+  ausência de dado. A ordem de resolução é `auth.uid()` → header `x-audit-actor` → GUC
+  `app.audit_actor` → NULL/`'servico'`, e **o JWT vir primeiro é invariante de SEGURANÇA**: se o
+  header fosse consultado antes, um usuário logado poderia forjá-lo e assinar a alteração no nome
+  de outra pessoa.
+- 🔴 **O ator dos caminhos da Next API viaja por HEADER** (`lib/audit-actor.ts` → `withAuditActor`).
+  Ela escreve por `service_role`, então `auth.uid()` é NULL em todo PATCH/DELETE: sem o header, o
+  **hard delete** (irreversível, cuja única cópia da linha destruída fica em `audit_log`) e **toda
+  edição de fornecedor** seriam auditados sem autor. Cadeia verificada ponta a ponta: `setHeader`
+  põe o header no fio em `update` e `delete` → o PostgREST o expõe em `current_setting('request.headers')`
+  → a trigger grava `ator_via='header'` com o uuid exato; **sem** o header, `'servico'` e autor
+  nulo — subatribuição honesta, nunca atribuição errada.
+- 🔴 **`ator_via='servico'` NÃO significa "ninguém".** Significa automação (pipeline, batch diário)
+  ou edição não atribuível. O SYSTEM_PROMPT e a descrição da tool declaram isso; ler como "não houve
+  alteração" inverteria a conclusão de uma auditoria.
+- **UPDATE grava o DELTA; DELETE grava a linha INTEIRA.** Medido: a linha da fato em `jsonb` tem
+  média **1,8 KB** e máximo **13 KB** — gravar a linha inteira em todo update custaria ~3,7 KB por
+  evento sem responder melhor à pergunta de governança. No DELETE ela é a única cópia que resta.
+  **UPDATE sem mudança real não gera linha**: `fn_set_updated_at` bumpa `updated_at` em TODO update,
+  então sem essa saída o batch que remarca a mesma situação encheria a trilha de eventos vazios.
+- 🔴 **Coluna de escrituração e coluna GERADA ficam FORA do delta** (`audit_ignored_fields()`):
+  ninguém "alterou" `days_late`, que é consequência. Coluna gerada nova precisa entrar nessa lista,
+  e há guarda cross-layer que compara com as migrations da Onda 6.
+- 🔴 **A policy de leitura espelha a 076 por `registro_dono` DESNORMALIZADO.** O padrão `EXISTS` da
+  079 (anexos) **não serve aqui**: ele herda a visibilidade consultando a conta pai, e a linha de
+  auditoria precisa **sobreviver à conta apagada** — com `EXISTS`, o registro de DELETE ficaria
+  invisível para todos exatamente quando passa a ser a única cópia. Um `CHECK` fail-closed garante
+  que evento da fato nunca tenha dono nulo. Verificado com usuários reais: Comercial (restrito) vê
+  **2 de 3** eventos, Financeiro vê **3 de 3**.
+- **A coluna da tool chama-se `usuario`, não `usuario_email`** — ela carrega um **rótulo**, que
+  pode ser `(automacao / nao atribuivel)` ou `(usuario removido: <uuid>)`. Um nome prometendo
+  e-mail faria o modelo apresentá-lo como endereço. ⚠️ Mudar o nome ou a lista de colunas do
+  `RETURNS TABLE` muda o TIPO DE RETORNO: o PostgreSQL recusa `CREATE OR REPLACE` (42P13), então a
+  118 usa `DROP` + `CREATE` — e **o DROP apaga os grants**, reemitidos ao fim do arquivo (a lição
+  da 116, que aqui já foi exercitada).
+- **As duas tools herdam os invariantes das ondas 1/3/6**: `SECURITY INVOKER` (é o que faz a RLS
+  valer no chat), `total_encontrado` por **janela** (4ª ocorrência da truncagem silenciosa),
+  `ORDER BY` com ordem total, clamp do `LIMIT` negativo e `GRANT`/`REVOKE` nos dois sentidos.
+  🔴 **`auditoria_eventos` nunca devolve `dados_antes`/`dados_depois` crus** — o gateway corta o
+  resultado de tool em 60 KB por registro, e uma linha de DELETE chega a 13 KB.
+- ⚠️ **A `audit_log` estava VAZIA quando a 118 foi escrita**, então um oráculo comparando contagens
+  seria `0 = 0` — verde para sempre, provando nada. O `DO $$` da migration **insere eventos
+  sintéticos, mede e desfaz por subtransação**, com asserção de sanidade de que a sonda exercitou
+  dado. Mesma armadilha da Regra 2 ("teste que promete uma garantia tem de entregá-la").
+- ⚠️ **`audit_sensitive_fields()` nasceu chamável por `anon`** (HTTP 200 com a anon key), como as 4
+  funções da Onda 1 — o `REVOKE` explícito foi acrescentado. **Não confiar no default privilege**,
+  pela quarta vez.
+- 🔴 **O ator vem de FORA e pode vir malformado — validar antes de converter** *(achado da
+  autorrevisão adversarial desta onda, reproduzido no banco)*. Com um valor não-uuid no canal de
+  ator, o `::uuid` levanta **22P02** e, sendo a trigger fail-closed, **derruba a gravação da conta
+  inteira**: um header ruim (proxy, cliente terceiro, chamador com bug) impediria de registrar um
+  pagamento. A distinção que faltava: **fail-closed vale para o REGISTRO da auditoria** (não
+  conseguiu auditar ⇒ não escreve, senão a trilha ganha buracos silenciosos), **não para
+  INTERPRETAR uma dica de atribuição não-confiável** — ator ilegível degrada para o mesmo
+  `NULL`/`'servico'` que já significa "não sei quem foi". Guarda de regex nos dois canais; não
+  trocar por cast direto.
+- ⚠️ **`audit_log.criado_em` é `now()`, o timestamp da TRANSAÇÃO** — todos os eventos de uma
+  mesma transação (uma ação em lote de 126 títulos, por exemplo) compartilham o instante, e o
+  desempate do `ORDER BY` é o `id`, um **uuid aleatório**. A ordem continua TOTAL (paginação
+  determinística), mas **não é cronológica dentro da transação** — o que é correto, já que os
+  eventos são simultâneos. Consequência prática: para identificar UM evento específico num
+  conjunto gravado junto, filtre pelo CONTEÚDO (`dados_depois`), nunca por "o mais recente". Foi
+  exatamente assim que a primeira versão de uma sonda desta onda leu o evento errado.
+- 🔴 **A migration NÃO trunca a `financial_account_control` para testar o TRUNCATE.** `TRUNCATE`
+  toma **ACCESS EXCLUSIVE** e o segura até o fim da transação — mesmo desfeito, bloquearia o
+  pipeline (que roda a cada 5 min) e o app inteiro durante o resto da migration, **a cada
+  reexecução**. A decomposição: a **lógica** de `fn_audit_truncate` é provada numa tabela TEMP
+  descartável (sonda F), e o **binding** (`BEFORE TRUNCATE` na tabela real) pelo catálogo. Testado
+  uma vez contra a tabela real, em transação desfeita: gravou `linhas_destruidas: 810`, batendo
+  com a contagem, e as 810 contas ficaram intactas.
+- **As sondas cobrem os quatro caminhos de escrita, e reexecutam junto com a migration:** UPDATE
+  com delta e no-op (A), curadoria por `authenticated` sem quebrar (B), ator malformado (C),
+  **DELETE gravando a linha inteira** (D), **atribuição por JWT** (E) e a lógica do TRUNCATE (F).
+  ⚠️ A sonda E resolve um usuário **REAL em tempo de execução** (`auth.users`): com
+  `request.jwt.claims` definido, `auth.uid()` passa a valer e a trigger de autoria grava
+  `updated_by` — um uuid fictício viola a FK e derruba a migration, e hardcodar um uuid quebraria
+  no dia em que aquele usuário fosse removido.
+- ✅ **VALIDADA EM PRODUÇÃO no próprio dia (11/08/2026)**, sem intervenção — os três caminhos
+  apareceram sozinhos na trilha: **`jwt`** (barbara marcou "Tem Boleto" na conta 962 pela UI →
+  delta `has_bank_slip: false → true`, autor resolvido pelo e-mail); **`servico`** em lote (28
+  eventos do batch diário — 20 `{status_id}` e 8 `{status_id, payment_date}`, este último o
+  espelho exato da trigger da 096); e **`supplier`** (o pipeline gravou `pix_key2` no fornecedor
+  H20IL — a alteração de chave PIX que motivou estender o escopo, agora rastreável). As tools
+  responderam sobre esse dado com `total_encontrado` correto.
+- 🔴 **USUÁRIO REMOVIDO ≠ AUTOMAÇÃO — são TRÊS estados, não dois** *(achado medido; corrigido
+  por `analytics.audit_actor_label`, fonte única das duas tools)*. Um evento com `ator_via='jwt'`
+  — **ação humana** — cujo autor foi apagado do `auth.users` caía num
+  `COALESCE(u.email, '(automacao…)')` e era contado junto com os eventos do batch. A trilha não
+  **perdia** o evento: ela o **reatribuía** a uma categoria que inocenta todo mundo, sem erro e
+  sem sinal — o número continua batendo. **Não é hipotético: este projeto já apagou um usuário**
+  (`teste@otimotex.com.br`, 07/08 — ver migration 110). Os três estados são `usuario_id` nulo
+  (automação), com e-mail (a pessoa) e **sem e-mail** (removido, com o uuid preservado). Nunca
+  reintroduzir um `COALESCE` local: duas cópias da regra divergem em silêncio.
+- 🔴 **`audit_log.usuario_id` NÃO tem FK para `auth.users`, e isso é DELIBERADO — não "corrigir".**
+  A tabela nasceu assim (criada à mão), mas a ausência virou **estrutural** na Onda 7: as três
+  opções de FK destroem a trilha, cada uma de um jeito. `ON DELETE CASCADE` **apagaria as linhas
+  de auditoria** do usuário removido — exatamente o histórico que se quer preservar quando alguém
+  sai. `ON DELETE SET NULL` **zeraria a atribuição**, e o autor humano viraria "(automação)" — o
+  bug que o `audit_actor_label` acabou de corrigir, reintroduzido pelo banco. `ON DELETE RESTRICT`
+  impediria remover usuário, que é operação legítima e já praticada aqui (migration 110). O
+  desenho correto para trilha de auditoria é **guardar o uuid e resolver o nome na leitura**,
+  tolerando que ele fique órfão — é o que o rótulo de três estados faz.
+- 🔴 **O filtro por CAMPO inclui a EXCLUSÃO do registro** — apagar a conta destrói aquele campo
+  junto. Medido: filtrando `campo='amount'`, um DELETE que levou uma conta de **R$ 50.000** não
+  aparecia (`campos_alterados` é NULL em DELETE), então *"quem mexeu no valor este mês?"* mostrava
+  as alterações pequenas e **omitia a destruição da conta inteira**. O 1º ramo do filtro usa o
+  índice GIN; o 2º só é avaliado nas linhas de DELETE. ⚠️ No eixo `campo` do **resumo** a exclusão
+  continua fora de propósito — contá-la sob cada campo inflaria "amount alterado N vezes" com
+  eventos que são de registro, não de campo; a descrição da tool manda usar `group_by='operacao'`
+  para vê-la.
+- **Cobertura declarada:** a trilha **começa em 11/08/2026**. Antes disso só existia o ÚLTIMO editor
+  de cada conta; ausência de evento anterior NÃO prova que nada mudou, e a tool diz isso ao modelo.
+- **Esta onda não tocou `skills/`** ⇒ **sem deploy em produção**; o `deploy-manifest.json` não mudou.
 
 **Dois invariantes que a auditoria do plano descobriu (não regredir):**
 
@@ -3482,8 +3624,16 @@ local/agendada (ver flag `EMAIL_READER_ENABLED` acima e memória [[vercel-deploy
 ## Banco de dados (Supabase)
 
 Migrations em `supabase/migrations/`, aplicadas **manualmente no SQL Editor** (ou via Supabase
-MCP — ver a nota de cada uma) em ordem numérica (`001` → `116`). **Próxima migration = `117`**
+MCP — ver a nota de cada uma) em ordem numérica (`001` → `118`). **Próxima migration = `119`**
 (verificar sempre antes de criar nova).
+
+**As `117`/`118` são a Onda 7 — a trilha de auditoria** (aplicadas via Supabase MCP em 2026-08-11,
+idempotentes). A **117** popula `public.audit_log` por trigger em `financial_account_control` e
+`supplier`, e antes disso **fecha o vazamento da própria tabela** (policy `TO public` + `GRANT
+SELECT TO anon`, herdados de ela ter sido criada pelo dashboard) e corrige `registro_id` de **uuid**
+para **bigint** — a PK da fato é bigint, então não havia onde gravar o id da conta. A **118** entrega
+a 10ª e a 11ª tools (`analytics.auditoria_eventos`, `analytics.auditoria_resumo`). Invariantes,
+achados e medições em "O que a Onda 7 entregou".
 
 **A `116` faz as duas funções de `analytics` DECLARAREM a truncagem** (aplicada via Supabase MCP em
 2026-08-10, idempotente) — correção do achado B1 do code review da Onda 6. `fornecedores_recorrentes`
@@ -3984,11 +4134,12 @@ internet` ao CHECK de `document_type` e faz backfill — ver "Normalização de 
 | Tabela | Propósito |
 |---|---|
 | `email_control` | Dedup/controle. `status` ∈ (`extraído`, `recebido`, `pendente`, `falha`, `ignorado`, `duplicidade`) — **migrations 022/031**. `extraído`=PDF extraído (CSV gerado); `recebido`=sem PDF, conta via corpo; `pendente`=PDF salvo sem CSV (substitui `baixado`); `falha`=casou keyword mas sem PDF e sem conta no corpo; `ignorado`=não-financeiro (sem keyword) **ou NF-e pura sem conta a pagar** (`subject_is_pure_nfe`); `duplicidade`=pagável do corpo duplica conta já registrada por outro e-mail (**migration 031**; card/filtro próprios em `/emails`). O status é calculado em `process_message` pelo resultado real (conta/CSV/corpo/duplicata), não por `pdf_extracted`. **Visibilidade por REMETENTE (migration 078):** a policy SELECT (`authenticated`) filtra por `lower(sender_email)=lower(auth.email())` quando o grupo do usuário tem `sees_only_own_accounts` (Comercial) — `/emails` mostra só os e-mails de que o usuário é remetente; demais grupos veem tudo; `service_role` com bypass. **Corpo (migrations 105/106 — Onda 2):** `body_preview` segue TRUNCADO em 500 chars (é o preview da tela) e **`body_full`** guarda o corpo INTEIRO — não unificar os dois. **`body_search`** é `tsvector` GERADO de assunto+corpo (`to_tsvector('portuguese'::regconfig, left(…, 100000))` — regconfig explícito porque a versão de 1 argumento é STABLE; o `left` é teto contra o limite de 1 MB do tsvector, que **quebraria o INSERT**), com índice GIN e a tool `analytics.buscar_emails`. `body_full` **NULL significa "ainda não temos o corpo"** (e-mail antigo com preview truncado, ou sem keyword — que nem tem o corpo baixado), distinto de string vazia. **A Onda 4 recuperou 70 dos 506 candidatos (2026-08-03); os 436 restantes são IRRECUPERÁVEIS** — os e-mails já não estão na INBOX, e não há segunda passada que os traga. `authenticated` NÃO grava nessas colunas (o UPDATE dele é restrito a `reviewed_at`) |
-| `financial_account_control` | Tabela principal de contas a pagar — uma linha por documento; alimentada pelo pipeline de e-mail **e** por CRUD manual (baixas, consolidações, dashboards). Substitui a antiga `financial_emails` (dropada na migration 020). O fornecedor é referenciado **só pela FK `sk_supplier`** (surrogate key snowflake, NOT NULL — **migration 042**, antes era `supplier_id`) — nome/CNPJ vêm do JOIN com `supplier` (colunas denormalizadas dropadas na **migration 041**). Tem `sender_email` (migration 023; backfill em 025) usado na resolução p/ alinhar `supplier.email`, e `subject` (migration 025) — exibidos/buscados em `/consulta`. **Classificação contábil** (migrations 047/048): `cost_center_id`/`chart_account_id` SMALLINT, NOT NULL DEFAULT 0 (FKs para os cadastros; id 0 = "não informado") — preenchidos no CRUD manual (cascata centro→plano). **Autoria** (migrations 076/077): `created_by` (DONO — base da visibilidade por dono), `updated_by`, `status_changed_by`, `status_changed_at` — UUID → `auth.users`, NOT NULL DEFAULT sentinela (hoje `financeiro@otimotex.com.br` — migration 110), carimbados pelo servidor/trigger `trg_fac_authorship` (ver "Visibilidade de contas por dono" / "Auditoria de autor"). **`payment_date`** (DATE, migration 096): **a data de pagamento da conta** — carimbada pela trigger `trg_fac_payment_date` ao entrar em `status_id = 8` e limpa ao sair; escrita SÓ pela trigger (fora do grant de coluna de `authenticated` e do schema Zod de escrita). Usar como data de pagamento sem ressalva; a auditoria estrutural e o limite do histórico (backfill da 096 = vencimento) estão no bloco da 096 acima. 🔴 **`competence_date` é TEXT no formato `YYYY-MM` (mês de competência) e NUNCA deve ser convertida para DATE** — `'2026-06'::date` é erro de sintaxe, e o formato é contrato de 3 camadas (prompt do Claude em `extract_pdf.py`, template do CSV, schema Zod); converter faria **todo INSERT do reader falhar**. **Colunas DERIVADAS (Onda 6, migrations 112/114 — todas `GENERATED ALWAYS ... STORED`, só leitura, no `.omit()` do schema Zod):** `competence_month` (1º dia do mês de competência, via **`make_date`** — `to_date` é STABLE e o PostgreSQL a recusa), `days_late` (`payment_date - due_date`; negativo = antecipado; **não é DPO**), `extraction_confidence` (alta/media/baixa/manual/desconhecida), `installment_number`/`installment_base` (ordinal da parcela e documento do carnê; **não existe total** — use `analytics.parcelamentos()`) |
+| `financial_account_control` | Tabela principal de contas a pagar — uma linha por documento; alimentada pelo pipeline de e-mail **e** por CRUD manual (baixas, consolidações, dashboards). Substitui a antiga `financial_emails` (dropada na migration 020). O fornecedor é referenciado **só pela FK `sk_supplier`** (surrogate key snowflake, NOT NULL — **migration 042**, antes era `supplier_id`) — nome/CNPJ vêm do JOIN com `supplier` (colunas denormalizadas dropadas na **migration 041**). Tem `sender_email` (migration 023; backfill em 025) usado na resolução p/ alinhar `supplier.email`, e `subject` (migration 025) — exibidos/buscados em `/consulta`. **Classificação contábil** (migrations 047/048): `cost_center_id`/`chart_account_id` SMALLINT, NOT NULL DEFAULT 0 (FKs para os cadastros; id 0 = "não informado") — preenchidos no CRUD manual (cascata centro→plano). **Autoria** (migrations 076/077): `created_by` (DONO — base da visibilidade por dono), `updated_by`, `status_changed_by`, `status_changed_at` — UUID → `auth.users`, NOT NULL DEFAULT sentinela (hoje `financeiro@otimotex.com.br` — migration 110), carimbados pelo servidor/trigger `trg_fac_authorship` (ver "Visibilidade de contas por dono" / "Auditoria de autor"). 🔴 **Essas colunas guardam só o ÚLTIMO autor** — a penúltima alteração é sobrescrita. O HISTÓRICO (quem alterou o quê, com antes/depois) vive em **`audit_log`** desde a Onda 7; não tente reconstruí-lo a partir daqui. **`payment_date`** (DATE, migration 096): **a data de pagamento da conta** — carimbada pela trigger `trg_fac_payment_date` ao entrar em `status_id = 8` e limpa ao sair; escrita SÓ pela trigger (fora do grant de coluna de `authenticated` e do schema Zod de escrita). Usar como data de pagamento sem ressalva; a auditoria estrutural e o limite do histórico (backfill da 096 = vencimento) estão no bloco da 096 acima. 🔴 **`competence_date` é TEXT no formato `YYYY-MM` (mês de competência) e NUNCA deve ser convertida para DATE** — `'2026-06'::date` é erro de sintaxe, e o formato é contrato de 3 camadas (prompt do Claude em `extract_pdf.py`, template do CSV, schema Zod); converter faria **todo INSERT do reader falhar**. **Colunas DERIVADAS (Onda 6, migrations 112/114 — todas `GENERATED ALWAYS ... STORED`, só leitura, no `.omit()` do schema Zod):** `competence_month` (1º dia do mês de competência, via **`make_date`** — `to_date` é STABLE e o PostgreSQL a recusa), `days_late` (`payment_date - due_date`; negativo = antecipado; **não é DPO**), `extraction_confidence` (alta/media/baixa/manual/desconhecida), `installment_number`/`installment_base` (ordinal da parcela e documento do carnê; **não existe total** — use `analytics.parcelamentos()`) |
 | `financial_cost_center` / `financial_chart_of_account` | **Cadastros de classificação contábil** (pré-existentes, **preservados em limpezas**) usados como lookup no modal de contas. `financial_cost_center` é **gerenciado pelo CRUD de centros de custo** (`/tabelas/centros-de-custo` — PK `cost_center_id` SMALLINT IDENTITY ALWAYS; id 0 = sentinela "não informado", fora do CRUD; ver "CRUD de centros de custo"). `financial_chart_of_account` (também gerenciado pelo **CRUD de Plano de contas** — `/tabelas/plano-de-contas`) tem `cost_center_id` (relaciona o plano ao centro — base da CASCATA), `chart_account_subgroup_id` (FK → subgrupo) e `is_postable` (só os postáveis são lançáveis). Os cadastros `financial_bank`, `financial_account`, `financial_chart_of_account_group` e `financial_chart_of_account_subgroup` também ganharam CRUD próprio (grupo Tabelas — ver "CRUDs dos demais cadastros contábeis"). Lidos via `lib/lookups.ts` (service_role) **e** pelo frontend via embed REST (papel `authenticated`); RLS habilitado com policy de SELECT `TO authenticated` (migration 049 — sem ela o embed voltava null e a UI mostrava `#id`) |
 | `email_processing_errors` | Log de falhas com `raw_payload` JSON. **Visibilidade por REMETENTE (migration 078):** policy SELECT (`authenticated`) filtra por `lower(sender_email)=lower(auth.email())` para grupo com `sees_only_own_accounts` (Comercial) — `/erros` mostra só os erros de que o usuário é remetente; demais veem tudo; `service_role` com bypass |
 | `financial_account_attachment` | **Anexos (N) de uma conta** (migration 079) — PADRÃO ÚNICO das duas origens: `origin='pipeline'` (documento do e-mail; espelha `financial_account_control.source_file`, gravado pelo reader) e `origin='manual'` (upload do usuário no cadastro/edição). `storage_key` = chave CRUA do objeto no bucket `attachments` (pipeline: nome flat; manual: `manual/{conta}/…`). **Soft delete** (`deleted_at`/`deleted_by`) — o objeto FICA no bucket; anexo `pipeline` é irremovível (auditoria → 403). UNIQUE `(account_id, storage_key)`; **não** UNIQUE global (um PDF com N boletos gera N contas que COMPARTILHAM o objeto). RLS SELECT herda a visibilidade da conta pai (076) via `EXISTS`; escrita só `service_role`. Ver "Anexos de conta" |
 | `dim_date` | **Calendário 2015-2045** (11.323 dias, migration 111 — Onda 6). Semeada PELAS funções `br_easter`/`br_holiday_name` (IMMUTABLE), com oráculo diferencial embutido na migration: ela **aborta** se a tabela divergir das funções. `is_business_day` segue o calendário **BANCÁRIO** (Febraban), não a letra da lei — Carnaval e Corpus Christi são ponto facultativo, mas o banco fecha, e o que importa para conta a pagar é se o dinheiro anda; `holiday_kind` distingue `'nacional'` de `'bancario'`. Consciência Negra só é nacional a partir de **2024** (Lei 14.759/2023). Dado de REFERÊNCIA: `authenticated` lê tudo (policy permissiva de SELECT — 🔴 obrigatória, ver a lição do GRANT sem policy), `anon` não lê, ninguém escreve pelo app. Consultada por `public.dias_uteis(de, ate)` (intervalo SEMIABERTO; **STABLE**, logo NÃO usável em coluna gerada). **Cadastro/configuração — preservar em limpezas** |
+| `audit_log` | **Trilha de auditoria** (migrations 117/118 — Onda 7): quem alterou o quê em `financial_account_control` e `supplier`. Gravada por trigger **AFTER** (`fn_audit_row`, `SECURITY DEFINER`) em UPDATE/DELETE + **BEFORE TRUNCATE** (`fn_audit_truncate`, que conta as linhas antes de a tabela esvaziar). UPDATE guarda o **delta**; DELETE guarda a **linha inteira** (única cópia que resta); UPDATE sem mudança real **não gera linha**. `registro_dono` desnormaliza o dono para a RLS **sobreviver à conta apagada** (o `EXISTS` da 079 não serve aqui); `ator_via` declara COMO o autor foi obtido (`jwt`/`header`/`guc`/`servico`). 🔴 **`usuario_id` NÃO tem FK para `auth.users` de propósito** — qualquer FK destruiria a trilha (CASCADE apaga, SET NULL desatribui, RESTRICT impede remover usuário); o nome é resolvido na LEITURA por `analytics.audit_actor_label`, que distingue automação de usuário removido. 🔴 `anon` **não lê** — a policy `TO public` original foi removida pela 117. Escrita só pela trigger. **Alvo de limpeza** (é log, não cadastro) |
 | `fiscal_document` | **Documento fiscal eletrônico** identificado pela chave de acesso de 44 dígitos (migration 107 — Onda 3): NF-e 55 · CT-e 57 · CF-e 59 · NFC-e 65. Tabela de **PROVENIÊNCIA, append-only** — `access_key` UNIQUE (dedup natural do reenvio), campos derivados da própria chave, `storage_key` (🔴 é o que faz a purga PRESERVAR o PDF) e a origem do e-mail (`gmail_message_id`/`sender_email`/`subject`/`received_at`, sem FK — o registro é não-fatal). **NÃO tem valor monetário, e isso é a barreira**: documento fiscal nunca soma em relatório financeiro (o frete já entra como boleto). RLS SELECT reusa o recorte por REMETENTE da 078; escrita só `service_role`. Ver "O que a Onda 3 entregou" |
 | `supplier` | Fornecedores. PK = `sk_supplier` (surrogate key snowflake auto-incremental — **migration 042**); `supplier_id` é **chave de negócio** (NOT NULL UNIQUE, só nesta tabela; = `sk_supplier` nos fornecedores criados pela extração, via trigger de espelho `trg_supplier_mirror_id`, podendo divergir em cargas externas). Auto-criados pelo trigger de resolução, mas **cadastro PRESERVADO** (curadoria manual de `email`/`email2`/`email3`/`email4`) — **nunca truncar** em limpezas (ver "Limpeza / reset de dados"). Reconhecimento por **e-mail** em `email`/`email2`/`email3`/`email4` (migrations 023/027/028) — ver "Auto-resolução de fornecedor". **Soft delete** via `deleted_at` (migration 045) — a baixa pelo CRUD da Next API marca `deleted_at` (nunca hard delete) e é bloqueada quando há contas vinculadas; ver "CRUD de fornecedores (Next API)". **Classificação default** `cost_center_id`/`chart_account_id` (SMALLINT NOT NULL DEFAULT 0 + FKs — migration 052): semeia o lançamento de novas contas e é atualizada pelo write-back do modal; ver "Classificação default do fornecedor — sync bidirecional". **Contatos** (migration 082): `phone_ddd1`/`phone1`/`phone_ddd2`/`phone2` (char(2)/varchar(9)), `whatsapp1`/`whatsapp2` (varchar(11)), `pix_key1`/`pix_key2` (varchar(77)) — 2 slots por tipo, preenchidos pelo form e pela extração (write-back com lógica de 2 slots); ver "Contato do fornecedor" |
 | `company` | Empresa pagadora (**cadastro**, tem campo `email`). PK = **`sk_company`** (surrogate key snowflake `GENERATED ALWAYS AS IDENTITY` — migration 083, chave única de relacionamento); `company_id` é **campo de origem** (NOT NULL UNIQUE, do sistema maior). Hoje há DUAS: OTIMOTEX (sk 1) e LEBIANCO (sk 2). A empresa da conta (`financial_account_control.sk_company`) tem DUAS origens, ambas explícitas: a **regra LEBIANCO** no pipeline e o **select "Empresa" do `ContaForm`** no CRUD manual (default OTIMOTEX) — ver "Empresa pagadora (`sk_company`) — regra LEBIANCO". O trigger `trg_fe_resolve_company()` → **`resolve_company_sk`** (`payer_cnpj`/`payer_name`) ficou como **fallback residual** (migration 084): só atuaria num INSERT que omitisse `sk_company`. O lookup do select é `GET /api/companies` (`companyService`). **Preservada em limpezas** (ver abaixo) |
@@ -4229,6 +4380,14 @@ manual (e-mails `email2`/`email3`/`email4`) que seria perdida na truncagem; no
 reprocessamento o `resolve_supplier_id` reutiliza os fornecedores existentes (casa por
 CNPJ/CPF/e-mail/nome) sem duplicar. A `company` e o `supplier` preservados continuam
 resolvendo `sk_company`/`sk_supplier` das novas contas.
+
+> 🔴 **A ORDEM da limpeza passou a importar (Onda 7).** `TRUNCATE` em
+> `financial_account_control` agora dispara `trg_audit_fac_truncate`, que **grava uma linha em
+> `audit_log`** registrando quantas linhas foram destruídas — é justamente o registro que se quer
+> ter depois de uma limpeza. Truncar a `audit_log` DEPOIS apagaria essa prova. **Truncar a
+> `audit_log` PRIMEIRO**, ou aceitar deliberadamente perder o registro da própria limpeza.
+> (Não há FK entre as duas, então o `CASCADE` de uma não alcança a outra — a ordem é escolha
+> de quem executa, não do banco.)
 
 > **Storage:** `DELETE` por `authenticated` em objetos do bucket `attachments` é bloqueado
 > pela policy RESTRICTIVE `attachments_no_delete_authenticated` (migration 073 — S2-2; antes

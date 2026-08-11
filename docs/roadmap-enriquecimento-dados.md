@@ -637,15 +637,71 @@ que são recorrentes.
 
 ---
 
-### ONDA 7 — Governança / auditoria
+### ONDA 7 — Governança / auditoria ✅ CONCLUÍDA (2026-08-11)
 
 | Item | O quê | Migration |
 |---|---|---|
-| 7.1 | Popular `audit_log` (existe com **0 linhas**) via trigger em `financial_account_control` | 117 |
-| 7.2 | Tool de auditoria | 118 |
+| 7.1 | ✅ `audit_log` populada por trigger em `financial_account_control` **e `supplier`** | 117 |
+| 7.2 | ✅ **DUAS** tools: `auditoria_eventos` (lista) + `auditoria_resumo` (agregado) | 118 |
+| 7.3 | ✅ Ator propagado nos caminhos da Next API (`lib/audit-actor.ts`) | — |
 
-**Destrava:** *"quais usuários vêm alterando campos sensíveis"* — hoje irrespondível, pois só o
-**último** editor é guardado (456 contas editadas por usuário real, 367 com situação alterada).
+**Destrava:** *"quais usuários vêm alterando campos sensíveis"* — antes irrespondível, pois só o
+**último** editor era guardado (456 contas editadas por usuário real, 367 com situação alterada).
+
+#### 🔴 O item 7.1 NÃO era executável como escrito — quatro achados no levantamento
+
+Medidos no catálogo **antes** de qualquer alteração:
+
+| # | Achado | Consequência |
+|---|---|---|
+| 1 | `audit_log.registro_id` era **uuid**; a PK da fato é **bigint** | Não havia onde gravar o id da conta. A tabela nasceu com o PK-UUID do padrão Sheild genérico, que **nenhuma** tabela deste projeto segue |
+| 2 | Policy `"Enable read access for all users"` **TO public** + `GRANT SELECT TO anon` | Popular a trilha **publicaria a base financeira** — a anon key é pública (vai no bundle). Mesma família dos achados 072/081/099: objeto criado pelo dashboard nasce permissivo |
+| 3 | Policy de `authenticated` era `USING (true)` | Ignorava a RLS 076 — o grupo Comercial veria o delta de contas alheias (vazamento lateral pela auditoria) |
+| 4 | `contaService.remove(id)` não recebia ator e grava por `service_role` | O **hard delete** seria auditado com autor desconhecido — justamente a operação mais destrutiva |
+
+Por isso a 117 **fecha o furo ANTES de ligar as triggers**: a ordem interna do arquivo é parte da
+correção, não organização.
+
+#### Decisões tomadas com o dono do produto
+
+- **Escopo:** UPDATE + DELETE + TRUNCATE. **INSERT fica de fora** — a linha recém-criada já *está*
+  na fato e o pipeline insere ~17/dia, o que somaria ~6.200 linhas/ano de ruído afogando a pergunta
+  de governança.
+- **Tabelas:** fato **+ `supplier`**. Alterar a chave PIX de um fornecedor é o vetor clássico de
+  fraude em contas a pagar e não deixava rastro algum (a tabela não tem sequer `updated_by`).
+- **Leitura:** espelha a RLS atual das contas — preserva o status quo, já que o painel de detalhe
+  de `/consulta` sempre mostrou "Criado por"/"Última edição por" a usuários não-restritos.
+
+#### O que a implementação descobriu (registrado no `CLAUDE.md`)
+
+- A trigger de linha tem de ser **AFTER** (as 5 atuais da fato são BEFORE e alteram `NEW`); a de
+  TRUNCATE tem de ser **BEFORE**, senão a contagem de linhas destruídas é inalcançável.
+- `SECURITY DEFINER` é **obrigatório**, ou a curadoria de `/consulta` quebra com 42501 — a
+  regressão classe **074**. A migration prova o contrário na própria aplicação.
+- **`OLD.updated_by` nunca é fonte de ator** (é o editor anterior → acusação falsa). O ator viaja
+  por **header** nos caminhos da Next API, e o **JWT tem precedência** — inverter a ordem
+  permitiria a um usuário logado assinar alterações no nome de outro.
+- `audit_sensitive_fields()` **nasceu chamável por `anon`** (HTTP 200 com a anon key), como as 4
+  funções da Onda 1. Quarta ocorrência: **não confiar no default privilege**.
+- A `audit_log` estava vazia, então o oráculo da 118 **insere eventos sintéticos, mede e desfaz** —
+  comparar contagens sobre tabela vazia seria `0 = 0`, verde para sempre.
+
+**✅ Validada em PRODUÇÃO no próprio dia**, sem intervenção manual: os três caminhos apareceram
+sozinhos na trilha — `jwt` (um usuário marcou "Tem Boleto" pela UI, delta e autor corretos),
+`servico` em lote (28 eventos do batch diário) e `supplier` (o pipeline gravou uma chave PIX, que é
+o vetor de fraude que motivou estender o escopo). As tools responderam sobre esse dado com
+`total_encontrado` correto.
+
+**Dois achados a mais, encontrados ao atacar o que já estava pronto:** (1) um evento de **usuário
+removido** era contado como *automação* — a trilha não perdia o evento, ela o **reatribuía** a uma
+categoria que inocenta todo mundo, e o projeto já apagou um usuário antes; (2) o filtro por campo
+**não enxergava a exclusão** que destruiu aquele campo, omitindo de *"quem mexeu no valor?"* um
+DELETE de R$ 50.000. Ambos corrigidos, com sonda na migration e guarda validada por mutante.
+
+**Verificação:** 34 guardas em `tests/test_onda7_auditoria.py` (validadas contra **9 mutantes**),
+4 testes de comportamento no `api-backend` (validados por mutante), recorte de RLS provado com
+usuários reais (Comercial **2 de 3**, Financeiro **3 de 3**) e cadeia do ator provada ponta a ponta
+contra o PostgREST real. **Sem deploy em produção** — nada em `skills/` foi tocado.
 **Esforço:** M.
 
 ---
@@ -736,7 +792,7 @@ banco real**. O documento foi escrito olhando as 42 colunas da tabela; o chat v�
 |---|---|
 | §1 — *matriz de perdas/ganhos entre `amount` e `amount_charged`* | ⚠️ **Premissa incorreta** — `amount_charged` é o **cobrado no boleto**, não o pago. Substituída pelas 11, 12 e 13 |
 | §2 — *índice de pontualidade / DPO* | 🚨 **Adiada (Onda 9)** — 97% das pagas têm data de backfill; só 2 dias de histórico real |
-| §5 — *quais usuários alteram campos sensíveis* | ⚠️ **Adiada (Onda 7)** — só o último editor é guardado; `audit_log` vazio |
+| §5 — *quais usuários alteram campos sensíveis* | ✅ **Entregue (Onda 7, 2026-08-11)** — `auditoria_resumo` com `group_by='usuario'` e `apenas_sensiveis=true` |
 | §4 — *falha da esteira de extração* | 🟡 Parcial na Onda 1; completa exige tool sobre `email_control` (Onda 2) |
 
 ---
@@ -782,7 +838,7 @@ as sustente — e isso é cumprimento da regra "sugestão é um contrato", não 
 | Pergunta | Por que ficou fora | Volta em |
 |---|---|---|
 | DPO / pontualidade | 97% das contas pagas têm `payment_date` de backfill | Onda 9 |
-| Quem alterou campos sensíveis | só o último editor é guardado; `audit_log` vazio | Onda 7 |
+| Quem alterou campos sensíveis | ✅ **entregue na Onda 7** — sugestão no painel + bateria de regressão | — |
 | Taxa de sucesso da extração | as falhas vivem em `email_control`, fora do alcance das tools | Onda 2 |
 
 **Entregue:** migrations 103 e 104 · 7ª tool (`demonstrativo_despesas`) · eixo `tipo` · filtros de
@@ -1306,7 +1362,7 @@ Revisão das adições feitas depois da 2ª passada (Ondas fiscais, varredura, f
 | 4 | dry-run reporta o total da caixa; ao fim, **nenhum `id` NOVO** em `financial_account_control` cuja origem seja a varredura — comparar o conjunto de ids capturado antes de iniciar, **não a contagem** (o reader agendado roda a cada 5 min e cria contas legítimas durante a passada) |
 | 5 | uma NF-e com N itens produz N linhas, e o total dos itens **não** aparece em nenhum relatório financeiro |
 | 6 | `competence_month` preenchida, pipeline gravando normalmente, suíte Python verde |
-| 7 | uma edição manual gera linha em `audit_log` |
+| 7 | ✅ uma edição manual gera linha em `audit_log`, com o autor certo — e a curadoria de /consulta continua funcionando (regressão classe 074) |
 | 8 | few-shot revisado e gate de uso por usuário ativo |
 | 9 | — (condicional) |
 
