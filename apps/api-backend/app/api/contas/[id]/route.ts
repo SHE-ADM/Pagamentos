@@ -76,7 +76,13 @@ export async function DELETE(req: NextRequest, ctx: Context) {
   if (id === null) return fail('Identificador de conta inválido', 400);
 
   try {
-    return ok(await contaService.remove(id));
+    // O ator vai junto para a trilha de auditoria (migration 117). O service escreve por
+    // service_role, então `auth.uid()` é NULL no banco: sem passar o usuário daqui, o hard delete
+    // — irreversível, e cuja única cópia da linha destruída fica em `audit_log` — seria registrado
+    // sem autor. `getAuthenticatedUser` e não `requireAdminGroup`: este já autorizou; o que falta
+    // é a IDENTIDADE.
+    const user = await getAuthenticatedUser(req);
+    return ok(await contaService.remove(id, user?.id));
   } catch (e) {
     return mapError(e);
   }

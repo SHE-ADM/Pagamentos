@@ -22,6 +22,7 @@ import { setSupplierClassification } from './suppliers';
 import { checkClassificationPair } from './classification';
 import { ApiServiceError } from './api-error';
 import { applyOrder } from './sort';
+import { withAuditActor } from './audit-actor';
 
 const TABLE = 'financial_account_control';
 const SUPPLIER_TABLE = 'supplier';
@@ -175,27 +176,38 @@ const contaRepository = {
   },
 
   // `updated_by` é carimbado pelo servidor (UUID do usuário logado) — não vem do corpo.
-  update(id: number, payload: FinancialAccountControlUpdate & { updated_by?: string }) {
-    return getSupabaseAdmin()
-      .from(TABLE)
-      .update(payload)
-      .eq('id', id)
-      .select(SELECT_WITH_SUPPLIER)
-      .is(ATTACHMENTS_DELETED_AT, null)
-      .maybeSingle();
+  // `withAuditActor`: a trilha da migration 117 precisa do ator por HEADER, porque este client é
+  // service_role e `auth.uid()` é NULL aqui. Sem ele o evento sairia como 'servico'/autor nulo.
+  update(id: number, payload: FinancialAccountControlUpdate & { updated_by?: string }, actorId?: string) {
+    return withAuditActor(
+      getSupabaseAdmin()
+        .from(TABLE)
+        .update(payload)
+        .eq('id', id)
+        .select(SELECT_WITH_SUPPLIER)
+        .is(ATTACHMENTS_DELETED_AT, null)
+        .maybeSingle(),
+      actorId,
+    );
   },
 
   // HARD DELETE físico — usado só pela rota DELETE (restrita ao grupo Administrador).
   // As linhas de financial_account_attachment somem por CASCADE (FK ON DELETE CASCADE);
   // os objetos no bucket viram órfãos (limpos pelo purge_orphan_attachments). Devolve a
   // linha removida (só `id`) — vazio => a conta não existia (404).
-  hardDelete(id: number) {
-    return getSupabaseAdmin()
-      .from(TABLE)
-      .delete()
-      .eq('id', id)
-      .select('id')
-      .maybeSingle();
+  // 🔴 `actorId` é o que separa "o Administrador X excluiu a conta 794" de "alguém excluiu". Um
+  // hard delete é irreversível e a linha destruída só sobrevive em `audit_log` — auditá-lo sem
+  // autor esvaziaria justamente o registro mais importante da trilha.
+  hardDelete(id: number, actorId?: string) {
+    return withAuditActor(
+      getSupabaseAdmin()
+        .from(TABLE)
+        .delete()
+        .eq('id', id)
+        .select('id')
+        .maybeSingle(),
+      actorId,
+    );
   },
 };
 
@@ -204,11 +216,14 @@ const contaRepository = {
 // > 0), o supplier passa a carregar essa classificação como default. Best-effort —
 // a conta é o artefato primário, então falha aqui NÃO derruba a resposta.
 // A extração Python não passa por este service, então não dispara write-back.
-async function writeBackSupplierClassification(conta: FinancialAccountControl): Promise<void> {
+async function writeBackSupplierClassification(
+  conta: FinancialAccountControl,
+  actorId?: string,
+): Promise<void> {
   const { sk_supplier: sk, cost_center_id: cc, chart_account_id: ca } = conta;
   if (!sk || !cc || !ca) return; // sentinela 0 em qualquer um → não grava no supplier
   try {
-    await setSupplierClassification(sk, cc, ca);
+    await setSupplierClassification(sk, cc, ca, actorId);
   } catch (e) {
     console.error(`Falha ao gravar classificação default no fornecedor ${sk}:`, e);
   }
@@ -269,7 +284,7 @@ export const contaService = {
     const { data, error } = await contaRepository.create(payload);
     if (error) throw mapWriteError(error);
     const conta = data as unknown as FinancialAccountControl;
-    await writeBackSupplierClassification(conta);
+    await writeBackSupplierClassification(conta, userId);
     return conta;
   },
 
@@ -291,11 +306,11 @@ export const contaService = {
     // Autoria (Etapa 2): carimba o editor. Quando status_id muda no PATCH, a trigger deriva
     // status_changed_by do mesmo ator (updated_by) — não precisa enviar aqui.
     const payload = userId ? { ...parsed.data, updated_by: userId } : parsed.data;
-    const { data, error } = await contaRepository.update(id, payload);
+    const { data, error } = await contaRepository.update(id, payload, userId);
     if (error) throw mapWriteError(error);
     if (!data) throw new ContaServiceError('Conta não encontrada', 404);
     const conta = data as unknown as FinancialAccountControl;
-    await writeBackSupplierClassification(conta);
+    await writeBackSupplierClassification(conta, userId);
     return conta;
   },
 
@@ -305,8 +320,8 @@ export const contaService = {
    * cancelamento (PATCH `status_id=cancelado`) segue como caminho padrão para os demais.
    * @throws {ContaServiceError} 404 (inexistente), 409 (FK que bloqueia) ou 500.
    */
-  async remove(id: number): Promise<{ id: number }> {
-    const { data, error } = await contaRepository.hardDelete(id);
+  async remove(id: number, userId?: string): Promise<{ id: number }> {
+    const { data, error } = await contaRepository.hardDelete(id, userId);
     if (error) {
       // 23503 = alguma FK RESTRICT referenciando a conta (anexos são CASCADE, não caem aqui).
       if ((error as { code?: string }).code === '23503') {

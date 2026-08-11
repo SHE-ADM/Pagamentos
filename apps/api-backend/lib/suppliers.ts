@@ -20,6 +20,7 @@ import { getSupabaseAdmin } from './supabase-admin';
 import { applyOrder, resolveSort, type SortOrder } from './sort';
 import { checkClassificationPair } from './classification';
 import { ApiServiceError } from './api-error';
+import { withAuditActor } from './audit-actor';
 
 const SUPPLIER_TABLE = 'supplier';
 // Colunas ordenáveis (própria tabela) usadas pelo sort do grid de /fornecedores.
@@ -127,14 +128,21 @@ const supplierRepository = {
     return getSupabaseAdmin().from(SUPPLIER_TABLE).insert(payload).select().single();
   },
 
-  update(sk: number, payload: SupplierUpdateInput) {
-    return getSupabaseAdmin()
-      .from(SUPPLIER_TABLE)
-      .update(payload)
-      .eq('sk_supplier', sk)
-      .is('deleted_at', null)
-      .select()
-      .maybeSingle();
+  // `actorId` alimenta a trilha de auditoria (migration 117) pelo header `x-audit-actor`. Este
+  // client é service_role, então sem ele a alteração de CHAVE PIX de um fornecedor — o vetor
+  // clássico de fraude em contas a pagar — seria registrada sem autor. `supplier` não tem coluna
+  // de autoria, logo o header é a ÚNICA via de atribuição aqui.
+  update(sk: number, payload: SupplierUpdateInput, actorId?: string) {
+    return withAuditActor(
+      getSupabaseAdmin()
+        .from(SUPPLIER_TABLE)
+        .update(payload)
+        .eq('sk_supplier', sk)
+        .is('deleted_at', null)
+        .select()
+        .maybeSingle(),
+      actorId,
+    );
   },
 
   // Conta quantas contas a pagar referenciam o fornecedor (FK reversa).
@@ -145,14 +153,17 @@ const supplierRepository = {
       .eq('sk_supplier', sk);
   },
 
-  softDelete(sk: number, deletedAt: string) {
-    return getSupabaseAdmin()
-      .from(SUPPLIER_TABLE)
-      .update({ deleted_at: deletedAt })
-      .eq('sk_supplier', sk)
-      .is('deleted_at', null)
-      .select()
-      .maybeSingle();
+  softDelete(sk: number, deletedAt: string, actorId?: string) {
+    return withAuditActor(
+      getSupabaseAdmin()
+        .from(SUPPLIER_TABLE)
+        .update({ deleted_at: deletedAt })
+        .eq('sk_supplier', sk)
+        .is('deleted_at', null)
+        .select()
+        .maybeSingle(),
+      actorId,
+    );
   },
 };
 
@@ -230,7 +241,7 @@ export const supplierService = {
    * @returns O fornecedor atualizado.
    * @throws {SupplierServiceError} 422 (payload inválido), 404 (inexistente) ou 409 (CNPJ/CPF de outro registro).
    */
-  async update(sk: number, raw: unknown): Promise<Supplier> {
+  async update(sk: number, raw: unknown, actorId?: string): Promise<Supplier> {
     const parsed = supplierUpdateSchema.safeParse(raw);
     if (!parsed.success) throw new SupplierServiceError(formatZodError(parsed.error), 422);
 
@@ -241,7 +252,7 @@ export const supplierService = {
       if (pairMsg) throw new SupplierServiceError(pairMsg, 422);
     }
 
-    const { data, error } = await supplierRepository.update(sk, parsed.data);
+    const { data, error } = await supplierRepository.update(sk, parsed.data, actorId);
     if (error) {
       if (error.code === '23505') {
         throw new SupplierServiceError(duplicateMessage(error.details ?? error.message), 409);
@@ -260,7 +271,7 @@ export const supplierService = {
    * @returns `{ sk_supplier }` do fornecedor baixado.
    * @throws {SupplierServiceError} 404 (inexistente) ou 409 (possui contas vinculadas).
    */
-  async remove(sk: number, now: string): Promise<{ sk_supplier: number }> {
+  async remove(sk: number, now: string, actorId?: string): Promise<{ sk_supplier: number }> {
     const existing = await supplierRepository.findBySk(sk);
     if (existing.error) throw new SupplierServiceError(existing.error.message, 500);
     if (!existing.data) throw new SupplierServiceError('Fornecedor não encontrado', 404);
@@ -271,7 +282,7 @@ export const supplierService = {
       throw new SupplierServiceError('Fornecedor possui contas vinculadas e não pode ser removido', 409);
     }
 
-    const { error } = await supplierRepository.softDelete(sk, now);
+    const { error } = await supplierRepository.softDelete(sk, now, actorId);
     if (error) throw new SupplierServiceError(error.message, 500);
     return { sk_supplier: sk };
   },
@@ -293,11 +304,15 @@ export async function setSupplierClassification(
   sk: number,
   costCenterId: number,
   chartAccountId: number,
+  actorId?: string,
 ): Promise<void> {
-  const { error } = await getSupabaseAdmin()
-    .from(SUPPLIER_TABLE)
-    .update({ cost_center_id: costCenterId, chart_account_id: chartAccountId })
-    .eq('sk_supplier', sk)
-    .is('deleted_at', null);
+  const { error } = await withAuditActor(
+    getSupabaseAdmin()
+      .from(SUPPLIER_TABLE)
+      .update({ cost_center_id: costCenterId, chart_account_id: chartAccountId })
+      .eq('sk_supplier', sk)
+      .is('deleted_at', null),
+    actorId,
+  );
   if (error) throw new SupplierServiceError(error.message, 500);
 }

@@ -197,6 +197,24 @@ Para contar, use a coluna \`total_encontrado\` (a contagem real do filtro, antes
 o número de linhas devolvidas. A cobertura é parcial: só o que chegou por e-mail e ainda tinha o
 PDF guardado.
 
+**Trilha de auditoria** (\`auditoria_eventos\`, \`auditoria_resumo\`): registra QUEM alterou o QUÊ
+em contas a pagar e fornecedores, com o valor antes e depois de cada campo.
+
+🔴 **A trilha começa em 11/08/2026.** Antes disso o sistema guardava apenas o ÚLTIMO editor de
+cada conta, e a penúltima alteração era sobrescrita. Não achar evento antigo NÃO significa que
+nada mudou — significa que não havia registro. Diga isso explicitamente quando a pergunta cobrir
+período anterior.
+
+🔴 **\`ator_via = "servico"\` NÃO quer dizer "ninguém".** Quer dizer alteração feita por rotina
+automática (a leitura de e-mails a cada 5 min, o batch diário de baixa/vencidos) ou edição sem
+autor atribuível. No resumo por usuário essas aparecem como "(automacao / nao atribuivel)".
+Nunca apresente isso como se um humano tivesse feito, nem como se a alteração não tivesse ocorrido.
+
+Para perguntas de VOLUME ou RANKING ("quais usuários mais alteram", "qual campo mais muda") use
+\`auditoria_resumo\`, não a lista de eventos: a lista é truncada e contá-la daria número errado.
+Alteração que não muda nada de fato não gera evento, e mudanças de escrituração automática
+(updated_at e afins) ficam fora do registro de propósito.
+
 **Origem da extração** (extraction_source): pdf_text vem do texto nativo do PDF (confiável);
 pdf_vision e image_vision vêm de leitura visual (OCR) e podem conter erro de leitura; email_body
 foi extraído do corpo do e-mail. Quando um número específico vier de OCR e a pergunta depender

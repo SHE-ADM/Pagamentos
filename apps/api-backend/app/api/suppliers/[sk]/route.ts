@@ -1,6 +1,6 @@
 import type { NextRequest } from 'next/server';
 import { ok, fail, failFromError } from '@/lib/response';
-import { requireAuth } from '@/lib/auth';
+import { requireAuth, getAuthenticatedUser } from '@/lib/auth';
 import { supplierService } from '@/lib/suppliers';
 
 // /api/suppliers/:sk — GET (por sk) + PATCH (update) + DELETE (soft delete).
@@ -49,7 +49,10 @@ export async function PATCH(req: NextRequest, ctx: Context) {
   }
 
   try {
-    return ok(await supplierService.update(sk, body ?? {}));
+    // O ator vai para a trilha de auditoria (117): este service escreve por service_role,
+    // logo `auth.uid()` e NULL no banco e o header e a UNICA via de atribuicao.
+    const user = await getAuthenticatedUser(req);
+    return ok(await supplierService.update(sk, body ?? {}, user?.id));
   } catch (e) {
     return mapError(e);
   }
@@ -63,7 +66,8 @@ export async function DELETE(req: NextRequest, ctx: Context) {
   if (sk === null) return fail('Identificador de fornecedor inválido', 400);
 
   try {
-    return ok(await supplierService.remove(sk, new Date().toISOString()));
+    const user = await getAuthenticatedUser(req);
+    return ok(await supplierService.remove(sk, new Date().toISOString(), user?.id));
   } catch (e) {
     return mapError(e);
   }
