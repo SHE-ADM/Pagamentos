@@ -3,6 +3,31 @@
 As migrations `001 → 061` são aplicadas **manualmente no SQL Editor do Supabase**, em
 **ordem numérica** e **uma única vez cada**. Não há runner automático.
 
+> **`120_ai_chat_gate_por_grupo.sql` (idempotente — aplicada DIRETO via Supabase MCP em
+> 2026-08-12)** — Onda 8, item 8.3. Acrescenta a `public.user_group` as colunas `ai_chat_enabled`
+> (`NOT NULL DEFAULT false`) e `ai_chat_limit_per_hour`/`_per_day` (NULL = teto do `.env`), o CHECK
+> `chk_user_group_ai_chat_limits` e a semente dos grupos **1, 2 e 7**.
+>
+> **Não regredir — três pontos:**
+> 1. **Não há função helper de RLS, de propósito.** RLS responde "quais linhas este papel lê"; o
+>    gate responde "este usuário pode chamar o endpoint". Quem lê é o `lib/ai-chat/gate.ts` com
+>    `service_role`, para quem um `SECURITY DEFINER` sobre `auth.uid()` seria inalcançável — e
+>    seria mais um objeto que os advisors apontam e ninguém consegue provar que é morto (o caso do
+>    `auth_group_sees_only_own()`, que este README já registra como impossível de revogar). Por isso
+>    também **não há GRANT/REVOKE aqui**: o arquivo não cria função nem objeto novo.
+> 2. **A semente é `SET ai_chat_enabled = true WHERE group_id IN (...)`.** A forma
+>    `SET ai_chat_enabled = (group_id IN (...))` também seria "idempotente" — e **revogaria em
+>    silêncio** qualquer grupo liberado à mão depois da aplicação.
+> 3. **A sonda P2 avança a sequence IDENTITY de `user_group` permanentemente** (sequence não é
+>    transacional, então o rollback devolve a linha mas não o número). Inócuo — não há requisito de
+>    numeração sem buracos —, mas registrado para não ser lido como vazamento.
+>
+> **⚠️ Ordem de implantação (o modo de falha real desta migration):** migration → conferir que o
+> **cache de schema do PostgREST** já enxerga a coluna → deploy da Next API → deploy da SPA.
+> Subir a API antes da migration faz o `gate.ts` falhar ao ler e, sendo **fail-closed**, derruba o
+> chat para todos — inclusive para quem iria corrigir. ❌ E a "correção" tentadora de transformar
+> "coluna não existe" em passe livre é um backdoor fail-open acionado por string de erro.
+
 > **`100_restore_service_role_default_dml.sql` (idempotente — aplicada DIRETO via Supabase MCP em
 > 2026-07-29)** — devolve `SELECT/INSERT/UPDATE/DELETE` ao papel **`service_role`** no DEFAULT de
 > tabelas novas (schemas `public` e `analytics`), sem devolver nada a `anon`/`authenticated`.

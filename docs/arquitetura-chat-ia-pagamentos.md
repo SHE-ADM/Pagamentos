@@ -1450,15 +1450,87 @@ O guarda de colunas de `log.test.ts` foi estendido às migrations 098/101/**102*
 mutante (`iterations` → `iteration_count`: o teste acusa `expected [ 'iteration_count' ] to deeply
 equal []`).
 
-#### Recorte da RLS — verificação ADIADA por decisão de produto
+#### Recorte da RLS — verificação ADIADA por decisão de produto (✅ PAGA na Onda 8, ver §21.4)
 
 Os dois usuários que testaram (`ricardo@sheild.com.br` = Administrador, `samuel@otimotex.com.br` =
 Diretor) estão em grupos **irrestritos** (`sees_only_own_accounts = false`), e fizeram perguntas
-diferentes — os `row_count` não são comparáveis. A prova exigiria `ester@otimotex.com.br` (Comercial,
-o único grupo com a flag) repetindo a pergunta de um irrestrito.
+diferentes — os `row_count` não são comparáveis. A prova exigiria um usuário do Comercial (o único
+grupo com a flag) repetindo a pergunta de um irrestrito.
 
-**O dono do produto decidiu não fazer esse teste agora**, porque a direção provável é **limitar o uso
-da IA por usuário** — o que muda a pergunta a ser respondida (deixa de ser só "a RLS recorta?" e
-passa a incluir "quem pode usar o chat?"). Fica registrado como **verificação em aberto por decisão,
-não por esquecimento**: o mecanismo em si (`security_invoker` + JWT do usuário) foi validado na Fase
-1 com o papel `authenticated` real (§16.3), onde ester via 48 contas e barbara 578.
+**O dono do produto decidiu não fazer esse teste naquele momento**, porque a direção provável era
+**limitar o uso da IA por usuário** — o que muda a pergunta a ser respondida (deixa de ser só "a RLS
+recorta?" e passa a incluir "quem pode usar o chat?"). Ficou registrado como **verificação em aberto
+por decisão, não por esquecimento**: o mecanismo em si (`security_invoker` + JWT do usuário) foi
+validado na Fase 1 com o papel `authenticated` real (§16.3), onde ester via 48 contas e barbara 578.
+
+---
+
+## 21. Onda 8 — o gate de acesso por grupo (2026-08-12)
+
+Fecha o item 8.3 do roadmap, o último em aberto do chat. **Migration 120** + `lib/ai-chat/gate.ts` +
+o gate cosmético no `Layout`. Sem deploy em produção (nada em `skills/`).
+
+### 21.1 As quatro decisões, e o que ficou rejeitado
+
+| # | Decisão | Alternativa rejeitada |
+|---|---|---|
+| D1 | Acesso on/off **+ cota por grupo** (`NULL` = teto do `.env`) | **Teto de tokens** — `SUM(input+output)` não é index-only (o `ix_ai_chat_log_user_created` cobre o predicado, não o payload), pediria política de falha própria, e com **8 interações** de histórico não há como calibrar número nenhum. Acrescentar a coluna "para depois" é peso morto. Gatilho para reabrir: um usuário passar de ~1M tokens/dia, **medido** |
+| D2 | Por **GRUPO** (`user_group`) | **Por usuário** (13 linhas em vez de 9, e o `user_profile` é RLS-scoped à própria linha) · **grupo + override** (2ª fonte de verdade e regra de precedência sem caso real; se surgir, a resolução entra num lugar só — o `gate.ts`) |
+| D3 | **Deny por default**, semente libera 1/2/7 | **Allow por default** inverteria a migration e tornaria a sonda P1 inútil (ninguém pode perder o que não se tira). A 076 usou `false` para *não restringir*; aqui `false` *nega*, porque o risco é dinheiro, não visibilidade |
+| D4 | Gate fail-**closed**, cota fail-**open** | Unificar. São economias de falha opostas: fail-open no gate é bypass de autorização; fail-closed na cota é queda total por soluço de contador |
+
+### 21.2 Por que `gate.ts` é um módulo separado do `rate-limit.ts`
+
+Os dois rodam lado a lado e parecem "dois pré-checks". A diferença é a política de falha, e ela é
+invisível para quem lê só as assinaturas — por isso a separação é **física**, e ambos os cabeçalhos
+declaram o contraste. O refactor que destruiria o desenho ("unificar o tratamento de erro dos dois
+pré-checks") converteria uma autorização em bypass **sem erro, sem teste vermelho e sem sintoma**.
+
+Consequência de contrato: a falha de consulta do gate lança `Error` **comum**, nunca `AiChatError`.
+As duas produzem o mesmo 500 genérico, mas `AiChatError` significa, neste projeto, *"mensagem curada,
+escrita para o usuário ler"* — usá-la para infraestrutura embaçaria um contrato hoje nítido.
+
+### 21.3 Onde o defeito silencioso mora
+
+- 🔴 **Chamar o gate e ignorar o retorno COMPILA** (o 2º parâmetro do rate limit é opcional). O
+  acesso segue funcionando, todos os outros testes passam, o typecheck passa — e a **cota por grupo
+  fica inerte**. É o defeito mais provável desta área; travado por caso próprio na rota e validado
+  por mutante.
+- 🔴 **Renomear a coluna só na migration** deixa vitest e typecheck verdes (os mocks não conhecem o
+  schema) e derruba o chat **para todos** em produção, porque o gate é fail-closed. Só a guarda
+  cross-layer em `tests/test_onda8_gate_ia.py` pega.
+- 🔴 **Ler o grupo do JWT** autorizaria e negaria as pessoas erradas em silêncio: medido,
+  `raw_app_meta_data->>'group_id'` existe em 2 dos 13 usuários e nos dois diz `0` enquanto o
+  `user_profile` diz `1` e `7`. Guarda de ausência proíbe `app_metadata` no `gate.ts`.
+- 🔴 **`ai_chat_enabled` lido por truthiness** liberaria com a string `"false"` — que é o que um
+  cache de schema velho pode devolver. A comparação é `=== true`, fail-closed por construção.
+- **Ordem de implantação:** migration → conferir o cache do PostgREST → API → SPA. E a "correção"
+  tentadora de tratar "coluna não existe" como passe livre é um backdoor fail-open por string de erro.
+
+### 21.4 Verificações executadas
+
+- **6 sondas** no `DO $$` da 120 (anti-vacuidade · ninguém perde acesso · default deny · o CHECK
+  morde · comportamento sob `SET LOCAL ROLE authenticated` · estrutura), todas verdes.
+- **P1 e P4 validadas por mutação simulada** numa transação desfeita (`GRANT`+`POLICY` concedidos a
+  `authenticated`, semente derrubada): P1 acusou `1` usuário sem acesso, P4 acusou a escrita
+  bem-sucedida. Zero resíduo — policy, grant e flags conferidos depois.
+- ✅ **Recorte da RLS provado** com usuário real do grupo Comercial (a dívida do §20):
+  `vw_payables` **830 → 5**, igual ao oráculo `count(*) WHERE created_by = <uid>`;
+  `analytics.resumo_situacao()` **R$ 12.581.149,54 → R$ 10.004,70**; `fiscal_document` 293 → 0.
+  🔴 Duas armadilhas para quem refizer: rodar num **único `DO $$`** (o MCP pode embrulhar cada
+  chamada numa transação própria, e aí a medição volta a ser como `postgres`, que ignora a RLS) e
+  assertar **`auth.uid()` primeiro** (claims malformadas zeram tudo, e o zero parece recorte).
+
+### 21.5 Achado colateral — três mensagens 503 que nunca chegavam ao usuário
+
+`failFromError` só ecoava `ApiServiceError` com `status < 500`. Os três ramos 503 de
+`translateAnthropicError` mudavam o status e **perdiam o texto**: quem esbarrava numa instabilidade
+da Anthropic lia "Erro interno ao processar a solicitação", indistinguível de um bug nosso — e o
+cabeçalho de `errors.ts` documentava o contrário. O teste de integração que dizia parear tradução e
+envelope pareava **só o 429** (Regra 2 do CLAUDE.md: teste que promete uma garantia sem entregá-la).
+
+A saída **não** foi relaxar o corte em 500 — 5xx costuma carregar detalhe interno, e é por isso que
+o corte existe. Foi marcar caso a caso o que é escrito para ser lido: `ApiServiceError.clientSafe`,
+opt-in com default `false` (os 8 CRUDs seguem intocados), ligado em `AiChatError`. A guarda nova
+pareia **cada** ramo com o envelope, mais uma contraprova de que um `ApiServiceError` 503 **sem** a
+marca continua genérico — sem ela, `clientSafe` poderia ter virado "ecoa sempre".

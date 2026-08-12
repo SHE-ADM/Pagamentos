@@ -32,7 +32,7 @@ const navLink = cva('nav-link', {
 });
 
 export default function Layout({ children }: Readonly<{ children: ReactNode }>) {
-  const { user, signOut } = useAuth();
+  const { user, signOut, aiChatEnabled } = useAuth();
   // Drawer da sidebar no mobile (< lg). Em lg+ a sidebar é estática e sempre visível.
   const [navOpen, setNavOpen] = useState(false);
 
@@ -204,8 +204,17 @@ export default function Layout({ children }: Readonly<{ children: ReactNode }>) 
       </main>
 
       {/* Assistente de IA — fica no Layout (não numa rota) para estar em todas as telas
-          protegidas. O painel é lazy; aqui entra só o botão flutuante. */}
-      <AiChatWidget />
+          protegidas. O painel é lazy; aqui entra só o botão flutuante.
+
+          🔴 `=== true`, NUNCA `!== false`. `null` significa "ainda não sei" (o perfil está
+          carregando) e nesse estado o botão não aparece: como ele é `fixed`, chegar 100 ms depois
+          não desloca nada, enquanto `!== false` piscaria um botão para todo usuário negado, em
+          toda carga de página — e negado é a maioria sob o default opt-in da migration 120.
+
+          🔴 Este gate é COSMÉTICO. A trava real é o `assertAiChatAllowed` em /api/ai-chat; não
+          apagar aquela checagem por parecer redundante — é a mesma relação entre `isAdminGroup`
+          (UI) e `requireAdminGroup` (servidor). */}
+      {aiChatEnabled === true && <AiChatWidget />}
     </div>
   );
 }

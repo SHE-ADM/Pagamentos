@@ -27,7 +27,7 @@ import { TOOL_DEFINITIONS, parseToolInput, type ToolName } from './tools';
  *
  * A duplicação do texto entre este arquivo e o componente é DELIBERADA: são apps distintos
  * (`api-backend` e `frontend-vite`), sem dependência entre si, e criar um pacote compartilhado só
- * para 15 strings acoplaria as duas camadas por um ganho pequeno. O que importa é que toda
+ * para 18 strings acoplaria as duas camadas por um ganho pequeno. O que importa é que toda
  * pergunta sugerida tenha cobertura — e é isso que esta lista trava.
  */
 type Params = Record<string, unknown>;
@@ -322,7 +322,7 @@ describe('bateria de regressão — perguntas sugeridas no painel', () => {
   // teste — quebrando em silêncio o invariante de que **sugestão é contrato**.
   //
   // Ler o arquivo (em vez de importar) é deliberado: `api-backend` e `frontend-vite` são apps
-  // distintos, sem dependência entre si, e criar um pacote compartilhado para 16 strings acoplaria
+  // distintos, sem dependência entre si, e criar um pacote compartilhado para 18 strings acoplaria
   // as duas camadas. O mesmo padrão do `log.test.ts`, que confere o payload contra as migrations.
   // Ancorado em `import.meta.dirname` porque `process.cwd()` muda conforme o vitest é invocado.
   it('cobre TODAS as perguntas oferecidas no painel (sugestão é contrato)', () => {

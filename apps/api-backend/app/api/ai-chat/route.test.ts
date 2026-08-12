@@ -11,12 +11,20 @@ vi.mock('@/lib/ai-chat/log', () => ({ logInteraction: vi.fn(async () => undefine
 // O rate limit tem suíte própria (rate-limit.test.ts) e fala com o banco via service_role; aqui
 // ele é mockado para a rota ser testada isoladamente. O caso "barrado" abaixo usa este mock.
 vi.mock('@/lib/ai-chat/rate-limit', () => ({ assertWithinRateLimit: vi.fn(async () => undefined) }));
+// 🔴 O gate PRECISA ser mockado: sem isto o módulo real roda, chama getSupabaseAdmin() e a suíte
+// INTEIRA da rota fica vermelha por env ausente — falha que aparece longe da causa.
+// `MENSAGEM_SEM_ACESSO` vem do módulo real (é uma const, não depende do banco).
+vi.mock('@/lib/ai-chat/gate', async (original) => ({
+  ...(await original<typeof import('@/lib/ai-chat/gate')>()),
+  assertAiChatAllowed: vi.fn(),
+}));
 
 import { POST } from './route';
 import { getAuthenticatedUser, getBearerToken } from '@/lib/auth';
 import { runChat } from '@/lib/ai-chat/gateway';
 import { logInteraction } from '@/lib/ai-chat/log';
 import { assertWithinRateLimit } from '@/lib/ai-chat/rate-limit';
+import { assertAiChatAllowed, MENSAGEM_SEM_ACESSO } from '@/lib/ai-chat/gate';
 import { AiChatAbortedError, AiChatError, attachPartialRun } from '@/lib/ai-chat/errors';
 
 const getUser = vi.mocked(getAuthenticatedUser);
@@ -24,6 +32,7 @@ const getToken = vi.mocked(getBearerToken);
 const chat = vi.mocked(runChat);
 const log = vi.mocked(logInteraction);
 const rateLimit = vi.mocked(assertWithinRateLimit);
+const gate = vi.mocked(assertAiChatAllowed);
 
 const USER = { id: '11111111-1111-1111-1111-111111111111' };
 /**
@@ -49,6 +58,8 @@ const okResult = {
 beforeEach(() => {
   vi.clearAllMocks();
   rateLimit.mockResolvedValue(undefined);
+  // Default liberado: os casos existentes testam outra coisa e não devem esbarrar no gate.
+  gate.mockResolvedValue({ perHour: null, perDay: null });
   getUser.mockResolvedValue(USER as never);
   getToken.mockReturnValue('jwt-do-usuario');
 });
@@ -321,5 +332,71 @@ describe('POST /api/ai-chat — auditoria (§17.3)', () => {
     expect(log).toHaveBeenCalledWith(
       expect.objectContaining({ userId: USER.id, inputTokens: 0, outputTokens: 0 }),
     );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Gate de acesso por grupo (Onda 8, item 8.3)
+// ---------------------------------------------------------------------------
+describe('POST /api/ai-chat — gate de acesso', () => {
+  it('403 quando o grupo não está liberado: nada é gasto e a tentativa é auditada', async () => {
+    gate.mockRejectedValue(new AiChatError(MENSAGEM_SEM_ACESSO, 403));
+
+    const res = await POST(req({ question: 'quanto devo?' }));
+    const body = await res.json();
+
+    expect(res.status).toBe(403);
+    expect(body.error).toBe(MENSAGEM_SEM_ACESSO);
+    expect(chat).not.toHaveBeenCalled();
+    // O gate roda ANTES do rate limit: uma tentativa negada não consome contagem alheia nem paga
+    // duas consultas para chegar à mesma conclusão.
+    expect(rateLimit).not.toHaveBeenCalled();
+    // "Quem está pedindo acesso" é justamente o sinal que esta feature produz — precisa da trilha.
+    expect(log).toHaveBeenCalledWith(
+      expect.objectContaining({ userId: USER.id, error: MENSAGEM_SEM_ACESSO, iterations: 0 }),
+    );
+  });
+
+  it('falha de verificação vira 500 genérico, sem vazar detalhe, e ainda audita', async () => {
+    const erros = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    gate.mockRejectedValue(new Error('gate de acesso indisponível: relation does not exist'));
+
+    const res = await POST(req({ question: 'quanto devo?' }));
+    const body = await res.json();
+
+    expect(res.status).toBe(500);
+    expect(body.error).toBe('Erro interno ao processar a solicitação');
+    expect(body.error).not.toContain('relation');
+    expect(chat).not.toHaveBeenCalled();
+    expect(log).toHaveBeenCalledWith(expect.objectContaining({ userId: USER.id }));
+    erros.mockRestore();
+  });
+
+  /**
+   * 🔴 O caso mais importante deste bloco. Sem ele, alguém pode chamar o gate e IGNORAR o retorno:
+   * o acesso continua funcionando, todos os outros testes passam, o typecheck passa (o parâmetro
+   * do rate limit é opcional) — e a cota por grupo fica INERTE, sem nenhum sintoma.
+   */
+  it('repassa a cota do grupo ao rate limit', async () => {
+    gate.mockResolvedValue({ perHour: 5, perDay: 20 });
+    chat.mockResolvedValue(okResult as never);
+
+    await POST(req({ question: 'quanto devo?' }));
+
+    expect(rateLimit).toHaveBeenCalledWith(
+      USER.id,
+      expect.objectContaining({ perHour: 5, perDay: 20 }),
+    );
+  });
+
+  it('o gate roda ANTES do rate limit', async () => {
+    gate.mockResolvedValue({ perHour: null, perDay: null });
+    chat.mockResolvedValue(okResult as never);
+
+    await POST(req({ question: 'quanto devo?' }));
+
+    const ordemGate = gate.mock.invocationCallOrder[0] ?? Number.POSITIVE_INFINITY;
+    const ordemLimite = rateLimit.mock.invocationCallOrder[0] ?? -1;
+    expect(ordemGate).toBeLessThan(ordemLimite);
   });
 });

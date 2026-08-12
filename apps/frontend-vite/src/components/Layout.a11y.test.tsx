@@ -4,8 +4,10 @@ import { MemoryRouter } from 'react-router-dom';
 import { axe } from '../../tests/axe';
 
 // Mock do contexto de auth — sem sessão real no teste.
+// `aiChatEnabled: true` para o shell escanear COM o botão flutuante montado — é o estado que a
+// maioria dos usuários liberados vê, e o que acrescenta um controle à árvore acessível.
 vi.mock('../contexts/AuthContext', () => ({
-  useAuth: () => ({ user: { email: 'suporte@sheild.app.br' }, signOut: vi.fn() }),
+  useAuth: () => ({ user: { email: 'suporte@sheild.app.br' }, signOut: vi.fn(), aiChatEnabled: true }),
 }));
 
 import Layout from './Layout';

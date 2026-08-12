@@ -31,6 +31,14 @@ interface AuthContextValue {
   groupId: number | null;
   /** Pertence ao grupo Administrador — GATE DE UI do hard delete (a trava real é o backend). */
   isAdminGroup: boolean;
+  /**
+   * O grupo pode usar o assistente de IA (`user_group.ai_chat_enabled`, migration 120)?
+   * `null` = AINDA NÃO SEI (carregando ou sem sessão) — estado distinto de `false`.
+   *
+   * GATE DE UI, como o `isAdminGroup`: a trava real é o `assertAiChatAllowed` da Next API. Serve
+   * para não oferecer um botão que responderia 403 — não para proteger o recurso.
+   */
+  aiChatEnabled: boolean | null;
   signOut: () => Promise<void>;
 }
 
@@ -65,7 +73,14 @@ export function AuthProvider({ children }: Readonly<{ children: ReactNode }>) {
   const [user, setUser] = useState<User | null>(null);
   const [session, setSession] = useState<Session | null>(null);
   const [loading, setLoading] = useState(true);
-  const [groupId, setGroupId] = useState<number | null>(null);
+  // 🔴 Os dois vêm da MESMA leitura e são gravados na MESMA transição de estado (ver o efeito
+  // abaixo). Separá-los em dois `useState` alimentados por efeitos distintos produziria um render
+  // intermediário em que o grupo já chegou e a permissão ainda não — e o widget piscaria.
+  const [perfil, setPerfil] = useState<{ groupId: number | null; aiChatEnabled: boolean | null }>({
+    groupId: null,
+    aiChatEnabled: null,
+  });
+  const { groupId, aiChatEnabled } = perfil;
 
   useEffect(() => {
     let active = true;
@@ -153,24 +168,42 @@ export function AuthProvider({ children }: Readonly<{ children: ReactNode }>) {
 
   useIdleLogout({ enabled: !!user, timeoutMs: IDLE_TIMEOUT_MS, onTimeout: handleIdleTimeout });
 
-  // Carrega o grupo do usuário (user_profile.group_id) a cada mudança de sessão — fonte
-  // do gate de UI do hard delete. O RLS da migration 065 permite ao usuário ler apenas o
-  // próprio perfil. Puramente cosmético: a autorização real é imposta no servidor
-  // (requireAdminGroup nas rotas DELETE). Perfil ausente → 0 (sentinela).
+  // Carrega o perfil do usuário (grupo + permissões de UI do grupo) a cada mudança de sessão.
+  // Fonte dos gates de UI do hard delete e do assistente de IA. As DUAS leituras são legais com o
+  // token do próprio usuário: a policy da 065 expõe a própria linha de `user_profile`, e a do
+  // `user_group` expõe o catálogo (`USING (true)`) — por isso um embed só, sem ida extra e sem
+  // endpoint novo. Puramente cosmético: a autorização real é imposta no servidor
+  // (requireAdminGroup nas rotas DELETE; assertAiChatAllowed em /api/ai-chat).
+  // Perfil ausente → grupo 0 (sentinela).
   const uid = user?.id ?? null;
   useEffect(() => {
     let active = true;
     const loadGroup = async () => {
       if (!uid) {
-        if (active) setGroupId(null);
+        if (active) setPerfil({ groupId: null, aiChatEnabled: null });
         return;
       }
-      const { data } = await supabase
+      const { data, error } = await supabase
         .from('user_profile')
-        .select('group_id')
+        .select('group_id, user_group(ai_chat_enabled)')
         .eq('user_id', uid)
         .maybeSingle();
-      if (active) setGroupId((data?.group_id as number | undefined) ?? 0);
+      if (!active) return;
+
+      // 🔴 ASSIMETRIA PROPOSITAL COM O SERVIDOR: lá o gate falha FECHADO (não consegui provar que
+      // pode ⇒ não pode); aqui ele falha ABERTO. Esconder o botão de quem tem direito por causa de
+      // um soluço de rede é o pior desfecho de uma camada que não protege nada — e o clique acaba
+      // em 403 curado de qualquer jeito, que é uma resposta melhor que um widget desaparecido.
+      if (error) {
+        setPerfil({ groupId: 0, aiChatEnabled: true });
+        return;
+      }
+
+      const grupo = data?.user_group as { ai_chat_enabled?: unknown } | null | undefined;
+      setPerfil({
+        groupId: (data?.group_id as number | undefined) ?? 0,
+        aiChatEnabled: grupo?.ai_chat_enabled === true,
+      });
     };
     void loadGroup();
     return () => {
@@ -190,9 +223,10 @@ export function AuthProvider({ children }: Readonly<{ children: ReactNode }>) {
       isAdmin: deriveIsAdmin(user),
       groupId,
       isAdminGroup: groupId === ADMIN_GROUP_ID,
+      aiChatEnabled,
       signOut,
     }),
-    [user, session, loading, groupId, signOut],
+    [user, session, loading, groupId, aiChatEnabled, signOut],
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

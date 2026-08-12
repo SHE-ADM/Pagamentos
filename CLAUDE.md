@@ -272,12 +272,27 @@ regredir e valem para **toda rota nova**:
 **Autorização e visibilidade**
 
 - **Modelo de papéis (single-org):** toda sessão autenticada opera o app — criação/edição usam só
-  `requireAuth`, não papel. **Duas exceções:** `POST /api/users` exige `requireAdmin`
-  (`app_metadata.role`, campo server-controlled) e o **hard delete** exige `requireAdminGroup`
-  (`user_profile.group_id = 1`). Gate de UI é cosmético; a autorização é imposta no servidor.
+  `requireAuth`, não papel. **Três exceções:** `POST /api/users` exige `requireAdmin`
+  (`app_metadata.role`, campo server-controlled), o **hard delete** exige `requireAdminGroup`
+  (`user_profile.group_id = 1`) e o **chat de IA** exige `assertAiChatAllowed`
+  (`user_group.ai_chat_enabled`, migration 120). Gate de UI é cosmético; a autorização é imposta
+  no servidor.
 - 🔴 **Visibilidade por LINHA é dimensão à parte do papel.** Grupo com
   `user_group.sees_only_own_accounts` (hoje só o Comercial) só vê — e só edita — o que é seu. É
   imposto no BANCO (RLS 076/078/080/081), não na tela.
+- 🔴 **`user_group` carrega DUAS flags ORTOGONAIS — não confundir nem "unificar":**
+  `sees_only_own_accounts` decide quais **LINHAS** o usuário enxerga (visibilidade, imposta pela
+  RLS) e `ai_chat_enabled` decide se ele pode **CHAMAR** uma feature paga (autorização, imposta na
+  Next API). São independentes: um grupo pode ver tudo e mesmo assim não usar o chat, e vice-versa.
+  Elas também têm **defaults opostos, de propósito** — a 076 usou `false` para *não restringir*
+  quem já trabalhava; a 120 usa `false` para *negar*, porque o recurso protegido custa dinheiro por
+  uso e grupo novo não pode nascer com acesso sem ninguém decidir.
+- ⚠️ **Exposição ACEITA, não descuido:** a policy de `user_group` é `USING (true)`, então qualquer
+  usuário logado lê o catálogo inteiro — inclusive quais grupos têm o chat e com que cota. É
+  **configuração, não segredo**, e é justamente o que permite ao gate de UI funcionar com o token
+  do próprio usuário, sem endpoint novo nem `service_role` no cliente. Registrado porque uma
+  auditoria de segurança vai levantar isso; a decisão é mantê-la. Restringir exigiria uma policy
+  por linha (`group_id = <o meu>`) e quebraria a leitura do catálogo pelo front.
 - 🔴 **`canSeeConta` (`lib/auth.ts`) é obrigatório em rota que recebe id de conta.** A Next API lê
   com **service_role, que IGNORA a RLS**: sem o guard, um id alheio devolve (e edita) a conta de
   outro. Ele checa com o **token do usuário**, para a regra ficar onde já está (a policy) em vez de
@@ -622,6 +637,15 @@ Alvo: **WCAG 2.1 Nível AA** em todas as telas. Regras práticas:
   que não tem nada a ver com acessibilidade. Criar pela **Admin API** já com a marca e **provar o
   login antes de cadastrar o secret** (`POST /auth/v1/token?grant_type=password` com a anon key —
   criar o usuário não prova que ele loga). Receita em `e2e/README.md`.
+  🔴 **E o grupo dele PRECISA ter `ai_chat_enabled = true`** (migration 120): o caso
+  *"Assistente de IA — painel aberto"* **clica no botão flutuante**, e o gate de UI não o renderiza
+  para grupo sem acesso — o spec falharia por timeout, num erro que não tem nada a ver com
+  acessibilidade. Por isso o usuário do CI foi movido do grupo 0 (sentinela, **que não pode ser
+  liberado** — é o destino de qualquer usuário sem perfil, e liberá-lo transformaria o opt-in em
+  opt-out) para o **7 Financeiro**, em 2026-08-12. Neutro para visibilidade: os dois grupos têm
+  `sees_only_own_accounts = false`. **Esta é a 2ª vez que o CI aparece como dependência
+  não-óbvia de uma mudança de autorização** — a 1ª foi a remoção do usuário sentinela; ao mexer em
+  grupo, papel ou flag, conferir o `a11y.yml` antes.
   ⚠️ **O workflow não tem `workflow_dispatch`** (só `pull_request` e `push` na `Features`), então
   não há como forçar uma execução de verificação: uma troca de credencial do CI só é exercitada de
   fato no PR seguinte. **Não rodar `npm run test:e2e` no sandbox do
@@ -828,9 +852,16 @@ perguntas reais, 2 usuários, `error IS NULL` em todas, 4 tools distintas exerci
 > "6 funções" no doc de arquitetura descrevem a Fase 1 e valem como histórico; a lista viva é
 > `lib/ai-chat/tools.ts`, travada por teste.
 
-> **Em aberto por DECISÃO, não esquecimento:** a prova do recorte da RLS com um usuário do grupo
-> Comercial foi adiada — a direção provável é limitar o uso da IA por usuário, o que muda a
-> pergunta a responder. O mecanismo (`security_invoker` + JWT) já foi validado na Fase 1 (§16.3).
+> ✅ **RECORTE DA RLS PROVADO (2026-08-12), com usuário real do grupo Comercial.** A prova estava
+> adiada até a forma do gate ser decidida (item 8.3); com ela fechada, foi executada e passa nas
+> três condições — bruna@lebianco.com.br: `vw_payables` **830 → 5**, batendo **exatamente** com o
+> oráculo `count(*) WHERE created_by = <uid>` = 5; `analytics.resumo_situacao()` (a **tool**, não
+> só a view) **R$ 12.581.149,54 → R$ 10.004,70**; `fiscal_document` 293 → 0 (coerente com a regra
+> já registrada — quem envia CT-e é a transportadora). 🔴 **Duas armadilhas, se for refazer:**
+> rodar tudo num **único `DO $$`** (o MCP pode embrulhar cada chamada numa transação própria, e aí
+> o `SET LOCAL ROLE` da 1ª sumiu na 2ª — a medição volta a ser como `postgres`, que **ignora a
+> RLS**, e "prova" que não há recorte); e assertar **`auth.uid() = <uid>` ANTES de tudo**, senão
+> claims malformadas zeram todas as contagens e o zero é lido como recorte.
 
 > **A `ANTHROPIC_API_KEY` do `.env` da RAIZ NÃO vale para a Next API (não regredir):** o Next
 > carrega env do diretório do próprio app, então a chave tem de estar em
@@ -851,6 +882,34 @@ perguntas reais, 2 usuários, `error IS NULL` em todas, 4 tools distintas exerci
 
 **Invariantes do gateway (`lib/ai-chat/` — não regredir):**
 
+- 🔴 **O ACESSO ao chat é opt-in POR GRUPO e imposto no SERVIDOR** (`lib/ai-chat/gate.ts`,
+  migration 120). `assertAiChatAllowed(userId)` lê `user_profile → user_group.ai_chat_enabled` com
+  `service_role` e devolve as cotas do grupo; grupo não liberado ⇒ **403 com mensagem curada**
+  (`MENSAGEM_SEM_ACESSO`, ecoada porque 403 < 500) e a tentativa **é auditada** no `ai_chat_log` —
+  "quem está pedindo acesso" é o sinal que a feature produz.
+- 🔴 **`gate.ts` NÃO pode ser fundido ao `rate-limit.ts`, e é a política de FALHA que separa os
+  dois:** o gate é AUTORIZAÇÃO e falha **FECHADO**; o rate limit é VOLUME e falha **ABERTO**. Sob
+  um arquivo só, o refactor natural ("unificar o tratamento de erro dos dois pré-checks") vira
+  bypass de autorização, sem erro e sem teste vermelho. A falha de consulta do gate lança `Error`
+  **comum** (500 genérico), nunca `AiChatError` — esta classe significa "mensagem escrita para o
+  usuário ler".
+- 🔴 **A ORDEM na rota é dependência de DADOS, não convenção:** `assertWithinRateLimit(user.id,
+  gate)` consome o retorno do gate, então inverter as linhas não compila. **Chamar o gate e
+  ignorar o retorno COMPILA** (o parâmetro é opcional) e deixa a cota do grupo **inerte, sem
+  sintoma** — é o defeito mais provável desta área, travado por caso próprio em `route.test.ts` e
+  validado por mutante.
+- 🔴 **O grupo vem de `user_profile`, NUNCA do JWT.** Medido em 2026-08-12:
+  `raw_app_meta_data->>'group_id'` existe em **2 dos 13** usuários e nos **dois** diz `0` enquanto
+  o `user_profile` diz `1` e `7`. Ler o claim autorizaria e negaria as pessoas erradas **sem
+  levantar erro**. Guarda de ausência em `tests/test_onda8_gate_ia.py`.
+- **A cota do grupo (`ai_chat_limit_per_hour`/`_per_day`, `NULL` = teto do `.env`) tem de aparecer
+  na MENSAGEM do 429** — dizer "limite de 30" ao barrar na 5ª pergunta contradiz o comportamento e
+  manda o suporte procurar um problema que não existe.
+- **Gate de UI (`Layout` + `AuthContext.aiChatEnabled`) é COSMÉTICO** e falha **ABERTO** de
+  propósito — o inverso do servidor: esconder o botão de quem tem direito por causa de um soluço de
+  rede é o pior desfecho de uma camada que não protege nada. `null` = "ainda não sei" e **não**
+  monta o widget; `=== true`, nunca `!== false` (que piscaria o botão para todo usuário negado, a
+  maioria sob o default opt-in).
 - **`getAnonClient()` + JWT do usuário, NUNCA `getSupabaseAdmin`** no caminho de dados. Só o
   **log** usa `service_role`, e é exceção deliberada: deixar o usuário auditado escrever a própria
   trilha permitiria omitir a própria pergunta (a policy da 098 o deixa **ler** só as dele).
@@ -1032,7 +1091,7 @@ Onda 5 (item 5.3) saiu na **119**.
 | 5 | ⚠️ **PARCIAL — 5.3 CONCLUÍDO** (migration **119**) | conteúdo do CT-e (rota · peso · NF transportada · destinatário · frete) **sem LLM**, da fatura agregada: `cte_content.py` + gancho no reader + backfill de **57 CT-e** + `documentos_fiscais` com filtro `rota`. 🔴 **5.1/5.2 (itens de NF-e) SUSPENSOS por falta de população — 15 DANFEs medidos** |
 | 6 | ✅ **CONCLUÍDA** (migrations **111–116**) | `dim_date` + feriados · `competence_month` · `days_late` · `extraction_confidence` · `installment_number`/`installment_base` (o **`installment_total` do plano NÃO existe na origem**) · `analytics.fornecedores_recorrentes` e `analytics.parcelamentos` · 5 colunas novas na `vw_payables` · **116** = correção do achado B1 (truncagem silenciosa) |
 | 7 | ✅ **CONCLUÍDA** (migrations **117/118**) | trilha de auditoria: `audit_log` populada por trigger em `financial_account_control` **e `supplier`** · vazamento da tabela fechado · ator propagado por header · **10ª e 11ª tools** (`auditoria_eventos`, `auditoria_resumo`) |
-| 8 | ⚠️ **PARCIAL** | ✅ rate limit (Onda 1) · ✅ **few-shot + as 2 lacunas de capacidade DECLARADAS no prompt** · ✅ 2 mapeamentos errados da bateria corrigidos. Falta só o **gate de uso por usuário (último item de todos)** |
+| 8 | ✅ **CONCLUÍDA** (migration **120**) | rate limit (Onda 1) · few-shot + as 2 lacunas de capacidade declaradas no prompt · 2 mapeamentos errados da bateria corrigidos · **gate de acesso ao chat por GRUPO** (`user_group.ai_chat_enabled` + cota própria), imposto no servidor e auditado — mais a **prova do recorte de RLS** que a onda devia |
 | 9 | Condicional | receitas p/ DRE · NFS-e · CF-e · DPO · agregados |
 
 **Decisões que NÃO devem ser reabertas sem evidência nova** (todas medidas em 2026-07-31):
@@ -3734,8 +3793,23 @@ local/agendada (ver flag `EMAIL_READER_ENABLED` acima e memória [[vercel-deploy
 ## Banco de dados (Supabase)
 
 Migrations em `supabase/migrations/`, aplicadas **manualmente no SQL Editor** (ou via Supabase
-MCP — ver a nota de cada uma) em ordem numérica (`001` → `119`). **Próxima migration = `120`**
+MCP — ver a nota de cada uma) em ordem numérica (`001` → `120`). **Próxima migration = `121`**
 (verificar sempre antes de criar nova).
+
+**A `120` é a Onda 8 (item 8.3) — o gate do chat de IA por grupo** (aplicada via Supabase MCP em
+2026-08-12, idempotente). Acrescenta a `public.user_group` três colunas — `ai_chat_enabled`
+(`NOT NULL DEFAULT false`, opt-in) e `ai_chat_limit_per_hour`/`_per_day` (NULL = teto do `.env`) —
+mais o CHECK `chk_user_group_ai_chat_limits`, e libera na semente os grupos **1 Administrador, 2
+Diretor e 7 Financeiro**. 🔴 **Não cria função helper de RLS, e isso é decisão:** RLS responde
+"quais linhas este papel lê", o gate responde "este usuário pode chamar o endpoint" — e quem lê é
+o `gate.ts` com `service_role`, para quem um `SECURITY DEFINER` baseado em `auth.uid()` seria
+**inalcançável**. 🔴 A semente é `SET ... = true WHERE group_id IN (...)`, **nunca**
+`SET ... = (group_id IN (...))`: a segunda forma também é "idempotente" e **revogaria em silêncio**
+todo grupo liberado à mão depois. O `DO $$` tem 6 sondas e aborta em qualquer uma; a mais valiosa é
+a **P1**, que cruza `analytics.ai_chat_log` com a semente e falha se algum usuário que **já usou** o
+chat ficasse sem acesso — pegando uma semente errada na aplicação, não em produção no dia seguinte.
+⚠️ A sonda P2 avança a sequence IDENTITY de forma permanente (sequence não é transacional);
+inócuo, mas registrado para não ser lido como vazamento.
 
 **A `119` é a Onda 5 (item 5.3)** — conteúdo do CT-e em `fiscal_document` (rota, peso, NF
 transportada, destinatário, frete) + `analytics.documentos_fiscais` devolvendo esses campos com
@@ -4262,7 +4336,7 @@ internet` ao CHECK de `document_type` e faz backfill — ver "Normalização de 
 | `supplier` | Fornecedores. PK = `sk_supplier` (surrogate key snowflake auto-incremental — **migration 042**); `supplier_id` é **chave de negócio** (NOT NULL UNIQUE, só nesta tabela; = `sk_supplier` nos fornecedores criados pela extração, via trigger de espelho `trg_supplier_mirror_id`, podendo divergir em cargas externas). Auto-criados pelo trigger de resolução, mas **cadastro PRESERVADO** (curadoria manual de `email`/`email2`/`email3`/`email4`) — **nunca truncar** em limpezas (ver "Limpeza / reset de dados"). Reconhecimento por **e-mail** em `email`/`email2`/`email3`/`email4` (migrations 023/027/028) — ver "Auto-resolução de fornecedor". **Soft delete** via `deleted_at` (migration 045) — a baixa pelo CRUD da Next API marca `deleted_at` (nunca hard delete) e é bloqueada quando há contas vinculadas; ver "CRUD de fornecedores (Next API)". **Classificação default** `cost_center_id`/`chart_account_id` (SMALLINT NOT NULL DEFAULT 0 + FKs — migration 052): semeia o lançamento de novas contas e é atualizada pelo write-back do modal; ver "Classificação default do fornecedor — sync bidirecional". **Contatos** (migration 082): `phone_ddd1`/`phone1`/`phone_ddd2`/`phone2` (char(2)/varchar(9)), `whatsapp1`/`whatsapp2` (varchar(11)), `pix_key1`/`pix_key2` (varchar(77)) — 2 slots por tipo, preenchidos pelo form e pela extração (write-back com lógica de 2 slots); ver "Contato do fornecedor" |
 | `company` | Empresa pagadora (**cadastro**, tem campo `email`). PK = **`sk_company`** (surrogate key snowflake `GENERATED ALWAYS AS IDENTITY` — migration 083, chave única de relacionamento); `company_id` é **campo de origem** (NOT NULL UNIQUE, do sistema maior). Hoje há DUAS: OTIMOTEX (sk 1) e LEBIANCO (sk 2). A empresa da conta (`financial_account_control.sk_company`) tem DUAS origens, ambas explícitas: a **regra LEBIANCO** no pipeline e o **select "Empresa" do `ContaForm`** no CRUD manual (default OTIMOTEX) — ver "Empresa pagadora (`sk_company`) — regra LEBIANCO". O trigger `trg_fe_resolve_company()` → **`resolve_company_sk`** (`payer_cnpj`/`payer_name`) ficou como **fallback residual** (migration 084): só atuaria num INSERT que omitisse `sk_company`. O lookup do select é `GET /api/companies` (`companyService`). **Preservada em limpezas** (ver abaixo) |
 | `status` | **Dimensão** de situação (`status_id`, `status_name`, `status_short_name`, `has_opened`/`has_closed`/`has_invoiced`). 10 linhas (ids 1..10) = **domínio de `financial_account_control.status_id`** (fonte única — a coluna `status` texto foi removida na 069) + alvo da FK `fk_fac_status`. O nome de exibição da conta vem do embed `status_dim:status(...)`. **Cadastro/configuração — preservar em limpezas** |
-| `user_group` | **Catálogo de grupos de usuário** (migration 063 — fundação de permissões por grupo). `group_id` IDENTITY ALWAYS PK, `group_name` VARCHAR(30) DEFAULT ''; **id 0 = sentinela "não informado"**. RLS read `authenticated`/write `service_role`. **Editado SÓ via Supabase** (sem CRUD no app); o usuário pretende acrescentar campos. A atribuição por usuário e o RBAC completo (`user_profile`/`permission`/`group_*`) estão **desenhados, não implementados** — ver "Grupos de usuário" na seção de papéis e `docs/design/permissoes-por-grupo.md`. **Cadastro/configuração — preservar em limpezas** |
+| `user_group` | **Catálogo de grupos de usuário** (migration 063 — fundação de permissões por grupo). `group_id` IDENTITY ALWAYS PK, `group_name` VARCHAR(30) DEFAULT ''; **id 0 = sentinela "não informado"**. RLS read `authenticated`/write `service_role`. Carrega as **flags de comportamento do grupo**, hoje duas e **ortogonais**: `sees_only_own_accounts` (076 — visibilidade de LINHA, imposta pela RLS) e `ai_chat_enabled` + `ai_chat_limit_per_hour`/`_per_day` (120 — acesso e cota do chat de IA, impostos na Next API; NULL nas cotas = teto do `.env`). **Editado SÓ via Supabase** (sem CRUD no app); o usuário pretende acrescentar campos. A atribuição por usuário e o RBAC completo (`user_profile`/`permission`/`group_*`) estão **desenhados, não implementados** — ver "Grupos de usuário" na seção de papéis e `docs/design/permissoes-por-grupo.md`. **Cadastro/configuração — preservar em limpezas** |
 | `cobranca_envios_log` | Cobranças de vencidos **enviadas com sucesso** (migration 037). `document_id` (= TÍTULO no Firebird) **UNIQUE** = chave de deduplicação: `already_sent()` consulta aqui antes de enviar. Exibida em `/cobranca/envios`. Alvo de limpeza (dados de teste) |
 | `cobranca_erros_log` | **Falhas** da cobrança (migration 037), **sem UNIQUE** (reprocessável — o mesmo título pode falhar em execuções distintas). `error_type` ∈ (`email_ausente`, `email_invalido`, `smtp_falha`, `smtp_bloqueio`, `supabase_falha`, `firebird_falha`, `erro_inesperado`); `error_message` = motivo em linguagem leiga (exibido em `/cobranca/erros`), `error_detail` = traceback técnico. Alvo de limpeza |
 

@@ -39,13 +39,35 @@ export class ApiServiceError extends Error {
   readonly status: number;
 
   /**
-   * @param message Mensagem curada, em pt-BR, endereçada ao usuário final.
-   * @param status  HTTP status. `< 500` é ecoado ao cliente; `>= 500` vira mensagem genérica.
-   * @param name    Nome da subclasse, preservado para logs e asserções de teste.
+   * Autoriza o eco da mensagem MESMO com status >= 500. Opt-in explícito, default `false`.
+   *
+   * POR QUE ISTO PRECISOU EXISTIR (achado de 2026-08-12)
+   * A regra "ecoa se `status < 500`" descartava, em silêncio, três mensagens que o
+   * `translateAnthropicError` produz DE PROPÓSITO para o usuário: as 503 de timeout, de falha de
+   * rede e de 5xx do provedor. Elas mudavam o status e perdiam o texto — quem perguntava "quanto
+   * paguei em julho" durante uma instabilidade da Anthropic lia "Erro interno ao processar a
+   * solicitação", indistinguível de um bug nosso, e o `errors.ts` documentava exatamente o
+   * contrário. O teste de integração que dizia parear tradução e envelope pareava só o 429.
+   *
+   * A saída NÃO é relaxar o corte em 500 para qualquer erro: 5xx costuma carregar detalhe interno, e
+   * essa é a razão de o corte existir. É marcar caso a caso o que foi escrito para ser lido — o
+   * mesmo espírito de exigir a herança desta classe em vez de aceitar qualquer objeto com
+   * `.status`. Erro sem a marca continua virando mensagem genérica + log.
    */
-  constructor(message: string, status: number, name = 'ApiServiceError') {
+  readonly clientSafe: boolean;
+
+  /**
+   * @param message    Mensagem curada, em pt-BR, endereçada ao usuário final.
+   * @param status     HTTP status. `< 500` é ecoado ao cliente; `>= 500` vira mensagem genérica,
+   *                   salvo com `clientSafe`.
+   * @param name       Nome da subclasse, preservado para logs e asserções de teste.
+   * @param clientSafe Ecoa a mensagem mesmo em 5xx. Use só quando o texto for curado por
+   *                   construção — nunca para embrulhar mensagem de biblioteca de terceiro.
+   */
+  constructor(message: string, status: number, name = 'ApiServiceError', clientSafe = false) {
     super(message);
     this.name = name;
     this.status = status;
+    this.clientSafe = clientSafe;
   }
 }

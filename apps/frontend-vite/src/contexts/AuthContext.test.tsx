@@ -36,12 +36,14 @@ import { AuthProvider, useAuth } from './AuthContext';
 
 // Consumidor mínimo que expõe o estado do contexto para asserção.
 function Probe() {
-  const { user, loading, isAdminGroup } = useAuth();
+  const { user, loading, isAdminGroup, aiChatEnabled } = useAuth();
   if (loading) return <span>loading</span>;
   return (
     <>
       <span>{user ? `user:${user.email}` : 'anon'}</span>
       <span>{`admingroup:${isAdminGroup}`}</span>
+      {/* String, não booleano: `null` (ainda não sei) tem de ser distinguível de `false`. */}
+      <span>{`aichat:${String(aiChatEnabled)}`}</span>
     </>
   );
 }
@@ -164,5 +166,72 @@ describe('AuthContext', () => {
 
     expect(await screen.findByText('user:barbara@otimotex.com.br')).toBeInTheDocument();
     expect(await screen.findByText('admingroup:false')).toBeInTheDocument();
+  });
+
+  // ---------------------------------------------------------------------------
+  // Gate de UI do assistente de IA (migration 120, Onda 8)
+  // ---------------------------------------------------------------------------
+  describe('aiChatEnabled', () => {
+    const comSessao = (user: { id: string; email: string }) => {
+      getSession.mockResolvedValue({ data: { session: { user } } });
+      getUser.mockResolvedValue({ data: { user }, error: null });
+    };
+
+    it('grupo habilitado → true', async () => {
+      comSessao({ id: '1', email: 'ricardo@sheild.com.br' });
+      maybeSingle.mockResolvedValue({
+        data: { group_id: 1, user_group: { ai_chat_enabled: true } },
+        error: null,
+      });
+
+      renderProvider();
+
+      expect(await screen.findByText('aichat:true')).toBeInTheDocument();
+    });
+
+    it('grupo sem acesso → false', async () => {
+      comSessao({ id: '3', email: 'ester@otimotex.com.br' });
+      maybeSingle.mockResolvedValue({
+        data: { group_id: 6, user_group: { ai_chat_enabled: false } },
+        error: null,
+      });
+
+      renderProvider();
+
+      expect(await screen.findByText('aichat:false')).toBeInTheDocument();
+    });
+
+    it('perfil ausente → false (grupo 0 não é liberado)', async () => {
+      comSessao({ id: '4', email: 'novo@otimotex.com.br' });
+      maybeSingle.mockResolvedValue({ data: null, error: null });
+
+      renderProvider();
+
+      expect(await screen.findByText('aichat:false')).toBeInTheDocument();
+    });
+
+    it('sem sessão → null (ainda não sei), nunca false', async () => {
+      getSession.mockResolvedValue({ data: { session: null } });
+
+      renderProvider();
+
+      // `false` aqui seria uma afirmação sobre um usuário que não existe.
+      expect(await screen.findByText('aichat:null')).toBeInTheDocument();
+    });
+
+    /**
+     * 🔴 ASSIMETRIA DELIBERADA com o servidor: o gate real (assertAiChatAllowed) falha FECHADO;
+     * este, que é cosmético, falha ABERTO. Esconder o botão de quem tem direito por causa de um
+     * soluço de rede é o pior desfecho de uma camada que não protege nada — e o clique acabaria
+     * num 403 curado de qualquer forma.
+     */
+    it('falha na leitura do perfil → true (fail-open na camada cosmética)', async () => {
+      comSessao({ id: '5', email: 'luiz@otimotex.com.br' });
+      maybeSingle.mockResolvedValue({ data: null, error: { message: 'network' } });
+
+      renderProvider();
+
+      expect(await screen.findByText('aichat:true')).toBeInTheDocument();
+    });
   });
 });

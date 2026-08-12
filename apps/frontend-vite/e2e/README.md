@@ -47,6 +47,20 @@ npm run test:e2e
 > secret**, com o mesmo grant que o app usa (`POST /auth/v1/token?grant_type=password`, com a
 > anon key): criar o usuário não prova que ele loga.
 
+> 🔴 **O GRUPO do usuário precisa ter `user_group.ai_chat_enabled = true`** (migration 120). O
+> caso *"Assistente de IA — painel aberto"* **clica no botão flutuante**, e desde a Onda 8 o
+> `Layout` só o renderiza para grupo liberado — sem isso o spec falha por timeout, com uma
+> mensagem que não sugere permissão em lugar nenhum. ⚠️ **Não resolva liberando o grupo 0**: ele
+> é o sentinela "não informado", destino de qualquer usuário sem perfil, e liberá-lo transformaria
+> o opt-in do gate em opt-out. Ponha o usuário do CI num grupo já liberado — hoje o **7
+> Financeiro**, escolhido por ser neutro em visibilidade (`sees_only_own_accounts = false`, igual
+> ao grupo 0):
+>
+> ```sql
+> UPDATE public.user_profile p SET group_id = 7
+>   FROM auth.users u WHERE u.id = p.user_id AND u.email = '<usuário do CI>';
+> ```
+
 Sem essas variáveis, o bloco de rotas protegidas é **pulado** (não falha a suíte).
 
 ## Escopo / limitação
