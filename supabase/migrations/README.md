@@ -22,6 +22,14 @@ As migrations `001 → 061` são aplicadas **manualmente no SQL Editor do Supaba
 >    transacional, então o rollback devolve a linha mas não o número). Inócuo — não há requisito de
 >    numeração sem buracos —, mas registrado para não ser lido como vazamento.
 >
+> ✅ **`get_advisors` rodado após aplicar (2026-08-12): ZERO achados novos.** Os ERROR/WARN que
+> aparecem (`app_user`, `search_path` mutável, `SECURITY DEFINER` executável por `anon`) são todos
+> **pré-existentes e já triados** no CLAUDE.md — inclusive o `auth_group_sees_only_own()`, que os
+> advisors apontam e **não pode** ser revogado, por ser chamado dentro das policies 076/078. É a
+> medição que sustenta a decisão do ponto 1: a 120 não criou função nem view, então não tinha como
+> acrescentar nada a essa lista. Rodar os advisors após DDL é a prática do projeto — barata, e
+> aqui ela transformou "o helper seria peso morto" de argumento em fato.
+>
 > **⚠️ Ordem de implantação (o modo de falha real desta migration):** migration → conferir que o
 > **cache de schema do PostgREST** já enxerga a coluna → deploy da Next API → deploy da SPA.
 > Subir a API antes da migration faz o `gate.ts` falhar ao ler e, sendo **fail-closed**, derruba o

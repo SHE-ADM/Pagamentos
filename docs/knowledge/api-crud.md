@@ -748,9 +748,18 @@ visibilidade do blueprint (`docs/design/permissoes-por-grupo.md`: empresa/centro
 **Erros não vazam detalhe interno — o contrato é a ORIGEM do erro, não o formato (segurança §3
 M-2; endurecido em 2026-07-29):** os route handlers usam `failFromError(e, '<tag>')`
 (`lib/response.ts`), que **só ecoa a mensagem quando o erro é um `ApiServiceError`**
-(`lib/api-error.ts`) com status < 500. Qualquer outra coisa — incluindo erro de terceiro — vira
-`'Erro interno ao processar a solicitação'` **500**, com o detalhe indo só para o `console.error`.
-Não reintroduzir `fail(e.message, 500)` nos handlers.
+(`lib/api-error.ts`) com status < 500 **ou marcado `clientSafe`**. Qualquer outra coisa — incluindo
+erro de terceiro — vira `'Erro interno ao processar a solicitação'` **500**, com o detalhe indo só
+para o `console.error`. Não reintroduzir `fail(e.message, 500)` nos handlers.
+
+> **`clientSafe` (2026-08-12) é a exceção OPT-IN ao corte em 500, e default `false`.** Ela nasceu
+> porque o corte descartava em silêncio as três mensagens **503** que o chat de IA produz de
+> propósito (timeout, falha de rede, 5xx do provedor): o usuário lia "Erro interno" justamente
+> quando a causa era temporária e havia o que fazer. Hoje só `AiChatError` a liga — toda mensagem
+> daquela classe é escrita para ser lida. **Marcar um 5xx genérico com ela reabre o vazamento que
+> esta seção existe para fechar.** Guarda: `tests/test_onda8_gate_ia.py` exige que todo doc vivo
+> que enuncie o corte também enuncie a exceção — foi assim que este parágrafo foi pego afirmando o
+> contrato antigo por um PR inteiro depois de o código ter mudado.
 
 > **Por que deixou de ser duck-typing (não regredir):** a regra antiga era "tem `.status` numérico
 > < 500? ecoa a mensagem" — e isso é **verdadeiro para erros de bibliotecas de terceiros**, que

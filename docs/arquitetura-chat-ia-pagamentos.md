@@ -1534,3 +1534,24 @@ o corte existe. Foi marcar caso a caso o que é escrito para ser lido: `ApiServi
 opt-in com default `false` (os 8 CRUDs seguem intocados), ligado em `AiChatError`. A guarda nova
 pareia **cada** ramo com o envelope, mais uma contraprova de que um `ApiServiceError` 503 **sem** a
 marca continua genérico — sem ela, `clientSafe` poderia ter virado "ecoa sempre".
+
+#### 21.6 O contrato estava em três lugares, e a correção só alcançou um por vez
+
+A mudança do `clientSafe` foi feita no código e documentada em três pontos novos — e **não** na
+Regra 3 do CLAUDE.md nem em `docs/knowledge/api-crud.md`, que enunciavam o contrato antigo. A
+verificação pós-merge pegou a Regra 3; a correção dela **não foi reauditada**, e o `api-crud.md`
+seguiu afirmando o oposto do comportamento por mais um PR inteiro. Três oportunidades, três
+escapes — cada um por confiar em disciplina onde cabia uma guarda.
+
+O modo de falha é específico de regra de **segurança** e merece ser nomeado: quem lê um contrato
+desatualizado de vazamento **acredita nele**, vê o 503 curado do chat chegando ao usuário e reporta
+um vazamento inexistente. Custa uma investigação e ensina a desconfiar da documentação — o oposto
+do que ela existe para fazer.
+
+A guarda escolhida não é "os docs não podem divergir" (vago, impossível de checar), e sim
+**"quem enuncia o corte tem de enunciar a exceção"**: `.md` vivo que contenha `failFromError` e
+`status < 500` sem citar `clientSafe` reprova. É verificável, tem falso positivo perto de zero e
+custa uma cláusula para satisfazer. `docs/review/**` fica de fora de propósito — relatórios são
+retratos **datados**, e reescrever um de 10/08 para refletir uma mudança de 12/08 falsificaria o
+registro. Implementada em `tests/test_onda8_gate_ia.py` (G9), com sanidade de parser dos dois lados
+e validada por mutante.

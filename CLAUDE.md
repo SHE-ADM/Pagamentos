@@ -198,7 +198,7 @@ Estas regras se aplicam a **todo** código novo ou alterado neste projeto, sem e
   sem ele os schemas sem teste próprio ficariam fora do lcov e o Sonar os leria como 0% — que foi
   a armadilha do PR #223. Medido: 5 de 14 arquivos no lcov sem o teste do barrel, **14 de 14** com
   ele. Ao criar schema novo, basta que o barrel o reexporte; não há include a manter.
-- **Suíte Python (pytest):** `py -3 -m pytest tests/` — **1.311 testes** (ex.:
+- **Suíte Python (pytest):** `py -3 -m pytest tests/` — **1.314 testes** (ex.:
   `test_link_extraction.py`, `test_email_body_extraction.py`, `test_body_amount.py`,
   `test_body_invoice_table.py`, `test_body_platform_invoice.py`,
   `test_body_supplier_override.py`, `test_arrecadacao_gnre.py`,
@@ -215,9 +215,9 @@ Estas regras se aplicam a **todo** código novo ou alterado neste projeto, sem e
   scripts de reprocessamento. Não é incluída no `npm test` (que soma **1.463** no Node —
   frontend-vite 854 · api-backend 575 · packages/shared 32 · portal-next 2, medidos em
   2026-08-12 após a Onda 8). A suíte
-  Python está em **1.311** (medida em 2026-08-12; os 28 novos desde 1.283 são as guardas da Onda 8
+  Python está em **1.314** (medida em 2026-08-12; os 31 novos desde 1.283 são as guardas da Onda 8
   — colunas cross-layer, deny por default nas 4 camadas, semente, ausências e ordem dos porteiros —
-  mais 3 da versão única de React (`test_react_versao_unica.py`);
+  mais 3 do contrato do erro e 3 da versão única de React (`test_react_versao_unica.py`);
   os 56 anteriores são a Onda 5 e a barra na chave de acesso; os 34 antes disso, a Onda 7).
   > ⚠️ **Medir o `frontend-vite` com `--maxWorkers=1`.** Em paralelo, o sandbox do agente
   > derruba ~9 casos de a11y (`StatusBadge.a11y`, `DashboardHeader.a11y`) por esgotamento de
@@ -335,6 +335,13 @@ regredir e valem para **toda rota nova**:
   exato momento em que a causa era temporária e havia o que fazer. Hoje só `AiChatError` o liga,
   porque toda mensagem daquela classe é escrita para ser lida. Marcar um 5xx genérico com ele
   reabre o vazamento que a classe existe para fechar. Pareado ramo a ramo em `errors.test.ts`.
+  🔴 **QUEM ENUNCIA O CORTE TEM DE ENUNCIAR A EXCEÇÃO** — travado por guarda
+  (`tests/test_onda8_gate_ia.py`): doc vivo que diga "ecoa se status < 500" sem citar `clientSafe`
+  descreve um comportamento que o código não tem mais. O contrato vive em **três** lugares (código,
+  esta regra e [docs/knowledge/api-crud.md](docs/knowledge/api-crud.md)); a mudança corrigiu o
+  código e cada correção seguinte esqueceu um doc — o `api-crud.md` afirmou o oposto por um PR
+  inteiro. Numa regra de SEGURANÇA isso é o pior modo de falha: quem lê acredita e reporta um
+  vazamento que não existe. `docs/review/**` fica fora da guarda (são retratos datados).
 - **Remoção padrão de conta = `PATCH status_id = cancelado`** (preservação). Hard delete é a
   exceção do grupo Administrador. Fornecedor usa **soft delete**; os 6 cadastros de Tabelas usam
   hard delete bloqueado por FK (409).
@@ -3820,7 +3827,9 @@ mais o CHECK `chk_user_group_ai_chat_limits`, e libera na semente os grupos **1 
 Diretor e 7 Financeiro**. 🔴 **Não cria função helper de RLS, e isso é decisão:** RLS responde
 "quais linhas este papel lê", o gate responde "este usuário pode chamar o endpoint" — e quem lê é
 o `gate.ts` com `service_role`, para quem um `SECURITY DEFINER` baseado em `auth.uid()` seria
-**inalcançável**. 🔴 A semente é `SET ... = true WHERE group_id IN (...)`, **nunca**
+**inalcançável** — e `get_advisors` após aplicar mediu **0 achados novos**, confirmando que a
+decisão evitou engordar aquela lista (os ERROR/WARN que aparecem são todos pré-existentes e já
+triados). 🔴 A semente é `SET ... = true WHERE group_id IN (...)`, **nunca**
 `SET ... = (group_id IN (...))`: a segunda forma também é "idempotente" e **revogaria em silêncio**
 todo grupo liberado à mão depois. O `DO $$` tem 6 sondas e aborta em qualquer uma; a mais valiosa é
 a **P1**, que cruza `analytics.ai_chat_log` com a semente e falha se algum usuário que **já usou** o

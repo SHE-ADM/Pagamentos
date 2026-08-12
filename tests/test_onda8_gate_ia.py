@@ -321,5 +321,55 @@ class G8OrdemDosPorteirosTest(unittest.TestCase):
         self.assertIn("assertWithinRateLimit(user.id, gate)", _codigo_ts(ROUTE_TS))
 
 
+class G9ContratoDoErroTest(unittest.TestCase):
+    """O contrato do `failFromError` e o mesmo no CODIGO e em TODO doc vivo que o enuncia.
+
+    POR QUE ESTA GUARDA EXISTE (e por que ela nasceu tarde)
+
+    A Onda 8 acrescentou `ApiServiceError.clientSafe` — a excecao opt-in ao corte em 500, criada
+    porque o corte descartava em silencio as tres mensagens 503 curadas do chat. Mas o contrato
+    estava enunciado em TRES lugares, e o commit da onda corrigiu so o codigo. Resultado: a Regra 3
+    do CLAUDE.md e o `docs/knowledge/api-crud.md` seguiram afirmando o oposto do comportamento — e
+    o segundo sobreviveu a mais um PR, porque a correcao do primeiro nao foi reauditada.
+
+    Regra mais afiada que "nao pode divergir": QUEM ENUNCIA O CORTE TEM DE ENUNCIAR A EXCECAO.
+    Um doc que diz "ecoa se status < 500" sem citar `clientSafe` esta descrevendo um comportamento
+    que o codigo nao tem mais — e o modo de falha e o pior possivel numa regra de SEGURANCA: quem
+    ler acredita, ve o 503 do chat chegando ao usuario e reporta um vazamento inexistente.
+    """
+
+    # Documentos vivos. `docs/review/**` fica FORA de proposito: sao relatorios DATADOS, retratos
+    # de um momento — reescrever um relatorio de 2026-08-10 para refletir uma mudanca de 08-12
+    # falsificaria o registro. O mesmo vale para o plano de um review ja executado.
+    def _docs_vivos(self) -> list[Path]:
+        return [
+            p for p in [RAIZ / "CLAUDE.md", *sorted((RAIZ / "docs").rglob("*.md"))]
+            if "review" not in p.relative_to(RAIZ).parts
+        ]
+
+    def test_sanidade_o_corte_e_a_excecao_existem_no_codigo(self):
+        codigo = _codigo_ts(RAIZ / "apps" / "api-backend" / "lib" / "response.ts")
+        self.assertIn("e.status < 500", codigo, "o corte sumiu de failFromError (o contrato mudou?)")
+        self.assertIn("e.clientSafe", codigo, "a excecao sumiu de failFromError (o contrato mudou?)")
+
+    def test_sanidade_ha_docs_que_enunciam_o_corte(self):
+        """Sem nenhum doc citando o corte, o teste abaixo seria `[] == []` — verde para sempre."""
+        citam = [p.name for p in self._docs_vivos() if "status < 500" in p.read_text(encoding="utf-8")]
+        self.assertGreaterEqual(len(citam), 2, f"esperava >= 2 docs enunciando o corte, achei {citam}")
+
+    def test_todo_doc_que_enuncia_o_corte_enuncia_a_excecao(self):
+        omissos = []
+        for p in self._docs_vivos():
+            texto = p.read_text(encoding="utf-8")
+            if "failFromError" in texto and "status < 500" in texto and "clientSafe" not in texto:
+                omissos.append(str(p.relative_to(RAIZ)))
+
+        self.assertEqual(
+            omissos, [],
+            "doc(s) enunciando o corte em 500 sem citar a excecao `clientSafe` — descrevem um "
+            f"comportamento que o codigo nao tem mais: {omissos}",
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
