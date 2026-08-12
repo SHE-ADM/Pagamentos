@@ -198,7 +198,7 @@ Estas regras se aplicam a **todo** código novo ou alterado neste projeto, sem e
   sem ele os schemas sem teste próprio ficariam fora do lcov e o Sonar os leria como 0% — que foi
   a armadilha do PR #223. Medido: 5 de 14 arquivos no lcov sem o teste do barrel, **14 de 14** com
   ele. Ao criar schema novo, basta que o barrel o reexporte; não há include a manter.
-- **Suíte Python (pytest):** `py -3 -m pytest tests/` — **1.252 testes** (ex.:
+- **Suíte Python (pytest):** `py -3 -m pytest tests/` — **1.283 testes** (ex.:
   `test_link_extraction.py`, `test_email_body_extraction.py`, `test_body_amount.py`,
   `test_body_invoice_table.py`, `test_body_platform_invoice.py`,
   `test_body_supplier_override.py`, `test_arrecadacao_gnre.py`,
@@ -206,6 +206,7 @@ Estas regras se aplicam a **todo** código novo ou alterado neste projeto, sem e
   `test_body_resolvers.py`, `test_extract_pdf.py`, `test_body_full.py`,
   `test_fiscal_key.py`, `test_fiscal_document_hook.py`,
   `test_fiscal_document_consistency.py`, `test_cte_content.py`,
+  `test_backfill_cte_content.py`,
   `test_varredura_historica.py`,
   `test_vision_multi_boleto.py`, `test_barcode_self_refuted.py`,
   `test_contact_block_nonpayable.py`, `test_is_processed.py`). Cobre o
@@ -213,8 +214,9 @@ Estas regras se aplicam a **todo** código novo ou alterado neste projeto, sem e
   scripts de reprocessamento. Não é incluída no `npm test` (que soma **1.420** no Node —
   frontend-vite 847 · api-backend 539 · packages/shared 32 · portal-next 2, medidos em
   2026-08-12). A suíte
-  Python está em **1.252** (medida em 2026-08-12; os 25 novos desde 1.227 são as guardas da Onda 5
-  — 21 do parser/gancho do CT-e — e da barra na chave de acesso; os 34 anteriores as da Onda 7).
+  Python está em **1.283** (medida em 2026-08-12; os 56 novos desde 1.227 são as guardas da Onda 5
+  — parser, gancho, fluxo de topo e backfill do CT-e — e da barra na chave de acesso; os 34
+  anteriores as da Onda 7).
   > ⚠️ **Medir o `frontend-vite` com `--maxWorkers=1`.** Em paralelo, o sandbox do agente
   > derruba ~9 casos de a11y (`StatusBadge.a11y`, `DashboardHeader.a11y`) por esgotamento de
   > recursos — eles passam isolados e em série. É a mesma classe de falso alarme já
@@ -1012,10 +1014,14 @@ Plano completo em **[docs/roadmap-enriquecimento-dados.md](docs/roadmap-enriquec
 **ler antes de mexer em qualquer item abaixo.** Objetivo: ampliar a acurácia e a gama de perguntas
 do chat **sem quebrar o pipeline de extração**. Execução **uma onda por vez**, cada uma cumprindo o
 protocolo de 5 passos da §3 do plano (baseline → migration idempotente → não regredir o pipeline →
-verificação por oráculo diferencial → fechamento). Migrations reservadas: **103–118** — a Onda 6
-ocupou **111–115** (o plano dizia 112–116, mas a 109/110 foram consumidas por trabalho não
+verificação por oráculo diferencial → fechamento). Migrations usadas até aqui: **103–119** — a Onda
+6 ocupou **111–115** (o plano dizia 112–116, mas a 109/110 foram consumidas por trabalho não
 relacionado; deixar buraco na sequência seria pior). A **116** corrigiu a truncagem silenciosa das
-duas funções da 115 (achado B1 do review de 2026-08-10), então a Onda 7 desloca para **117–118**.
+duas funções da 115 (achado B1 do review de 2026-08-10), a Onda 7 deslocou para **117–118** e a
+Onda 5 (item 5.3) saiu na **119**.
+> 🔴 **Número de migration NÃO se reserva com antecedência.** O plano reservava 109/110/111 para a
+> Onda 5 e os três foram consumidos por outro trabalho antes de ela começar. Confira sempre a
+> última aplicada; a tabela de um roadmap escrito há meses não é fonte de verdade para isso.
 
 | # | Onda | Entrega |
 |---|---|---|
@@ -1285,6 +1291,25 @@ tabela por grupo em [docs/roadmap-enriquecimento-dados.md](docs/roadmap-enriquec
   nada — sem erro, com o log dizendo "registrado". Ordem travada por teste que EXECUTA o gancho e
   observa a sequência das chamadas, validada contra 2 mutantes (inverter a ordem · remover o
   gancho). Guarda textual não serviria aqui — é a lição da regra 2, item 6.
+- 🔴 **São DOIS níveis de teste, e o de cima NÃO é redundante** *(medido em 2026-08-12)*.
+  `test_cte_content.py` chama `_register_fiscal_documents` **direto**, passando o texto na mão —
+  prova o gancho, mas não o elo anterior. `ConteudoCteFluxoTopoTest`
+  (`tests/test_fiscal_document_hook.py`) executa **`extract_and_store_accounts`**, provando que o
+  Passo 1 lê o PDF e entrega **aquele** texto ao gancho. Medido com o mutante que troca
+  `pdf_raw_text` por `row.get("description")` — plausível, não quebra nada e não é pego por
+  typecheck: o teste de topo fica **18 vermelhos** e o do gancho direto segue **27 verdes**.
+  Ao mexer no Passo 1, os dois níveis têm de continuar existindo.
+- **A fixture da fatura vive em `tests/fixtures_cte.py`**, compartilhada pelos dois arquivos.
+  Copiada, as versões divergem no primeiro ajuste e o oráculo do SUB-TOTAL — que só vale enquanto
+  linhas e total forem coerentes entre si — deixa de valer sem nada acusar. Não é `conftest.py`
+  porque estes testes são `unittest.TestCase`, que não recebe fixture por parâmetro.
+- ✅ **`SupabaseControl.update_fiscal_content` PROVADO contra o banco real** (2026-08-12): o
+  backfill grava por outro caminho (`rest_write`) e os testes usam controle falso, então o método
+  que roda quando chega uma fatura por e-mail nunca tinha falado com o PostgREST. Sonda que
+  regrava os MESMOS valores lidos do banco: `content_extracted_at` avançou (o UPDATE alcançou a
+  linha), o hash do conteúdo ficou **idêntico** e as contagens globais não se mexeram
+  (824 contas · 293 docs · 57 com conteúdo). Nome de coluna errado, Decimal serializado como
+  float ou filtro `not.eq` malformado só apareceriam aí.
 - **`content_source` existe para as duas fontes conviverem** (`braspress_invoice` hoje,
   `dacte_llm` no futuro), com CHECK de domínio fechado. O gancho e o backfill **não sobrescrevem
   conteúdo de outra fonte**: um dado mais rico não pode ser rebaixado por uma passada
@@ -1297,6 +1322,18 @@ tabela por grupo em [docs/roadmap-enriquecimento-dados.md](docs/roadmap-enriquec
   armadilha da 116 (lá o risco era perder os GRANTs; aqui, a idempotência).
 - **Cobertura declarada ao modelo:** o conteúdo existe só para CT-e recebido em fatura agregada
   (57 de 293 documentos). Campo vazio significa **"ainda não extraído"**, nunca "não tem".
+- 🔴 **Ao contrário das Ondas 6 e 7, esta onda TOCOU `skills/` ⇒ EXIGIU deploy** —
+  `cte_content.py` (arquivo NOVO), `read_emails.py` e `fiscal_key.py`, mais o
+  `deploy-manifest.json`. **Aplicado e validado em produção em 2026-08-12**: paridade 28/28 +
+  dois smoke tests na própria máquina (`modulo carregou: True` e a chave extraída do texto com o
+  CNPJ formatado). Detalhe em [docs/deploy/historico-deploys.md](docs/deploy/historico-deploys.md).
+  ⚠️ **`cte_content.py` degrada em SILÊNCIO se faltar** — é import lazy, então o pipeline segue
+  verde gravando documentos **sem** peso/rota/frete e o único sinal é `Deploy parcial?` no log.
+- ⏳ **O que ainda NÃO foi exercitado em produção:** a captura **automática** a partir de um
+  e-mail novo. O backfill cobriu o acervo, o fluxo de topo tem teste e o
+  `update_fiscal_content` foi provado contra o banco — falta apenas chegar a próxima fatura
+  (são semanais). Conferir com
+  `SELECT count(*) FROM fiscal_document WHERE content_extracted_at >= '<data>'`.
 
 **O que a Onda 6 entregou e os invariantes que ela criou (não regredir):**
 

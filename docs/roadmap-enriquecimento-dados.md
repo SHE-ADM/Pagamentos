@@ -532,15 +532,25 @@ camada 2 (itens/conteúdo) multiplicaria o custo pelo nº de documentos — deci
 **Por quê:** a chave de acesso identifica o documento, mas não diz **o que** foi comprado ou
 transportado. Este é o conteúdo mais rico do projeto — e o mais caro e arriscado de extrair.
 
-| Item | O quê | Migration |
-|---|---|---|
-| 5.1 | Tabela `fiscal_document_item` (1:N → `fiscal_document`) — **itens de produto da NF-e** | 109 |
-| 5.2 | Extração por LLM do DANFE: código, descrição, NCM, CFOP, quantidade, unidade, valor unitário, valor total | — |
-| 5.3 | Campos de conteúdo do CT-e: peso, volumes, origem/destino, valor do frete, NF vinculada | 110 |
-| 5.4 | Tool `itens_nota_fiscal(...)` / extensão de `documentos_fiscais` | 111 |
+| Item | O quê | Migration | Estado |
+|---|---|---|---|
+| 5.1 | Tabela `fiscal_document_item` (1:N → `fiscal_document`) — **itens de produto da NF-e** | — | 🔴 **SUSPENSO** — 15 DANFEs medidos |
+| 5.2 | Extração por LLM do DANFE: código, descrição, NCM, CFOP, quantidade, unidade, valor unitário, valor total | — | 🔴 **SUSPENSO** — mesma causa |
+| 5.3 | Campos de conteúdo do CT-e: peso, volumes, origem/destino, valor do frete, NF vinculada | **119** | ✅ **CONCLUÍDO** (2026-08-12) — **sem LLM**, da fatura agregada |
+| 5.3-b | O mesmo, a partir do **DACTE individual** (83 PDFs) — exige LLM, layout varia por emissor | — | ⏸ não iniciado |
+| 5.4 | Extensão de `documentos_fiscais` (rota/peso/frete + filtro `p_rota`) | **119** | ✅ saiu junto com o 5.3 |
 
-**Destrava:** *"o que compramos deste fornecedor?"*, análise por NCM/CFOP, custo de frete por rota
-— perguntas hoje impossíveis em qualquer camada do sistema.
+> ⚠️ **Os números 109/110/111 que esta tabela reservava NÃO valem mais** — foram consumidos por
+> trabalho não relacionado (e-mail de plataforma; sentinela de autoria) e pela Onda 6, antes desta
+> onda começar. O 5.3 saiu na **119**. Confira sempre a última migration aplicada antes de criar
+> uma nova; reservar número com meses de antecedência não sobrevive ao contato com a realidade.
+>
+> A tool `itens_nota_fiscal(...)` que o 5.4 previa **não foi criada**: ela serviria aos itens de
+> NF-e, que estão suspensos. O que a 119 entregou foi a extensão da tool existente.
+
+**Destrava:** custo de frete por rota, peso por destino e a NF transportada em cada conhecimento —
+✅ **entregue pelo 5.3**. O *"o que compramos deste fornecedor?"* e a análise por NCM/CFOP dependem
+dos itens de NF-e e **seguem impossíveis**, por falta de população, não por falta de implementação.
 
 **Riscos — esta onda é a de maior risco do plano:**
 
