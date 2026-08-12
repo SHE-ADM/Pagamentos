@@ -30,7 +30,21 @@ import { TOOL_DEFINITIONS, parseToolInput, type ToolName } from './tools';
  * para 15 strings acoplaria as duas camadas por um ganho pequeno. O que importa é que toda
  * pergunta sugerida tenha cobertura — e é isso que esta lista trava.
  */
-const PERGUNTAS: ReadonlyArray<{ pergunta: string; tool: ToolName; params: Record<string, unknown> }> = [
+type Params = Record<string, unknown>;
+
+/**
+ * `params` aceita UMA chamada ou uma LISTA delas.
+ *
+ * A lista existe para as perguntas que nenhuma tool resolve numa chamada só (comparar as três
+ * empresas, hoje). Antes desta mudança essas perguntas eram registradas com uma chamada
+ * arbitrária, o que fazia a bateria afirmar uma cobertura que não existe — foi assim que
+ * `sk_company: 2` acabou documentando "compare as três empresas".
+ */
+const PERGUNTAS: ReadonlyArray<{
+  pergunta: string;
+  tool: ToolName;
+  params: Params | ReadonlyArray<Params>;
+}> = [
   // ---- Panorama ----
   {
     pergunta: 'Como estamos de contas a pagar?',
@@ -48,9 +62,15 @@ const PERGUNTAS: ReadonlyArray<{ pergunta: string; tool: ToolName; params: Recor
     params: { group_by: 'faixa' },
   },
   {
+    // CORRIGIDO em 2026-08-12. Estava fixada em `gasto_por_fornecedor`, que NÃO tem filtro de
+    // situação e portanto não consegue restringir a vencidos: o oráculo diferencial rodado no
+    // banco devolveu 1 fornecedor por `aging_vencidos` contra 5 não-vencidos pela tool antiga —
+    // interseção ZERO. Em produção o modelo já escolhia `aging_vencidos` (ai_chat_log ids 2 e 4):
+    // ele acertava e a bateria é que documentava o mapeamento errado, verde, porque só verificava
+    // que os parâmetros parseavam. Ver a guarda `tool com recorte de situação` abaixo.
     pergunta: 'Quais os 5 maiores fornecedores com contas vencidas?',
-    tool: 'gasto_por_fornecedor',
-    params: { date_from: '2020-01-01', date_to: '2026-07-31', limit: 5 },
+    tool: 'aging_vencidos',
+    params: { group_by: 'fornecedor', limit: 5 },
   },
 
   // ---- Despesas e custos (foco de auditoria 1) ----
@@ -112,9 +132,21 @@ const PERGUNTAS: ReadonlyArray<{ pergunta: string; tool: ToolName; params: Recor
     params: { date_from: '2026-07-01', date_to: '2026-07-31', date_field: 'pagamento' },
   },
   {
+    // CORRIGIDO em 2026-08-12. Estava fixada em `sk_company: 2` — UMA empresa, ou seja não
+    // comparava nada, e passava porque um filtro escalar válido parseia perfeitamente.
+    //
+    // `gasto_por_periodo` não tem eixo de empresa (só o escalar `sk_company`), então a pergunta
+    // custa N chamadas — em produção o modelo fez 6 (`ai_chat_log` id 9). Registrar as três
+    // chamadas deixa esse custo VISÍVEL na bateria em vez de escondido atrás de um mapeamento
+    // que fingia resolver com uma. Uma tool com `group_by: 'empresa'` resolveria em 1 chamada;
+    // é decisão da Onda 9, não deste teste.
     pergunta: 'Compare os gastos entre OTIMOTEX TECIDOS, LEBIANCO e OTIMOTEX FARDOS',
     tool: 'gasto_por_periodo',
-    params: { date_from: '2026-07-01', date_to: '2026-07-31', sk_company: 2 },
+    params: [
+      { date_from: '2026-07-01', date_to: '2026-07-31', sk_company: 1 },
+      { date_from: '2026-07-01', date_to: '2026-07-31', sk_company: 2 },
+      { date_from: '2026-07-01', date_to: '2026-07-31', sk_company: 3 },
+    ],
   },
 
   // ---- E-mails (Onda 2) ----
@@ -141,12 +173,120 @@ const PERGUNTAS: ReadonlyArray<{ pergunta: string; tool: ToolName; params: Recor
   },
 ];
 
+/** Normaliza `params` para lista — uma pergunta pode custar N chamadas. */
+const chamadas = (p: Params | ReadonlyArray<Params>): ReadonlyArray<Params> =>
+  Array.isArray(p) ? p : [p as Params];
+
 describe('bateria de regressão — perguntas sugeridas no painel', () => {
   it.each(PERGUNTAS)('"$pergunta" → $tool aceita os parâmetros', ({ tool, params }) => {
-    const r = parseToolInput(tool, params);
-    // A mensagem do Zod entra na asserção para o teste dizer O QUE está errado, não só que falhou.
-    expect(r.ok ? '' : r.message).toBe('');
-    expect(r.ok).toBe(true);
+    for (const p of chamadas(params)) {
+      const r = parseToolInput(tool, p);
+      // A mensagem do Zod entra na asserção para o teste dizer O QUE está errado, não só que falhou.
+      expect(r.ok ? '' : r.message).toBe('');
+      expect(r.ok).toBe(true);
+    }
+  });
+
+  // ─────────────────────────────────────────────────────────────────────────────────────────
+  // GUARDA DE CAPACIDADE — o defeito de fundo que esta bateria tinha (achado de 2026-08-12).
+  //
+  // Verificar que os parâmetros PARSEIAM não verifica que a tool CONSEGUE RESPONDER. Foi essa
+  // lacuna que deixou "os 5 maiores fornecedores com contas VENCIDAS" fixada em
+  // `gasto_por_fornecedor` — uma tool sem nenhum filtro de situação — com a suíte verde por
+  // meses. Um mapeamento impossível é pior que nenhum: ele documenta como correto o que o
+  // modelo, em produção, já fazia diferente.
+  //
+  // A guarda é estrutural: se o TEXTO da pergunta pede um recorte de situação, a tool escolhida
+  // precisa ou aceitar `status`, ou ser intrinsecamente restrita àquela situação (é o caso de
+  // `aging_vencidos`, que por definição só olha título vencido em aberto). A capacidade é lida
+  // do `input_schema` REAL — o mesmo que o modelo enxerga —, nunca de uma lista mantida à mão,
+  // que divergiria em silêncio quando a tool mudasse.
+  it('pergunta que pede recorte de situação aponta para tool capaz de recortar situação', () => {
+    const TERMOS = /\bvencid|\bem aberto\b|\bpag(a|o|as|os)\b|\bcancelad/i;
+    // Tools cujo escopo JÁ é a situação pedida — não precisam do parâmetro para respeitá-la.
+    const INTRINSECAS = new Set<ToolName>(['aging_vencidos', 'resumo_situacao']);
+
+    const aceitaStatus = (tool: ToolName): boolean => {
+      const def = TOOL_DEFINITIONS.find((t) => t.name === tool);
+      const props = (def?.input_schema as { properties?: Record<string, unknown> })?.properties;
+      return Boolean(props && 'status' in props);
+    };
+
+    const impossiveis = PERGUNTAS
+      .filter(({ pergunta, tool }) =>
+        TERMOS.test(pergunta) && !INTRINSECAS.has(tool) && !aceitaStatus(tool))
+      .map(({ pergunta, tool }) => `${pergunta} → ${tool}`);
+
+    expect(impossiveis, 'pergunta com recorte de situação mapeada em tool sem esse filtro')
+      .toEqual([]);
+
+    // Sanidade: a guarda só vale se o regex de fato casar alguma pergunta e se a leitura do
+    // input_schema estiver funcionando. Sem isto ela viraria "[] === []" — verde para sempre.
+    expect(PERGUNTAS.filter((p) => TERMOS.test(p.pergunta)).length).toBeGreaterThan(0);
+    expect(aceitaStatus('listar_contas')).toBe(true);
+    expect(aceitaStatus('gasto_por_fornecedor')).toBe(false);
+  });
+
+  // ─────────────────────────────────────────────────────────────────────────────────────────
+  // GUARDA ANTI-DUPLA-CONTAGEM (Onda 5, item 5.3).
+  //
+  // Até a Onda 3 a proteção era ESTRUTURAL: `fiscal_document` não tinha coluna de valor, então
+  // não havia como somar documento fiscal com despesa nem por engano. A migration 119 acrescenta
+  // `freight_amount` — o frete por conhecimento —, e a barreira passa a ser DECLARADA.
+  //
+  // Declaração sozinha é frase, não garantia: alguém enxuga o prompt, o modelo deixa de ser
+  // avisado e passa a somar o frete decomposto com `gasto_por_periodo`, contando a MESMA despesa
+  // duas vezes — sem erro, sem teste vermelho, com um número plausível na tela. Esta guarda é o
+  // que transforma a frase em invariante verificável.
+  //
+  // Lê o gateway REAL (o SYSTEM_PROMPT não é exportado), no mesmo padrão de `log.test.ts` × as
+  // migrations e da guarda do painel acima. Ancorado em `import.meta.dirname`.
+  it('tool que expõe valor de frete traz a advertência de não somar, na tool E no prompt', () => {
+    const fiscal = TOOL_DEFINITIONS.find((t) => t.name === 'documentos_fiscais');
+    expect(fiscal, 'documentos_fiscais sumiu do catálogo').toBeTruthy();
+
+    const expoeValor = /frete_rs/.test(fiscal!.description);
+    // Sanidade: se a tool deixar de expor valor, a guarda não tem o que proteger — mas ela não
+    // pode virar "true === true" em silêncio, então o próprio pressuposto é asseverado.
+    expect(expoeValor, 'documentos_fiscais deixou de expor frete_rs — revise esta guarda').toBe(true);
+
+    // (a) a própria descrição da tool proíbe a soma, nomeando as tools com que não se mistura
+    expect(fiscal!.description).toMatch(/DECOMPOSIÇÃO/i);
+    expect(fiscal!.description).toMatch(/gasto_por_periodo/);
+    expect(fiscal!.description).toMatch(/duas vezes|duplicaria/i);
+
+    // (b) o SYSTEM_PROMPT carrega a mesma proibição — é ele que o modelo lê a cada turno
+    const gateway = readFileSync(resolve(import.meta.dirname, './gateway.ts'), 'utf8');
+    // A crase de fechamento não pode estar escapada: o prompt cita tools em `crase escapada`
+    // (\`gasto_por_periodo\`), e um `[\s\S]*?` guloso pararia na primeira delas.
+    const prompt = /const SYSTEM_PROMPT = `[\s\S]*?[^\\]`;/.exec(gateway)?.[0];
+    expect(prompt, 'SYSTEM_PROMPT não encontrado — o gateway foi reestruturado?').toBeTruthy();
+    expect(prompt!.length).toBeGreaterThan(2000);   // sanidade do parser
+
+    expect(prompt).toMatch(/frete_rs/);
+    expect(prompt).toMatch(/DECOMPOSIÇÃO/i);
+    expect(prompt).toMatch(/nunca\D{0,40}some/i);
+    expect(prompt).toMatch(/gasto_por_periodo/);
+
+    // (c) a frase antiga "a ferramenta não devolve valor algum" NÃO pode sobreviver: ela era
+    // verdadeira na Onda 3 e virou mentira aqui — e uma mentira no prompt é pior que um silêncio,
+    // porque o modelo confia nela e deixa de aplicar a regra de não somar.
+    expect(prompt).not.toMatch(/não devolve valor algum/i);
+  });
+
+  // Pergunta que compara N entidades não pode ser registrada com UMA chamada filtrando uma só:
+  // era exatamente o `sk_company: 2` em "compare as três empresas".
+  it('pergunta comparativa entre empresas registra uma chamada por empresa', () => {
+    const comparativas = PERGUNTAS.filter((p) => /\bcompare\b/i.test(p.pergunta));
+    expect(comparativas.length, 'nenhuma pergunta comparativa na bateria').toBeGreaterThan(0);
+
+    for (const { pergunta, params } of comparativas) {
+      const cs = chamadas(params);
+      const empresas = new Set(cs.map((c) => c.sk_company).filter((v) => v !== undefined));
+      // Ou a chamada não filtra empresa (compara todas de uma vez), ou filtra mais de uma.
+      const ok = empresas.size === 0 || empresas.size > 1;
+      expect(ok, `${pergunta}: compara empresas mas filtra só ${[...empresas]}`).toBe(true);
+    }
   });
 
   it('toda pergunta aponta para uma tool que existe de fato', () => {
@@ -162,11 +302,14 @@ describe('bateria de regressão — perguntas sugeridas no painel', () => {
     const usadas = PERGUNTAS.map((p) => p.tool);
     expect(usadas).toContain('demonstrativo_despesas');
 
-    const porTipo = PERGUNTAS.some((p) => p.params.group_by === 'tipo');
+    // Varre TODAS as chamadas de cada pergunta — desde 2026-08-12 uma pergunta pode custar N.
+    const todasAsChamadas = PERGUNTAS.flatMap((p) => chamadas(p.params));
+
+    const porTipo = todasAsChamadas.some((c) => c.group_by === 'tipo');
     expect(porTipo, 'nenhuma pergunta exercita group_by="tipo"').toBe(true);
 
-    const compliance = PERGUNTAS.some(
-      (p) => p.params.has_bank_slip === true && p.params.has_invoice === false,
+    const compliance = todasAsChamadas.some(
+      (c) => c.has_bank_slip === true && c.has_invoice === false,
     );
     expect(compliance, 'nenhuma pergunta exercita boleto sem NF').toBe(true);
   });
@@ -202,6 +345,36 @@ describe('bateria de regressão — perguntas sugeridas no painel', () => {
     const semCobertura = doPainel.filter((q) => !cobertas.has(q));
     expect(semCobertura, 'perguntas no painel sem cobertura na bateria').toEqual([]);
     expect(PERGUNTAS).toHaveLength(doPainel.length);
+  });
+
+  // GUARDA DO FEW-SHOT (Onda 8). Os exemplos de raciocínio no SYSTEM_PROMPT citam tools pelo
+  // nome; um nome errado ou de tool removida ensina o modelo a chamar algo que não existe — e o
+  // sintoma seria uma tool_result de erro no meio do loop, gastando iteração, sem nada vermelho
+  // no CI. Também confere que o exemplo de vencidos ensina a MESMA tool que a bateria fixa,
+  // senão prompt e bateria divergem em silêncio.
+  it('os exemplos do prompt citam apenas tools existentes e coerentes com a bateria', () => {
+    const gateway = readFileSync(resolve(import.meta.dirname, './gateway.ts'), 'utf8');
+    const secao = /## Exemplos de raciocínio[\s\S]*?[^\\]`;/.exec(gateway)?.[0];
+    expect(secao, 'seção de exemplos não encontrada no SYSTEM_PROMPT').toBeTruthy();
+
+    // Tools citadas como \`nome\` dentro do template literal.
+    const citadas = [...secao!.matchAll(/\\`([a-z_]+)\\`/g)].map((m) => m[1]);
+    expect(citadas.length, 'sanidade: nenhum nome de tool casou no parser').toBeGreaterThan(3);
+
+    // Nem tudo entre crases é tool: os exemplos também citam COLUNAS do retorno. A lista é
+    // explícita (e não um filtro esperto) justamente para que um nome de tool digitado errado
+    // continue caindo na asserção em vez de ser absorvido como "deve ser um campo".
+    const CAMPOS = new Set(['frete_rs']);
+    const existentes = new Set(TOOL_DEFINITIONS.map((t) => t.name as string));
+    const inexistentes = [...new Set(citadas)]
+      .filter((n) => !CAMPOS.has(n))
+      .filter((n) => !existentes.has(n));
+    expect(inexistentes, 'exemplo do prompt cita tool que não existe').toEqual([]);
+
+    // Coerência com a bateria: o exemplo de vencidos tem de ensinar a mesma tool registrada.
+    const daBateria = PERGUNTAS.find((p) => /vencidas\?$/.test(p.pergunta))?.tool;
+    expect(daBateria).toBe('aging_vencidos');
+    expect(secao).toMatch(new RegExp(`maiores fornecedores[\\s\\S]{0,120}${daBateria}`));
   });
 
   it('cobre a busca em e-mails (capacidade nova da Onda 2)', () => {

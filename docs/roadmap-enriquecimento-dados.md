@@ -557,6 +557,64 @@ transportado. Este é o conteúdo mais rico do projeto — e o mais caro e arris
 identificação estiver estável e alguém estiver de fato consultando os documentos.
 **Esforço:** G.
 
+#### 🔴 POPULAÇÃO MEDIDA (2026-08-12) — o carro-chefe da onda não se sustenta
+
+Levantamento feito **lendo os 144 PDFs do bucket** (pdfplumber, sem LLM) e classificando pelo
+TEXTO, não por assunto/nome — a classificação por metadados, tentada antes, erra: 34 PDFs com
+assunto `CT-e - NNNN` registravam apenas a chave da NF-e citada dentro do DACTE.
+
+| Grupo | PDFs | Docs | O que é | Serve a quê |
+|---|---|---|---|---|
+| **A** DACTE | 83 | 123 | conhecimento de transporte, **layout varia por emissor** (Rodonaves × Oksman × STC) | **5.3** — exige LLM ou parser por emissor |
+| **B** fatura agregada | 10 | 55 | BRASPRESS/SSW — **tabela regular**: AWB, percurso ORIG/DEST, data, peso, NF, vlr. mercadoria, vlr. frete, destinatário, + a chave do CT-e na linha seguinte | **5.3 SEM LLM** |
+| **C** guia GNRE | 31 | 31 | guia de recolhimento citando a chave | nada |
+| **D** DANFE | **15** | **15** | única fonte de itens de produto (só **6** com tabela detectável) | 5.1/5.2 |
+| **F** outro | 5 | 8 | DACTE com texto corrompido pelo extrator | 5.3 parcial |
+
+**Três conclusões que mudam o desenho da onda:**
+
+1. **5.1/5.2 (itens de NF-e) tem população real de 15 documentos** — e o "o que compramos deste
+   fornecedor?" que justifica a onda não se sustenta neles. Das 128 NF-e registradas, a maioria
+   são chaves **citadas** em guias GNRE ou dentro do DACTE; o DANFE em si não está no acervo.
+   Criar tabela filha + extração por LLM + tool + testes para 15 documentos é desproporcional.
+2. **5.3 é maior e mais barato do que o plano supunha.** A hipótese registrada era que o grupo B
+   fosse "resumo de cobrança, não DACTE" — **ler o PDF a desmentiu**: ele traz exatamente os
+   campos do 5.3 em tabela estruturada, casável 1:1 com `fiscal_document.access_key`, extraível
+   por regex determinístico. O LLM ficaria só para o grupo A.
+3. 🔴 **O pré-requisito declarado da onda continua NÃO cumprido:** `documentos_fiscais` **nunca
+   foi chamada** — 8 interações em `analytics.ai_chat_log`, de 30/07 a 10/08. Detalhar conteúdo
+   que ninguém consulta é otimizar o degrau errado.
+
+**Achado colateral, já corrigido (não era escopo da onda):** a varredura expôs que **61 CT-e
+estavam sendo perdidos** por a barra faltar no separador de dígitos do `fiscal_key.py` — acervo
+de 232 → **293** documentos. Ver o bloco da Onda 3 no `CLAUDE.md`.
+
+**Recomendação:** executar **só o 5.3**, e começando pelo grupo B (determinístico, 55 CT-e, sem
+custo de LLM) — ou **adiar a onda inteira** até alguém consultar os documentos, registrando a
+queda da premissa, como a Onda 4 fez. Os itens 5.1/5.2 ficam **suspensos por falta de
+população**, a reabrir se o acervo de DANFE crescer.
+
+#### ✅ EXECUTADO em 2026-08-12 — item 5.3 pelo grupo B (migration 119)
+
+| Entrega | Onde |
+|---|---|
+| Parser determinístico, stdlib puro, fail-closed pelo SUB-TOTAL | `skills/pdf-contas-pagar/scripts/cte_content.py` |
+| 9 colunas de conteúdo + `content_source` + índice de rota | migration **119** |
+| `analytics.documentos_fiscais` devolve rota/peso/frete/NF + filtro `p_rota` | migration **119** |
+| Gancho no reader, **depois** do registro das chaves | `_register_cte_content` em `read_emails.py` |
+| Backfill de **57 CT-e** em 12 faturas | `scripts/backfill_cte_content.py` |
+| 21 testes (parser + gancho executado), validados contra 4 mutantes | `tests/test_cte_content.py` |
+| Guarda anti-dupla-contagem (tool × SYSTEM_PROMPT) | `lib/ai-chat/regression.test.ts` |
+
+**Verificação por oráculo diferencial:** o SUB-TOTAL impresso fechou em **10/10** faturas; e,
+cruzando pelo PDF de origem, **9 de 9** faturas com conta a pagar vinculada batem **exatamente**
+com o `amount` da conta — o que prova, no dado, que o frete é decomposição e não despesa nova.
+
+**O que NÃO foi feito, e por quê:** 5.1/5.2 (itens de NF-e) seguem suspensos — 15 DANFEs; e o
+5.3-b (DACTE individual por LLM, 83 PDFs) não foi implementado, porque o layout varia por
+transportadora e o pré-requisito de uso da Onda 3 continua não cumprido. Executar o barato e
+verificável primeiro deixa a decisão sobre o LLM para quando houver demanda real.
+
 ---
 
 ### ONDA 6 — Campos derivados na tabela fato

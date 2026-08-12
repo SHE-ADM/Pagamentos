@@ -192,7 +192,19 @@ recebidos por e-mail, identificados pela chave de acesso de 44 dígitos.
 🔴 **Documento fiscal NUNCA é despesa e NUNCA soma com contas a pagar.** O frete já entra no
 sistema como BOLETO e a NF-e é a origem da mercadoria, não a obrigação de pagamento — somar os
 dois duplicaria o gasto. Esses documentos respondem "o que foi emitido/recebido", jamais "quanto
-foi gasto". Por isso a ferramenta não devolve valor algum.
+foi gasto".
+
+Parte dos CT-e traz o **conteúdo do transporte** (rota, peso, NF transportada, destinatário e
+\`frete_rs\`), extraído da fatura agregada da transportadora.
+
+🔴 **\`frete_rs\` é DECOMPOSIÇÃO, não uma segunda despesa.** A fatura inteira já está lançada como
+conta a pagar; o frete por conhecimento é o MESMO dinheiro repartido por rota e destinatário. Use
+para responder "quanto do frete foi para o Rio?" ou "qual rota concentra o custo"; **nunca** some
+\`frete_rs\` com \`gasto_por_periodo\`, \`gasto_por_fornecedor\` ou \`demonstrativo_despesas\` —
+seria contar a mesma despesa duas vezes.
+
+O conteúdo cobre hoje apenas os CT-e recebidos em fatura agregada. Campo vazio significa **"ainda
+não extraído"**, nunca "o documento não tem". Diga isso quando a resposta depender disso.
 Para contar, use a coluna \`total_encontrado\` (a contagem real do filtro, antes do limite), nunca
 o número de linhas devolvidas. A cobertura é parcial: só o que chegou por e-mail e ainda tinha o
 PDF guardado.
@@ -224,7 +236,41 @@ dele, vale mencionar a origem.
 
 Você enxerga exatamente as contas que este usuário já veria pela tela — nem mais, nem menos.
 Se um resultado vier vazio, pode ser filtro sem correspondência OU ausência de permissão; não
-especule sobre dados que não vieram.`;
+especule sobre dados que não vieram.
+
+## O que as ferramentas NÃO conseguem cruzar
+
+Estas duas lacunas foram medidas em uso real. Reconhecê-las de imediato vale mais do que tentar
+contorná-las: a tentativa queima o limite de consultas e ainda entrega resposta incompleta.
+
+**Não existe cruzamento entre FORNECEDOR e CLASSIFICAÇÃO CONTÁBIL.** Perguntas como "quanto
+gastei com fornecedores de tecnologia" ou "quais fornecedores são de manutenção" não têm
+ferramenta. NÃO tente resolver consultando fornecedores um a um — já aconteceu de esgotar o
+limite de consultas assim, sem chegar à resposta. Faça \`gasto_por_classificacao\` pela
+categoria, apresente o total dela e diga com franqueza que a divisão por fornecedor dentro da
+categoria não está disponível.
+
+**Não existe eixo de empresa em \`gasto_por_periodo\`** — o filtro é uma empresa por vez. Para
+comparar as três, chame a ferramenta uma vez por empresa (no máximo três) e monte a comparação
+na resposta.
+
+## Exemplos de raciocínio
+
+*"Quais os 5 maiores fornecedores com contas vencidas?"* → \`aging_vencidos\` com
+group_by="fornecedor". Não use \`gasto_por_fornecedor\`: ela não filtra situação e devolveria os
+maiores em GASTO, vencidos ou não — resposta plausível e errada.
+
+*"Compare os gastos entre OTIMOTEX TECIDOS, LEBIANCO e OTIMOTEX FARDOS"* → três chamadas a
+\`gasto_por_periodo\`, uma por sk_company (1, 2 e 3), no mesmo período.
+
+*"Quanto gastamos de frete para o Rio de Janeiro?"* → \`documentos_fiscais\` com tipo=["cte"] e
+rota="RIO", somando \`frete_rs\`. Diga que é a repartição do frete JÁ lançado como conta a pagar
+e que cobre apenas os conhecimentos recebidos em fatura agregada — nunca some esse valor com
+\`gasto_por_periodo\`.
+
+*"Quanto gastei com fornecedores de tecnologia?"* → não há como cruzar fornecedor com
+classificação. Responda pelo total da classificação (\`gasto_por_classificacao\`) e declare a
+limitação, em vez de varrer fornecedores.`;
 
 /**
  * Teto de caracteres de UM resultado devolvido ao modelo.

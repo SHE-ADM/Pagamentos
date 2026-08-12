@@ -89,6 +89,11 @@ _CANONICAL_BARCODE_WARNED = False
 _FISCAL_KEY = None
 _FISCAL_KEY_WARNED = False
 
+# Idem para o conteudo do CT-e (Onda 5). Mesmo mecanismo, mesmo motivo: `cte_content` tambem e
+# arquivo NOVO, e sem o aviso o deploy parcial deixaria de gravar peso/rota/frete em silencio.
+_CTE_CONTENT = None
+_CTE_CONTENT_WARNED = False
+
 
 def _febraban():
     """Modulo `febraban` (codigo de barras / linha digitavel) — fonte UNICA das regras.
@@ -129,6 +134,29 @@ def _fiscal_key():
         log.warning("  [FISCAL] modulo 'fiscal_key' indisponivel — documento fiscal NAO sera "
                     "registrado. Deploy parcial (falta fiscal_key.py)?")
     return _FISCAL_KEY or None
+
+
+def _cte_content():
+    """Modulo `cte_content` (conteudo do CT-e, Onda 5), ou None AVISANDO UMA VEZ.
+
+    Sem fallback local, pelo mesmo motivo do `_fiscal_key`: o parser so e confiavel porque
+    confere a soma extraida contra o SUB-TOTAL impresso na fatura. Um fallback "casa a linha e
+    grava" perderia justamente o oraculo e produziria rateio incompleto — pior que nao gravar.
+    """
+    global _CTE_CONTENT, _CTE_CONTENT_WARNED  # noqa: PLW0603 — cache/aviso por processo
+    if _CTE_CONTENT is None:
+        try:
+            if str(EXTRACT_SCRIPT.parent) not in sys.path:
+                sys.path.insert(0, str(EXTRACT_SCRIPT.parent))
+            import cte_content
+            _CTE_CONTENT = cte_content
+        except Exception:
+            _CTE_CONTENT = False
+    if not _CTE_CONTENT and not _CTE_CONTENT_WARNED:
+        _CTE_CONTENT_WARNED = True
+        log.warning("  [FISCAL] modulo 'cte_content' indisponivel — peso/rota/frete do CT-e NAO "
+                    "serao gravados. Deploy parcial (falta cte_content.py)?")
+    return _CTE_CONTENT or None
 
 
 def _febraban_fn(name: str):
@@ -730,6 +758,54 @@ class SupabaseControl:
             return False
         except Exception as e:
             log.warning(f"Falha ao registrar documento fiscal {doc.get('access_key')}: {e}")
+            return False
+
+    def update_fiscal_content(self, item: dict) -> bool:
+        """Grava o conteudo do CT-e (peso, rota, NF, frete) na linha ja registrada — Onda 5.
+
+        ATUALIZA, nunca insere: o documento so ganha conteudo depois de existir, e quem o cria
+        e o `register_fiscal_document`. Chave que ainda nao esta na tabela simplesmente nao
+        recebe nada — inserir aqui criaria um documento sem passar pela validacao de 5 camadas
+        da chave de acesso.
+
+        Nao sobrescreve conteudo de OUTRA fonte (`content_source=neq.dacte_llm` no filtro), para
+        o dia em que o DACTE for lido por LLM: um dado mais rico nao pode ser rebaixado por uma
+        passada deterministica que rodou depois.
+
+        NAO-FATAL, como todo o gancho fiscal: engole a propria falha e devolve False.
+        """
+        if not self._available or not item.get("access_key"):
+            return False
+        payload = {
+            "awb":                  item.get("awb"),
+            "origin":               item.get("origin"),
+            "destination":          item.get("destination"),
+            "service_date":         item["service_date"].isoformat() if item.get("service_date") else None,
+            # Decimal nao e serializavel em JSON — str preserva a precisao (float nao).
+            "cargo_weight_kg":      str(item["cargo_weight_kg"]) if item.get("cargo_weight_kg") is not None else None,
+            "cargo_amount":         str(item["cargo_amount"]) if item.get("cargo_amount") is not None else None,
+            "freight_amount":       str(item["freight_amount"]) if item.get("freight_amount") is not None else None,
+            "linked_invoice":       item.get("linked_invoice"),
+            "receiver_name":        item.get("receiver_name"),
+            "content_source":       "braspress_invoice",
+            "content_extracted_at": "now()",
+        }
+        url = (f"{self.base}/rest/v1/fiscal_document"
+               f"?access_key=eq.{item['access_key']}&content_source=not.eq.dacte_llm")
+        try:
+            req = urllib.request.Request(
+                url, data=json.dumps(payload).encode(),
+                headers={**self.headers, "Prefer": "return=minimal"}, method="PATCH")
+            with urllib.request.urlopen(req, timeout=10) as r:
+                r.read()
+            return True
+        except urllib.error.HTTPError as e:
+            body = e.read().decode(errors="replace")
+            log.warning(f"    [FISCAL] falha ao gravar conteudo de {item['access_key'][-8:]}: "
+                        f"{e.code} {body[:150]}")
+            return False
+        except Exception as e:  # noqa: BLE001 — best-effort por design
+            log.warning(f"    [FISCAL] falha ao gravar conteudo de {item['access_key'][-8:]}: {e}")
             return False
 
     def find_financial_duplicate(self, payload: dict) -> dict | None:
@@ -2963,7 +3039,41 @@ def _register_fiscal_documents(ctrl, pdf_text: str, storage_key: str,
                          f"(serie {doc['series']}) do CNPJ {doc['emitter_cnpj']} registrado")
     except Exception as e:  # noqa: BLE001 — best-effort por design
         log.warning(f"    [FISCAL] falha ao registrar documento de {storage_key}: {e}")
+
+    # Onda 5 — conteudo do CT-e (peso, rota, NF vinculada, frete) da fatura agregada.
+    # DEPOIS do laco acima, e nao dentro dele: o conteudo e um UPDATE na linha, entao ela
+    # precisa existir. Rodar antes gravaria em nada, sem erro — e o log diria "registrado".
+    _register_cte_content(ctrl, pdf_text, storage_key)
     return gravados
+
+
+def _register_cte_content(ctrl, pdf_text: str, storage_key: str) -> int:
+    """Grava peso/rota/NF/frete dos CT-e da fatura agregada (Onda 5, item 5.3).
+
+    Devolve quantos conhecimentos foram atualizados — so para log/teste; nenhum caller decide
+    nada com isso. Igual ao resto do gancho fiscal, e NAO-FATAL e sem efeito colateral: nao
+    altera o status do e-mail, nao cria nem muda conta a pagar.
+
+    O parser ja e fail-closed (fatura cujo SUB-TOTAL nao fecha devolve lista vazia), entao aqui
+    nao ha decisao de qualidade a tomar — se veio lista, ela fecha.
+    """
+    if not (pdf_text and storage_key):
+        return 0
+    mod = _cte_content()
+    if mod is None:
+        return 0
+    try:
+        itens = mod.parse_braspress_invoice(pdf_text)
+        if not itens:
+            return 0
+        atualizados = sum(1 for item in itens if ctrl.update_fiscal_content(item))
+        if atualizados:
+            log.info(f"    [FISCAL] conteudo de {atualizados} CT-e gravado "
+                     f"(peso/rota/frete) a partir da fatura")
+        return atualizados
+    except Exception as e:  # noqa: BLE001 — best-effort por design
+        log.warning(f"    [FISCAL] falha ao extrair conteudo de CT-e de {storage_key}: {e}")
+        return 0
 
 
 def resolve_sk_company(subject=None, body_text=None, sender_email=None, description=None,

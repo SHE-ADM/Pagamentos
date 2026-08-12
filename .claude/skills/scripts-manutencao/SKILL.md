@@ -36,6 +36,7 @@ mesma coisa que a execução, está avisado abaixo.
 | Corpo gravado é só o aviso "conteúdo em HTML" | `backfill_placeholder_bodies.py` |
 | Contato do fornecedor (telefone/WhatsApp/PIX) vazio | `backfill_supplier_contacts.py` |
 | Chave fiscal dos PDFs que já estão no bucket | `backfill_fiscal_documents.py` |
+| CT-e sem rota/peso/frete (conteúdo do transporte, Onda 5) | `backfill_cte_content.py` |
 | Bucket acumulando objeto que nenhuma linha referencia | `purge_orphan_attachments.py` |
 
 **O detalhe de cada um vive na própria docstring do script** (`py -3 scripts/<nome>.py --help`, ou
@@ -43,6 +44,11 @@ abra o arquivo) — elas são longas e mantidas junto do código, então não di
 é só o que **não** cabe numa docstring: ordem entre scripts e riscos de operação.
 
 ## Ordem importa
+
+**Chave fiscal antes do conteúdo do CT-e.** `backfill_cte_content.py` só faz **UPDATE**: ele
+preenche rota/peso/frete em linha que já existe em `fiscal_document`. Rodá-lo antes do
+`backfill_fiscal_documents.py` não dá erro — simplesmente não encontra o que atualizar e reporta
+`chave sem registro`, o que se lê como "não havia dado" em vez de "faltou o passo anterior".
 
 **Link antes de corpo.** `reprocess_link_emails.py` e `reprocess_body_emails.py` varrem a mesma
 fila (`status='falha'`) e são complementares: rode o de **link** primeiro (o boleto real, com linha
