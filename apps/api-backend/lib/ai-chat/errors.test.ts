@@ -113,6 +113,40 @@ describe('integração com failFromError', () => {
     });
   });
 
+  /**
+   * 🔴 A guarda que faltava (achado de 2026-08-12).
+   *
+   * Este describe dizia que "a tradução só tem valor se casar com o contrato do failFromError" e
+   * pareava APENAS o 429. Os outros três ramos são 503, e a regra padrão do envelope ("ecoa só
+   * abaixo de 500") descartava o texto deles: o usuário lia "Erro interno ao processar a
+   * solicitação" exatamente quando a causa era temporária e havia o que fazer. Um teste que
+   * promete uma garantia precisa observá-la em todos os ramos, não num representante.
+   */
+  it.each([
+    ['timeout de conexão', new Anthropic.APIConnectionTimeoutError({ message: 'timeout' }), 503],
+    ['falha de rede', new Anthropic.APIConnectionError({ message: 'network' }), 503],
+    ['5xx do provedor', httpError(529, 'overloaded'), 503],
+  ])('%s: a mensagem curada CHEGA ao cliente (não vira genérica)', async (_rotulo, erro, status) => {
+    const out = translateAnthropicError(erro);
+    const res = failFromError(out, 'ai-chat');
+
+    expect(res.status).toBe(status);
+    const body = (await res.json()) as { error: string };
+    expect(body.error).toBe((out as AiChatError).message);
+    expect(body.error).not.toBe('Erro interno ao processar a solicitação');
+  });
+
+  it('o eco em 5xx é OPT-IN: ApiServiceError sem a marca continua genérico', async () => {
+    // Sem esta contraprova, `clientSafe` poderia ter sido implementado como "ecoa sempre" e o
+    // invariante "5xx não vaza detalhe interno" estaria desligado para o projeto inteiro.
+    const res = failFromError(new ApiServiceError('detalhe interno com nome de tabela', 503), 'x');
+    expect(res.status).toBe(503);
+    await expect(res.json()).resolves.toEqual({
+      success: false,
+      error: 'Erro interno ao processar a solicitação',
+    });
+  });
+
   it('erro NÃO traduzido vira 500 genérico — a mensagem do provider não vaza', async () => {
     const out = translateAnthropicError(httpError(401, 'invalid x-api-key sk-ant-abc123'));
     const res = failFromError(out, 'ai-chat');

@@ -47,7 +47,12 @@ export function fail(error: string, status = 400): Response {
 export function failFromError(e: unknown, tag = 'api'): Response {
   if (e instanceof ApiServiceError) {
     // Mensagem deliberadamente escrita para o usuário: pode ir ao cliente.
-    if (e.status < 500) return fail(e.message, e.status);
+    //
+    // `clientSafe` estende esse eco a um 5xx marcado explicitamente (ver lib/api-error.ts). Sem
+    // ele, as 503 curadas do chat de IA — "o assistente está indisponível", timeout, falha de rede
+    // — perdiam o texto e chegavam como "Erro interno", indistinguíveis de um bug nosso. O 5xx
+    // NÃO-marcado continua virando mensagem genérica, com o detalhe só no log: a marca é opt-in.
+    if (e.status < 500 || e.clientSafe) return fail(e.message, e.status);
     console.error(`[${tag}] ${e.status}:`, e.message);
     return fail('Erro interno ao processar a solicitação', e.status);
   }

@@ -776,13 +776,51 @@ contra o PostgREST real. **Sem deploy em produção** — nada em `skills/` foi 
 
 ### ONDA 8 — Hardening do chat (Fase 4 do roadmap original)
 
-| Item | O quê |
-|---|---|
-| 8.1 | ~~Rate limit~~ — **promovido para a Onda 1 (item 1.5)** pela auditoria de 2026-07-31 |
-| 8.2 | Tuning de few-shot a partir do `ai_chat_log` acumulado |
-| 8.3 | **Gate de uso da IA por usuário** — **decisão do usuário: é o ÚLTIMO item de todos** |
+| Item | O quê | Migration |
+|---|---|---|
+| 8.1 | ~~Rate limit~~ — **promovido para a Onda 1 (item 1.5)** pela auditoria de 2026-07-31 | — |
+| 8.2 | ✅ Tuning de few-shot a partir do `ai_chat_log` acumulado (2026-08-12) | — |
+| 8.3 | ✅ **Gate de uso da IA por GRUPO** — acesso opt-in + cota própria | **120** |
 
-**Esforço:** P–M.
+**Esforço:** P–M. **Status: ✅ CONCLUÍDA (2026-08-12).**
+
+#### O que a implementação decidiu (e o que ficou rejeitado)
+
+| # | Decisão | Alternativa rejeitada, e por quê |
+|---|---|---|
+| D1 | Acesso **+ cota** por grupo (`NULL` = teto do `.env`) | **Teto de tokens**: a soma não é index-only, pediria política de falha própria e, com 8 interações de histórico, não há como calibrar número. Gatilho para reabrir: um usuário passar de ~1M tokens/dia, **medido** |
+| D2 | Por **GRUPO** (`user_group`), espelhando `sees_only_own_accounts` | **Override por usuário**: 2ª fonte de verdade + regra de precedência, sem caso real. Se surgir, a resolução entra num lugar só — o `gate.ts` |
+| D3 | **Deny por default**, semente libera 1, 2 e 7 | **Allow por default**: grupo novo nasceria com acesso a recurso pago sem ninguém decidir |
+| D4 | Gate fail-**closed**, cota fail-**open** | Unificar: fail-open no gate é bypass de autorização; fail-closed na cota é queda total por soluço de contador |
+
+> 🔴 **Comercial (6) ficou fora de propósito, e não é só permissão:** com `sees_only_own_accounts`,
+> o chat responderia sobre ~5 contas enquanto um colega vê 830 — mesma pergunta, totais diferentes,
+> e o modelo não tem como dizer por quê. Se entrar, entra **junto** com uma linha no SYSTEM_PROMPT
+> declarando o recorte.
+
+#### Verificação
+
+- **6 sondas** no `DO $$` da 120, todas verdes na aplicação. A **P1** (ninguém que já usou perde
+  acesso) e a **P4** (o papel `authenticated` enxerga a coluna mas não a escreve) foram validadas
+  por **mutação simulada em transação desfeita** — P1 acusou `1` usuário sem acesso com a semente
+  errada; P4 acusou escrita bem-sucedida com `GRANT`+`POLICY` concedidos. Zero resíduo no banco.
+- **8 mutantes** de código, isolados e em série: renomear a coluna só na migration (guarda
+  cross-layer vermelha, vitest verde), gate fail-open, rota ignorando o retorno do gate, 429 citando
+  o `.env`, `!== false` no Layout, `clientSafe` desligado, gate lendo por truthiness.
+- **Prova do recorte de RLS** (dívida da onda, adiada em 2026-07-31): bruna@lebianco.com.br, grupo
+  Comercial — `vw_payables` **830 → 5**, igual ao oráculo `created_by`; `resumo_situacao()`
+  **R$ 12.581.149,54 → R$ 10.004,70**; `fiscal_document` 293 → 0.
+- Gates: **Node 1.461** · **Python 1.307** (+24 guardas da onda) · lint, typecheck e prune limpos.
+- **Sem deploy em produção** — nada em `skills/` foi tocado.
+
+#### Achado colateral corrigido junto
+
+`failFromError` só ecoava `ApiServiceError` com `status < 500`, então as **três mensagens 503** de
+`translateAnthropicError` (timeout, falha de rede, 5xx do provedor) mudavam o status e **perdiam o
+texto**: o usuário lia "Erro interno ao processar a solicitação" justamente quando a causa era
+temporária e havia o que fazer. O teste de integração que dizia parear tradução e envelope pareava
+**só o 429**. Corrigido com `ApiServiceError.clientSafe` (opt-in, default `false` — os 8 CRUDs
+seguem intocados) e uma guarda que pareia **cada** ramo, validada por mutante.
 
 ---
 
@@ -1431,7 +1469,7 @@ Revisão das adições feitas depois da 2ª passada (Ondas fiscais, varredura, f
 | 5 | uma NF-e com N itens produz N linhas, e o total dos itens **não** aparece em nenhum relatório financeiro |
 | 6 | `competence_month` preenchida, pipeline gravando normalmente, suíte Python verde |
 | 7 | ✅ uma edição manual gera linha em `audit_log`, com o autor certo — e a curadoria de /consulta continua funcionando (regressão classe 074) |
-| 8 | few-shot revisado e gate de uso por usuário ativo |
+| 8 | ✅ few-shot revisado e **gate de acesso por grupo ativo** — grupo não liberado recebe 403 curado, a tentativa aparece no `ai_chat_log` e a cota do grupo chega ao rate limit |
 | 9 | — (condicional) |
 
 ---

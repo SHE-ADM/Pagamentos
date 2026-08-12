@@ -1,4 +1,4 @@
-import { test } from '@playwright/test';
+import { test, expect } from '@playwright/test';
 import { expectNoA11yViolations } from './axe';
 
 // Rotas internas exigem sessão (Supabase Auth). Sem auto-cadastro: o admin cria um
@@ -49,7 +49,20 @@ test.describe('Acessibilidade WCAG AA — páginas protegidas (navegador real)',
   test('Assistente de IA — painel aberto', async ({ page }) => {
     await page.goto('/consulta');
     await page.waitForLoadState('networkidle');
-    await page.getByRole('button', { name: /abrir assistente/i }).click();
+
+    // 🔴 PRÉ-CONDIÇÃO DE PERMISSÃO, não de acessibilidade (Onda 8, migration 120): desde o gate
+    // por grupo, o `Layout` só monta o botão flutuante quando `user_group.ai_chat_enabled` é true.
+    // Sem esta checagem o `.click()` abaixo falharia por TIMEOUT — um erro que não menciona
+    // permissão em lugar nenhum e manda quem investiga procurar no seletor ou no lazy chunk.
+    // Ver a receita do usuário do CI em e2e/README.md.
+    const botao = page.getByRole('button', { name: /abrir assistente/i });
+    await expect(
+      botao,
+      'o botão do assistente não foi montado — o grupo do usuário do CI provavelmente está sem '
+        + 'ai_chat_enabled (migration 120); ver e2e/README.md',
+    ).toBeVisible();
+
+    await botao.click();
     await page.getByLabel('Sua pergunta').waitFor();
     await expectNoA11yViolations(page);
   });

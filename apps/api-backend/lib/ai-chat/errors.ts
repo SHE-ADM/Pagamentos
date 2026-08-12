@@ -14,15 +14,29 @@
 //   Vira 500 (com log), que é a verdade: falha do servidor.
 // - 400 → bug nosso de payload. Idem.
 // Traduzir demais é tão ruim quanto de menos: transforma erro nosso em "culpa" do usuário.
+//
+// ⚠️ A regra acima é sobre erros que CHEGAM DO PROVEDOR por `translateAnthropicError`. Ela não
+// alcança o 403 que o `gate.ts` mina por conta própria: aquele é autorização NOSSA, com mensagem
+// escrita para o usuário do financeiro ler ("o assistente não está liberado para o seu grupo") e
+// uma ação real associada — falar com o administrador. Ele é ecoado, e deve continuar sendo.
+// Não "uniformizar" os dois: 403 do provedor e 403 nosso são coisas diferentes com o mesmo número.
 
 import Anthropic from '@anthropic-ai/sdk';
 import { ApiServiceError } from '../api-error';
 import type { LoggedToolCall } from './log';
 
-/** Erro do chat com mensagem curada — `failFromError` ecoa (status < 500). */
+/**
+ * Erro do chat com mensagem curada — `failFromError` ecoa a mensagem.
+ *
+ * 🔴 `clientSafe: true` NÃO é decorativo. Três das quatro mensagens que `translateAnthropicError`
+ * produz são 503 (timeout, falha de rede, 5xx do provedor), e a regra padrão do `failFromError`
+ * ("ecoa só abaixo de 500") as descartava: o usuário lia "Erro interno ao processar a solicitação"
+ * justamente quando a causa era temporária e havia algo a fazer — tentar de novo. Toda mensagem
+ * desta classe é escrita para o usuário do financeiro ler; é isso que a marca declara.
+ */
 export class AiChatError extends ApiServiceError {
   constructor(message: string, status: number) {
-    super(message, status, 'AiChatError');
+    super(message, status, 'AiChatError', true);
   }
 }
 

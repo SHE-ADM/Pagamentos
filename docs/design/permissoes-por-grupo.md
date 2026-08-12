@@ -5,6 +5,16 @@
 > FK real + trigger `handle_new_user` + backfill). Pendente: `permission`/`group_permission`/
 > `group_*` + enforcement (Next API + RLS de escopo + menu). Este documento é o blueprint das
 > *referências* para as próximas migrations + enforcement.
+>
+> 🔴 **ATENÇÃO — já existem DUAS flags de permissão FORA deste modelo, direto em `user_group`:**
+> `sees_only_own_accounts` (migration 076 — visibilidade de linha) e `ai_chat_enabled` +
+> `ai_chat_limit_per_hour`/`_per_day` (migration **120** — acesso e cota do chat de IA). Não são
+> dívida por descuido: uma coluna booleana é proporcional para **uma** feature, e criar
+> `permission`/`group_permission` inteiro para ligar um botão seria construir a estrutura antes de
+> ter o problema. **Mas quem for implementar o RBAC precisa saber que elas existem**, senão encontra
+> um mecanismo concorrente e não sabe qual vence. **Regra de transição:** quando a **segunda**
+> feature precisar de flag própria, as duas migram para `group_permission` (`resource='ai_chat'`,
+> `action='view'`), e as colunas viram compatibilidade — nunca duas fontes de verdade convivendo.
 
 ## Contexto e decisões
 

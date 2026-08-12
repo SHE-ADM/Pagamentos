@@ -52,6 +52,36 @@ const PER_HOUR = readLimit(process.env.AI_CHAT_RATE_LIMIT_PER_HOUR, 30);
 /** Teto diário — sem ele, o limite horário ainda permitiria 24× o volume num único dia. */
 const PER_DAY = readLimit(process.env.AI_CHAT_RATE_LIMIT_PER_DAY, 150);
 
+/**
+ * Escolhe entre a cota do GRUPO (migration 120) e o teto do ambiente.
+ *
+ * NÃO é o `readLimit` reaproveitado, e a duplicação aparente é deliberada: aquele valida uma
+ * `string` vinda de env, este valida um `number` vindo do banco. Fundir os dois deixaria uma
+ * edição futura enfraquecer as duas validações de uma vez — e são as duas metades da MESMA
+ * proteção contra o limite `0`, que faz `count >= 0` ser sempre verdadeiro e devolve 429 a
+ * qualquer usuário do grupo.
+ *
+ * O banco já barra `0` e negativo pelo CHECK `chk_user_group_ai_chat_limits`; esta função é a
+ * segunda barreira, para o caso de a cota chegar por outro caminho (correção manual, cópia de
+ * base, coluna alterada). Valor inutilizável cai no default do ambiente e é registrado.
+ */
+function pickLimit(override: number | null | undefined, envDefault: number): number {
+  if (override === null || override === undefined) return envDefault;
+  if (!Number.isInteger(override) || override <= 0) {
+    console.error(
+      `[ai-chat] rate limit: cota de grupo inválida ${JSON.stringify(override)}; usando ${envDefault}`,
+    );
+    return envDefault;
+  }
+  return override;
+}
+
+/** Cotas próprias do grupo, quando houver. Ver `lib/ai-chat/gate.ts`. */
+interface LimitOverrides {
+  perHour?: number | null;
+  perDay?: number | null;
+}
+
 const HOUR_MS = 60 * 60 * 1000;
 const DAY_MS = 24 * HOUR_MS;
 
@@ -77,26 +107,50 @@ async function countSince(userId: string, since: Date): Promise<number | null> {
  * FAIL-OPEN DELIBERADO: se a contagem falhar (banco indisponível, permissão), a função **deixa
  * passar** e registra no console. É a mesma escolha de `logInteraction`, e pelo mesmo motivo —
  * derrubar o chat inteiro por causa do contador transformaria um problema de infraestrutura num
- * incidente de produto. O risco aceito é limitado: são ~12 usuários internos, todos autenticados e
+ * incidente de produto. O risco aceito é limitado: são 13 usuários internos, todos autenticados e
  * identificados na trilha de auditoria, então um eventual excesso é visível e atribuível.
  * (Se o perfil de uso mudar — usuários externos, volume alto — reavaliar para fail-closed.)
  */
-export async function assertWithinRateLimit(userId: string): Promise<void> {
+export async function assertWithinRateLimit(
+  userId: string,
+  overrides?: LimitOverrides,
+): Promise<void> {
+  // 🔴 A mensagem tem de citar o limite EFETIVO, não a constante de módulo. Com uma cota de grupo
+  // de 5 e o ambiente em 30, dizer "limite de 30" ao barrar na 5ª pergunta contradiz o próprio
+  // comportamento e manda o suporte procurar um problema que não existe.
+  const perHour = pickLimit(overrides?.perHour, PER_HOUR);
+  const perDay = pickLimit(overrides?.perDay, PER_DAY);
+
+  // 🔴 O CHECK da migration 120 (`per_day >= per_hour`) só compara o que está NO BANCO — ele não
+  // enxerga o teto do ambiente. Um grupo com `per_hour = 200` e `per_day` NULL passa pelo CHECK e
+  // produz 200/hora contra 150/dia do `.env`: a cota horária vira inalcançável, e o operador acha
+  // que configurou algo que não vale. Esta é a única camada que conhece os DOIS valores efetivos,
+  // então é aqui que a incoerência pode ser detectada.
+  //
+  // AVISO, não erro: o comportamento continua seguro (o menor dos dois manda) — o que está errado
+  // é a configuração, e derrubar o chat por causa dela seria pior que registrá-la.
+  if (perHour > perDay) {
+    console.error(
+      `[ai-chat] rate limit: cota horária (${perHour}) acima da diária (${perDay}) — `
+        + 'a horária nunca será atingida; revise a cota do grupo (user_group).',
+    );
+  }
+
   const now = Date.now();
   const [lastHour, lastDay] = await Promise.all([
     countSince(userId, new Date(now - HOUR_MS)),
     countSince(userId, new Date(now - DAY_MS)),
   ]);
 
-  if (lastHour !== null && lastHour >= PER_HOUR) {
+  if (lastHour !== null && lastHour >= perHour) {
     throw new AiChatError(
-      `Você atingiu o limite de ${PER_HOUR} perguntas por hora. Tente novamente mais tarde.`,
+      `Você atingiu o limite de ${perHour} perguntas por hora. Tente novamente mais tarde.`,
       429,
     );
   }
-  if (lastDay !== null && lastDay >= PER_DAY) {
+  if (lastDay !== null && lastDay >= perDay) {
     throw new AiChatError(
-      `Você atingiu o limite de ${PER_DAY} perguntas por dia. Tente novamente amanhã.`,
+      `Você atingiu o limite de ${perDay} perguntas por dia. Tente novamente amanhã.`,
       429,
     );
   }

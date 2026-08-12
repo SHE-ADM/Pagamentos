@@ -146,3 +146,95 @@ describe('assertWithinRateLimit', () => {
     await expect(assertWithinRateLimit('user-1')).rejects.toMatchObject({ status: 429 });
   });
 });
+
+// ---------------------------------------------------------------------------
+// Cota POR GRUPO (migration 120, Onda 8)
+// ---------------------------------------------------------------------------
+// Os casos acima continuam chamando `assertWithinRateLimit` com UM argumento — e é assim que eles
+// provam o fallback para o ambiente. Os daqui exercitam o segundo argumento, que vem do gate.
+describe('assertWithinRateLimit — cota do grupo', () => {
+  it('a cota do grupo vence o teto do ambiente', async () => {
+    process.env.AI_CHAT_RATE_LIMIT_PER_HOUR = '30';
+    // 3 perguntas na última hora: passaria folgado no teto 30 do ambiente, barra na cota 3.
+    const m = mockAdmin([{ count: 3, error: null }, { count: 3, error: null }]);
+    const { assertWithinRateLimit } = await load(m);
+
+    await expect(assertWithinRateLimit('user-1', { perHour: 3 })).rejects.toMatchObject({
+      status: 429,
+    });
+  });
+
+  it('🔴 a mensagem cita o limite EFETIVO, não a constante do ambiente', async () => {
+    process.env.AI_CHAT_RATE_LIMIT_PER_HOUR = '30';
+    const m = mockAdmin([{ count: 5, error: null }, { count: 5, error: null }]);
+    const { assertWithinRateLimit } = await load(m);
+
+    // Dizer "limite de 30" ao barrar na 5ª pergunta contradiz o próprio comportamento e manda o
+    // suporte procurar um problema que não existe.
+    await expect(assertWithinRateLimit('user-1', { perHour: 5 })).rejects.toMatchObject({
+      message: expect.stringContaining('limite de 5 perguntas por hora'),
+    });
+  });
+
+  it('cota diária do grupo também vale, e a mensagem a reflete', async () => {
+    process.env.AI_CHAT_RATE_LIMIT_PER_DAY = '150';
+    const m = mockAdmin([{ count: 1, error: null }, { count: 20, error: null }]);
+    const { assertWithinRateLimit } = await load(m);
+
+    await expect(assertWithinRateLimit('user-1', { perDay: 20 })).rejects.toMatchObject({
+      message: expect.stringContaining('limite de 20 perguntas por dia'),
+    });
+  });
+
+  it('cota nula (grupo sem override) cai no teto do ambiente', async () => {
+    process.env.AI_CHAT_RATE_LIMIT_PER_HOUR = '30';
+    const m = mockAdmin([{ count: 29, error: null }, { count: 29, error: null }]);
+    const { assertWithinRateLimit } = await load(m);
+
+    await expect(
+      assertWithinRateLimit('user-1', { perHour: null, perDay: null }),
+    ).resolves.toBeUndefined();
+  });
+
+  /**
+   * O CHECK da 120 (`per_day >= per_hour`) só compara o que está NO BANCO. Com `per_day` nulo, o
+   * teto diário vem do ambiente — e a incoerência atravessa a fronteira que o SQL não enxerga.
+   * Esta é a única camada que conhece os dois valores efetivos.
+   */
+  it('AVISA quando a cota horária do grupo passa do teto diário do ambiente', async () => {
+    const erro = vi.spyOn(console, 'error').mockImplementation(() => {});
+    process.env.AI_CHAT_RATE_LIMIT_PER_DAY = '150';
+    const m = mockAdmin([{ count: 1, error: null }, { count: 1, error: null }]);
+    const { assertWithinRateLimit } = await load(m);
+
+    // 200/hora contra 150/dia: a horária é inalcançável, e nada no banco poderia ter barrado isso.
+    await expect(assertWithinRateLimit('user-1', { perHour: 200 })).resolves.toBeUndefined();
+    expect(erro).toHaveBeenCalledWith(expect.stringContaining('acima da diária'));
+  });
+
+  it('NÃO avisa na configuração coerente — senão o aviso vira ruído e ninguém o lê', async () => {
+    const erro = vi.spyOn(console, 'error').mockImplementation(() => {});
+    process.env.AI_CHAT_RATE_LIMIT_PER_HOUR = '30';
+    process.env.AI_CHAT_RATE_LIMIT_PER_DAY = '150';
+    const m = mockAdmin([{ count: 1, error: null }, { count: 1, error: null }]);
+    const { assertWithinRateLimit } = await load(m);
+
+    await expect(assertWithinRateLimit('user-1', { perHour: 5, perDay: 20 })).resolves.toBeUndefined();
+    expect(erro).not.toHaveBeenCalled();
+  });
+
+  // O CHECK da migration 120 já barra 0/negativo no banco, e o gate já descarta o inutilizável.
+  // Esta é a terceira barreira: cota 0 aqui reproduziria o bug do `readLimit` (429 para o grupo).
+  it.each([0, -5, 2.5, Number.NaN])(
+    'cota inutilizável (%s) cai no default e AVISA',
+    async (valor) => {
+      const erro = vi.spyOn(console, 'error').mockImplementation(() => {});
+      process.env.AI_CHAT_RATE_LIMIT_PER_HOUR = '30';
+      const m = mockAdmin([{ count: 29, error: null }, { count: 29, error: null }]);
+      const { assertWithinRateLimit } = await load(m);
+
+      await expect(assertWithinRateLimit('user-1', { perHour: valor })).resolves.toBeUndefined();
+      expect(erro).toHaveBeenCalledWith(expect.stringContaining('cota de grupo inválida'));
+    },
+  );
+});

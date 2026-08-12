@@ -5,8 +5,14 @@ import { MemoryRouter } from 'react-router-dom';
 
 // Mock do contexto de auth — sem sessão real nos testes.
 const signOut = vi.fn();
+// `vi.hoisted` para o valor poder ser trocado por caso (padrão de CrudTablePage.test.tsx).
+const auth = vi.hoisted((): { aiChatEnabled: boolean | null } => ({ aiChatEnabled: true }));
 vi.mock('../contexts/AuthContext', () => ({
-  useAuth: () => ({ user: { email: 'suporte@sheild.app.br' }, signOut }),
+  useAuth: () => ({
+    user: { email: 'suporte@sheild.app.br' },
+    signOut,
+    aiChatEnabled: auth.aiChatEnabled,
+  }),
 }));
 
 import Layout from './Layout';
@@ -56,10 +62,28 @@ describe('Layout (sidebar)', () => {
 
   // O assistente de IA vive no Layout (não numa rota) para estar em TODAS as telas
   // protegidas; aqui entra só o botão flutuante — o painel é lazy.
-  it('monta o botão flutuante do assistente de IA', () => {
+  it('monta o botão flutuante do assistente de IA quando o grupo tem acesso', () => {
+    auth.aiChatEnabled = true;
     renderLayout();
     expect(screen.getByRole('button', { name: /abrir assistente/i })).toBeInTheDocument();
     expect(screen.queryByRole('heading', { name: /assistente de contas a pagar/i })).not.toBeInTheDocument();
+  });
+
+  /**
+   * 🔴 O caso `null` é o que CONGELA a decisão de produto (Onda 8, migration 120).
+   *
+   * `false` sozinho ficaria verde com `!== false` no lugar de `=== true` — e aí todo usuário
+   * NEGADO veria o botão piscar em cada carga de página, já que sob o default opt-in "negado" é a
+   * maioria. É por isso que os dois estados são testados, e não só o óbvio.
+   */
+  it.each<[string, boolean | null]>([
+    ['negado (false)', false],
+    ['ainda não sei (null)', null],
+  ])('NÃO monta o botão do assistente quando o acesso é %s', (_rotulo, valor) => {
+    auth.aiChatEnabled = valor;
+    renderLayout();
+    expect(screen.queryByRole('button', { name: /abrir assistente/i })).not.toBeInTheDocument();
+    auth.aiChatEnabled = true;
   });
 
   it('aciona signOut ao clicar em sair', async () => {
