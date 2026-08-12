@@ -219,5 +219,56 @@ class ExtractAccessKeysTest(unittest.TestCase):
         self.assertEqual(F.extract_access_keys(f"{CTE_REAL}\n{outra}"), [CTE_REAL, outra])
 
 
+class ChaveComCnpjFormatadoTest(unittest.TestCase):
+    """A BARRA no meio da chave — 54 CT-e perdidos ate 2026-08-12.
+
+    Rodonaves, TRB e SSW nao imprimem a chave como 44 digitos corridos nem em blocos de 4:
+    imprimem com o CNPJ do emitente FORMATADO dentro dela. Sem a barra no separador, o run
+    de digitos parte em 14 + 30 e nenhum pedaco alcanca 44 — a chave do proprio CT-e some e
+    so a NF-e citada no corpo do DACTE fica registrada.
+
+    O sintoma nao parecia defeito: um DACTE registrado apenas com `model=55` passa por
+    "documento sem CT-e", nao por falha de leitura. So apareceu ao LER os 144 PDFs do
+    bucket e comparar com o que estava gravado.
+    """
+
+    # Como o DACTE da Rodonaves imprime, byte a byte (PDF real, e-mail "CT-e - 62409157").
+    IMPRESSO = "35.2608.44.914.992/0001-38-57-001-062.409.157-162.409.157-0"
+    ESPERADA = "35260844914992000138570010624091571624091570"
+
+    def test_sanidade_da_fixture(self):
+        """A fixture tem de ser a chave esperada — senao o teste abaixo mede outra coisa."""
+        self.assertEqual(re.sub(r"\D", "", self.IMPRESSO), self.ESPERADA)
+        self.assertIsNotNone(F.parse_access_key(self.ESPERADA, ref_date=date(2026, 8, 12)))
+
+    def test_acha_a_chave_com_cnpj_formatado_no_meio(self):
+        texto = ("DACTE MODAL\nChave de acesso para consulta no site www.cte.fazenda.gov.br\n"
+                 f"{self.IMPRESSO}\nCIDADE DE ORIGEM DA PRESTACAO 207 - SAO PAULO - SP")
+        self.assertIn(self.ESPERADA, F.extract_access_keys(texto))
+
+    def test_o_cte_vence_a_nfe_citada_no_mesmo_dacte(self):
+        """O DACTE cita a NF-e transportada; as DUAS tem de sair, nao so a segunda.
+
+        Este e o caso que produziu os 39 PDFs com `models=[55]`: a NF-e vinha em digitos
+        corridos (era achada) e o CT-e vinha formatado (era perdido).
+        """
+        nfe = _com_modelo(55)
+        texto = f"DOCUMENTOS ORIGINARIOS {nfe}\nCHAVE {self.IMPRESSO}"
+        achadas = F.extract_access_keys(texto)
+        self.assertIn(self.ESPERADA, achadas)
+        self.assertIn(nfe, achadas)
+
+    def test_barra_nao_transforma_data_e_cnpj_vizinhos_em_chave(self):
+        """O risco da barra: colar numeros distintos ate somar 44 digitos.
+
+        Medido em 138 PDFs nao-fiscais do bucket antes de aplicar a mudanca: 0 falsos
+        positivos. Aqui fica a versao sintetica do pior caso — datas e CNPJ concatenados,
+        que juntos passam de 44 digitos.
+        """
+        ruido = ("Venc 10/08/2026 Emissao 03/08/2026 CNPJ 47.273.917/0001-23 "
+                 "IE 109518165110 Fone (11)2291-1699 NF 000152737/2026")
+        self.assertEqual(F.extract_access_keys(ruido), [])
+
+
 if __name__ == "__main__":
     unittest.main()

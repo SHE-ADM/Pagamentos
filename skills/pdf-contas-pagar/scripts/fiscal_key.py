@@ -80,8 +80,24 @@ _UF_CODES = frozenset({
 })
 
 # Sequencia de digitos possivelmente formatada: o DACTE costuma imprimir a chave em
-# blocos de 4 separados por espaco, e alguns emissores usam ponto ou hifen.
-_DIGIT_RUN_RE = re.compile(r"[\d][\d\s.\-]*[\d]")
+# blocos de 4 separados por espaco, e alguns emissores usam ponto, hifen ou BARRA.
+#
+# A BARRA foi acrescentada em 2026-08-12, e ela sozinha respondia por 54 CT-e PERDIDOS
+# (+23% sobre os 232 documentos registrados). Rodonaves, TRB e SSW imprimem a chave com o
+# CNPJ do emitente FORMATADO no meio dela:
+#
+#     35.2608.44.914.992/0001-38-57-001-062.409.157-162.409.157-0
+#
+# Sem a barra na classe, o run parte em 14 + 30 digitos: nenhum pedaco chega a 44, a chave
+# do proprio CT-e nao e vista e so a NF-e citada no corpo do DACTE acaba registrada. O
+# sintoma era mudo — 39 dos 88 PDFs de transporte tinham `models=[55]`, o que parece um
+# documento legitimamente sem CT-e, nao uma falha de leitura.
+#
+# O risco de a barra COLAR numeros distintos (data "03/08/2026", fracao, CNPJ vizinho) e
+# real, mas as cinco camadas de `parse_access_key` o contem. Medido antes de aplicar, em
+# 138 PDFs NAO-fiscais do bucket (boletos, guias, recibos): **0 falsos positivos**; as
+# duas unicas chaves novas ali eram CT-e legitimos que tambem estavam sendo perdidos.
+_DIGIT_RUN_RE = re.compile(r"[\d][\d\s.\-/]*[\d]")
 
 
 def access_key_dv_ok(digits: str) -> bool:
