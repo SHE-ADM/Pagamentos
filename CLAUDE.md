@@ -198,22 +198,23 @@ Estas regras se aplicam a **todo** código novo ou alterado neste projeto, sem e
   sem ele os schemas sem teste próprio ficariam fora do lcov e o Sonar os leria como 0% — que foi
   a armadilha do PR #223. Medido: 5 de 14 arquivos no lcov sem o teste do barrel, **14 de 14** com
   ele. Ao criar schema novo, basta que o barrel o reexporte; não há include a manter.
-- **Suíte Python (pytest):** `py -3 -m pytest tests/` — **1.146 testes** (ex.:
+- **Suíte Python (pytest):** `py -3 -m pytest tests/` — **1.252 testes** (ex.:
   `test_link_extraction.py`, `test_email_body_extraction.py`, `test_body_amount.py`,
   `test_body_invoice_table.py`, `test_body_platform_invoice.py`,
   `test_body_supplier_override.py`, `test_arrecadacao_gnre.py`,
   `test_dup_nosso_numero_titulo.py`, `test_email_sem_pagavel.py`,
   `test_body_resolvers.py`, `test_extract_pdf.py`, `test_body_full.py`,
   `test_fiscal_key.py`, `test_fiscal_document_hook.py`,
-  `test_fiscal_document_consistency.py`, `test_varredura_historica.py`,
+  `test_fiscal_document_consistency.py`, `test_cte_content.py`,
+  `test_varredura_historica.py`,
   `test_vision_multi_boleto.py`, `test_barcode_self_refuted.py`,
   `test_contact_block_nonpayable.py`, `test_is_processed.py`). Cobre o
   pipeline de extração; rodar após mexer em `read_emails.py`/`extract_pdf.py` ou nos
-  scripts de reprocessamento. Não é incluída no `npm test` (que soma **1.416** no Node —
-  frontend-vite 847 · api-backend 535 · packages/shared 32 · portal-next 2, medidos em
-  2026-08-11). A suíte
-  Python está em **1.227** (medida em 2026-08-11; os 34 novos desde 1.193 são as guardas da Onda 7,
-  e os 47 anteriores as da Onda 6 — 40 da onda + 7 do achado B1 do review).
+  scripts de reprocessamento. Não é incluída no `npm test` (que soma **1.420** no Node —
+  frontend-vite 847 · api-backend 539 · packages/shared 32 · portal-next 2, medidos em
+  2026-08-12). A suíte
+  Python está em **1.252** (medida em 2026-08-12; os 25 novos desde 1.227 são as guardas da Onda 5
+  — 21 do parser/gancho do CT-e — e da barra na chave de acesso; os 34 anteriores as da Onda 7).
   > ⚠️ **Medir o `frontend-vite` com `--maxWorkers=1`.** Em paralelo, o sandbox do agente
   > derruba ~9 casos de a11y (`StatusBadge.a11y`, `DashboardHeader.a11y`) por esgotamento de
   > recursos — eles passam isolados e em série. É a mesma classe de falso alarme já
@@ -1022,10 +1023,10 @@ duas funções da 115 (achado B1 do review de 2026-08-10), então a Onda 7 deslo
 | 2 | ✅ **CONCLUÍDA** (migrations **105/106**) | `body_full` + `body_search` (tsvector) + GIN · backfill de 383 corpos · reader grava o corpo completo · **8ª tool `buscar_emails`** — deploy do `read_emails.py` **APLICADO e verificado em prod** |
 | 3 | ✅ **CONCLUÍDA** (migrations **107/108**) | `fiscal_document` pela **chave de acesso** (CT-e 57 · NF-e 55 · CF-e 59 · NFC-e 65), sem LLM · `fiscal_key.py` · gancho no Passo 1 · purga preservando o PDF fiscal · backfill de 172 documentos · **9ª tool `documentos_fiscais`** — deploy **APLICADO e verificado em prod** (27/27, 2026-08-01) |
 | 4 | ✅ **CONCLUÍDA** (sem migration, sem deploy) | `scripts/varredura_historica.py` — passada única e estritamente aditiva na caixa postal: **+70 corpos · +7 chaves fiscais · +4 objetos**, 0 falhas, contas intocadas. 🔴 **A premissa caiu: a INBOX tinha 264 de 1.166 e-mails — 0 CT-e recuperados** |
-| 5 | Fiscais camada 2 | itens de NF-e / peso-rota-frete do CT-e (via LLM) |
+| 5 | ⚠️ **PARCIAL — 5.3 CONCLUÍDO** (migration **119**) | conteúdo do CT-e (rota · peso · NF transportada · destinatário · frete) **sem LLM**, da fatura agregada: `cte_content.py` + gancho no reader + backfill de **57 CT-e** + `documentos_fiscais` com filtro `rota`. 🔴 **5.1/5.2 (itens de NF-e) SUSPENSOS por falta de população — 15 DANFEs medidos** |
 | 6 | ✅ **CONCLUÍDA** (migrations **111–116**) | `dim_date` + feriados · `competence_month` · `days_late` · `extraction_confidence` · `installment_number`/`installment_base` (o **`installment_total` do plano NÃO existe na origem**) · `analytics.fornecedores_recorrentes` e `analytics.parcelamentos` · 5 colunas novas na `vw_payables` · **116** = correção do achado B1 (truncagem silenciosa) |
 | 7 | ✅ **CONCLUÍDA** (migrations **117/118**) | trilha de auditoria: `audit_log` populada por trigger em `financial_account_control` **e `supplier`** · vazamento da tabela fechado · ator propagado por header · **10ª e 11ª tools** (`auditoria_eventos`, `auditoria_resumo`) |
-| 8 | Hardening do chat | few-shot + **gate de uso por usuário (último item de todos)** |
+| 8 | ⚠️ **PARCIAL** | ✅ rate limit (Onda 1) · ✅ **few-shot + as 2 lacunas de capacidade DECLARADAS no prompt** · ✅ 2 mapeamentos errados da bateria corrigidos. Falta só o **gate de uso por usuário (último item de todos)** |
 | 9 | Condicional | receitas p/ DRE · NFS-e · CF-e · DPO · agregados |
 
 **Decisões que NÃO devem ser reabertas sem evidência nova** (todas medidas em 2026-07-31):
@@ -1126,9 +1127,14 @@ duas funções da 115 (achado B1 do review de 2026-08-10), então a Onda 7 deslo
   (UF/AAMM/CNPJ do emitente/série/número), `storage_key` e a origem do e-mail
   (`gmail_message_id`/`sender_email`/`subject`/`received_at`).
 - 🔴 **Documento fiscal NUNCA soma em relatório financeiro.** O frete já entra como BOLETO e a
-  NF-e é a origem da mercadoria, não a obrigação de pagamento — somar duplicaria despesa. A
-  barreira é ESTRUTURAL: a tabela e a tool **não têm nenhuma coluna de valor**. O SYSTEM_PROMPT
-  declara isso; não acrescentar valor monetário aqui "por conveniência".
+  NF-e é a origem da mercadoria, não a obrigação de pagamento — somar duplicaria despesa.
+  ⚠️ **A barreira DEIXOU de ser estrutural na Onda 5** (migration 119): a tabela ganhou
+  `freight_amount`/`cargo_amount`, então a antiga garantia "não há coluna de valor" **não vale
+  mais** — não a cite. O que a substitui é uma barreira DECLARADA em três camadas (COMMENT da
+  coluna, descrição da tool e SYSTEM_PROMPT), sustentada por **guarda de teste**: a bateria
+  `regression.test.ts` reprova se a tool expuser `frete_rs` sem que o prompt carregue a proibição
+  de somar — inclusive reprovando a frase antiga *"a ferramenta não devolve valor algum"*, que
+  virou mentira. Declaração sem guarda seria só uma frase que alguém enxuga.
 - 🔴 **A purga passou a preservar o PDF fiscal** (`scripts/purge_orphan_attachments.py` consulta
   `fiscal_document.storage_key` como TERCEIRA fonte de "referenciado"). Sem isso ela apagaria
   exatamente o que a onda registra — CT-e sem boleto, por regra de negócio, **nunca** tem linha
@@ -1194,6 +1200,23 @@ duas funções da 115 (achado B1 do review de 2026-08-10), então a Onda 7 deslo
   primeiras e virou uma **CF-e de setembro de 1991** — sequência aleatória fecha módulo 11 em
   ~1/11 dos casos. Os 7 códigos reais e o falso positivo do aluguel são fixtures em
   `tests/test_fiscal_key.py`.
+- 🔴 **O SEPARADOR da chave inclui a BARRA — sem ela eram 61 CT-e perdidos, em silêncio**
+  *(corrigido em 2026-08-12)*. Rodonaves, TRB e SSW imprimem a chave com o **CNPJ do emitente
+  formatado dentro dela** (`35.2608.44.914.992/0001-38-57-001-…`); a barra faltava em
+  `_DIGIT_RUN_RE`, o run de dígitos partia em 14+30 e **nenhum pedaço chegava a 44**. O sintoma
+  não parecia defeito: **39 dos 88 PDFs de transporte** ficavam com `models=[55]` — só a NF-e
+  citada no corpo do DACTE —, o que se lê como "documento sem CT-e", não como falha de leitura.
+  Só apareceu ao **LER os 144 PDFs do bucket e comparar com o que estava gravado**; nem a suíte
+  nem o dado agregado acusavam. Backfill reaplicado: **104 → 165 CT-e** (total 232 → 293).
+  O risco de a barra COLAR números distintos foi **medido antes de aplicar**, em 138 PDFs
+  NÃO-fiscais (boletos, guias, recibos): **0 falsos positivos** — as cinco camadas contêm.
+  Guarda com a fixture real impressa em `ChaveComCnpjFormatadoTest`, validada por mutante.
+  > **Lição que generaliza:** um extrator que erra **para menos** não gera erro, não gera linha
+  > em `/erros` e não quebra teste — ele produz um acervo menor que parece completo. A única
+  > verificação que o encontra é comparar o **conteúdo da fonte** com o que foi gravado.
+  > ⚠️ No `--dry-run` do backfill, "novas" conta **ocorrências**: a mesma chave em 2 PDFs
+  > (DACTE individual + fatura agregada) é contada 2×, e na gravação a 2ª vira duplicata
+  > ignorada. Dry-run 65 × gravadas 61 é coerente, não perda — a reexecução acusa `0 novas`.
 - **O gancho fica no Passo 1 de `extract_and_store_accounts`, e ANTES do `run_extraction`** — não
   nos 7 pontos de `skipped_nonpayable`. Ponto único, cobre o documento **mesmo quando a linha
   vira conta** (o boleto de transporte que traz a chave do CT-e junto) e captura a chave ainda
@@ -1224,6 +1247,56 @@ duas funções da 115 (achado B1 do review de 2026-08-10), então a Onda 7 deslo
   capturava nada).
 - **`documentos_fiscais` devolve `total_encontrado`** — 2ª ocorrência da armadilha da truncagem
   silenciosa; a regra geral está no bloco da Onda 6 ("Toda função com `LIMIT` DECLARA o total").
+
+**O que a Onda 5 entregou — item 5.3 apenas (não regredir):**
+
+A população foi medida **lendo os 144 PDFs fiscais do bucket** (pdfplumber, sem LLM). Detalhe e a
+tabela por grupo em [docs/roadmap-enriquecimento-dados.md](docs/roadmap-enriquecimento-dados.md),
+"POPULAÇÃO MEDIDA".
+
+- 🔴 **Classificar documento fiscal por ASSUNTO ou NOME DE ARQUIVO ERRA.** 34 PDFs com assunto
+  `CT-e - NNNN` tinham registrado só a chave da **NF-e citada dentro** do DACTE. Toda contagem
+  por grupo tem de sair do TEXTO do PDF; foi a classificação por metadados que sustentou a
+  premissa errada do levantamento anterior (41 DACTEs, quando são 83).
+- 🔴 **5.1/5.2 (itens de NF-e) SUSPENSOS: 15 DANFEs, 6 com tabela de itens detectável.** Das 128
+  NF-e registradas, a maioria são chaves **citadas** em guia GNRE ou dentro do DACTE — o DANFE
+  não está no acervo. Reabrir só se o acervo crescer; tabela filha + LLM + tool + testes para 15
+  documentos é desproporcional.
+- **A fonte do 5.3 é a FATURA AGREGADA, não o DACTE** (`cte_content.py`, stdlib puro): 10 PDFs,
+  um único emissor (BRASPRESS), tabela regular → regex, custo zero de LLM. O DACTE individual (83
+  PDFs) tem layout por transportadora — "PESO" aparece em 80/83, mas "VALOR TOTAL DA PRESTAÇÃO"
+  em **5/83** —, e fica para a etapa com LLM (5.3-b, **não implementada**).
+- 🔴 **O parser é FAIL-CLOSED pelo SUB-TOTAL impresso na própria fatura**: se a soma do que
+  extraiu não bate, devolve **NADA daquele PDF**. Estes números são um **rateio**; rateio a que
+  falta uma linha não é "quase certo" — ele atribui frete ao conjunto errado, e a soma passa a
+  discordar da conta a pagar sem que nada acuse. Medido: **10/10 faturas fechando**, e o oráculo
+  recusa até a menor linha da fatura (R$ 133,87).
+- 🔴 **`freight_amount` é DECOMPOSIÇÃO, nunca uma segunda despesa** — ver o bloco da Onda 3, onde
+  está registrado que a barreira deixou de ser estrutural e passou a ser declarada + travada por
+  teste. **Provado no dado:** cruzando pelo PDF de origem, **9 de 9** faturas com conta vinculada
+  batem **exatamente** com o `amount` da conta a pagar (a 10ª diverge por causa do `source_file`
+  cruzado da conta 521, limitação já conhecida do download por link).
+  > ⚠️ **Ao cruzar `fiscal_document` com `financial_account_control` por `storage_key` =
+  > `source_file`, AGREGUE OS DOIS LADOS ANTES do join.** Um PDF com 2 contas multiplica as
+  > linhas de CT-e e **dobra o frete somado** — a primeira versão desta verificação acusou uma
+  > divergência de exatamente 2× que não existia no dado, só no fan-out da consulta.
+- 🔴 **O gancho de conteúdo roda DEPOIS do registro das chaves** (`_register_cte_content` ao fim
+  de `_register_fiscal_documents`): conteúdo é **UPDATE**, então antes do INSERT ele grava em
+  nada — sem erro, com o log dizendo "registrado". Ordem travada por teste que EXECUTA o gancho e
+  observa a sequência das chamadas, validada contra 2 mutantes (inverter a ordem · remover o
+  gancho). Guarda textual não serviria aqui — é a lição da regra 2, item 6.
+- **`content_source` existe para as duas fontes conviverem** (`braspress_invoice` hoje,
+  `dacte_llm` no futuro), com CHECK de domínio fechado. O gancho e o backfill **não sobrescrevem
+  conteúdo de outra fonte**: um dado mais rico não pode ser rebaixado por uma passada
+  determinística que rodou depois.
+- **`linked_invoice` é NULL quando a fatura diz "DIVER."** (várias notas no mesmo conhecimento) —
+  guardar o literal inventaria uma nota fiscal que não existe. 6 dos 57 estão nesse caso.
+- ⚠️ **A migration 119 precisou de DOIS `DROP FUNCTION`** — a assinatura antiga (6 parâmetros) e
+  a nova (7). Com só o primeiro, a **reexecução** falha com *"function already exists with same
+  argument types"*: na 2ª passada a antiga já não existe e o DROP não acha nada. É variante da
+  armadilha da 116 (lá o risco era perder os GRANTs; aqui, a idempotência).
+- **Cobertura declarada ao modelo:** o conteúdo existe só para CT-e recebido em fatura agregada
+  (57 de 293 documentos). Campo vazio significa **"ainda não extraído"**, nunca "não tem".
 
 **O que a Onda 6 entregou e os invariantes que ela criou (não regredir):**
 
@@ -3624,8 +3697,16 @@ local/agendada (ver flag `EMAIL_READER_ENABLED` acima e memória [[vercel-deploy
 ## Banco de dados (Supabase)
 
 Migrations em `supabase/migrations/`, aplicadas **manualmente no SQL Editor** (ou via Supabase
-MCP — ver a nota de cada uma) em ordem numérica (`001` → `118`). **Próxima migration = `119`**
+MCP — ver a nota de cada uma) em ordem numérica (`001` → `119`). **Próxima migration = `120`**
 (verificar sempre antes de criar nova).
+
+**A `119` é a Onda 5 (item 5.3)** — conteúdo do CT-e em `fiscal_document` (rota, peso, NF
+transportada, destinatário, frete) + `analytics.documentos_fiscais` devolvendo esses campos com
+filtro `p_rota`. Aplicada via psql em 2026-08-12, idempotente (**exige os DOIS `DROP FUNCTION`**,
+6 e 7 parâmetros — ver os invariantes da Onda 5) e com sonda `DO $$` que grava, consulta pela
+tool, testa o filtro de rota nas duas pontas, verifica o CHECK e **aborta** em qualquer
+divergência. 🔴 Ela é a migration que **acrescenta valor monetário** a `fiscal_document`, o que
+substitui a barreira estrutural da Onda 3 por uma declarada + travada em teste.
 
 **As `117`/`118` são a Onda 7 — a trilha de auditoria** (aplicadas via Supabase MCP em 2026-08-11,
 idempotentes). A **117** popula `public.audit_log` por trigger em `financial_account_control` e
@@ -4140,7 +4221,7 @@ internet` ao CHECK de `document_type` e faz backfill — ver "Normalização de 
 | `financial_account_attachment` | **Anexos (N) de uma conta** (migration 079) — PADRÃO ÚNICO das duas origens: `origin='pipeline'` (documento do e-mail; espelha `financial_account_control.source_file`, gravado pelo reader) e `origin='manual'` (upload do usuário no cadastro/edição). `storage_key` = chave CRUA do objeto no bucket `attachments` (pipeline: nome flat; manual: `manual/{conta}/…`). **Soft delete** (`deleted_at`/`deleted_by`) — o objeto FICA no bucket; anexo `pipeline` é irremovível (auditoria → 403). UNIQUE `(account_id, storage_key)`; **não** UNIQUE global (um PDF com N boletos gera N contas que COMPARTILHAM o objeto). RLS SELECT herda a visibilidade da conta pai (076) via `EXISTS`; escrita só `service_role`. Ver "Anexos de conta" |
 | `dim_date` | **Calendário 2015-2045** (11.323 dias, migration 111 — Onda 6). Semeada PELAS funções `br_easter`/`br_holiday_name` (IMMUTABLE), com oráculo diferencial embutido na migration: ela **aborta** se a tabela divergir das funções. `is_business_day` segue o calendário **BANCÁRIO** (Febraban), não a letra da lei — Carnaval e Corpus Christi são ponto facultativo, mas o banco fecha, e o que importa para conta a pagar é se o dinheiro anda; `holiday_kind` distingue `'nacional'` de `'bancario'`. Consciência Negra só é nacional a partir de **2024** (Lei 14.759/2023). Dado de REFERÊNCIA: `authenticated` lê tudo (policy permissiva de SELECT — 🔴 obrigatória, ver a lição do GRANT sem policy), `anon` não lê, ninguém escreve pelo app. Consultada por `public.dias_uteis(de, ate)` (intervalo SEMIABERTO; **STABLE**, logo NÃO usável em coluna gerada). **Cadastro/configuração — preservar em limpezas** |
 | `audit_log` | **Trilha de auditoria** (migrations 117/118 — Onda 7): quem alterou o quê em `financial_account_control` e `supplier`. Gravada por trigger **AFTER** (`fn_audit_row`, `SECURITY DEFINER`) em UPDATE/DELETE + **BEFORE TRUNCATE** (`fn_audit_truncate`, que conta as linhas antes de a tabela esvaziar). UPDATE guarda o **delta**; DELETE guarda a **linha inteira** (única cópia que resta); UPDATE sem mudança real **não gera linha**. `registro_dono` desnormaliza o dono para a RLS **sobreviver à conta apagada** (o `EXISTS` da 079 não serve aqui); `ator_via` declara COMO o autor foi obtido (`jwt`/`header`/`guc`/`servico`). 🔴 **`usuario_id` NÃO tem FK para `auth.users` de propósito** — qualquer FK destruiria a trilha (CASCADE apaga, SET NULL desatribui, RESTRICT impede remover usuário); o nome é resolvido na LEITURA por `analytics.audit_actor_label`, que distingue automação de usuário removido. 🔴 `anon` **não lê** — a policy `TO public` original foi removida pela 117. Escrita só pela trigger. **Alvo de limpeza** (é log, não cadastro) |
-| `fiscal_document` | **Documento fiscal eletrônico** identificado pela chave de acesso de 44 dígitos (migration 107 — Onda 3): NF-e 55 · CT-e 57 · CF-e 59 · NFC-e 65. Tabela de **PROVENIÊNCIA, append-only** — `access_key` UNIQUE (dedup natural do reenvio), campos derivados da própria chave, `storage_key` (🔴 é o que faz a purga PRESERVAR o PDF) e a origem do e-mail (`gmail_message_id`/`sender_email`/`subject`/`received_at`, sem FK — o registro é não-fatal). **NÃO tem valor monetário, e isso é a barreira**: documento fiscal nunca soma em relatório financeiro (o frete já entra como boleto). RLS SELECT reusa o recorte por REMETENTE da 078; escrita só `service_role`. Ver "O que a Onda 3 entregou" |
+| `fiscal_document` | **Documento fiscal eletrônico** identificado pela chave de acesso de 44 dígitos (migration 107 — Onda 3): NF-e 55 · CT-e 57 · CF-e 59 · NFC-e 65. Tabela de **PROVENIÊNCIA, append-only** — `access_key` UNIQUE (dedup natural do reenvio), campos derivados da própria chave, `storage_key` (🔴 é o que faz a purga PRESERVAR o PDF) e a origem do e-mail (`gmail_message_id`/`sender_email`/`subject`/`received_at`, sem FK — o registro é não-fatal). **Conteúdo do transporte (migration 119 — Onda 5):** `origin`/`destination`/`cargo_weight_kg`/`freight_amount`/`cargo_amount`/`linked_invoice`/`receiver_name`/`service_date`/`awb`, com `content_source` (`braspress_invoice` \| `dacte_llm`) declarando a procedência — preenchidos só para CT-e vindo de fatura agregada (57 de 293); NULL = **ainda não extraído**, não "não tem". 🔴 **`freight_amount` é DECOMPOSIÇÃO da fatura já lançada como conta a pagar — nunca somar com `gasto_por_*`**; a barreira aqui é declarada + travada em teste, não mais a ausência de coluna. RLS SELECT reusa o recorte por REMETENTE da 078; escrita só `service_role`. Ver "O que a Onda 3 entregou" e "O que a Onda 5 entregou" |
 | `supplier` | Fornecedores. PK = `sk_supplier` (surrogate key snowflake auto-incremental — **migration 042**); `supplier_id` é **chave de negócio** (NOT NULL UNIQUE, só nesta tabela; = `sk_supplier` nos fornecedores criados pela extração, via trigger de espelho `trg_supplier_mirror_id`, podendo divergir em cargas externas). Auto-criados pelo trigger de resolução, mas **cadastro PRESERVADO** (curadoria manual de `email`/`email2`/`email3`/`email4`) — **nunca truncar** em limpezas (ver "Limpeza / reset de dados"). Reconhecimento por **e-mail** em `email`/`email2`/`email3`/`email4` (migrations 023/027/028) — ver "Auto-resolução de fornecedor". **Soft delete** via `deleted_at` (migration 045) — a baixa pelo CRUD da Next API marca `deleted_at` (nunca hard delete) e é bloqueada quando há contas vinculadas; ver "CRUD de fornecedores (Next API)". **Classificação default** `cost_center_id`/`chart_account_id` (SMALLINT NOT NULL DEFAULT 0 + FKs — migration 052): semeia o lançamento de novas contas e é atualizada pelo write-back do modal; ver "Classificação default do fornecedor — sync bidirecional". **Contatos** (migration 082): `phone_ddd1`/`phone1`/`phone_ddd2`/`phone2` (char(2)/varchar(9)), `whatsapp1`/`whatsapp2` (varchar(11)), `pix_key1`/`pix_key2` (varchar(77)) — 2 slots por tipo, preenchidos pelo form e pela extração (write-back com lógica de 2 slots); ver "Contato do fornecedor" |
 | `company` | Empresa pagadora (**cadastro**, tem campo `email`). PK = **`sk_company`** (surrogate key snowflake `GENERATED ALWAYS AS IDENTITY` — migration 083, chave única de relacionamento); `company_id` é **campo de origem** (NOT NULL UNIQUE, do sistema maior). Hoje há DUAS: OTIMOTEX (sk 1) e LEBIANCO (sk 2). A empresa da conta (`financial_account_control.sk_company`) tem DUAS origens, ambas explícitas: a **regra LEBIANCO** no pipeline e o **select "Empresa" do `ContaForm`** no CRUD manual (default OTIMOTEX) — ver "Empresa pagadora (`sk_company`) — regra LEBIANCO". O trigger `trg_fe_resolve_company()` → **`resolve_company_sk`** (`payer_cnpj`/`payer_name`) ficou como **fallback residual** (migration 084): só atuaria num INSERT que omitisse `sk_company`. O lookup do select é `GET /api/companies` (`companyService`). **Preservada em limpezas** (ver abaixo) |
 | `status` | **Dimensão** de situação (`status_id`, `status_name`, `status_short_name`, `has_opened`/`has_closed`/`has_invoiced`). 10 linhas (ids 1..10) = **domínio de `financial_account_control.status_id`** (fonte única — a coluna `status` texto foi removida na 069) + alvo da FK `fk_fac_status`. O nome de exibição da conta vem do embed `status_dim:status(...)`. **Cadastro/configuração — preservar em limpezas** |

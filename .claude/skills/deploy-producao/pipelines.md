@@ -20,12 +20,19 @@ preciso reiniciar nada**.
 
 **Copiar** — `skills\email-reader\scripts\read_emails.py`,
 `skills\pdf-contas-pagar\scripts\extract_pdf.py`, `skills\pdf-contas-pagar\scripts\febraban.py`,
-`skills\pdf-contas-pagar\scripts\fiscal_key.py` (os que tiverem mudado) **+
-`scheduler\deploy-manifest.json`**.
+`skills\pdf-contas-pagar\scripts\fiscal_key.py`, `skills\pdf-contas-pagar\scripts\cte_content.py`
+(os que tiverem mudado) **+ `scheduler\deploy-manifest.json`**.
 
 🔴 **Interdependentes.** `read_emails.py` chama `extract_pdf.extract_to_csv()` **in-process**; e
 `extract_pdf.py` importa `febraban` e `fiscal_key` **no topo** — módulo ausente ⇒ `ImportError` ⇒
 **nenhum PDF extraído**. Copie o módulo novo primeiro, ou todos juntos.
+
+⚠️ **`cte_content.py` é ARQUIVO NOVO (Onda 5, 2026-08-12)** — conteúdo do CT-e (rota, peso, NF
+transportada, frete) a partir da fatura agregada. Ao contrário de `febraban`/`fiscal_key`, ele é
+importado **lazy** pelo `read_emails.py`, então a ausência **degrada com aviso**
+(`modulo 'cte_content' indisponivel … Deploy parcial?`) em vez de parar a extração. É mais
+brando, e por isso mais fácil de esquecer: o pipeline segue verde gravando os documentos **sem**
+peso/rota/frete, e o único sinal fica no log. Confira o aviso depois do primeiro ciclo.
 
 **Dependência:** `pypdf` (desde 2026-06-29, boleto com senha + split de carnê) —
 `py -3 -m pip install "pypdf~=6.13"`. Sem ele, `import extract_pdf` falha e a extração para.
