@@ -198,7 +198,7 @@ Estas regras se aplicam a **todo** código novo ou alterado neste projeto, sem e
   sem ele os schemas sem teste próprio ficariam fora do lcov e o Sonar os leria como 0% — que foi
   a armadilha do PR #223. Medido: 5 de 14 arquivos no lcov sem o teste do barrel, **14 de 14** com
   ele. Ao criar schema novo, basta que o barrel o reexporte; não há include a manter.
-- **Suíte Python (pytest):** `py -3 -m pytest tests/` — **1.283 testes** (ex.:
+- **Suíte Python (pytest):** `py -3 -m pytest tests/` — **1.311 testes** (ex.:
   `test_link_extraction.py`, `test_email_body_extraction.py`, `test_body_amount.py`,
   `test_body_invoice_table.py`, `test_body_platform_invoice.py`,
   `test_body_supplier_override.py`, `test_arrecadacao_gnre.py`,
@@ -209,14 +209,16 @@ Estas regras se aplicam a **todo** código novo ou alterado neste projeto, sem e
   `test_backfill_cte_content.py`,
   `test_varredura_historica.py`,
   `test_vision_multi_boleto.py`, `test_barcode_self_refuted.py`,
-  `test_contact_block_nonpayable.py`, `test_is_processed.py`). Cobre o
+  `test_contact_block_nonpayable.py`, `test_is_processed.py`,
+  `test_onda8_gate_ia.py`, `test_react_versao_unica.py`). Cobre o
   pipeline de extração; rodar após mexer em `read_emails.py`/`extract_pdf.py` ou nos
-  scripts de reprocessamento. Não é incluída no `npm test` (que soma **1.420** no Node —
-  frontend-vite 847 · api-backend 539 · packages/shared 32 · portal-next 2, medidos em
-  2026-08-12). A suíte
-  Python está em **1.283** (medida em 2026-08-12; os 56 novos desde 1.227 são as guardas da Onda 5
-  — parser, gancho, fluxo de topo e backfill do CT-e — e da barra na chave de acesso; os 34
-  anteriores as da Onda 7).
+  scripts de reprocessamento. Não é incluída no `npm test` (que soma **1.463** no Node —
+  frontend-vite 854 · api-backend 575 · packages/shared 32 · portal-next 2, medidos em
+  2026-08-12 após a Onda 8). A suíte
+  Python está em **1.311** (medida em 2026-08-12; os 28 novos desde 1.283 são as guardas da Onda 8
+  — colunas cross-layer, deny por default nas 4 camadas, semente, ausências e ordem dos porteiros —
+  mais 3 da versão única de React (`test_react_versao_unica.py`);
+  os 56 anteriores são a Onda 5 e a barra na chave de acesso; os 34 antes disso, a Onda 7).
   > ⚠️ **Medir o `frontend-vite` com `--maxWorkers=1`.** Em paralelo, o sandbox do agente
   > derruba ~9 casos de a11y (`StatusBadge.a11y`, `DashboardHeader.a11y`) por esgotamento de
   > recursos — eles passam isolados e em série. É a mesma classe de falso alarme já
@@ -234,11 +236,18 @@ Estas regras se aplicam a **todo** código novo ou alterado neste projeto, sem e
 - **`apps/portal-next`**: testado via **server rendering** (`react-dom/server`
   `renderToStaticMarkup`) em vez de jsdom + `@testing-library/react` (`app/page.test.tsx`).
   O React agora é **unificado em 19** em todo o monorepo (Fase 2 do upgrade), então o
-  antigo conflito "duas versões do React" não existe mais; o `vitest.config.ts` ainda usa
-  `resolve.dedupe: ['react','react-dom']` (defensivo). O `frontend-vite` também aplica esse
-  dedupe no `vite.config.ts` — há `react@18` só como transitivo eventual, então o dedupe
-  garante uma única cópia no bundle/teste. (Follow-up: com o React unificado, o portal pode
-  voltar a usar jsdom + Testing Library — ainda não feito.)
+  antigo conflito "duas versões do React" não existe mais: **medido em 2026-08-12, `react@19.2.7`
+  em 23 nós do grafo e UMA só cópia física** — não há `react@18` nem como transitivo. Os
+  `resolve.dedupe: ['react','react-dom']` do portal e do `frontend-vite` ficam como defesa contra
+  um transitivo futuro, **não** como contorno de um problema atual. Guarda:
+  `tests/test_react_versao_unica.py` (lê as declarações dos workspaces; validada por mutante).
+  🔴 **Não medir versão de React por substring** — `lucide-react@1.21.0` e
+  `@testing-library/react@16.3.2` casam `react@<versão>` e devolvem uma resposta confiantemente
+  errada; medir por cópia em disco ou por chave do dicionário de dependências.
+  **Sobre o portal voltar a jsdom:** medido que **já funciona** (sonda com jsdom + Testing Library
+  passou). Segue em `renderToStaticMarkup` por mérito próprio — a página é um placeholder sem
+  hooks, e jsdom custaria ~16 s de ambiente por nada. Ao migrar, **declarar `jsdom` e
+  `@testing-library/react` como devDependencies do portal**: hoje só resolvem por hoisting da raiz.
 
 ### 3 — REST no backend
 
@@ -316,9 +325,16 @@ regredir e valem para **toda rota nova**:
   pick**: elas têm `.default(false)` e o `.partial()` do Zod **não remove default**, então um PATCH
   que as omitisse **apagaria a curadoria**.
 - 🔴 **Erro nunca vaza detalhe interno:** `failFromError` só ecoa a mensagem de um
-  **`ApiServiceError`** com status < 500 — qualquer outra coisa vira 500 genérico. Classe de erro
-  de service nova **DEVE estender `ApiServiceError`** (senão a mensagem curada vira 500), e o mock
-  de teste também. Erro de escrita passa por `mapWriteError`: default **500**, não 422.
+  **`ApiServiceError`** com status < 500 **ou marcado `clientSafe`** — qualquer outra coisa vira
+  500 genérico. Classe de erro de service nova **DEVE estender `ApiServiceError`** (senão a
+  mensagem curada vira 500), e o mock de teste também. Erro de escrita passa por `mapWriteError`:
+  default **500**, não 422.
+  🔴 **`clientSafe` é opt-in e default `false` — não ligar por conveniência.** Ele nasceu porque o
+  corte em 500 descartava, em silêncio, as **três mensagens 503** que `translateAnthropicError`
+  produz de propósito (timeout, falha de rede, 5xx do provedor): o usuário lia "Erro interno" no
+  exato momento em que a causa era temporária e havia o que fazer. Hoje só `AiChatError` o liga,
+  porque toda mensagem daquela classe é escrita para ser lida. Marcar um 5xx genérico com ele
+  reabre o vazamento que a classe existe para fechar. Pareado ramo a ramo em `errors.test.ts`.
 - **Remoção padrão de conta = `PATCH status_id = cancelado`** (preservação). Hard delete é a
   exceção do grupo Administrador. Fornecedor usa **soft delete**; os 6 cadastros de Tabelas usam
   hard delete bloqueado por FK (409).
@@ -1010,8 +1026,9 @@ perguntas reais, 2 usuários, `error IS NULL` em todas, 4 tools distintas exerci
   dono do produto — ver o bloco da migration 096 na seção de banco.
 
 **Widget do assistente (`frontend-vite`):** `organisms/AiChatWidget.tsx` (botão flutuante + **o
-estado da conversa**) montado **uma vez no `Layout`** — presente em todas as telas protegidas e em
-nenhuma de auth; `organisms/AiChatPanel.tsx` (side sheet apresentacional, `lazy()`) usa `<dialog>` +
+estado da conversa**) montado **uma vez no `Layout`**, e **só quando `aiChatEnabled === true`**
+(migration 120) — em nenhuma tela de auth, e em nenhuma tela para grupo sem acesso;
+`organisms/AiChatPanel.tsx` (side sheet apresentacional, `lazy()`) usa `<dialog>` +
 `showModal()`, herdando role/aria-modal, trap de foco, Esc e retorno de foco nativos. A resposta é
 markdown renderizado por `lib/markdownLite.ts` + `molecules/MarkdownMessage.tsx`, **JSX puro, sem
 `dangerouslySetInnerHTML`** e sem dependência nova. Cliente em `services/aiChat.ts`.
@@ -1818,7 +1835,7 @@ apps/frontend-vite/src/components/
 │   ├── ResetPasswordForm.tsx  # (gradient) updateUser + signOut + redirect (fluxo "esqueci a senha")
 │   ├── ChangePasswordForm.tsx # (auth) troca obrigatória no 1º acesso — updateUser + marca password_changed (sem deslogar)
 │   ├── ResendErrosAction.tsx  # (cobrança) barra de seleção "Reenviar e-mails (N)" + confirmação inline + poll de progresso
-│   ├── AiChatWidget.tsx       # (chat IA) botão flutuante + ESTADO da conversa; montado no Layout (todas as telas protegidas); painel por lazy()
+│   ├── AiChatWidget.tsx       # (chat IA) botão flutuante + ESTADO da conversa; montado no Layout só quando aiChatEnabled === true (gate da 120); painel por lazy()
 │   ├── AiChatPanel.tsx        # (chat IA) side sheet apresentacional em <dialog>+showModal (foco/Esc nativos) — mensagens, sugestões, chips de tool, retry, "Nova conversa"
 │   ├── ContaForm.tsx          # (contas) form criar/editar conta — supplier + cascata INVERTIDA plano→centro; onSubmit(data, pendingFiles) — a fila de anexos sobe no PAI, após gravar a conta
 │   ├── ContaAttachments.tsx   # (anexos) anexos SALVOS de uma conta — lista + viewer + soft delete (com confirmação); fallback legacySourceFile
