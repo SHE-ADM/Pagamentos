@@ -151,6 +151,8 @@ const schemas = {
     date_from: isoDate.optional(),
     date_to: isoDate.optional(),
     numero: z.number().int().min(1).optional(),
+    // Onda 5: sigla de praça (origem OU destino) ou a rota inteira "CCT->RIO".
+    rota: z.string().trim().min(2).max(9).optional(),
     limit: z.number().int().min(1).max(100).optional(),
   }),
   auditoria_eventos: z.object({
@@ -399,9 +401,18 @@ export const TOOL_DEFINITIONS: readonly ToolDefinition[] = [
       + 'CF-e, NFC-e), identificados pela chave de acesso de 44 dígitos. Responde "quantos CT-e '
       + 'a transportadora X emitiu?", "recebi a NF-e número 19016?", "de quais emitentes vieram '
       + 'conhecimentos de transporte em julho?". '
-      + '🔴 NÃO é conta a pagar e NÃO tem valor: o frete já entra no sistema como BOLETO e a NF-e '
-      + 'é a origem da mercadoria, não a obrigação de pagamento. NUNCA misture estes documentos '
-      + 'com gastos nem os apresente como despesa. '
+      + 'Para parte dos CT-e traz também o CONTEÚDO do transporte: rota, peso, nota fiscal '
+      + 'transportada, destinatário e valor do frete — responde "quanto custou o frete para o '
+      + 'Rio?", "qual rota pesa mais?", "qual NF veio neste conhecimento?". '
+      + '🔴 DOCUMENTO FISCAL NÃO É CONTA A PAGAR. O frete já entra no sistema como BOLETO e a '
+      + 'NF-e é a origem da mercadoria, não a obrigação de pagamento. NUNCA misture estes '
+      + 'documentos com gastos nem os apresente como despesa. '
+      + '🔴 `frete_rs` é a DECOMPOSIÇÃO da fatura que JÁ ESTÁ lançada como conta a pagar — o '
+      + 'mesmo dinheiro visto por rota. Serve para repartir o frete entre rotas/destinatários, '
+      + 'JAMAIS para somar com gasto_por_periodo, gasto_por_fornecedor ou '
+      + 'demonstrativo_despesas: isso contaria a mesma despesa duas vezes. '
+      + 'O conteúdo existe hoje só para os CT-e que vieram em FATURA AGREGADA da transportadora; '
+      + 'nos demais esses campos vêm vazios, o que significa "ainda não extraído", não "não tem". '
       + 'Cada linha traz total_encontrado com a contagem REAL do filtro (antes do limite) — use '
       + 'esse número para contar, nunca o número de linhas devolvidas. '
       + 'COBERTURA PARCIAL: só documentos cujo PDF chegou por e-mail e ainda estava no bucket; '
@@ -423,6 +434,12 @@ export const TOOL_DEFINITIONS: readonly ToolDefinition[] = [
         date_from: { type: 'string', format: 'date' },
         date_to: { type: 'string', format: 'date' },
         numero: { type: 'integer', description: 'Número do documento (não a chave de acesso).' },
+        rota: {
+          type: 'string',
+          description: 'Praça de ORIGEM ou de DESTINO (sigla da transportadora, ex.: "RIO", '
+            + '"MGF", "CCT"), ou a rota inteira no formato "CCT->RIO". Casa qualquer uma das '
+            + 'duas pontas, porque "frete para o Rio" é destino e "saindo de SP" é origem.',
+        },
         limit: limitProp(DEFAULT_LIMIT),
       },
     },
