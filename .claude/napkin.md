@@ -29,20 +29,30 @@ Runbook curado de gotchas recorrentes. Leia antes de trabalhar; mantenha enxuto.
 6. Flask → `{ "ok": bool, ... }` (legado). Next API → `{ success, data?, error?, meta? }`
    (`apps/api-backend/lib/response.ts`). Rotas novas de CRUD vão na Next API.
 
+## Banco / implantação
+
+7. **Migration que cria coluna lida pelo TS: aplicar e conferir o CACHE DE SCHEMA do
+   PostgREST ANTES de subir a API.** Leitura fail-closed (ex.: `lib/ai-chat/gate.ts`)
+   trata "coluna não existe" como negação, então a ordem invertida derruba a feature
+   para todos — inclusive para quem iria corrigir. Conferir pelo REST, não só por SQL.
+   ❌ Nunca "resolver" transformando erro de coluna ausente em passe livre.
+
 ## TypeScript / testes
 
-7. **Duas versões do React no monorepo:** React 18 (frontend-vite, hoisted na raiz) vs
-   React 19 (apps Next, aninhado). Testes de componente nos apps Next quebram com
-   "Objects are not valid as a React child" (mistura de cópias). `dedupe`/`alias` no
-   Vitest não resolveram de forma confiável. **Follow-up:** alinhar versões de React ou
-   setup de teste dedicado antes de testar componentes do portal/Next.
-8. **`getErrorMessage(e)`** (`frontend-vite/src/lib/getErrorMessage.ts`) para `catch`
+8. **React é UNIFICADO em 19 no monorepo** — medido em 2026-08-12: `19.2.7` em 23 nós do
+   grafo e **uma só cópia física** em `node_modules/react`. O item antigo aqui descrevia
+   um conflito 18×19 que a Fase 2 do upgrade resolveu, e prescrevia um follow-up já
+   feito. Os `resolve.dedupe` nos Vitest/Vite configs ficam como defesa, não como
+   contorno. Testar `react@` por substring engana (`lucide-react@1.21.0`,
+   `@testing-library/react@16.3.2` casam) — medir por cópia em disco. Guarda:
+   `tests/test_react_versao_unica.py`.
+9. **`getErrorMessage(e)`** (`frontend-vite/src/lib/getErrorMessage.ts`) para `catch`
    em strict mode (o valor é `unknown`).
-9. **Tipos compartilhados** vêm de `@sheild/shared` (schemas Zod). Resolução: Vite usa
+10. **Tipos compartilhados** vêm de `@sheild/shared` (schemas Zod). Resolução: Vite usa
    `vite-tsconfig-paths`; apps Next usam `transpilePackages: ['@sheild/shared']`.
 
 ## Next 16 (apps Next)
 
-10. Turbopack por padrão; `params`/`cookies`/`headers` são async. Definir
+11. Turbopack por padrão; `params`/`cookies`/`headers` são async. Definir
     `turbopack.root` = raiz do monorepo no `next.config.ts` silencia o aviso de
     múltiplos lockfiles. Docs empacotados em `node_modules/next/dist/docs/`.
