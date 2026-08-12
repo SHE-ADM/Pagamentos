@@ -14,6 +14,7 @@ Os dados sao publicos de conhecimento de transporte (chave, rota, peso) — sem 
 
 import sys
 import unittest
+from unittest import mock
 from datetime import date
 from decimal import Decimal
 from pathlib import Path
@@ -159,6 +160,86 @@ class TotalsMatchTest(unittest.TestCase):
     def test_texto_sem_subtotal_nao_fecha(self):
         self.assertFalse(C.totals_match("sem total algum", [
             {"cargo_weight_kg": Decimal(0), "freight_amount": Decimal(0)}]))
+
+
+class UpdateFiscalContentTest(unittest.TestCase):
+    """O método que ESCREVE — inclusive o caminho de erro, que só roda quando já deu errado."""
+
+    def setUp(self):
+        import importlib.util  # noqa: PLC0415
+
+        raiz = Path(__file__).resolve().parents[1]
+        spec = importlib.util.spec_from_file_location(
+            "read_emails_para_teste_update", raiz / "skills" / "email-reader" / "scripts" / "read_emails.py")
+        self.R = importlib.util.module_from_spec(spec)
+        sys.path.insert(0, str(raiz / "skills" / "pdf-contas-pagar" / "scripts"))
+        spec.loader.exec_module(self.R)
+
+        self.ctrl = self.R.SupabaseControl.__new__(self.R.SupabaseControl)
+        self.ctrl._available = True
+        self.ctrl.base = "https://x.supabase.co"
+        self.ctrl.headers = {"apikey": "k", "Authorization": "Bearer k",
+                             "Content-Type": "application/json"}
+        self.item = C.parse_braspress_invoice(FATURA_REAL)[0]
+
+    def _captura(self):
+        """Devolve (mock do urlopen, lista onde o Request cai)."""
+        vistos: list = []
+        cm = mock.MagicMock()
+        cm.__enter__.return_value.read.return_value = b""
+
+        def _urlopen(req, timeout=None):
+            vistos.append(req)
+            return cm
+        return _urlopen, vistos
+
+    def test_monta_patch_na_chave_certa_com_os_campos_do_parser(self):
+        import json  # noqa: PLC0415
+
+        _urlopen, vistos = self._captura()
+        with mock.patch.object(self.R.urllib.request, "urlopen", _urlopen):
+            self.assertTrue(self.ctrl.update_fiscal_content(self.item))
+
+        req = vistos[0]
+        self.assertEqual(req.get_method(), "PATCH")
+        self.assertIn(f"access_key=eq.{self.item['access_key']}", req.full_url)
+        corpo = json.loads(req.data)
+        self.assertEqual(corpo["origin"], "CCT")
+        self.assertEqual(corpo["destination"], "RIO")
+        self.assertEqual(corpo["content_source"], "braspress_invoice")
+        # Decimal serializado como STRING preserva o centavo; float não.
+        self.assertEqual(corpo["freight_amount"], "652.60")
+        self.assertIsInstance(corpo["cargo_weight_kg"], str)
+
+    def test_nao_rebaixa_conteudo_vindo_de_llm(self):
+        """O filtro faz parte da URL: sem ele, esta passada sobrescreveria dado mais rico."""
+        _urlopen, vistos = self._captura()
+        with mock.patch.object(self.R.urllib.request, "urlopen", _urlopen):
+            self.ctrl.update_fiscal_content(self.item)
+        self.assertIn("content_source=not.eq.dacte_llm", vistos[0].full_url)
+
+    def test_sem_chave_nao_faz_requisicao(self):
+        chamou = []
+        with mock.patch.object(self.R.urllib.request, "urlopen",
+                                        lambda *a, **k: chamou.append(1)):
+            self.assertFalse(self.ctrl.update_fiscal_content({"access_key": None}))
+        self.assertEqual(chamou, [])
+
+    def test_supabase_indisponivel_devolve_false(self):
+        self.ctrl._available = False
+        self.assertFalse(self.ctrl.update_fiscal_content(self.item))
+
+    def test_http_error_e_engolido_com_log(self):
+        """NÃO-FATAL: conteúdo é enriquecimento, não pode derrubar a extração do e-mail."""
+        erro = self.R.urllib.error.HTTPError("u", 400, "bad", None, None)
+        erro.read = lambda: b"detalhe"
+        with mock.patch.object(self.R.urllib.request, "urlopen", side_effect=erro):
+            self.assertFalse(self.ctrl.update_fiscal_content(self.item))
+
+    def test_falha_de_rede_e_engolida_com_log(self):
+        with mock.patch.object(self.R.urllib.request, "urlopen",
+                                        side_effect=TimeoutError("t")):
+            self.assertFalse(self.ctrl.update_fiscal_content(self.item))
 
 
 class GanchoNoPipelineTest(unittest.TestCase):
