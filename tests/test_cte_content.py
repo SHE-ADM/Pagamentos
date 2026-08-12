@@ -23,26 +23,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "skills" / "pdf-con
 
 import cte_content as C  # noqa: E402
 
-# Trecho REAL da fatura 2607128724 (e-mail "ENC: 1o. ENVIO - Acesso a faturas via WEB").
-# Os tres conhecimentos e o SUB-TOTAL sao os do PDF; o cabecalho foi encurtado.
-FATURA_REAL = """Matriz: ROD PRESIDENTE DUTRA KM 222,500 S/N
-CNPJ 48.740.351/0001-65 Insc. Est.796621736119
-Cliente: TEXTIL E CONFECCOES OTIMOTEX LTDA CNPJ: 47.273.917/0001-23
-BRASPRES TRANSPORTES URGENTES LTDA - CNPJ: 48.740.351/0001-65
-www.braspress.com.br - Central de atendimento Cobranca Braspress: 0800-775-3333
-Fatura de Conhecimento(s) de transporte eletronico, acesse o site abaixo e informe a(s) chave(s)
-NUMERO PERCURSO DATA PESO NOTA VRL. VRL. DESTINATARIO
-AWB ORIG DEST FISCAL MERC. FRETE
-005709378 CCT RIO 14/07/2026 96,00 248632 24.156,61 652,60 HANDRED STUDIO COMERCIO LTDA
-Chave CTe 35260748740351011442570000057093781966739743
-005712210 CCT RIO 16/07/2026 3,00 248658 511,20 148,70 HANDRED STUDIO COMERCIO LTDA
-Chave CTe 35260748740351011442570000057122101176557511
-005710879 CCT V2C 15/07/2026 8,28 248586 2.300,40 133,87 HAGAEF CONFECCOES EIRELI
-Chave CTe 35260748740351011442570000057108791138923112
-SUB-TOTAL 107,28 26.968,21 935,17
-TOTAL BRUTO R$ PESO CREDIT SUB-TOTAL ICMS ST ICMS QTD AW DESCONTO VALOR LIQUIDO R$
-935,17 107,28 0,00 935,17 0,00 0,00 3 0,00 935,17
-"""
+# A fixture (trecho REAL da fatura 2607128724) vive em `fixtures_cte.py`, compartilhada
+# com `test_fiscal_document_hook.py` — copiada nos dois, as versoes divergiriam e o
+# oraculo do SUB-TOTAL deixaria de valer sem nada acusar.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from fixtures_cte import FATURA_BRASPRESS as FATURA_REAL  # noqa: E402
+from fixtures_cte import SUBTOTAL_FRETE, SUBTOTAL_PESO  # noqa: E402
 
 
 class DeteccaoTest(unittest.TestCase):
@@ -92,8 +78,11 @@ class ParseTest(unittest.TestCase):
             self.assertEqual(i["access_key"][20:22], "57")
 
     def test_soma_do_frete_bate_com_o_subtotal_impresso(self):
-        soma = sum(i["freight_amount"] for i in self.itens)
-        self.assertEqual(soma, Decimal("935.17"))
+        # Os totais vem da fixture, nao repetidos aqui: um numero magico solto divergiria da
+        # fatura no primeiro ajuste, e o teste passaria a comparar com um valor que nao existe
+        # em documento nenhum.
+        self.assertEqual(sum(i["freight_amount"] for i in self.itens), Decimal(SUBTOTAL_FRETE))
+        self.assertEqual(sum(i["cargo_weight_kg"] for i in self.itens), Decimal(SUBTOTAL_PESO))
 
 
 class DiversasNotasTest(unittest.TestCase):
