@@ -1,5 +1,71 @@
 # Histórico de deploys
 
+## 2026-08-12 — Barra na chave de acesso (61 CT-e perdidos) + conteúdo do CT-e (Onda 5)
+
+**Sintoma: nenhum.** É o que torna este deploy diferente dos outros desta página — não houve
+e-mail em `falha`, linha em `/erros` nem teste vermelho. O extrator errava **para menos**: a chave
+de acesso do CT-e não era vista, e o acervo ficava menor do que devia parecendo completo. O sinal
+mais próximo de um sintoma eram **39 dos 88 PDFs de transporte** registrados com `models=[55]` —
+só a NF-e citada dentro do DACTE —, o que se lê como "documento sem CT-e", não como falha de
+leitura.
+
+**Causa:** `fiscal_key._DIGIT_RUN_RE` não tolerava **barra** no separador. Rodonaves, TRB e SSW
+imprimem a chave com o CNPJ do emitente FORMATADO dentro dela
+(`35.2608.44.914.992/0001-38-57-001-…`): o run de dígitos partia em 14 + 30 e nenhum pedaço
+alcançava 44. **61 CT-e recuperados** no backfill (acervo 232 → 293).
+
+**Como foi encontrado:** baixando os 144 PDFs fiscais do bucket e comparando o TEXTO com o que
+estava gravado. Nenhuma métrica, log ou suíte apontava para lá.
+
+**Arquivos:** `skills/pdf-contas-pagar/scripts/fiscal_key.py` (a barra) ·
+`skills/pdf-contas-pagar/scripts/cte_content.py` (**ARQUIVO NOVO** — conteúdo do CT-e) ·
+`skills/email-reader/scripts/read_emails.py` (`update_fiscal_content` + gancho) ·
+`deploy-manifest.json`.
+
+**Junto foi a Onda 5, item 5.3** (migration **119**, já aplicada no banco): rota, peso, NF
+transportada, destinatário e frete, extraídos da **fatura agregada** da transportadora por regex —
+sem LLM. O parser é fail-closed pelo SUB-TOTAL impresso: fatura que não fecha não grava nada.
+Backfill de **57 CT-e**; e, cruzando pelo PDF de origem, **9 de 9** faturas com conta a pagar
+vinculada batem exatamente com o `amount` da conta — o que prova que o frete é decomposição da
+despesa já lançada, não uma despesa nova.
+
+**Sem** `.env` novo, **sem** dependência nova, **sem** `setup-*-task.ps1`. A migration 119 foi
+aplicada antes, via psql.
+
+⚠️ **`cte_content.py` degrada em SILÊNCIO se faltar.** Ao contrário de `febraban`/`fiscal_key`
+(importados no topo do `extract_pdf.py`, cuja ausência estoura), ele é importado **lazy** pelo
+reader: sem ele o pipeline segue verde gravando documentos **sem** peso/rota/frete, e o único
+sinal é a linha `modulo 'cte_content' indisponivel … Deploy parcial?` no log. É mais brando e por
+isso mais fácil de esquecer.
+
+**Implantado e validado em produção em 2026-08-12.** Paridade **28/28** (0 faltando · 0
+divergentes · 0 extras) e, porque paridade prova o arquivo mas não a execução, dois smoke tests
+na própria máquina:
+
+```powershell
+py -3 -c "import sys; sys.path.insert(0,'skills/email-reader/scripts'); sys.path.insert(0,'skills/pdf-contas-pagar/scripts'); import read_emails as R; print(hasattr(R,'_register_cte_content'), R._cte_content() is not None)"
+py -3 -c "import sys; sys.path.insert(0,'skills/pdf-contas-pagar/scripts'); import fiscal_key as F; print(F.extract_access_keys('35.2608.44.914.992/0001-38-57-001-062.409.157-162.409.157-0'))"
+```
+
+Resultado: `gancho: True | modulo carregou: True` e a chave
+`35260844914992000138570010624091571624091570` — que é justamente um dos 61 CT-e que antes se
+perdiam. O primeiro comando é o que importa aqui: ele prova que o import lazy **encontra** o
+módulo naquele Python, que é exatamente o que degradaria calado.
+
+SHA-256 nesta versão: `fiscal_key.py` `2a6e34f3…90b9994` · `cte_content.py` `1877e67b…77aec29` ·
+`read_emails.py` `ac298ec3…e7c0b99`.
+
+**Lições não-óbvias:**
+
+- **Extrator que erra PARA MENOS não gera sintoma.** Não há erro, não há linha em `/erros`, não há
+  teste vermelho — só um acervo menor que parece completo. A única verificação que encontra isso é
+  comparar o **conteúdo da fonte** com o que foi gravado; auditoria por métrica agregada não vê.
+- **Classificar documento por assunto ou nome de arquivo erra.** Foi a classificação por metadados
+  que sustentou a premissa errada do levantamento anterior (41 DACTEs, quando são 83).
+- **Ao auditar um campo, varra TODAS as origens.** A auditoria de 17/07 cobriu só `pdf_text` (205
+  contas) e concluiu "1 divergência"; o defeito morava em `pdf_vision`. Restringir a varredura à
+  origem que se suspeita confirma a suspeita e deixa o resto invisível.
+
 ## 2026-08-07 — Vision multi-boleto: carnê escaneado deixava de virar conta
 
 **Sintoma:** e-mail com boletos escaneados ficava `extraído` com **0 contas** e uma linha

@@ -12,6 +12,8 @@ O QUE ESTES TESTES TRAVAM (e por que cada um existe)
     levanta, e a conta tem de ser gravada assim mesmo).
   - Sem o modulo `fiscal_key` (deploy parcial) o reader degrada em silencio funcional — nao
     grava nada, nao quebra nada.
+  - **Onda 5:** o CONTEUDO do CT-e (rota/peso/frete) chega ao banco pelo fluxo de TOPO, e nao
+    so quando `_register_fiscal_documents` e chamada diretamente. Ver `ConteudoCteFluxoTopoTest`.
 """
 
 import sys
@@ -21,6 +23,11 @@ from unittest.mock import patch
 
 _SCRIPTS_DIR = Path(__file__).resolve().parents[1] / "skills" / "email-reader" / "scripts"
 sys.path.insert(0, str(_SCRIPTS_DIR))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "skills" / "pdf-contas-pagar" / "scripts"))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+from fixtures_cte import CHAVES as FATURA_CHAVES  # noqa: E402
+from fixtures_cte import FATURA_BRASPRESS  # noqa: E402
 
 import read_emails as R  # noqa: E402
 
@@ -45,6 +52,7 @@ class FakeControl:
     def __init__(self, fiscal_raises=False):
         self.financial_calls = []
         self.fiscal_calls = []
+        self.content_calls = []
         self.error_calls = []
         self.order = []
         self._fiscal_raises = fiscal_raises
@@ -55,6 +63,12 @@ class FakeControl:
             raise RuntimeError("banco fora do ar")
         self.fiscal_calls.append((doc, storage_key, ctx))
         self.order.append("fiscal")
+        return True
+
+    # -- conteudo do CT-e (Onda 5) ----------------------------------------------
+    def update_fiscal_content(self, item):
+        self.content_calls.append(item)
+        self.order.append("conteudo")
         return True
 
     # -- caminho financeiro ------------------------------------------------------
@@ -233,6 +247,79 @@ class DegradacaoTest(_RunnerMixin, unittest.TestCase):
         ctrl, _, _ = self._run({"guia.pdf": f"Guia DAMSP {arrecadacao}"},
                                {"guia.pdf": _row("guia.pdf", None, doc_type="dam / duam")})
         self.assertEqual(ctrl.fiscal_calls, [])
+
+
+class ConteudoCteFluxoTopoTest(_RunnerMixin, unittest.TestCase):
+    """Onda 5 — o conteudo do CT-e chega ao banco pelo FLUXO DE TOPO.
+
+    POR QUE ESTA CLASSE EXISTE, SE `test_cte_content.py` JA TESTA O GANCHO
+        La o teste chama `_register_fiscal_documents` DIRETAMENTE, passando o texto na mao.
+        Isso prova o gancho, mas nao prova o elo anterior: que `extract_and_store_accounts`
+        le o PDF e entrega ESSE texto ao gancho. Se alguem trocar o argumento por
+        `row.get("description")` — que tambem e uma string plausivel e nao quebra nada —, o
+        outro teste segue verde e o conteudo para de ser gravado em producao.
+
+        E a mesma lacuna descrita na regra 2, item 6 do CLAUDE.md: guarda que nao EXECUTA o
+        caminho de topo nao ve escopo, ordem nem argumento errado. O caso que originou aquela
+        regra foi um `UnboundLocalError` em `process_message` com a guarda de wiring verde.
+
+    A extracao (Claude) e a leitura do PDF continuam controladas pelo `_RunnerMixin` — o que
+    NAO esta mockado aqui e justamente o trecho sob teste: o Passo 1 de
+    `extract_and_store_accounts`, incluindo a decisao de quando e com o que chamar o gancho.
+    """
+
+    FATURA = "fatura_braspress.pdf"
+
+    def _fatura(self, ctrl=None):
+        # A fatura tem boleto (e uma cobranca real), entao a linha vira conta normalmente —
+        # o conteudo do CT-e e gravado ALEM disso, sem interferir na regra financeira.
+        return self._run({self.FATURA: FATURA_BRASPRESS},
+                         {self.FATURA: _row(self.FATURA, BOLETO_REAL, doc_type="boleto")},
+                         ctrl=ctrl)
+
+    def test_grava_o_conteudo_dos_tres_conhecimentos(self):
+        ctrl, _, _ = self._fatura()
+        self.assertEqual(len(ctrl.content_calls), 3)
+
+    def test_o_conteudo_corresponde_as_chaves_da_fatura(self):
+        """Prova que o texto que chegou ao gancho e o DO PDF, nao outra string qualquer."""
+        ctrl, _, _ = self._fatura()
+        self.assertEqual([c["access_key"] for c in ctrl.content_calls], list(FATURA_CHAVES))
+
+    def test_os_campos_de_transporte_chegam_preenchidos(self):
+        ctrl, _, _ = self._fatura()
+        primeiro = ctrl.content_calls[0]
+        self.assertEqual(primeiro["origin"], "CCT")
+        self.assertEqual(primeiro["destination"], "RIO")
+        self.assertEqual(str(primeiro["freight_amount"]), "652.60")
+
+    def test_conteudo_vem_DEPOIS_do_registro_da_chave(self):
+        """Conteudo e UPDATE: antes do INSERT ele gravaria em nada, sem erro nenhum."""
+        ctrl, _, _ = self._fatura()
+        self.assertIn("fiscal", ctrl.order)
+        self.assertLess(max(i for i, o in enumerate(ctrl.order) if o == "fiscal"),
+                        min(i for i, o in enumerate(ctrl.order) if o == "conteudo"))
+
+    def test_a_conta_a_pagar_e_gravada_do_mesmo_jeito(self):
+        """A Onda 5 nao pode alterar a regra financeira — o boleto continua virando conta."""
+        ctrl, saved, nonpayable_only = self._fatura()
+        self.assertEqual(saved, 1)
+        self.assertFalse(nonpayable_only)
+
+    def test_pdf_que_nao_e_fatura_nao_gera_conteudo(self):
+        ctrl, _, _ = self._run({"dacte.pdf": DACTE_TEXT},
+                               {"dacte.pdf": _row("dacte.pdf", None)})
+        self.assertEqual(ctrl.content_calls, [])
+
+    def test_falha_ao_gravar_conteudo_nao_derruba_a_conta(self):
+        """NAO-FATAL: enriquecimento nao pode custar a extracao financeira do e-mail."""
+        class CtrlQuebraNoConteudo(FakeControl):
+            def update_fiscal_content(self, item):
+                raise RuntimeError("banco fora do ar")
+
+        ctrl = CtrlQuebraNoConteudo()
+        _, saved, _ = self._fatura(ctrl=ctrl)
+        self.assertEqual(saved, 1)
 
 
 class HelperUnitarioTest(unittest.TestCase):
