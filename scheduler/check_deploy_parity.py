@@ -57,6 +57,12 @@ DEPLOY_GLOBS: tuple[str, ...] = (
     "skills/cobranca-vencidos/scripts/*.py",
     "skills/backup-supabase/scripts/*.py",
     "skills/baixa-automatica/scripts/*.py",
+    # Medição mensal dos gatilhos da Onda 9. Entrou em produção a pedido do dono do produto
+    # (2026-08-13) — antes rodava só no dev. É a única rotina agendada que NÃO faz parte do
+    # pipeline financeiro: não lê e-mail, não cobra ninguém, não move dinheiro. Consequência
+    # prática de estar aqui: uma falha dela reprova a tarefa agendada e gera Event Log no servidor
+    # do negócio, como as demais.
+    "skills/roadmap-gatilhos/scripts/*.py",
     "scheduler/*.ps1",
 )
 

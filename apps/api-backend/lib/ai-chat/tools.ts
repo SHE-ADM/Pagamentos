@@ -1,7 +1,8 @@
 // lib/ai-chat/tools.ts
-// As 11 tools do chat de IA: definição enviada ao modelo + execução via RPC no schema `analytics`.
+// As 12 tools do chat de IA: definição enviada ao modelo + execução via RPC no schema `analytics`.
 // (6 da migration 098 · demonstrativo_despesas da 104 — Onda 1 · buscar_emails da 106 — Onda 2 ·
-// documentos_fiscais da 108 — Onda 3 · auditoria_eventos e auditoria_resumo da 118 — Onda 7.)
+// documentos_fiscais da 108 — Onda 3 · auditoria_eventos e auditoria_resumo da 118 — Onda 7 ·
+// pontualidade_pagamento da 121 — Onda 9.)
 //
 // POR QUE JSON SCHEMA CRU E NÃO ZOD (§17.7 do doc de arquitetura)
 // O §6 do documento já especifica os contratos em JSON Schema, que é exatamente o formato que a
@@ -51,6 +52,8 @@ const FISCAL_DOC_TYPES = ['nfe', 'cte', 'cfe', 'nfce'] as const;
 const AUDIT_TABLES = ['financial_account_control', 'supplier'] as const;
 const AUDIT_OPERATIONS = ['UPDATE', 'DELETE', 'TRUNCATE'] as const;
 const AUDIT_GROUPS = ['usuario', 'campo', 'tabela', 'operacao'] as const;
+// Onda 9. 'faixa' agrupa por severidade do atraso; 'geral' devolve uma linha só (o panorama).
+const PUNCTUALITY_GROUPS = ['geral', 'fornecedor', 'empresa', 'mes', 'faixa'] as const;
 const DATE_FIELDS = ['vencimento', 'pagamento', 'emissao'] as const;
 const GRANULARITIES = ['dia', 'semana', 'mes', 'trimestre'] as const;
 const CLASSIFICATION_DIMS = ['centro_custo', 'plano_contas', 'grupo', 'subgrupo', 'tipo'] as const;
@@ -171,6 +174,16 @@ const schemas = {
     group_by: z.enum(AUDIT_GROUPS),
     apenas_sensiveis: z.boolean().optional(),
     tabela: z.enum(AUDIT_TABLES).optional(),
+    limit: z.number().int().min(1).max(100).optional(),
+  }),
+  pontualidade_pagamento: z.object({
+    // date_from/date_to filtram por DATA DE PAGAMENTO — é a única data que faz sentido aqui, e
+    // por isso não há `date_field`: pontualidade de um período é sobre o que foi PAGO nele.
+    date_from: isoDate.optional(),
+    date_to: isoDate.optional(),
+    group_by: z.enum(PUNCTUALITY_GROUPS),
+    sk_company: skCompanyId.optional(),
+    min_contas: z.number().int().min(1).max(1000).optional(),
     limit: z.number().int().min(1).max(100).optional(),
   }),
 } as const;
@@ -523,6 +536,58 @@ export const TOOL_DEFINITIONS: readonly ToolDefinition[] = [
           description: 'true = conta só as alterações que tocaram campo sensível.',
         },
         tabela: { type: 'string', enum: AUDIT_TABLES },
+        limit: limitProp(DEFAULT_LIMIT),
+      },
+      required: ['group_by'],
+    },
+  },
+  {
+    name: 'pontualidade_pagamento',
+    description:
+      'Pontualidade de pagamento: quanto se paga EM DIA, com que atraso e onde o atraso se '
+      + 'concentra. Responde "estamos pagando em dia?", "qual o atraso médio?", "quais '
+      + 'fornecedores recebem com atraso?", "a pontualidade melhorou de um mês para o outro?". '
+      + '🔴 NÃO é DPO. DPO é um indicador contábil (saldo de contas a pagar ÷ CMV × dias) e exige '
+      + 'o passivo da empresa; aqui a base é só o que chegou por e-mail. Nunca apresente este '
+      + 'resultado como DPO nem como prazo médio de pagamento a fornecedores. '
+      + '🔴 COBERTURA PARCIAL, e ela precisa ser dita: só entram contas pagas a partir de '
+      + '`cobertura_desde`. Antes dessa data a data de pagamento veio de um backfill (ficou igual '
+      + 'ao vencimento) e produziria atraso ZERO artificial. `fora_da_cobertura` diz quantas '
+      + 'contas pagas do período ficaram de fora por isso, e `excluidas_venc_alterado` quantas '
+      + 'saíram porque o vencimento foi alterado DEPOIS do pagamento (nesses casos o atraso '
+      + 'mediria a alteração, não o pagamento). Cite esses números quando forem maiores que zero. '
+      + '`pct_pontualidade` conta como pontual o que foi pago ATÉ o vencimento (antecipado '
+      + 'inclusive). `atraso_medio_dias` e `atraso_mediano_dias` somam APENAS as atrasadas e vêm '
+      + 'vazios quando não houve nenhuma — não os leia como zero; `desvio_medio_dias` é o líquido '
+      + 'com sinal, em que antecipação abate atraso. '
+      + '🔴 Quando o período consultado só tiver contas fora da cobertura, a resposta vem com UMA '
+      + 'linha de aviso ("nenhuma conta com data de pagamento confiável no período"), contas = 0 e '
+      + '`fora_da_cobertura` maior que zero. Isso NÃO significa que não houve pagamento no '
+      + 'período — significa que houve e não é mensurável. Diga isso ao usuário, com o número. '
+      + 'Cada linha traz total_encontrado com a contagem REAL antes do limite — use esse número '
+      + 'para contar, nunca o número de linhas devolvidas.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        date_from: {
+          type: 'string',
+          format: 'date',
+          description: 'Início do período, pela DATA DE PAGAMENTO (não vencimento).',
+        },
+        date_to: { type: 'string', format: 'date' },
+        group_by: {
+          type: 'string',
+          enum: PUNCTUALITY_GROUPS,
+          description: 'geral = uma linha, o panorama · faixa = onde o atraso se concentra '
+            + '(antecipado, em dia, 1-7, 8-30, 31+ dias) · fornecedor · empresa · mes.',
+        },
+        sk_company: { type: 'integer', enum: [1, 2, 3] },
+        min_contas: {
+          type: 'integer',
+          minimum: 1,
+          description: 'Descarta grupos com menos de N contas. Use em group_by="fornecedor": '
+            + 'pontualidade calculada sobre 1 conta é ruído, não indicador.',
+        },
         limit: limitProp(DEFAULT_LIMIT),
       },
       required: ['group_by'],

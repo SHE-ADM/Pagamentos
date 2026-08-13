@@ -5,10 +5,12 @@
     "scheduler/run_backup.ps1": "81faf41ac350dc03ad3fbbf4a3c42170c0ed8af8459d8ba28d28ba220664bcf0",
     "scheduler/run_baixa.ps1": "a692d1d04508f4f2cf49509985989ab9fa8d441d71110fc19a606decf1d463ee",
     "scheduler/run_cobranca.ps1": "28592e216a89eefbdbed73374c566518c3a3893e9d57b9981ac90f58ba0a1524",
+    "scheduler/run_gatilhos.ps1": "9f97f8a256aaa9096f09fc162e6b322843b1594e54d2b2a4dcfc8e14786a6545",
     "scheduler/run_reader.ps1": "0ed146b2969c918ce025f4dd4e80ff103e6c7c2ca9fc6ad051c19f7f26f43046",
     "scheduler/setup-backup-task.ps1": "4848100fb955307ebfc8903b613eac79bdc7b02cc5699c8c7d0d3948fbcb4eb5",
     "scheduler/setup-baixa-task.ps1": "8f7ee7db5988ebc2cf28f098ddb0f88eb9590061789ef26a80b18fd947413bba",
     "scheduler/setup-cobranca-task.ps1": "c59dd8a24781883ec12b3739a32ab20198e78cb63f05b1db0b8d346a1b9b254c",
+    "scheduler/setup-gatilhos-task.ps1": "6c650da546e49901a2691d064065631dd48e7e3c3bec6ca2b1b11a15e4887086",
     "scheduler/setup-task.ps1": "509b68698b7baa3935f578c07a5518341d7e16d565d6fd214d0d074090416356",
     "skills/backup-supabase/scripts/backup_db.py": "4e44c331e4542180805d232677d819038bb16a62e866b4eec6a4576aac36f54e",
     "skills/backup-supabase/scripts/backup_storage.py": "e33d47a04fc8b5ba21125837c461ed89576c419c129ab5b50893f01ff073fb30",
@@ -28,6 +30,7 @@
     "skills/pdf-contas-pagar/scripts/cte_content.py": "1877e67b3009552785430b4230cc799ce2632f78764d1c24adacde97377aec29",
     "skills/pdf-contas-pagar/scripts/extract_pdf.py": "0b3afd8fa0bb2bd7811c57b754d91624e90e39cced65e1917bd19a8602654586",
     "skills/pdf-contas-pagar/scripts/febraban.py": "1ccb90f8c2fb4f7f56ac3a6058e1dab8670cb71b092deb1b1054a48666bcb1ce",
-    "skills/pdf-contas-pagar/scripts/fiscal_key.py": "2a6e34f3e849960d26725f7b2aedd9c1d7d23f2e1af6d067a71ebf3fd90b9994"
+    "skills/pdf-contas-pagar/scripts/fiscal_key.py": "2a6e34f3e849960d26725f7b2aedd9c1d7d23f2e1af6d067a71ebf3fd90b9994",
+    "skills/roadmap-gatilhos/scripts/run.py": "0d7e814e56ffae876aef511903ad06a9912e9222c1f3b1c384dfe17c8ca2b68a"
   }
 }

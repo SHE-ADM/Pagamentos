@@ -212,13 +212,16 @@ Estas regras se aplicam a **todo** código novo ou alterado neste projeto, sem e
   `test_contact_block_nonpayable.py`, `test_is_processed.py`,
   `test_onda8_gate_ia.py`, `test_react_versao_unica.py`). Cobre o
   pipeline de extração; rodar após mexer em `read_emails.py`/`extract_pdf.py` ou nos
-  scripts de reprocessamento. Não é incluída no `npm test` (que soma **1.466** no Node —
-  frontend-vite 855 · api-backend 577 · packages/shared 32 · portal-next 2, medidos em
-  2026-08-13 após o review da Onda 8). A suíte Python está em **1.314** (medida em 2026-08-13
-  contra `fbb2dc0`, o commit anterior à onda: 1.283 → 1.314). Os **31** da Onda 8 são
-  `test_onda8_gate_ia.py` (**28** — colunas cross-layer, deny por default nas 4 camadas, semente,
-  ausências, ordem dos porteiros e o contrato do erro) e `test_react_versao_unica.py` (**3**);
-  os 56 anteriores são a Onda 5 e a barra na chave de acesso; os 34 antes disso, a Onda 7.
+  scripts de reprocessamento. Não é incluída no `npm test` (que soma **1.468** no Node —
+  frontend-vite 855 · api-backend 579 · packages/shared 32 · portal-next 2, medidos em
+  2026-08-13 após a Onda 9). A suíte Python está em **1.367** — os **26** mais recentes são
+  `test_roadmap_gatilhos.py` (o medidor mensal dos gatilhos: domínio cross-layer script × CHECK,
+  limiares nas duas bordas, isolamento entre medidores e a contagem pelo header). Os **25** da Onda 9 são
+  `test_onda9_pontualidade.py` (assinatura cross-layer TS↔SQL, fonte única da data de corte e do
+  domínio do eixo, a negação do nome DPO, o período sem cobertura, sondas e grants); os **31** da
+  Onda 8, `test_onda8_gate_ia.py` (**28**) e
+  `test_react_versao_unica.py` (**3**), medidos contra `fbb2dc0` (1.283 → 1.314); os 56 anteriores
+  são a Onda 5 e a barra na chave de acesso; os 34 antes disso, a Onda 7.
   > 🔴 **O TOTAL da suíte vive AQUI e em nenhum outro doc.** Registro de onda cita o INCREMENTO,
   > que é propriedade dela e não envelhece; total muda a cada PR, e a 2ª cópia diverge no dia
   > seguinte — foi o que aconteceu com o roadmap da Onda 8, errado nos **três** números 24 h depois
@@ -886,10 +889,10 @@ perguntas reais, 2 usuários, `error IS NULL` em todas, 4 tools distintas exerci
 `cache_read_input_tokens > 0` em 5 de 5. Pilares: **nunca `service_role` no caminho de leitura** ·
 **tool calling** sobre funções de negócio como via primária · log de toda interação para auditoria.
 
-> ⚠️ **São 11 tools, não 6.** As 6 da Fase 1 + `demonstrativo_despesas` (104) + `buscar_emails`
-> (106) + `documentos_fiscais` (108) + `auditoria_eventos` e `auditoria_resumo` (118). Menções a
-> "6 funções" no doc de arquitetura descrevem a Fase 1 e valem como histórico; a lista viva é
-> `lib/ai-chat/tools.ts`, travada por teste.
+> ⚠️ **São 12 tools, não 6.** As 6 da Fase 1 + `demonstrativo_despesas` (104) + `buscar_emails`
+> (106) + `documentos_fiscais` (108) + `auditoria_eventos` e `auditoria_resumo` (118) +
+> `pontualidade_pagamento` (121). Menções a "6 funções" no doc de arquitetura descrevem a Fase 1 e
+> valem como histórico; a lista viva é `lib/ai-chat/tools.ts`, travada por teste.
 
 > ✅ **RECORTE DA RLS PROVADO (2026-08-12), com usuário real do grupo Comercial.** A prova estava
 > adiada até a forma do gate ser decidida (item 8.3); com ela fechada, foi executada e passa nas
@@ -1120,7 +1123,7 @@ Plano completo em **[docs/roadmap-enriquecimento-dados.md](docs/roadmap-enriquec
 **ler antes de mexer em qualquer item abaixo.** Objetivo: ampliar a acurácia e a gama de perguntas
 do chat **sem quebrar o pipeline de extração**. Execução **uma onda por vez**, cada uma cumprindo o
 protocolo de 5 passos da §3 do plano (baseline → migration idempotente → não regredir o pipeline →
-verificação por oráculo diferencial → fechamento). Migrations usadas até aqui: **103–119** — a Onda
+verificação por oráculo diferencial → fechamento). Migrations usadas até aqui: **103–123** — a Onda
 6 ocupou **111–115** (o plano dizia 112–116, mas a 109/110 foram consumidas por trabalho não
 relacionado; deixar buraco na sequência seria pior). A **116** corrigiu a truncagem silenciosa das
 duas funções da 115 (achado B1 do review de 2026-08-10), a Onda 7 deslocou para **117–118** e a
@@ -1139,7 +1142,7 @@ Onda 5 (item 5.3) saiu na **119**.
 | 6 | ✅ **CONCLUÍDA** (migrations **111–116**) | `dim_date` + feriados · `competence_month` · `days_late` · `extraction_confidence` · `installment_number`/`installment_base` (o **`installment_total` do plano NÃO existe na origem**) · `analytics.fornecedores_recorrentes` e `analytics.parcelamentos` · 5 colunas novas na `vw_payables` · **116** = correção do achado B1 (truncagem silenciosa) |
 | 7 | ✅ **CONCLUÍDA** (migrations **117/118**) | trilha de auditoria: `audit_log` populada por trigger em `financial_account_control` **e `supplier`** · vazamento da tabela fechado · ator propagado por header · **10ª e 11ª tools** (`auditoria_eventos`, `auditoria_resumo`) |
 | 8 | ✅ **CONCLUÍDA** (migration **120**) | rate limit (Onda 1) · few-shot + as 2 lacunas de capacidade declaradas no prompt · 2 mapeamentos errados da bateria corrigidos · **gate de acesso ao chat por GRUPO** (`user_group.ai_chat_enabled` + cota própria), imposto no servidor e auditado — mais a **prova do recorte de RLS** que a onda devia |
-| 9 | Condicional | receitas p/ DRE · NFS-e · CF-e · DPO · agregados |
+| 9 | ⚠️ **1 de 7 itens** (migration **121**) | onda CONDICIONAL — os 7 gatilhos foram **medidos** em 2026-08-13 e só um ocorreu: **pontualidade de pagamento** (12ª tool `pontualidade_pagamento`). Seguem sem evidência: CF-e/NFC-e (0 documentos), NFS-e (1 conta), text-to-SQL (0 pergunta descoberta no log), agregados (2–7 ms contra teto de 500), receitas/DRE (0 entradas) e conciliação (sem integração) |
 
 **Decisões que NÃO devem ser reabertas sem evidência nova** (todas medidas em 2026-07-31):
 
@@ -1152,9 +1155,13 @@ Onda 5 (item 5.3) saiu na **119**.
 - **DRE completo DESCARTADO** (decisão do usuário — opção B): o sistema tem **0 receitas**, é
   contas a **pagar**. No lugar, a tool **`demonstrativo_despesas`** (Onda 1), com esse nome — não
   "DRE". Reabrir só via integração de receitas do Firebird (Onda 9).
-- **DPO / pontualidade ADIADO** — **450 de 463 contas pagas (97%)** têm `payment_date = due_date`
-  por artefato do backfill da migration 096; só há **2 dias** de histórico real (29–30/07).
-  Calcular DPO hoje devolveria "atraso médio zero", confiantemente falso.
+- **DPO (o indicador contábil) segue FORA — a PONTUALIDADE entrou na Onda 9.** O que adiou o item
+  era o backfill da 096 (450 de 463 pagas com `payment_date = due_date` por artefato, 2 dias de
+  histórico real); medido em 2026-08-13 há **218 contas com carimbo real em 3 semanas contínuas**,
+  e a tool da 121 mede só essa população. 🔴 **O artefato não sumiu, foi CERCADO:** agregar
+  `days_late` sem o corte de `analytics.payment_date_confiavel_desde()` reproduz o mesmo "atraso
+  médio zero" falso. E **DPO continua não sendo calculável** — exige o passivo contábil e o CMV da
+  empresa, não o que chegou por e-mail; o prompt nega o nome em vez de ignorá-lo.
 - **Cupom fiscal NÃO eletrônico fora** — sem chave, sem estrutura, **0 ocorrências**.
 - **`amount_paid` e `approved_by` automáticos fora** — trigger inventaria dado.
 - **`is_overdue` / aging como COLUNA fora** — muda com o tempo sem UPDATE (o bug da 095).
@@ -1182,8 +1189,9 @@ Onda 5 (item 5.3) saiu na **119**.
   do contador seria pior. Conta também as tentativas que falharam (elas gastaram tokens).
 - **Sugestão do painel é CONTRATO**: só entra pergunta coberta por tool e travada na bateria
   `regression.test.ts`. DPO, auditoria de autor e taxa de extração ficaram **fora** por não terem
-  dado que as sustente. ✅ **A auditoria de autor VOLTOU na Onda 7** (migrations 117/118 criaram a
-  trilha e as tools); DPO e taxa de extração seguem fora, aguardando as Ondas 9 e 2.
+  dado que as sustente. ✅ **A auditoria de autor VOLTOU na Onda 7** e a **pontualidade na Onda 9**
+  (as duas pelo mesmo motivo: o gatilho era dado acumulado e ele chegou). **Taxa de extração segue
+  fora** — as falhas vivem em `email_control`, e nenhuma tool as alcança.
 
 **O que a Onda 2 entregou (não regredir):**
 
@@ -1687,6 +1695,69 @@ linha recém-criada já está na fato, e o pipeline insere ~17/dia). Guardas em
 - **Cobertura declarada:** a trilha **começa em 11/08/2026**. Antes disso só existia o ÚLTIMO editor
   de cada conta; ausência de evento anterior NÃO prova que nada mudou, e a tool diz isso ao modelo.
 - **Esta onda não tocou `skills/`** ⇒ **sem deploy em produção**; o `deploy-manifest.json` não mudou.
+
+**O que a Onda 9 entregou e os invariantes que ela criou (não regredir):**
+
+A onda é **CONDICIONAL**: os 7 gatilhos foram **medidos** contra o banco em 2026-08-13 e só um
+ocorreu. A tabela com todas as medições está em
+[docs/roadmap-enriquecimento-dados.md](docs/roadmap-enriquecimento-dados.md) § ONDA 9 — consulte-a
+antes de implementar qualquer outro item, e **remeça** em vez de confiar no número escrito lá.
+
+- 🔴 **É PONTUALIDADE, nunca DPO.** DPO é indicador contábil (saldo de contas a pagar ÷ CMV ×
+  dias) e exige o passivo da empresa; a base aqui é só o que chegou por e-mail. É o mesmo erro que
+  a decisão do DRE evitou. O prompt **nega o nome explicitamente** em vez de silenciar: perguntado
+  por DPO, o modelo responde pontualidade e diz que DPO não é calculável. Travado nas duas camadas
+  (`regression.test.ts` e `tests/test_onda9_pontualidade.py`).
+- 🔴 **A população é só a do CARIMBO REAL.** As 441 contas do backfill da 096 têm `days_late = 0`
+  por construção; incluí-las devolve "atraso médio zero" — exatamente o número falso que adiou o
+  item. **Qualquer consulta futura sobre `days_late` precisa do mesmo corte**; ele é a métrica, não
+  um detalhe dela.
+- 🔴 **A data de corte vive em `analytics.payment_date_confiavel_desde()`, e SÓ ali.** Guarda: o
+  literal pode aparecer **1× no repositório inteiro** (validada por mutante). Uma 2ª cópia diverge
+  no primeiro ajuste e o backfill volta para dentro da conta, sem erro nenhum.
+- 🔴 **`payment_date <> due_date` NÃO prova carimbo real — a hipótese foi REFUTADA pelo banco.**
+  Parecia exata (o backfill sempre iguala), mas há **13 contas pagas antes do corte com desvio**, a
+  primeira em 2026-05-06: o **`due_date` foi alterado depois do pagamento** (reemissão de boleto
+  atualiza o vencimento da conta existente). Onde isso acontece, `days_late` mede a alteração do
+  vencimento, não o pagamento — por isso a tool **exclui** esses casos (detectáveis na `audit_log`
+  desde a Onda 7) e conta quantos. Hoje são 0; a exclusão existe para continuar correto quando
+  deixarem de ser.
+- 🔴 **`atraso_medio_dias` soma SÓ as atrasadas e vem NULL quando não houve nenhuma** — vazio ali
+  significa "não houve atraso", nunca zero. Incluir as antecipações produziria um número menor que
+  o atraso real com o nome de atraso; quem quer o líquido tem `desvio_medio_dias`.
+- **Cobertura declarada no RETORNO** (`cobertura_desde`, `fora_da_cobertura`,
+  `excluidas_venc_alterado`), repetida em cada linha como o `total_encontrado`: o consumidor é um
+  modelo de linguagem, e ressalva que não vem junto do número não é dita ao usuário.
+- 🔴 **Período 100% fora da cobertura devolve UMA LINHA DE AVISO, nunca vazio** *(achado da
+  autorrevisão adversarial, reproduzido no banco antes de corrigir)*. Junho/2026 tem **113 contas
+  pagas**, todas anteriores ao corte, e a 1ª versão devolvia **zero linhas** — o modelo responderia
+  *"não houve pagamento em junho"*, falso e invertendo a conclusão. **"Não existe" e "existe mas
+  não dá para medir" são respostas diferentes**, e preservar essa diferença é a razão de ser desta
+  tool. ⚠️ **A correção quase quebrou o domínio fechado** e foi a **sonda P3 que pegou, no ensaio**:
+  com eixo inválido o agregado também fica vazio, e sem a guarda o aviso apareceria — trocando
+  "parâmetro errado" por uma resposta de aparência legítima. O domínio virou CTE (`eixo`), fonte
+  única para os dois ramos. *Quem corrige, reaudita.*
+- **Herda os invariantes da camada `analytics`**: `SECURITY INVOKER` (é o que faz a RLS valer no
+  chat), `total_encontrado` por **janela** (5ª ocorrência da truncagem silenciosa), `ORDER BY` com
+  ordem total, clamp do `LIMIT` e `GRANT`/`REVOKE` nos dois sentidos. Verificado que o quadro de
+  privilégios é **idêntico** ao das tools existentes (`authenticated` sim; `service_role` e `anon`
+  não) — inclusive pelo PostgREST, onde o 403 (e não `PGRST202`) é o que prova que o cache de
+  schema já enxerga a função.
+- 🔴 **Ao contrário das Ondas 6 e 7, esta onda TOCOU `skills/` ⇒ EXIGIU deploy** —
+  `skills/roadmap-gatilhos/scripts/run.py` é arquivo **NOVO** e entrou nos `DEPLOY_GLOBS`
+  (`check_deploy_parity.py`), junto de `scheduler/run_gatilhos.ps1` e
+  `scheduler/setup-gatilhos-task.ps1`; o `deploy-manifest.json` foi de **28 para 31** entradas e a
+  5ª tarefa agendada roda em produção. Detalhe em "QUINTA tarefa" na seção do Task Scheduler.
+- 🔴 **O ramo do aviso olha `confiaveis`, NUNCA `agrupado`** *(achado B1 do code review de
+  2026-08-13, corrigido pela migration **123**)*. `agrupado` já passou pelo `HAVING count(*) >=
+  p_min_contas`, então vazio ali significa **duas** coisas — "não há população confiável" e "há,
+  mas nenhum grupo atingiu o piso" — e o aviso só vale para a primeira. Medido com os parâmetros
+  que a **própria descrição da tool recomenda** ("use `min_contas` em `group_by=fornecedor`"):
+  janela de 7 dias + `min_contas=10` ⇒ **118 contas confiáveis reais** e a tool respondia
+  *"nenhuma conta com data de pagamento confiável no período"*. É a mesma inversão que a CTE do
+  aviso existe para impedir, entrando pela outra porta. ⚠️ **Nenhuma das 8 sondas da 121 pegou, e
+  o motivo generaliza:** todas exercitavam `p_min_contas` no **default**, valor em que o defeito é
+  inalcançável — sonda que só roda o caminho padrão não prova o caminho parametrizado.
 
 **Dois invariantes que a auditoria do plano descobriu (não regredir):**
 
@@ -3840,8 +3911,57 @@ local/agendada (ver flag `EMAIL_READER_ENABLED` acima e memória [[vercel-deploy
 ## Banco de dados (Supabase)
 
 Migrations em `supabase/migrations/`, aplicadas **manualmente no SQL Editor** (ou via Supabase
-MCP — ver a nota de cada uma) em ordem numérica (`001` → `120`). **Próxima migration = `121`**
+MCP — ver a nota de cada uma) em ordem numérica (`001` → `123`). **Próxima migration = `124`**
 (verificar sempre antes de criar nova).
+
+**A `123` corrige DOIS achados do code review da Onda 9**
+([docs/review/2026-08-13-Features-light-onda9.md](docs/review/2026-08-13-Features-light-onda9.md))
+— aplicada via psql em 2026-08-13, idempotente. (1) **B1**, bloqueante:
+o ramo do aviso da `pontualidade_pagamento` testava `agrupado` em vez de `confiaveis`, então um
+`p_min_contas` alto fazia a tool **afirmar** que não há dado confiável no período — medido, 118
+contas reais numa janela de 7 dias com `min_contas=10`. É `CREATE OR REPLACE` (assinatura e
+`RETURNS TABLE` idênticos ⇒ **sem DROP e os grants sobrevivem**, o inverso da armadilha da 116).
+(2) **R1**: a sonda P4b da 122 comparava o `measured_at` contra um marco anterior aos **dois**
+INSERTs, e por isso passava com ou sem a trigger de touch; a sonda corrigida (aqui, porque a 122 é
+artefato aplicado) compara o 2º carimbo **contra o 1º**. A migration reprova a si mesma nas duas
+frentes e refaz a prova sob o papel `authenticated`, porque o **corpo da função mudou**.
+✅ **Verificado em produção no mesmo dia:** os cenários que devolviam a linha de aviso falsa (7 dias
++ `min_contas=10` sobre **118 contas reais**) passaram a devolver **vazio**, o aviso legítimo do
+período fora da cobertura continua saindo, e uma reexecução do medidor provou o `touch` da 122 no
+mundo real — 7 linhas, 7 gatilhos distintos (não duplicou) e `measured_at` avançando de 14:16 para
+17:48. A tool também foi exercitada **pelo PostgREST** pela primeira vez: `42501` com a anon key,
+não `PGRST202` — o que prova, de uma vez, que o cache de schema a enxerga e que `anon` está barrado.
+
+**A `122` cria `analytics.roadmap_trigger_snapshot`** — a série histórica dos 7 gatilhos
+condicionais da Onda 9 (aplicada via psql em 2026-08-13, idempotente), alimentada pela skill
+**`roadmap-gatilhos`**. 🔴 **A UNIQUE `(trigger_key, measured_on)` é a característica central, não
+um detalhe**: a gravação é UPSERT por dia, então remedir CORRIGE o ponto em vez de duplicar — sem
+ela, qualquer média ou gráfico sobre a série passaria a mentir depois da primeira reexecução, que
+acontece o tempo todo (teste manual, retomada após falha). O CHECK fecha o domínio das chaves para
+que um typo no script não crie série órfã (a série certa pararia de crescer em silêncio), e
+`criterion` guarda a régua aplicada **naquela** medição — sem ela, um `fired = false` de hoje fica
+inauditável quando o limiar mudar. Ela também concede a `service_role` o `EXECUTE` de
+`payment_date_confiavel_desde()`: sem isso o medidor teria de **fixar a data de corte por conta
+própria**, criando a 2ª fonte de verdade que a 121 existe para impedir.
+🔴 **`measured_at` usa `clock_timestamp()` e é mantido por TRIGGER, não por DEFAULT** *(achado da
+autorrevisão adversarial, reproduzido antes de corrigir)*. `DEFAULT` só vale no INSERT, e o UPSERT
+do PostgREST atualiza apenas as colunas **enviadas** — o script não manda o horário de propósito,
+para o relógio ser sempre o do banco. Resultado: na 2ª medição do dia, `metrics` mudava e o
+carimbo ficava congelado no horário da **primeira**, ou seja, a coluna cuja única função é dizer
+*quando se mediu* passava a informar outra hora, em silêncio. E o `clock_timestamp()` não é
+estilo: com `now()` (que é o instante em que a **transação** começou) o valor do UPDATE seria
+idêntico ao do INSERT, tornando o invariante **improvável por construção** — a sonda não teria como
+distinguir "a trigger funcionou" de "a trigger não existe".
+
+**A `121` é a Onda 9 — pontualidade de pagamento** (aplicada via psql em 2026-08-13, idempotente).
+Cria `analytics.payment_date_confiavel_desde()` (a data de corte do backfill, **fonte única**) e a
+12ª tool `analytics.pontualidade_pagamento(...)`. 🔴 **Ela mede só o que tem carimbo real da
+trigger da 096** — as 441 contas do backfill têm `days_late = 0` por construção, e agregá-las junto
+devolve "atraso médio zero", que foi o motivo de o item ficar adiado por meses. A tool **exclui e
+CONTA** (`fora_da_cobertura`, `excluidas_venc_alterado`): número que esconde a própria cobertura
+não é auditável. Invariantes e as duas armadilhas do dado em "O que a Onda 9 entregou".
+⚠️ Antes de aplicar, a migration inteira foi **ensaiada dentro de `BEGIN … ROLLBACK`** — as 8
+sondas rodaram e nada persistiu; é o jeito barato de testar DDL numa base compartilhada dev+prod.
 
 **A `120` é a Onda 8 (item 8.3) — o gate do chat de IA por grupo** (aplicada via Supabase MCP em
 2026-08-12, idempotente). Acrescenta a `public.user_group` três colunas — `ai_chat_enabled`
@@ -3884,6 +4004,19 @@ devolvia **50 de 63** fornecedores com HTTP 200 e nenhum sinal do corte. Acresce
 o `RETURNS TABLE` é mudar o tipo de retorno) e **reemite os `GRANT`/`REVOKE`**, que o `DROP` apaga.
 Traz `DO $$` que **aborta** comparando o total declarado com o real. Detalhe em
 [docs/review/2026-08-10-Features-light-onda6.md](docs/review/2026-08-10-Features-light-onda6.md).
+
+> 🔴 **`financeiro@otimotex.com.br` é conta TÉCNICA do backend, não uma pessoa** *(decisão do dono
+> do produto, 2026-08-13)*. Ela existe para ser o sentinela de autoria e **nunca terá acesso pelo
+> app** — nunca logou (`last_sign_in_at` nulo desde a criação, em 07/08).
+> **Está no grupo 7 (Financeiro) desde 2026-08-13, DE PROPÓSITO** — antes estava no 0, e foi movida
+> a pedido, para que nenhum usuário fique no grupo sentinela. ⚠️ Isso lhe dá `ai_chat_enabled =
+> true`: **risco conhecido e ACEITO**, porque a conta não é usada por ninguém. **Não "corrigir" de
+> volta para o grupo 0** ao encontrá-la no Financeiro — não é engano.
+> ⚠️ **A LINHA `user_group.group_id = 0` continua existindo e não pode ser removida**, mesmo sem
+> nenhum usuário: `handle_new_user` insere `group_id = 0` **hardcoded** e a coluna é `NOT NULL
+> DEFAULT 0` com FK. Removê-la faz a criação de QUALQUER usuário novo falhar por violação de chave
+> estrangeira. Consequência a lembrar: todo usuário novo **nasce no grupo 0** e depende de um passo
+> manual de designação — enquanto estiver lá, não vê nada e o chat responde 403, em silêncio.
 
 **A `110` troca a IDENTIDADE do SENTINELA de autoria** — `teste@otimotex.com.br` →
 `financeiro@otimotex.com.br` (aplicada via Supabase MCP em 2026-08-07, idempotente). Ver
@@ -4942,6 +5075,55 @@ Quatro tarefas agendadas na pasta `\Sheild\` do Agendador (produção
 automática"). **Cobrança Vencidos e Baixa Automática coincidem no horário (08:00)** — são
 tarefas independentes (scripts, tabelas e sistemas distintos: Firebird+SMTP vs. Supabase
 REST), sem recurso compartilhado, então rodam em paralelo sem conflito.
+
+> **QUINTA tarefa — *Pagamentos - Gatilhos Roadmap*** (skill **`roadmap-gatilhos`**,
+> `scheduler/setup-gatilhos-task.ps1`): mede mensalmente (dia 1, 07:00) os 7 gatilhos condicionais
+> da Onda 9 e grava a série em `analytics.roadmap_trigger_snapshot` (migration 122). **Roda em
+> produção**, como as outras quatro — decisão do dono do produto em 2026-08-13 (antes rodava só no
+> dev), então ela está nos **`DEPLOY_GLOBS`** e o manifesto passou de 28 para **31 arquivos**.
+> ⚠️ **É a única rotina agendada que NÃO faz parte do pipeline financeiro** — não lê e-mail, não
+> cobra ninguém, não move dinheiro. Uma falha dela reprova a tarefa e gera Event Log
+> (`Pagamentos-Gatilhos`, EventId **1005**) como as demais, mas **sem impacto no negócio**: o
+> efeito é a série ficar sem o ponto do mês. Comece a triagem por aí. **Zero dependência nova** —
+> `urllib` + `python-dotenv` e as mesmas `SUPABASE_URL`/`SUPABASE_SERVICE_KEY` da
+> `baixa-automatica`; não usa `SUPABASE_DB_URL` nem `pg_dump`.
+> ⚠️ **Instalada e validada em produção em 2026-08-13** (`LastTaskResult = 0`; próxima execução
+> 01/09 07:00), e a série já foi gravada de lá.
+>
+> 🔴 **É a única tarefa MENSAL, e ela é registrada por XML — não pelos cmdlets (não regredir).**
+> `New-ScheduledTaskTrigger` não tem opção mensal (só Once/Daily/Weekly/AtLogon/AtStartup), e
+> `-Once -RepetitionInterval 30 dias` seria sutilmente errado (30 dias não é um mês: a medição
+> escorrega até cair fora do mês pretendido). **Três defeitos foram pagos para chegar ao XML, e os
+> três só apareceram AO REGISTRAR — montar, parsear e validar passavam:**
+> 1. **Trigger por CIM (`MSFT_TaskMonthlyTrigger`) NÃO funciona.** O objeto monta sem erro, mas o
+>    `Register-ScheduledTask` do PowerShell 7 recusa com **"Parâmetro incorreto"**, sem dizer qual.
+> 2. **`<Principal>` vai DENTRO de `<Principals>` (plural), e a ORDEM dos nós é fixa:**
+>    `RegistrationInfo → Principals → Settings → Triggers → Actions` — sequência tirada de um
+>    `Export-ScheduledTask` **real**, não do XSD publicado. Fora dela: *"o XML contém um nó
+>    inesperado"*, que aponta a linha e não a causa. O script hoje **confere a sequência antes de
+>    registrar**, para o erro sair explicando o esperado.
+> 3. 🔴 **Verificar o TIPO do trigger é falso-positivo garantido.** A checagem original exigia
+>    `CimClassName -eq 'MSFT_TaskMonthlyTrigger'` e **reprovou uma tarefa registrada corretamente**:
+>    via XML o Agendador expõe o gatilho como `MSFT_TaskTrigger` genérico. Hoje a prova é
+>    **`NextRunTime`** — comportamento, não implementação: ele só existe com gatilho ativo, e vale
+>    para qualquer forma de registro. *Verificação que acusa defeito onde não há custa mais que
+>    verificação nenhuma* — esta mandou remover uma tarefa que estava boa.
+>
+> ⚠️ **Mensagem de erro não pode culpar o palpite mais comum.** O `catch` do setup dizia "verifique
+> se é Administrador" para qualquer falha, e mandou o operador procurar no lugar errado **com a
+> janela já elevada**. A elevação é checada no início; daí em diante o erro reporta a causa real.
+>
+> 🔴 **O `BUDGET_SECONDS` do `run.py` (10 min) e o `ExecutionTimeLimit` da tarefa (15 min) são um
+> PAR — mexer num sem o outro quebra a garantia** *(endurecimento de 2026-08-13)*. O pior caso de
+> rede (≈15 requisições × 3 tentativas × 30 s de timeout + backoff) passa de 24 min, e quem
+> encerraria o processo seria o **Agendador**: sem exit code próprio, sem log de resumo e **sem
+> gravar os gatilhos que já tinham sido medidos** — a medição do mês inteiro se perde por causa dos
+> últimos. Com o teto no script, ele para sozinho, grava o que apurou e sai 1. A folga de 5 min é
+> para a gravação e o encerramento.
+> ⚠️ Os temporários do runner são **por processo** (`_stdout_$PID.tmp`): com nome fixo, uma execução
+> manual coincidindo com a agendada faz as duas redirecionarem para o MESMO arquivo e a segunda
+> morre ao abri-lo. O `MultipleInstancesPolicy=IgnoreNew` protege o Agendador contra si mesmo, não
+> contra alguém rodando o runner à mão.
 
 `scheduler/run_reader.ps1` — intervalo de 5 min (`$INTERVAL_MIN` em
 `scheduler/setup-task.ps1`). Detecta Python com `pdfplumber` (ordem: `py -3.12`,

@@ -57,9 +57,48 @@ def _react_declarado(pkg: Path) -> str | None:
 
 
 def _major(faixa: str) -> str:
-    m = re.search(r"(\d+)", faixa)
-    assert m, f"nao consegui extrair o major de {faixa!r}"
-    return m.group(1)
+    """O major declarado numa faixa semver.
+
+    🔴 RECUSA faixa AMBIGUA em vez de adivinhar. A versao anterior era `re.search(r"(\\d+)")`, que
+    devolve o PRIMEIRO numero encontrado: `">=18 <20"` virava "18" com toda a confianca, e a
+    guarda passaria a comparar um major que ninguem declarou. Numa guarda cujo proposito e provar
+    que TODOS os workspaces dizem a mesma coisa, adivinhar derrota o objetivo — o certo e falhar e
+    exigir decisao humana.
+
+    Formas aceitas: `19`, `19.2.7`, `^19.2.7`, `~19.2`, `19.x`, `npm:react@19` (o alias que um
+    workspace usaria para apontar outro pacote). Rejeitadas: faixas com dois comparadores, uniao
+    (`||`) e qualquer coisa de que saiam majors diferentes.
+    """
+    # Ignora o que vem antes de um `@` (aliases `npm:pkg@19`), depois coleta os majors candidatos:
+    # o primeiro numero de cada componente separado por espaco, `||` ou `-`.
+    limpa = faixa.split("@")[-1] if faixa.startswith("npm:") else faixa
+    candidatos = {
+        m.group(1) for parte in re.split(r"\|\||\s+|-", limpa) if parte
+        if (m := re.match(r"[\^~>=<]*\s*(\d+)", parte.strip()))
+    }
+    assert candidatos, f"nao consegui extrair o major de {faixa!r}"
+    assert len(candidatos) == 1, (
+        f"faixa AMBIGUA {faixa!r}: majors possiveis {sorted(candidatos)}. Declare uma faixa de um "
+        "major so — a guarda nao pode escolher por voce qual deles vale."
+    )
+    return candidatos.pop()
+
+
+class ExtracaoDoMajorTest(unittest.TestCase):
+    """O extrator precisa acertar as formas reais — e RECUSAR o que for ambiguo."""
+
+    def test_formas_aceitas(self):
+        for faixa, esperado in (
+            ("19", "19"), ("19.2.7", "19"), ("^19.2.7", "19"), ("~19.2", "19"),
+            ("19.x", "19"), (">=19", "19"), ("npm:react@19.2.7", "19"),
+        ):
+            self.assertEqual(_major(faixa), esperado, f"faixa {faixa!r}")
+
+    def test_faixa_ambigua_e_RECUSADA_em_vez_de_adivinhada(self):
+        """`>=18 <20` devolvia "18" em silencio — um major que ninguem declarou."""
+        for faixa in (">=18 <20", "18 || 19", "18.0.0 - 19.0.0"):
+            with self.assertRaises(AssertionError, msg=f"faixa {faixa!r} deveria ser recusada"):
+                _major(faixa)
 
 
 class ReactVersaoUnicaTest(unittest.TestCase):

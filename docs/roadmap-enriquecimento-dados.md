@@ -101,18 +101,26 @@ de cada onda** — e o motivo de algumas ideias terem sido descartadas.
 | Contas bancárias cadastradas | **1** |
 | `audit_log` | existe, **0 linhas** |
 
-### 2.5 O achado que bloqueia a métrica de DPO
+### 2.5 O achado que bloqueava a métrica de DPO — ✅ superado na Onda 9 (2026-08-13)
 
-| Indicador | Valor |
-|---|---|
-| Contas pagas | 463 |
-| **Com `payment_date` ≠ `due_date`** | **13** |
-| Janela desses pagamentos reais | **29 a 30/07/2026** |
+Medição de **2026-07-31**, que adiou o item:
 
-> A migration **096** fez backfill adotando `due_date` como data de pagamento. Logo **450 de 463
-> (97%)** das pagas têm "pagamento exatamente no vencimento" **por artefato**, não por pontualidade.
-> Só existem **2 dias** de histórico real. Calcular DPO hoje devolveria *"atraso médio zero"* —
-> confiantemente falso.
+| Indicador | 2026-07-31 | 2026-08-13 |
+|---|---|---|
+| Contas pagas | 463 | **658** |
+| Com carimbo REAL da trigger | 13 | **218** (33%) |
+| Janela de histórico real | 29 a 30/07 (**2 dias**) | 29/07 a 12/08 (**3 semanas contínuas**) |
+
+> A migration **096** fez backfill adotando `due_date` como data de pagamento. Em julho, **450 de
+> 463 (97%)** das pagas tinham "pagamento exatamente no vencimento" **por artefato**, e calcular
+> DPO devolveria *"atraso médio zero"* — confiantemente falso.
+>
+> 🔴 **O artefato NÃO desapareceu: ele foi CERCADO.** As 441 contas do backfill continuam lá e
+> continuam com `days_late` zero por construção. O que mudou é que agora existe população real
+> suficiente ao lado delas, e a tool da Onda 9 (`analytics.pontualidade_pagamento`) **separa as
+> duas** — mede só o carimbo real e devolve `fora_da_cobertura` para o modelo declarar quantas
+> ficaram de fora. Qualquer consulta futura que agregue `days_late` sem esse corte volta a produzir
+> o mesmo número falso: o corte é a métrica, não um detalhe dela.
 
 ---
 
@@ -837,15 +845,53 @@ seguem intocados) e uma guarda que pareia **cada** ramo, validada por mutante.
 
 ### ONDA 9 — Condicional (só com evidência)
 
-| Item | Gatilho para reabrir |
-|---|---|
-| **Integração de RECEITAS (Firebird → Supabase) → DRE completo** | o negócio precisar de DRE de verdade. É o **único caminho** para isso: as receitas existem no Firebird (`VW_PSQ_FIN_REC_BAN`, já lido pela cobrança de vencidos), mas nada é gravado no Supabase. **Esforço G** — projeto próprio, muda a natureza do produto (deixa de ser só contas a pagar). Até lá, vale o "Demonstrativo de Custos e Despesas" da Onda 1 |
-| **NFS-e** (extração por layout municipal) | volume crescer — hoje são **4 PDFs**, sem chave nacional |
-| **CF-e / NFC-e / cupom fiscal eletrônico** | aparecer volume — o parser da Onda 3 **já aceita** os modelos 59/65; hoje há **1 e-mail e 0 anexos** |
-| **DPO / pontualidade real** | histórico pós-096 acumulado (hoje: 2 dias) |
-| Valor efetivamente pago / conciliação | integração bancária ou extrato — **não é derivável** |
-| Text-to-SQL (Fase 5 do chat) | tools novas não cobrirem as perguntas do `ai_chat_log` |
-| **Tabelas agregadas** | alguma tool passar de **~500 ms** warm |
+**Status: 1 de 7 itens entregue (2026-08-13).** Esta onda não se "implementa" em bloco: cada item
+tem um gatilho, e implementar um item cujo gatilho não ocorreu é construir para um cenário que não
+existe. Os **sete foram medidos contra o banco** em 2026-08-13, e o resultado é a tabela abaixo.
+
+| Item | Gatilho | Medido em 2026-08-13 | Situação |
+|---|---|---|---|
+| **DPO / pontualidade real** | histórico pós-096 acumulado | **218 contas com carimbo REAL da trigger** (33% das 658 pagas), em 3 semanas CONTÍNUAS (40/100/77); 132 com desvio; atraso médio 2,9 d nas atrasadas, máximo 31 | ✅ **ENTREGUE** — migration **121**, 12ª tool `pontualidade_pagamento` |
+| **CF-e / NFC-e / cupom eletrônico** | aparecer volume (parser já aceita 59/65) | `fiscal_document` tem **133 NF-e (55) e 169 CT-e (57)** — **zero** dos modelos 59/65 | ⬜ gatilho não ocorreu |
+| **NFS-e** (layout municipal) | volume crescer | **1 conta** `nfse` e 14 e-mails citando no assunto — sem chave nacional, cada município é um layout | ⬜ gatilho não ocorreu |
+| Text-to-SQL (Fase 5 do chat) | tools não cobrirem as perguntas do log | `ai_chat_log`: **8 interações, 0 erro, 0 truncada, 0 sem tool** — as tools cobriram 100% do que foi perguntado | ⬜ o inverso do gatilho |
+| **Tabelas agregadas** | alguma tool passar de ~500 ms warm | **2,2 a 7,0 ms** server-side (`EXPLAIN ANALYZE` nas mais pesadas) — 70× de folga | ⬜ gatilho não ocorreu |
+| **Receitas (Firebird → Supabase) → DRE** | o negócio precisar de DRE de verdade | **0 linhas de entrada** (833 contas, nenhuma negativa). Continua sendo decisão de negócio, não medição — a opção B de 2026-07-31 segue valendo. **Esforço G**, projeto próprio | ⬜ decisão do dono do produto |
+| Valor pago / conciliação | integração bancária ou extrato | sem integração — **não é derivável** de nada que exista hoje | ⬜ sem fonte |
+
+> 🔴 **Este registro é o produto mais durável da onda.** Sem ele, a próxima pessoa remede tudo do
+> zero — ou, pior, implementa por intuição um item cujo gatilho não ocorreu. Ao reavaliar, refaça
+> as medições (elas derivam) e atualize a coluna, em vez de confiar nos números acima.
+>
+> ✅ **A remedição está AUTOMATIZADA desde 2026-08-13** — skill **`roadmap-gatilhos`**, mensal
+> (dia 1, 07:00), gravando em `analytics.roadmap_trigger_snapshot` (migration 122). Consulte a
+> SÉRIE antes de decidir: `SELECT measured_on, fired, metrics FROM
+> analytics.roadmap_trigger_snapshot WHERE trigger_key = '<chave>' ORDER BY measured_on DESC`.
+> A tendência é o que decide (1 → 3 → 8 antecipa; três `false` isolados não dizem nada). Os
+> limiares aplicados vêm gravados em `criterion`, medição a medição.
+>
+> ⚠️ **Dois gatilhos NÃO são automatizáveis, e o script diz isso em vez de fingir:**
+> `text_to_sql` tem ponto cego (pergunta que o modelo declarou não cobrir fica com `error` nulo e
+> conta como sucesso — exige leitura manual do log) e `tabelas_agregadas` é medido por **proxy** de
+> volume, porque a latência real exigiria `EXPLAIN ANALYZE`, que o `service_role` não roda por REST.
+
+#### O que o item entregue decidiu
+
+| # | Decisão | Alternativa rejeitada, e por quê |
+|---|---|---|
+| D1 | Chama-se **pontualidade de pagamento**, não DPO | **DPO**: é indicador contábil (saldo de contas a pagar ÷ CMV × dias) e exige o passivo da empresa; aqui a base é só o que chegou por e-mail. Publicar com o nome consagrado repetiria o erro que a decisão do DRE evitou. O prompt **nega o nome** explicitamente em vez de ignorá-lo — perguntado por DPO, o modelo responde pontualidade e diz que DPO não é calculável |
+| D2 | População restrita ao **carimbo real** (`payment_date >= analytics.payment_date_confiavel_desde()`) | **Usar todas as pagas**: as 441 do backfill da 096 têm `days_late = 0` por construção e diluiriam tudo — é exatamente o "atraso médio zero" que adiou o item |
+| D3 | A data de corte vive numa **função IMMUTABLE**, não em literal repetido | **Literal no corpo**: 2ª fonte de verdade; divergindo, o backfill volta a entrar na conta sem erro nenhum. Travado por guarda (a data pode aparecer **1×** no repositório inteiro) |
+| D4 | Excluir conta cujo **vencimento mudou depois do pagamento**, e contar quantas | **Ignorar**: `days_late` ali mede a alteração do vencimento, não o pagamento. Hoje são 0; a exclusão existe para continuar correto quando deixarem de ser |
+| D5 | `atraso_medio_dias` soma **só as atrasadas**; `desvio_medio_dias` é o líquido | **Uma média só**: incluir antecipações produz um número menor que o atraso real, com o nome de atraso |
+
+> 🔴 **A hipótese inicial do discriminador foi REFUTADA pelo banco, e vale registrar.** Parecia
+> óbvio que `payment_date <> due_date` provasse carimbo real (o backfill sempre iguala). Medido:
+> **13 contas pagas antes do corte têm desvio**, a primeira em 2026-05-06 — todas com
+> `status_changed_at = 2026-07-16` e `updated_at = 2026-08-04`, ou seja o **`due_date` foi alterado
+> depois do pagamento** (reemissão de boleto atualiza o vencimento da conta existente). Sem essa
+> medição, o discriminador "elegante" teria entrado no lugar do corte por data e contaminado a
+> métrica em silêncio.
 
 **Esforço:** variável — cada item é reavaliado quando (e se) o gatilho ocorrer.
 
@@ -908,7 +954,7 @@ banco real**. O documento foi escrito olhando as 42 colunas da tabela; o chat v�
 | Origem | Situação |
 |---|---|
 | §1 — *matriz de perdas/ganhos entre `amount` e `amount_charged`* | ⚠️ **Premissa incorreta** — `amount_charged` é o **cobrado no boleto**, não o pago. Substituída pelas 11, 12 e 13 |
-| §2 — *índice de pontualidade / DPO* | 🚨 **Adiada (Onda 9)** — 97% das pagas têm data de backfill; só 2 dias de histórico real |
+| §2 — *índice de pontualidade / DPO* | ✅ **Entregue (Onda 9, 2026-08-13)** — `pontualidade_pagamento`, com esse nome: DPO exige o passivo contábil e o CMV, que este banco não tem. O motivo do adiamento (97% das pagas com data de backfill) virou o **recorte da tool**, que só considera o carimbo real e declara o que ficou de fora |
 | §5 — *quais usuários alteram campos sensíveis* | ✅ **Entregue (Onda 7, 2026-08-11)** — `auditoria_resumo` com `group_by='usuario'` e `apenas_sensiveis=true` |
 | §4 — *falha da esteira de extração* | 🟡 Parcial na Onda 1; completa exige tool sobre `email_control` (Onda 2) |
 
@@ -922,11 +968,11 @@ banco real**. O documento foi escrito olhando as 42 colunas da tabela; o chat v�
 | 2 — Corpo de e-mail | ✅ **concluída** | **105, 106** | 2026-07-31 | escopo A; 8ª tool; **deploy do reader APLICADO e verificado em prod** |
 | 3 — Fiscais camada 1 (chave: CT-e/NF-e/CF-e) | ✅ **concluída** | **107, 108** | 2026-08-01 | 9ª tool; **72 PDFs fiscais salvos da próxima purga**; **deploy APLICADO e verificado em prod (27/27)** |
 | **4 — Varredura histórica (passada única)** | ✅ **concluída** | — (nenhuma) | 2026-08-03 | 264 mensagens · **+70 corpos · +7 chaves · +4 objetos** · 0 falhas · contas intocadas. **A premissa caiu: a INBOX tinha 264 de 1.166 e-mails — 0 CT-e recuperados** |
-| 5 — Fiscais camada 2 (itens de NF-e via LLM) | ⬜ não iniciada | — | — | requer Onda 3 |
-| 6 — Campos derivados | ⬜ não iniciada | — | — | — |
-| 7 — Auditoria | ⬜ não iniciada | — | — | — |
-| 8 — Hardening | ⬜ não iniciada | — | — | — |
-| 9 — Condicional (NFS-e, CF-e, DPO…) | ⬜ não iniciada | — | — | — |
+| 5 — Fiscais camada 2 (conteúdo do CT-e) | ⚠️ **parcial** | **119** | 2026-08-12 | só o item 5.3 (fatura agregada): 57 CT-e com rota/peso/frete. **5.1/5.2 SUSPENSOS — 15 DANFEs medidos**, população não sustenta. **Deploy APLICADO (28/28)** |
+| 6 — Campos derivados | ✅ **concluída** | **111–116** | 2026-08-10 | `dim_date` · 5 colunas geradas · 2 funções. A **116** corrigiu a truncagem silenciosa (achado B1 do review) |
+| 7 — Auditoria | ✅ **concluída** | **117, 118** | 2026-08-11 | trilha por trigger + 10ª e 11ª tools; vazamento da `audit_log` fechado ANTES de popular. **Validada em produção no mesmo dia** |
+| 8 — Hardening | ✅ **concluída** | **120** | 2026-08-12 | gate de acesso ao chat por GRUPO (opt-in + cota), fail-closed no servidor; mais a **prova do recorte de RLS** que a onda devia (830 → 5) |
+| 9 — Condicional | ⚠️ **1 de 7 itens** | **121** | 2026-08-13 | os **7 gatilhos foram medidos**; só o de pontualidade ocorreu → 12ª tool. Os outros 6 seguem sem evidência — ver a tabela da onda |
 
 ---
 
@@ -954,7 +1000,7 @@ as sustente — e isso é cumprimento da regra "sugestão é um contrato", não 
 
 | Pergunta | Por que ficou fora | Volta em |
 |---|---|---|
-| DPO / pontualidade | 97% das contas pagas têm `payment_date` de backfill | Onda 9 |
+| DPO / pontualidade | ✅ **entregue na Onda 9** (2026-08-13) como **pontualidade**, nunca como DPO — o gatilho era histórico acumulado e ocorreu. A ressalva que a manteve fora vale até hoje para as pagas antes de 29/07, e por isso a tool as EXCLUI e conta quantas | — |
 | Quem alterou campos sensíveis | ✅ **entregue na Onda 7** — sugestão no painel + bateria de regressão | — |
 | Taxa de sucesso da extração | as falhas vivem em `email_control`, fora do alcance das tools | Onda 2 |
 
