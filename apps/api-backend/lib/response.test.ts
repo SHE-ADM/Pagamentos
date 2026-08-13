@@ -65,6 +65,36 @@ describe('failFromError', () => {
     expect(spy).toHaveBeenCalledWith('[contas] 500:', 'relation "x" does not exist');
   });
 
+  // --- `clientSafe`: o eco em 5xx é opt-in, e NÃO desliga o log ---
+
+  it('5xx marcado clientSafe ecoa a mensagem E continua sendo logado', async () => {
+    const spy = silenceConsole();
+    // A marca resolve o que o USUÁRIO lê. O operador continua precisando ver que houve uma falha
+    // de servidor: sem o log, uma indisponibilidade do provedor atinge todo mundo em silêncio —
+    // hoje só o chat de IA usa a marca, e ele grava a própria trilha, mas isso é acidente do
+    // consumidor, não garantia deste helper.
+    const res = failFromError(
+      new ApiServiceError('O assistente está indisponível no momento.', 503, 'AiChatError', true),
+      'ai-chat',
+    );
+
+    expect(res.status).toBe(503);
+    await expect(res.json()).resolves.toEqual({
+      success: false,
+      error: 'O assistente está indisponível no momento.',
+    });
+    expect(spy).toHaveBeenCalledWith(
+      '[ai-chat] 503 (curado, ecoado):',
+      'O assistente está indisponível no momento.',
+    );
+  });
+
+  it('4xx curado NÃO é logado — ali o erro é do pedido, não do servidor', async () => {
+    const spy = silenceConsole();
+    failFromError(new ContaServiceError('Conta não encontrada', 404), 'contas');
+    expect(spy).not.toHaveBeenCalled();
+  });
+
   it('preserva os status 502/504 da ponte Python, sem ecoar a mensagem', async () => {
     silenceConsole();
     const res = failFromError(new PythonBridgeError('ECONNREFUSED 127.0.0.1:8000', 502), 'emails');

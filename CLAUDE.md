@@ -212,13 +212,18 @@ Estas regras se aplicam a **todo** código novo ou alterado neste projeto, sem e
   `test_contact_block_nonpayable.py`, `test_is_processed.py`,
   `test_onda8_gate_ia.py`, `test_react_versao_unica.py`). Cobre o
   pipeline de extração; rodar após mexer em `read_emails.py`/`extract_pdf.py` ou nos
-  scripts de reprocessamento. Não é incluída no `npm test` (que soma **1.463** no Node —
-  frontend-vite 854 · api-backend 575 · packages/shared 32 · portal-next 2, medidos em
-  2026-08-12 após a Onda 8). A suíte
-  Python está em **1.314** (medida em 2026-08-12; os 31 novos desde 1.283 são as guardas da Onda 8
-  — colunas cross-layer, deny por default nas 4 camadas, semente, ausências e ordem dos porteiros —
-  mais 3 do contrato do erro e 3 da versão única de React (`test_react_versao_unica.py`);
-  os 56 anteriores são a Onda 5 e a barra na chave de acesso; os 34 antes disso, a Onda 7).
+  scripts de reprocessamento. Não é incluída no `npm test` (que soma **1.466** no Node —
+  frontend-vite 855 · api-backend 577 · packages/shared 32 · portal-next 2, medidos em
+  2026-08-13 após o review da Onda 8). A suíte Python está em **1.314** (medida em 2026-08-13
+  contra `fbb2dc0`, o commit anterior à onda: 1.283 → 1.314). Os **31** da Onda 8 são
+  `test_onda8_gate_ia.py` (**28** — colunas cross-layer, deny por default nas 4 camadas, semente,
+  ausências, ordem dos porteiros e o contrato do erro) e `test_react_versao_unica.py` (**3**);
+  os 56 anteriores são a Onda 5 e a barra na chave de acesso; os 34 antes disso, a Onda 7.
+  > 🔴 **O TOTAL da suíte vive AQUI e em nenhum outro doc.** Registro de onda cita o INCREMENTO,
+  > que é propriedade dela e não envelhece; total muda a cada PR, e a 2ª cópia diverge no dia
+  > seguinte — foi o que aconteceu com o roadmap da Onda 8, errado nos **três** números 24 h depois
+  > (inclusive no incremento, que nunca fora medido). Ao fechar onda, meça contra o commit anterior
+  > num `git worktree` isolado; não conte de cabeça.
   > ⚠️ **Medir o `frontend-vite` com `--maxWorkers=1`.** Em paralelo, o sandbox do agente
   > derruba ~9 casos de a11y (`StatusBadge.a11y`, `DashboardHeader.a11y`) por esgotamento de
   > recursos — eles passam isolados e em série. É a mesma classe de falso alarme já
@@ -335,6 +340,12 @@ regredir e valem para **toda rota nova**:
   exato momento em que a causa era temporária e havia o que fazer. Hoje só `AiChatError` o liga,
   porque toda mensagem daquela classe é escrita para ser lida. Marcar um 5xx genérico com ele
   reabre o vazamento que a classe existe para fechar. Pareado ramo a ramo em `errors.test.ts`.
+  🔴 **Ecoar NÃO desliga o log** (achado do review de 2026-08-13): o 5xx marcado passa por
+  `console.error` antes do eco. A marca resolve o que o **usuário** lê, não o que o **operador**
+  precisa ver — sem essa linha, uma indisponibilidade do provedor atingiria todo mundo sem deixar
+  rastro na function, e a rastreabilidade sobreviveria só porque *este* consumidor grava o próprio
+  `ai_chat_log`: acidente do consumidor, não garantia do helper, que é opt-in para ser reusado.
+  4xx curado segue **sem** log (ali o erro é do pedido, não do servidor). Os dois em `response.test.ts`.
   🔴 **QUEM ENUNCIA O CORTE TEM DE ENUNCIAR A EXCEÇÃO** — travado por guarda
   (`tests/test_onda8_gate_ia.py`): doc vivo que diga "ecoa se status < 500" sem citar `clientSafe`
   descreve um comportamento que o código não tem mais. O contrato vive em **três** lugares (código,
@@ -669,9 +680,14 @@ Alvo: **WCAG 2.1 Nível AA** em todas as telas. Regras práticas:
   `sees_only_own_accounts = false`. **Esta é a 2ª vez que o CI aparece como dependência
   não-óbvia de uma mudança de autorização** — a 1ª foi a remoção do usuário sentinela; ao mexer em
   grupo, papel ou flag, conferir o `a11y.yml` antes.
-  ⚠️ **O workflow não tem `workflow_dispatch`** (só `pull_request` e `push` na `Features`), então
-  não há como forçar uma execução de verificação: uma troca de credencial do CI só é exercitada de
-  fato no PR seguinte. **Não rodar `npm run test:e2e` no sandbox do
+  ✅ **O workflow TEM `workflow_dispatch`** (Actions → *Acessibilidade (a11y)* → **Run workflow**),
+  acrescentado em 2026-08-13 — antes só havia `pull_request` e `push` na `Features`, e uma troca de
+  credencial do CI só era exercitada de fato no PR seguinte, que é como as duas dependências acima
+  foram descobertas **depois**. 🔴 **O disparo manual leva o input `require_protected` (default
+  `true`) e FALHA CEDO quando algum dos 4 secrets está ausente** — sem essa guarda o `test.skip` do
+  spec pularia as rotas protegidas em silêncio, e "pulado" num log de CI se lê como "passou": o
+  verde não provaria nada, que é o oposto do motivo de o disparo existir. Para varrer só as páginas
+  públicas, rode com `require_protected = false`. **Não rodar `npm run test:e2e` no sandbox do
   agente** — o renderer do Chromium crasha ao montar a SPA completa (limite de recursos do ambiente,
   não do código); validar na máquina do usuário ou no CI. A camada já **pegou e corrigiu 45 violações
   de contraste** nas páginas protegidas (sidebar/cabeçalhos/grid/toolbar) que os guardas por token e o
@@ -933,6 +949,13 @@ perguntas reais, 2 usuários, `error IS NULL` em todas, 4 tools distintas exerci
   rede é o pior desfecho de uma camada que não protege nada. `null` = "ainda não sei" e **não**
   monta o widget; `=== true`, nunca `!== false` (que piscaria o botão para todo usuário negado, a
   maioria sob o default opt-in).
+  🔴 **O embed to-one é NORMALIZADO nas DUAS pontas** (objeto **ou** array — `primeiro()` no
+  `gate.ts`, `Array.isArray` no `AuthContext`). A forma é propriedade da VERSÃO do supabase-js, não
+  do contrato (mesma classe do `auth.concurrency.test.ts`), e a faixa é `^2.45.0`: lendo só objeto,
+  um array faria a flag virar `undefined` → `false` para **todos** e o botão sumiria da tela
+  inteira, sem erro, com a API intacta — e o servidor, que normaliza, não acusaria nada. Só o lado
+  do servidor tinha a guarda até o review de 2026-08-13; hoje há caso de teste para cada forma nos
+  dois arquivos.
 - **`getAnonClient()` + JWT do usuário, NUNCA `getSupabaseAdmin`** no caminho de dados. Só o
   **log** usa `service_role`, e é exceção deliberada: deixar o usuário auditado escrever a própria
   trilha permitiria omitir a própria pergunta (a policy da 098 o deixa **ler** só as dele).

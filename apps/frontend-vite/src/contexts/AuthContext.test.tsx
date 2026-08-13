@@ -201,6 +201,24 @@ describe('AuthContext', () => {
       expect(await screen.findByText('aichat:false')).toBeInTheDocument();
     });
 
+    /**
+     * O embed to-one vem como OBJETO no supabase-js instalado — mas isso é propriedade da VERSÃO,
+     * não do contrato, e o gate do servidor já normaliza as duas formas (`gate.ts`, `primeiro()`).
+     * Sem o mesmo cuidado aqui, um array faria a flag virar `undefined` → `false` para TODOS, e o
+     * botão sumiria da tela inteira com a API funcionando — sem erro e sem teste vermelho.
+     */
+    it('embed devolvido como ARRAY também é lido (a forma é da versão, não do contrato)', async () => {
+      comSessao({ id: '2', email: 'barbara@otimotex.com.br' });
+      maybeSingle.mockResolvedValue({
+        data: { group_id: 7, user_group: [{ ai_chat_enabled: true }] },
+        error: null,
+      });
+
+      renderProvider();
+
+      expect(await screen.findByText('aichat:true')).toBeInTheDocument();
+    });
+
     it('perfil ausente → false (grupo 0 não é liberado)', async () => {
       comSessao({ id: '4', email: 'novo@otimotex.com.br' });
       maybeSingle.mockResolvedValue({ data: null, error: null });
