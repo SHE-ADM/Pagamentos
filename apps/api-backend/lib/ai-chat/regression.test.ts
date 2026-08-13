@@ -149,6 +149,13 @@ const PERGUNTAS: ReadonlyArray<{
     ],
   },
 
+  // ---- Pontualidade (Onda 9) ----
+  {
+    pergunta: 'Estamos pagando as contas em dia?',
+    tool: 'pontualidade_pagamento',
+    params: { group_by: 'geral' },
+  },
+
   // ---- E-mails (Onda 2) ----
   {
     pergunta: 'Em quais e-mails falaram sobre reajuste?',
@@ -274,6 +281,45 @@ describe('bateria de regressão — perguntas sugeridas no painel', () => {
     expect(prompt).not.toMatch(/não devolve valor algum/i);
   });
 
+  // ─────────────────────────────────────────────────────────────────────────────────────────
+  // GUARDA DO NOME E DA COBERTURA — pontualidade (Onda 9).
+  //
+  // Duas coisas podem se perder aqui em silêncio, e as duas transformam um número certo numa
+  // resposta errada:
+  //
+  //   (a) apresentar o resultado como DPO. DPO é indicador contábil (saldo de contas a pagar ÷
+  //       CMV × dias) e exige o passivo da empresa; aqui a base é só o que chegou por e-mail. É
+  //       exatamente o erro que a decisão do DRE evitou — número com o nome de outra coisa.
+  //   (b) omitir a cobertura. As contas pagas antes do corte carregam a data do BACKFILL da 096
+  //       (payment_date = due_date), e incluí-las devolveria "atraso zero" artificial. A tool
+  //       exclui e CONTA; se o prompt não mandar declarar, o modelo não declara.
+  //
+  // A guarda lê a descrição REAL da tool e o SYSTEM_PROMPT real — nunca uma cópia local, que
+  // divergiria sem ninguém perceber. Mesmo padrão da guarda anti-dupla-contagem acima.
+  it('a tool de pontualidade nega o nome DPO e declara a cobertura, na tool E no prompt', () => {
+    const tool = TOOL_DEFINITIONS.find((t) => t.name === 'pontualidade_pagamento');
+    expect(tool, 'pontualidade_pagamento sumiu do catálogo').toBeTruthy();
+
+    // (a) a descrição da tool nega o nome e diz o que fazer no lugar
+    expect(tool!.description).toMatch(/NÃO é DPO/i);
+    // (b) a descrição nomeia os dois campos de cobertura — sem eles o modelo não tem o que citar
+    expect(tool!.description).toMatch(/fora_da_cobertura/);
+    expect(tool!.description).toMatch(/excluidas_venc_alterado/);
+    // "atraso médio" que embute antecipação seria menor que o atraso real, com nome de atraso
+    expect(tool!.description).toMatch(/APENAS as atrasadas/i);
+
+    const gateway = readFileSync(resolve(import.meta.dirname, './gateway.ts'), 'utf8');
+    const prompt = /const SYSTEM_PROMPT = `[\s\S]*?[^\\]`;/.exec(gateway)?.[0];
+    expect(prompt, 'SYSTEM_PROMPT não encontrado — o gateway foi reestruturado?').toBeTruthy();
+    expect(prompt!.length).toBeGreaterThan(2000);   // sanidade do parser
+
+    expect(prompt).toMatch(/pontualidade_pagamento/);
+    expect(prompt).toMatch(/NÃO é DPO/i);
+    expect(prompt).toMatch(/cobertura_desde/);
+    // O modelo precisa saber que campo VAZIO ali não é zero — é "não houve atraso".
+    expect(prompt).toMatch(/vazio ali significa/i);
+  });
+
   // Pergunta que compara N entidades não pode ser registrada com UMA chamada filtrando uma só:
   // era exatamente o `sk_company: 2` em "compare as três empresas".
   it('pergunta comparativa entre empresas registra uma chamada por empresa', () => {
@@ -364,7 +410,7 @@ describe('bateria de regressão — perguntas sugeridas no painel', () => {
     // Nem tudo entre crases é tool: os exemplos também citam COLUNAS do retorno. A lista é
     // explícita (e não um filtro esperto) justamente para que um nome de tool digitado errado
     // continue caindo na asserção em vez de ser absorvido como "deve ser um campo".
-    const CAMPOS = new Set(['frete_rs']);
+    const CAMPOS = new Set(['frete_rs', 'fora_da_cobertura']);
     const existentes = new Set(TOOL_DEFINITIONS.map((t) => t.name as string));
     const inexistentes = [...new Set(citadas)]
       .filter((n) => !CAMPOS.has(n))

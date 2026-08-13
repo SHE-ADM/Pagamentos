@@ -50,8 +50,13 @@ interface AiChatPanelProps {
  * (A pergunta de auditoria SAIU dessa lista de exclusões na Onda 7: as migrations 117/118 criaram
  * a trilha e as tools que a expõem. As demais seguem fora.)
  *
- *   - DPO / pontualidade → 97% das contas pagas têm payment_date vindo do backfill da migration
- *     096 (só 2 dias de histórico real). Responderia "atraso médio zero", que é falso.
+ * (A pergunta de PONTUALIDADE saiu da lista de exclusões na Onda 9, pelo mesmo motivo: o gatilho
+ * era histórico acumulado e ele ocorreu. Quando esta lista foi escrita, 97% das contas pagas
+ * traziam a data do backfill da migration 096 e a resposta seria "atraso médio zero" — falso.
+ * Medido em 2026-08-13: 218 contas com carimbo real da trigger, 3 semanas contínuas. A cobertura
+ * ainda é parcial, e a tool devolve o quanto ficou de fora para o modelo declarar.)
+ *
+ * Segue fora, e o motivo continua valendo:
  *   - Taxa de sucesso da extração → as falhas nem viram linha em financial_account_control; vivem
  *     em email_control, que nenhuma tool alcança (Onda 2).
  *
@@ -113,6 +118,15 @@ const SUGGESTION_GROUPS: ReadonlyArray<{ theme: string; questions: readonly stri
     // concluir que nada mudou, e a distinguir alteração de rotina automática de edição humana.
     theme: 'Auditoria',
     questions: ['Quem alterou o valor ou o vencimento das contas neste mês?'],
+  },
+  {
+    // Onda 9: o gatilho do item "DPO / pontualidade" era histórico pós-096 acumulado, e ele
+    // ocorreu — medido em 2026-08-13, 218 contas pagas com carimbo REAL da trigger (33% das
+    // pagas), em 3 semanas contínuas, com desvio de verdade (média 2,9 dias nas atrasadas, máximo
+    // 31). A cobertura segue PARCIAL: as pagas antes de 29/07 carregam a data do backfill e ficam
+    // de fora, e o system prompt manda declarar isso. Continua NÃO sendo DPO — ver a nota acima.
+    theme: 'Pontualidade',
+    questions: ['Estamos pagando as contas em dia?'],
   },
 ];
 

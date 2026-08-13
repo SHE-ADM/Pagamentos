@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, afterEach } from 'vitest';
 import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router-dom';
@@ -60,6 +60,14 @@ describe('Layout (sidebar)', () => {
     expect(screen.getByText('Indicadores de Vencimentos')).toBeInTheDocument();
   });
 
+  // 🔴 Restauração em `afterEach`, NÃO no fim do corpo do teste. Escrita lá dentro, ela só roda
+  // quando as asserções passam: um caso vermelho deixaria `aiChatEnabled` alterado e os testes
+  // SEGUINTES falhariam em cascata, apontando para o lugar errado. Estado de módulo compartilhado
+  // por `vi.hoisted` volta ao default no teardown, sempre.
+  afterEach(() => {
+    auth.aiChatEnabled = true;
+  });
+
   // O assistente de IA vive no Layout (não numa rota) para estar em TODAS as telas
   // protegidas; aqui entra só o botão flutuante — o painel é lazy.
   it('monta o botão flutuante do assistente de IA quando o grupo tem acesso', () => {
@@ -83,7 +91,6 @@ describe('Layout (sidebar)', () => {
     auth.aiChatEnabled = valor;
     renderLayout();
     expect(screen.queryByRole('button', { name: /abrir assistente/i })).not.toBeInTheDocument();
-    auth.aiChatEnabled = true;
   });
 
   it('aciona signOut ao clicar em sair', async () => {

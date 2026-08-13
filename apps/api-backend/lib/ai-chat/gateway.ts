@@ -227,6 +227,27 @@ Para perguntas de VOLUME ou RANKING ("quais usuários mais alteram", "qual campo
 Alteração que não muda nada de fato não gera evento, e mudanças de escrituração automática
 (updated_at e afins) ficam fora do registro de propósito.
 
+**Pontualidade de pagamento** (\`pontualidade_pagamento\`) responde "pagamos em dia?", "qual o
+atraso médio?" e "onde o atraso se concentra?".
+
+🔴 **NÃO é DPO e não pode ser apresentada como tal.** DPO é indicador contábil (saldo de contas a
+pagar ÷ CMV × dias) e exige o passivo da empresa; aqui a base é apenas o que chegou por e-mail.
+Se perguntarem por DPO ou por "prazo médio de pagamento a fornecedores", responda o que existe —
+pontualidade — e diga com franqueza que o DPO contábil não é calculável com estes dados.
+
+🔴 **A cobertura é PARCIAL e precisa ser dita quando \`fora_da_cobertura\` for maior que zero.**
+Só entram contas pagas a partir de \`cobertura_desde\`: antes disso a data de pagamento veio de um
+preenchimento retroativo que a igualou ao vencimento, e incluí-la produziria "atraso zero" falso.
+\`excluidas_venc_alterado\` são as contas cujo vencimento mudou DEPOIS do pagamento — ali o atraso
+mediria a alteração do vencimento, não o pagamento.
+
+\`pct_pontualidade\` conta como pontual o pagamento feito ATÉ o vencimento (antecipado inclusive).
+\`atraso_medio_dias\` e \`atraso_mediano_dias\` somam **apenas as atrasadas** e vêm vazios quando
+não houve nenhuma — vazio ali significa "não houve atraso", nunca "o atraso foi zero";
+\`desvio_medio_dias\` é o líquido com sinal, em que antecipação abate atraso. Em
+group_by="fornecedor", use \`min_contas\` e cite o número de contas: pontualidade sobre 1 conta é
+ruído, não indicador.
+
 **Origem da extração** (extraction_source): pdf_text vem do texto nativo do PDF (confiável);
 pdf_vision e image_vision vêm de leitura visual (OCR) e podem conter erro de leitura; email_body
 foi extraído do corpo do e-mail. Quando um número específico vier de OCR e a pergunta depender
@@ -270,7 +291,15 @@ e que cobre apenas os conhecimentos recebidos em fatura agregada — nunca some 
 
 *"Quanto gastei com fornecedores de tecnologia?"* → não há como cruzar fornecedor com
 classificação. Responda pelo total da classificação (\`gasto_por_classificacao\`) e declare a
-limitação, em vez de varrer fornecedores.`;
+limitação, em vez de varrer fornecedores.
+
+*"Estamos pagando em dia?"* → \`pontualidade_pagamento\` com group_by="geral" para o número, e
+group_by="faixa" quando a pergunta for onde o atraso se concentra. Informe a cobertura se
+\`fora_da_cobertura\` for maior que zero.
+
+*"Qual o nosso DPO?"* → não é calculável: DPO exige o passivo contábil e o CMV da empresa, e aqui
+só existe o que chegou por e-mail. Responda com \`pontualidade_pagamento\` (group_by="geral"),
+deixando claro que é pontualidade de pagamento, não DPO.`;
 
 /**
  * Teto de caracteres de UM resultado devolvido ao modelo.
