@@ -52,7 +52,16 @@ export function failFromError(e: unknown, tag = 'api'): Response {
     // ele, as 503 curadas do chat de IA — "o assistente está indisponível", timeout, falha de rede
     // — perdiam o texto e chegavam como "Erro interno", indistinguíveis de um bug nosso. O 5xx
     // NÃO-marcado continua virando mensagem genérica, com o detalhe só no log: a marca é opt-in.
-    if (e.status < 500 || e.clientSafe) return fail(e.message, e.status);
+    if (e.status < 500 || e.clientSafe) {
+      // 🔴 O eco resolve o que o USUÁRIO lê; não resolve o que o OPERADOR precisa ver. Um 5xx
+      // marcado continua sendo falha de servidor, e sem esta linha ele saía daqui sem deixar
+      // rastro nenhum no log da function: uma indisponibilidade do provedor atingiria todo mundo
+      // em silêncio. Hoje o único consumidor da marca grava a própria trilha (`ai_chat_log`), mas
+      // isso é acidente do consumidor, não garantia do helper — e a marca é opt-in justamente
+      // para ser reusada. O 4xx segue sem log: ali o "erro" é do pedido, não do servidor.
+      if (e.status >= 500) console.error(`[${tag}] ${e.status} (curado, ecoado):`, e.message);
+      return fail(e.message, e.status);
+    }
     console.error(`[${tag}] ${e.status}:`, e.message);
     return fail('Erro interno ao processar a solicitação', e.status);
   }
