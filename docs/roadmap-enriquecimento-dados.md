@@ -810,7 +810,18 @@ contra o PostgREST real. **Sem deploy em produção** — nada em `skills/` foi 
 - **Prova do recorte de RLS** (dívida da onda, adiada em 2026-07-31): bruna@lebianco.com.br, grupo
   Comercial — `vw_payables` **830 → 5**, igual ao oráculo `created_by`; `resumo_situacao()`
   **R$ 12.581.149,54 → R$ 10.004,70**; `fiscal_document` 293 → 0.
-- Gates: **Node 1.461** · **Python 1.307** (+24 guardas da onda) · lint, typecheck e prune limpos.
+- Gates: suítes Node e Python inteiras verdes no fechamento, com lint, typecheck e prune limpos.
+  A onda acrescentou **+31 casos Python** — `tests/test_onda8_gate_ia.py` (28) e
+  `tests/test_react_versao_unica.py` (3) —, medido em 2026-08-13 rodando a suíte contra
+  `fbb2dc0`, o commit imediatamente anterior à onda: **1.283 → 1.314**.
+  > 🔴 **A contagem TOTAL da suíte não se repete aqui, de propósito.** Ela muda a cada PR, então
+  > fixá-la num registro datado nasce condenada a divergir — e divergiu: este item dizia
+  > *"Node 1.461 · Python 1.307 (+24 guardas da onda)"*, e os **três** números já estavam errados
+  > no dia seguinte (o total porque três commits da própria onda vieram depois de ele ser escrito;
+  > o incremento porque nunca foi medido). O que fica registrado aqui é o **incremento**, que é
+  > propriedade da onda e não envelhece; o total vivo mora num lugar só, o `CLAUDE.md`
+  > § Regras mandatórias 2. Duas cópias de um número vivo é a mesma armadilha da 2ª fonte de
+  > verdade que este roadmap rejeita em dado — vale igual para número em prosa.
 - **Sem deploy em produção** — nada em `skills/` foi tocado.
 
 #### Achado colateral corrigido junto
