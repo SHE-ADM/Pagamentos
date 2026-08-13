@@ -5,6 +5,16 @@ name: Acessibilidade (a11y)
 # "teto" do ambiente local: o runner do GitHub tem Chromium com recursos
 # normais, então o render pesado da SPA não derruba o renderer.
 on:
+  # Execução MANUAL (Actions → Acessibilidade (a11y) → Run workflow). Existe para verificar uma
+  # troca de credencial do CI — usuário do e2e, grupo, permissão — sem esperar o próximo PR: essa
+  # dependência já apareceu duas vezes (remoção do usuário sentinela e o gate do chat por grupo da
+  # migration 120), e as duas foram descobertas depois, no PR seguinte.
+  workflow_dispatch:
+    inputs:
+      require_protected:
+        description: 'Falhar se as rotas protegidas não puderem ser escaneadas (secrets ausentes)'
+        type: boolean
+        default: true
   pull_request:
     paths:
       - 'apps/frontend-vite/**'
@@ -31,6 +41,39 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      # 🔴 Sem os secrets, o bloco das rotas protegidas é PULADO pelo `test.skip` do spec — e
+      # "pulado" num log de CI se lê como "passou". Nos gatilhos automáticos isso é o que se
+      # quer (PR de quem não tem os secrets não deve quebrar); num disparo MANUAL, cujo único
+      # propósito é confirmar que a credencial do CI ainda loga e que o grupo dela tem acesso,
+      # o mesmo silêncio inverteria a conclusão — o verde provaria exatamente nada.
+      #
+      # Roda ANTES de `npm ci` e do Chromium: falha em segundos, com a causa no topo do log, em
+      # vez de depois de ~3 min de provisionamento. Secrets vão por `env` (e não direto no `if`)
+      # porque só o shell os enxerga de forma confiável; a comparação é por conteúdo vazio,
+      # nunca pelo valor — que não pode aparecer no log.
+      - name: Exigir credenciais das rotas protegidas (só no disparo manual)
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.require_protected }}
+        shell: bash
+        env:
+          A11Y_TEST_EMAIL: ${{ secrets.A11Y_TEST_EMAIL }}
+          A11Y_TEST_PASSWORD: ${{ secrets.A11Y_TEST_PASSWORD }}
+          VITE_SUPABASE_URL: ${{ secrets.VITE_SUPABASE_URL }}
+          VITE_SUPABASE_ANON_KEY: ${{ secrets.VITE_SUPABASE_ANON_KEY }}
+        run: |
+          faltando=()
+          [ -n "$A11Y_TEST_EMAIL" ]       || faltando+=(A11Y_TEST_EMAIL)
+          [ -n "$A11Y_TEST_PASSWORD" ]    || faltando+=(A11Y_TEST_PASSWORD)
+          # Os dois do Supabase entram porque o workflow cai em PLACEHOLDER quando faltam: o
+          # login não completaria e a falha apareceria como erro de rede no meio do axe, longe
+          # da causa real (secret ausente).
+          [ -n "$VITE_SUPABASE_URL" ]     || faltando+=(VITE_SUPABASE_URL)
+          [ -n "$VITE_SUPABASE_ANON_KEY" ] || faltando+=(VITE_SUPABASE_ANON_KEY)
+          if [ ${#faltando[@]} -gt 0 ]; then
+            echo "::error::secret(s) ausente(s): ${faltando[*]} — as rotas protegidas seriam PULADAS e o verde não provaria nada. Cadastre em Settings → Secrets and variables → Actions, ou rode de novo com require_protected = false."
+            exit 1
+          fi
+          echo "Credenciais presentes — as rotas protegidas serão escaneadas."
 
       - name: Configurar Node.js
         uses: actions/setup-node@v4
