@@ -199,7 +199,15 @@ export function AuthProvider({ children }: Readonly<{ children: ReactNode }>) {
         return;
       }
 
-      const grupo = data?.user_group as { ai_chat_enabled?: unknown } | null | undefined;
+      // 🔴 O embed to-one é NORMALIZADO, como `lib/ai-chat/gate.ts` faz do lado do servidor.
+      // Medido: o supabase-js instalado devolve OBJETO para FK to-one — mas isso é propriedade da
+      // VERSÃO, não do contrato (mesma classe de coisa que `auth.concurrency.test.ts` existe para
+      // fixar). Lendo só a forma objeto, um array faria `ai_chat_enabled` virar `undefined` e o
+      // botão do assistente sumir para TODOS os usuários, sem erro e com a API intacta — e o
+      // servidor, que normaliza, não acusaria nada.
+      type Grupo = { ai_chat_enabled?: unknown };
+      const bruto = data?.user_group as Grupo | Grupo[] | null | undefined;
+      const grupo = Array.isArray(bruto) ? bruto[0] : bruto;
       setPerfil({
         groupId: (data?.group_id as number | undefined) ?? 0,
         aiChatEnabled: grupo?.ai_chat_enabled === true,
