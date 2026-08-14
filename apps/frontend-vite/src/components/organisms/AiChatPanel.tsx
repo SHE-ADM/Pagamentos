@@ -14,6 +14,7 @@ import type { ChatEntry } from '../../services/aiChat';
 import Alert from '../atoms/Alert';
 import MarkdownMessage from '../molecules/MarkdownMessage';
 import { cn } from '../../lib/cn';
+import { rotuloDoProgresso, type StreamingState } from './aiChatProgress';
 
 /**
  * Aviso ao usuário no fim da conversa.
@@ -30,6 +31,8 @@ export interface PanelFeedback {
 interface AiChatPanelProps {
   entries: readonly ChatEntry[];
   loading: boolean;
+  /** Progresso do turno em voo; `null` quando não há nada em andamento. */
+  streaming: StreamingState | null;
   feedback: PanelFeedback | null;
   onSend: (question: string) => void;
   /** Aborta a requisição em voo (botão "Parar"). */
@@ -133,6 +136,7 @@ const SUGGESTION_GROUPS: ReadonlyArray<{ theme: string; questions: readonly stri
 export default function AiChatPanel({
   entries,
   loading,
+  streaming,
   feedback,
   onSend,
   onCancel,
@@ -194,6 +198,8 @@ export default function AiChatPanel({
     setDraft('');
     onSend(question);
   };
+
+  const rotuloProgresso = rotuloDoProgresso(streaming);
 
   return (
     <dialog
@@ -314,17 +320,57 @@ export default function AiChatPanel({
         {loading && (
           // Sem aria-live próprio: já está dentro do role="log", e região viva aninhada
           // faz o leitor de tela anunciar duas vezes.
-          <div className="flex items-center gap-3">
-            <p className="flex items-center gap-2 text-sm text-slate-600">
-              <span className="h-2 w-2 animate-pulse rounded-full bg-brand-dark" aria-hidden="true" />
-              Consultando os dados…
-            </p>
-            {/* "Parar" ABORTA de verdade: o corte da conexão chega ao gateway pelo
-                `request.signal`, que interrompe o loop de tool use. Sem ele, desistir era só
-                fechar o painel — e o servidor seguia gastando tokens até o fim. */}
-            <button type="button" onClick={onCancel} className="btn text-slate-600">
-              <Square size={12} aria-hidden="true" /> Parar
-            </button>
+          <div className="space-y-1.5">
+            {streaming && streaming.tools.length > 0 && (
+              // aria-hidden: os chips mudam várias vezes por turno e estão DENTRO do role="log".
+              // Sem isto, o leitor de tela anunciaria cada início e cada fim de consulta, soterrando
+              // a resposta — que é o que a pessoa está esperando. O rótulo textual abaixo já informa
+              // o estado, e ele muda pouco.
+              <ul className="flex flex-wrap gap-1.5" aria-hidden="true">
+                {streaming.tools.map((t, ti) => (
+                  <li
+                    key={`${t.name}-${ti}`}
+                    className={cn(
+                      'badge flex items-center gap-1',
+                      t.rows === undefined
+                        ? 'bg-brand-light text-brand-dark'
+                        : 'bg-slate-50 text-slate-600',
+                    )}
+                  >
+                    <Wrench size={11} aria-hidden="true" />
+                    {t.name}
+                    {t.rows === undefined && ' · consultando…'}
+                    {t.rows !== undefined && ` · ${t.rows} linha${t.rows === 1 ? '' : 's'}`}
+                  </li>
+                ))}
+              </ul>
+            )}
+
+            {streaming && streaming.text !== '' && (
+              // 🔴 aria-hidden pelo mesmo motivo, e aqui o efeito seria pior: o texto chega token a
+              // token, então um leitor de tela reanunciaria a resposta inteira dezenas de vezes por
+              // segundo. Quem usa leitor recebe a resposta uma vez, completa, quando ela vira
+              // `ChatEntry` — que é o comportamento correto.
+              <div
+                aria-hidden="true"
+                className="max-w-[95%] rounded-2xl rounded-bl-sm border border-slate-200 bg-white px-3 py-2"
+              >
+                <MarkdownMessage text={streaming.text} />
+              </div>
+            )}
+
+            <div className="flex items-center gap-3">
+              <p className="flex items-center gap-2 text-sm text-slate-600">
+                <span className="h-2 w-2 animate-pulse rounded-full bg-brand-dark" aria-hidden="true" />
+                {rotuloProgresso}
+              </p>
+              {/* "Parar" ABORTA de verdade: o corte da conexão chega ao gateway pelo
+                  `request.signal`, que interrompe o loop de tool use. Sem ele, desistir era só
+                  fechar o painel — e o servidor seguia gastando tokens até o fim. */}
+              <button type="button" onClick={onCancel} className="btn text-slate-600">
+                <Square size={12} aria-hidden="true" /> Parar
+              </button>
+            </div>
           </div>
         )}
 

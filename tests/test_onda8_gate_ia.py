@@ -40,6 +40,8 @@ FRONT = RAIZ / "apps" / "frontend-vite" / "src"
 
 GATE_TS = API / "lib" / "ai-chat" / "gate.ts"
 ROUTE_TS = API / "app" / "api" / "ai-chat" / "route.ts"
+# A sequencia dos dois porteiros mora aqui desde que a rota SSE entrou — ver G8OrdemDosPorteirosTest.
+SESSION_TS = API / "lib" / "ai-chat" / "session.ts"
 AUTH_TS = API / "lib" / "auth.ts"
 AUTH_CONTEXT_TSX = FRONT / "contexts" / "AuthContext.tsx"
 LAYOUT_TSX = FRONT / "components" / "Layout.tsx"
@@ -295,30 +297,56 @@ class G7MensagemUnicaTest(unittest.TestCase):
 
 
 class G8OrdemDosPorteirosTest(unittest.TestCase):
-    """O gate roda ANTES do rate limit.
+    """O gate roda ANTES do rate limit, e TODA rota de chat passa pelos dois.
 
     🔴 ESCOPO DESTA GUARDA (licao da Regra 2, item 6 do CLAUDE.md): ela prova que a chamada
     EXISTE e em que POSICAO do arquivo — nunca que ela roda. Escopo, ordem de atribuicao, excecao
-    e tipo passam despercebidos por leitura textual. Quem prova a execucao e o caso
-    "o gate roda ANTES do rate limit" de `app/api/ai-chat/route.test.ts`, que executa a rota e
-    compara `invocationCallOrder`. As duas se completam: esta impede que alguem REMOVA a ligacao,
-    aquela impede que ela deixe de funcionar.
+    e tipo passam despercebidos por leitura textual. Quem prova a execucao sao os casos
+    "o gate roda ANTES do rate limit" de `app/api/ai-chat/route.test.ts` e do `stream/route.test.ts`,
+    que executam a rota e comparam a ordem real. As duas se completam: esta impede que alguem
+    REMOVA a ligacao, aquelas impedem que ela deixe de funcionar.
+
+    ⚠️ O ALVO MUDOU quando o streaming entrou (2026-08-14). Os dois porteiros moravam dentro de
+    `app/api/ai-chat/route.ts`; com a rota SSE irma, copiar a sequencia para o segundo arquivo seria
+    a duplicacao classica — e o modo de falha nao e codigo feio, e a rota nova nascer SEM o gate sem
+    que nada acuse. A sequencia passou a viver em `lib/ai-chat/session.ts` (`assertChatAllowed`), e
+    esta guarda foi atras dela; o teste novo abaixo cobre o que a mudanca criou de risco.
     """
 
-    def test_a_rota_chama_os_dois_porteiros(self):
-        codigo = _codigo_ts(ROUTE_TS)
-        self.assertIn("assertAiChatAllowed(user.id)", codigo)
-        self.assertIn("assertWithinRateLimit(user.id", codigo)
+    def test_a_sequencia_dos_porteiros_chama_os_dois(self):
+        codigo = _codigo_ts(SESSION_TS)
+        self.assertIn("assertAiChatAllowed(userId)", codigo)
+        self.assertIn("assertWithinRateLimit(userId", codigo)
 
     def test_o_gate_vem_primeiro(self):
-        codigo = _codigo_ts(ROUTE_TS)
-        pos_gate = codigo.index("assertAiChatAllowed(user.id)")
-        pos_limite = codigo.index("assertWithinRateLimit(user.id")
+        codigo = _codigo_ts(SESSION_TS)
+        pos_gate = codigo.index("assertAiChatAllowed(userId)")
+        pos_limite = codigo.index("assertWithinRateLimit(userId")
         self.assertLess(pos_gate, pos_limite)
 
     def test_a_cota_do_grupo_e_repassada_ao_rate_limit(self):
         """Chamar o gate e IGNORAR o retorno compila (o parametro e opcional) e deixa a cota inerte."""
-        self.assertIn("assertWithinRateLimit(user.id, gate)", _codigo_ts(ROUTE_TS))
+        self.assertIn("assertWithinRateLimit(userId, gate)", _codigo_ts(SESSION_TS))
+
+    def test_TODA_rota_de_chat_passa_pelos_porteiros(self):
+        """🔴 O risco que a extracao criou: uma rota de chat nova sem autorizacao.
+
+        Concentrar a sequencia num modulo torna impossivel ESQUECER a ordem — mas nao torna
+        impossivel esquecer de CHAMAR o modulo. Uma rota que pule `assertChatAllowed` responde
+        perfeitamente bem, sem erro e sem teste vermelho, enquanto entrega o assistente pago a um
+        grupo que nao tem acesso. Por isso a guarda varre o diretorio inteiro em vez de listar os
+        arquivos conhecidos: rota nova entra no escopo sozinha.
+        """
+        rotas = sorted((API / "app" / "api" / "ai-chat").rglob("route.ts"))
+        self.assertGreaterEqual(len(rotas), 2, f"esperava ao menos 2 rotas de chat, achei {rotas}")
+
+        sem_gate = [r.name for r in rotas if "assertChatAllowed(" not in _codigo_ts(r)]
+        self.assertEqual(
+            sem_gate, [],
+            "rota(s) de chat sem `assertChatAllowed`: "
+            f"{[str(r.relative_to(API)) for r in rotas if r.name in sem_gate]} — o assistente e pago "
+            "e o acesso e opt-in por grupo (migration 120)",
+        )
 
 
 class G9ContratoDoErroTest(unittest.TestCase):

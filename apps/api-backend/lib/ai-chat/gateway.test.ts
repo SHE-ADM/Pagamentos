@@ -12,10 +12,30 @@ vi.mock('@anthropic-ai/sdk', async () => {
     // O gateway usa `.stream(...).finalMessage()`; o mock devolve o mesmo objeto de mensagem por
     // trás dessa fachada, porque o que os testes verificam é o CONTEÚDO enviado e recebido, não o
     // transporte. Uma rejeição precisa vir de `finalMessage()` — é onde o SDK real a lança.
+    // `.on('text', cb)` existe porque o gateway o usa para repassar o texto em tempo real à rota
+    // SSE. O mock o simula da forma mais fiel que importa aqui: emite cada bloco de texto da
+    // resposta ANTES de `finalMessage()` resolver, que é a ordem do SDK real. Sem isso não haveria
+    // como provar que o progresso sai do MESMO loop que produz a resposta.
     messages = {
       stream: (...a: unknown[]) => {
         const p = create(...a);
-        return { finalMessage: () => p };
+        const handlers: Array<(delta: string) => void> = [];
+        const fachada = {
+          on: (evento: string, cb: (delta: string) => void) => {
+            if (evento === 'text') handlers.push(cb);
+            return fachada;
+          },
+          finalMessage: async () => {
+            const msg = (await p) as { content?: Array<{ type: string; text?: string }> };
+            for (const bloco of msg.content ?? []) {
+              if (bloco.type === 'text' && bloco.text) {
+                for (const cb of handlers) cb(bloco.text);
+              }
+            }
+            return msg;
+          },
+        };
+        return fachada;
       },
     };
   }
@@ -625,5 +645,130 @@ describe('runChat — erros do provedor', () => {
     runToolMock.mockResolvedValue([{ x: 1 }]);
 
     await expect(runChat(supabase, TOKEN, { question: 'x' })).rejects.toBeInstanceOf(AiChatError);
+  });
+});
+
+/* ──────────────────────────────────────────────────────────────────────────────────────────────
+ * PROGRESSO (ChatProgress) — o que a rota SSE observa.
+ *
+ * 🔴 O que estes casos protegem é a DECISÃO de arquitetura: não existe um segundo `runChat` para
+ * streaming. Se alguém um dia duplicar o loop, o teto de iterações, o pareamento
+ * tool_use/tool_result e o acumulador de tokens passam a ter duas cópias — e elas divergem na
+ * primeira alteração. Aqui o streaming é observação do MESMO loop, e é isso que se verifica.
+ * ────────────────────────────────────────────────────────────────────────────────────────────── */
+describe('runChat — callbacks de progresso', () => {
+  it('sem `events`, o comportamento é o de antes (nada quebra)', async () => {
+    reply(textReply('resposta'));
+    const res = await runChat(supabase, TOKEN, { question: 'x' });
+    expect(res.answer).toBe('resposta');
+  });
+
+  it('emite tool → tool_end → texto, na ordem do turno', async () => {
+    reply(toolReply([{ id: 't1', name: 'resumo_situacao', input: {} }]));
+    reply(textReply('Você tem R$ 1.000,00.'));
+    runToolMock.mockResolvedValue([{ a: 1 }, { a: 2 }]);
+
+    const ordem: string[] = [];
+    await runChat(supabase, TOKEN, { question: 'x' }, undefined, {
+      onToolStart: (c) => ordem.push(`start:${c.name}`),
+      onToolEnd: (c) => ordem.push(`end:${c.name}:${c.rows}`),
+      onTextStart: () => ordem.push('text_start'),
+      onTextDelta: (t) => ordem.push(`delta:${t}`),
+    });
+
+    expect(ordem).toEqual([
+      'start:resumo_situacao',
+      'end:resumo_situacao:2',
+      'text_start',
+      'delta:Você tem R$ 1.000,00.',
+    ]);
+  });
+
+  /**
+   * O preâmbulo e a resposta final são mensagens DIFERENTES, e cada uma abre seu próprio bloco de
+   * texto. É esse sinal que faz o cliente descartar o buffer — sem ele os dois apareceriam grudados
+   * e a tela divergiria do `answer`, que é só o texto da última mensagem.
+   */
+  it('cada mensagem do assistente abre um novo bloco de texto', async () => {
+    reply({
+      id: 'm1', type: 'message', role: 'assistant', model: 'x', stop_reason: 'tool_use',
+      content: [
+        { type: 'text', text: 'Vou verificar isso.' },
+        { type: 'tool_use', id: 't1', name: 'resumo_situacao', input: {} },
+      ],
+      usage: { input_tokens: 1, output_tokens: 1 },
+    });
+    reply(textReply('Você tem R$ 1.000,00.'));
+    runToolMock.mockResolvedValue([{ a: 1 }]);
+
+    const eventos: string[] = [];
+    await runChat(supabase, TOKEN, { question: 'x' }, undefined, {
+      onTextStart: () => eventos.push('START'),
+      onTextDelta: (t) => eventos.push(t),
+    });
+
+    expect(eventos).toEqual(['START', 'Vou verificar isso.', 'START', 'Você tem R$ 1.000,00.']);
+  });
+
+  /** Falha de tool fecha o chip com marca — e sem levar a mensagem interna ao cliente. */
+  it('tool que falha emite tool_end com erro genérico, não o detalhe interno', async () => {
+    reply(toolReply([{ id: 't1', name: 'resumo_situacao', input: {} }]));
+    reply(textReply('segue'));
+    runToolMock.mockRejectedValue(new Error('column "foo" does not exist'));
+
+    const fins: Array<{ rows: number; error?: string }> = [];
+    await runChat(supabase, TOKEN, { question: 'x' }, undefined, {
+      onToolEnd: (c) => fins.push({ rows: c.rows, error: c.error }),
+    });
+
+    expect(fins).toEqual([{ rows: 0, error: 'falhou' }]);
+    expect(JSON.stringify(fins)).not.toContain('foo');
+  });
+
+  /**
+   * 🔴 O invariante que sustenta a resiliência inteira: `controller.enqueue` LANÇA quando o cliente
+   * já fechou a conexão — o caminho normal de "Parar" e de fechar a aba. Se a exceção subisse, ela
+   * abortaria o turno de dentro de um callback, num ponto arbitrário do loop, e pularia a auditoria
+   * do que já foi gasto.
+   */
+  it('callback que LANÇA não derruba o turno', async () => {
+    reply(toolReply([{ id: 't1', name: 'resumo_situacao', input: {} }]));
+    reply(textReply('resposta apesar de tudo'));
+    runToolMock.mockResolvedValue([{ a: 1 }]);
+    const erroDoConsole = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+
+    const explode = () => { throw new Error('cliente desconectou'); };
+    const res = await runChat(supabase, TOKEN, { question: 'x' }, undefined, {
+      onToolStart: explode,
+      onToolEnd: explode,
+      onTextStart: explode,
+      onTextDelta: explode,
+    });
+
+    expect(res.answer).toBe('resposta apesar de tudo');
+    expect(res.iterations).toBe(2);
+    expect(erroDoConsole).toHaveBeenCalled(); // a falha do observador é registrada, não engolida
+    erroDoConsole.mockRestore();
+  });
+
+  /**
+   * A chamada de FECHAMENTO (teto de iterações) também streama. É a resposta da pergunta MAIS CARA:
+   * sem isto, o usuário veria a tela parada exatamente no turno mais longo — que é quando o
+   * streaming importa.
+   */
+  it('a chamada de fechamento por teto de iterações também emite texto', async () => {
+    for (let i = 0; i < MAX_ITERATIONS; i += 1) {
+      reply(toolReply([{ id: `t${i}`, name: 'resumo_situacao', input: {} }]));
+    }
+    reply(textReply('resposta parcial do fechamento'));
+    runToolMock.mockResolvedValue([{ x: 1 }]);
+
+    const deltas: string[] = [];
+    const res = await runChat(supabase, TOKEN, { question: 'x' }, undefined, {
+      onTextDelta: (t) => deltas.push(t),
+    });
+
+    expect(res.truncated).toBe(true);
+    expect(deltas).toContain('resposta parcial do fechamento');
   });
 });

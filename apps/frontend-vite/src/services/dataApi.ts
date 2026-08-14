@@ -24,10 +24,21 @@ async function authHeaders(): Promise<Record<string, string>> {
   return { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` };
 }
 
+/**
+ * Fetch cru, já com base URL e header de auth — para respostas que NÃO são o envelope JSON.
+ *
+ * Existe por causa do streaming do chat (`text/event-stream`): o `dataApiCall` sempre consome o
+ * corpo com `res.json()`, o que é justamente o oposto do que uma resposta streamada precisa. Quem
+ * usa este helper assume o desembrulho e o tratamento de erro por conta própria.
+ */
+export async function dataApiFetch(path: string, init: RequestInit = {}): Promise<Response> {
+  return fetch(`${DATA_API_BASE}${path}`, { ...init, headers: await authHeaders() });
+}
+
 // Chamada genérica: desembrulha o envelope e lança o erro em pt-BR do backend
 // (mensagens já leigas — 409/422/404 etc.).
 export async function dataApiCall<T>(path: string, init: RequestInit = {}): Promise<ApiEnvelope<T>> {
-  const res = await fetch(`${DATA_API_BASE}${path}`, { ...init, headers: await authHeaders() });
+  const res = await dataApiFetch(path, init);
   const body = (await res.json().catch(() => ({}))) as ApiEnvelope<T>;
   if (!res.ok || !body.success) {
     // Mensagem curada do backend (4xx leigo) tem precedência. Sem envelope (resposta

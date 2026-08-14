@@ -44,7 +44,17 @@ export function fail(error: string, status = 400): Response {
 // `lib/api-error.ts` para o raciocínio completo e §17.9 do doc de arquitetura do chat.
 //
 // `tag` identifica o recurso no log.
-export function failFromError(e: unknown, tag = 'api'): Response {
+// A DECISÃO — status e mensagem que o cliente pode ler —, separada de COMO ela é transportada.
+//
+// 🔴 Existe porque o chat de IA responde por dois transportes: envelope JSON (`failFromError`) e
+// evento SSE, que depois de abrir o stream não tem mais status HTTP para usar. São formatos
+// diferentes da MESMA regra de segurança, e uma segunda cópia dela é o pior lugar possível para
+// haver divergência: quem escrevesse a versão do SSE por conta própria acabaria ecoando um 500
+// não-curado — o vazamento que este helper existe para impedir — sem que nada acusasse.
+//
+// Já aconteceu neste projeto em escala menor: quando o `clientSafe` entrou, dois documentos
+// seguiram descrevendo o contrato antigo por um PR inteiro. Ali era prosa; aqui seria código.
+export function describeClientError(e: unknown, tag = 'api'): { status: number; message: string } {
   if (e instanceof ApiServiceError) {
     // Mensagem deliberadamente escrita para o usuário: pode ir ao cliente.
     //
@@ -60,13 +70,19 @@ export function failFromError(e: unknown, tag = 'api'): Response {
       // isso é acidente do consumidor, não garantia do helper — e a marca é opt-in justamente
       // para ser reusada. O 4xx segue sem log: ali o "erro" é do pedido, não do servidor.
       if (e.status >= 500) console.error(`[${tag}] ${e.status} (curado, ecoado):`, e.message);
-      return fail(e.message, e.status);
+      return { status: e.status, message: e.message };
     }
     console.error(`[${tag}] ${e.status}:`, e.message);
-    return fail('Erro interno ao processar a solicitação', e.status);
+    return { status: e.status, message: 'Erro interno ao processar a solicitação' };
   }
   // Erro não curado (bug nosso, ou de terceiro): status honesto é 500 e a mensagem não sai daqui.
   const detail = e instanceof Error ? `${e.name}: ${e.message}` : String(e);
   console.error(`[${tag}] 500 (erro não curado):`, detail);
-  return fail('Erro interno ao processar a solicitação', 500);
+  return { status: 500, message: 'Erro interno ao processar a solicitação' };
+}
+
+/** O mesmo veredito de `describeClientError`, embrulhado no envelope JSON da API. */
+export function failFromError(e: unknown, tag = 'api'): Response {
+  const { status, message } = describeClientError(e, tag);
+  return fail(message, status);
 }
