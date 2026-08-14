@@ -212,9 +212,12 @@ Estas regras se aplicam a **todo** código novo ou alterado neste projeto, sem e
   `test_contact_block_nonpayable.py`, `test_is_processed.py`,
   `test_onda8_gate_ia.py`, `test_react_versao_unica.py`). Cobre o
   pipeline de extração; rodar após mexer em `read_emails.py`/`extract_pdf.py` ou nos
-  scripts de reprocessamento. Não é incluída no `npm test` (que soma **1.470** no Node —
-  frontend-vite 855 · api-backend 581 · packages/shared 32 · portal-next 2, medidos em
-  2026-08-13 após a migration 125). A suíte Python está em **1.408** — os **18** mais recentes são
+  scripts de reprocessamento. Não é incluída no `npm test` (que soma **1.540** no Node —
+  frontend-vite 873 · api-backend 612 · packages/shared 53 · portal-next 2, medidos em
+  2026-08-14 após o streaming SSE, que acrescentou **70**: 18 no cliente/rótulo, 31 na rota SSE e
+  no transporte, 6 no progresso do gateway e 15 no contrato compartilhado). A suíte Python está em
+  **1.409** — o mais recente é a guarda que exige `assertChatAllowed` em **toda** rota de chat
+  (`test_onda8_gate_ia.py`, validada por mutante). Antes dele, os **18** de
   `test_gasto_por_periodo_parcial.py` (o balde parcial da série temporal: as 4 colunas lidas pelo
   NOME e não por substring, o fuso de São Paulo, o domínio cross-layer Zod × SQL e a declaração na
   descrição da tool e no prompt), mais os **8** que a **125** acrescentou a
@@ -990,8 +993,19 @@ perguntas reais, 2 usuários, `error IS NULL` em todas, 4 tools distintas exerci
   cortado **por registro** — JSON partido ao meio é ilegível para o modelo. Quando UM registro
   estoura sozinho (`additional_info` é TEXT sem limite), corta a string e **DECLARA** o corte
   (`JSON CORTADO`): cortar sem avisar faria o modelo ler o fragmento final como dado.
-- **Streaming (`.stream().finalMessage()`)**, não `.create()`: a resposta ao cliente é a mesma, o
-  ganho é o socket não ficar ocioso num turno longo (timeout de proxy).
+- **Streaming (`.stream().finalMessage()`)**, não `.create()`: mantém o socket ocupado num turno
+  longo (timeout de proxy) **e** é de onde sai o texto em tempo real da rota SSE — ver "Streaming
+  da resposta" abaixo.
+- 🔴 **SÃO DUAS ROTAS PARA O MESMO RECURSO, E UM SÓ LOOP.** `/api/ai-chat` responde em JSON,
+  `/api/ai-chat/stream` em SSE, e as duas chamam o MESMO `runChat` — o streaming é observação
+  lateral (`ChatProgress`), nunca um segundo loop. Duplicar o loop criaria duas cópias do teto de
+  iterações, do pareamento tool_use/tool_result, do acumulador de tokens e da tradução de erro.
+  Sem `events`, `runChat` se comporta byte a byte como antes (travado em `gateway.test.ts`).
+- 🔴 **Autenticar, validar, autorizar e auditar vivem em `lib/ai-chat/session.ts`** — nunca
+  copiados entre as rotas. O modo de falha da cópia não é código feio: é a rota nova nascer **sem o
+  gate de acesso**, respondendo perfeitamente bem enquanto entrega um recurso pago a um grupo sem
+  direito. Guarda: `test_onda8_gate_ia.py` varre `app/api/ai-chat/**/route.ts` e exige
+  `assertChatAllowed` em **todas** — rota nova entra no escopo sozinha (validada por mutante).
 - **401/400 do SDK NÃO são traduzidos** (viram 500 + log): são erro de configuração/payload
   **nosso**; dizer "sessão expirada" mandaria o usuário deslogar sem efeito. Só se traduz o que o
   usuário pode **agir** — 429 (`RateLimitError`), **qualquer 5xx do provedor** (→ 503) e timeout.
@@ -1063,6 +1077,48 @@ perguntas reais, 2 usuários, `error IS NULL` em todas, 4 tools distintas exerci
   empresa usa `unaccent` + `pg_trgm` (os índices trigram já existem).
 - **`payment_date` responde caixa realizado direto** (`date_field: 'pagamento'`), por decisão do
   dono do produto — ver o bloco da migration 096 na seção de banco.
+
+**Streaming da resposta (SSE — 2026-08-14):** a espera percebida caiu de ~12 s de tela parada para
+o texto surgindo conforme é gerado. **O tempo total não muda** — medido: `latência ≈ 6,8 s fixos +
+7,7 ms por token de saída`, e os 6,8 s são os dois round-trips ao modelo, que troca de modelo não
+resolve (Opus 5 → Sonnet 5 cortou 9%, não os 2–3× esperados: a geração dos dois é quase igual aqui,
+~65 × ~71 tok/s). Protocolo em `@sheild/shared/ai-chat-stream.ts`; transporte em
+`lib/ai-chat/sse.ts`; rota em `app/api/ai-chat/stream/route.ts`; cliente em `askAiChatStream`.
+Invariantes:
+
+- 🔴 **A FRONTEIRA DO STATUS HTTP.** Tudo que pode ser recusado ANTES do corpo abrir (401/400/422
+  da sessão, **403 do gate, 429 da cota**) é recusado com JSON e status, igual à rota irmã — por
+  isso `assertChatAllowed` fica FORA do `ReadableStream`. Depois do primeiro byte o status já foi
+  enviado e a falha vira evento `error` (com `status` dentro, para o cliente saber o que dá para
+  tentar de novo).
+- 🔴 **A regra de eco é a MESMA, pelo MESMO helper** (`describeClientError`, extraído de
+  `failFromError`): 5xx não-curado vira mensagem genérica nos dois transportes. Uma segunda cópia
+  dessa regra é o pior lugar possível para divergir — quem escrevesse a versão do SSE por conta
+  própria acabaria ecoando detalhe interno sem que nada acusasse.
+- 🔴 **Auditoria ANTES de `controller.close()`**, não antes do `return` — em serverless a function
+  é congelada quando o corpo termina, então gravar depois de fechar é gravar em nada. É o §17.3
+  traduzido para streaming.
+- 🔴 **`SseWriter` nunca lança.** `controller.enqueue` **lança** quando o cliente já fechou — o
+  caminho NORMAL de "Parar" e de fechar a aba. Se subisse, abortaria o turno de dentro de um
+  callback, em ponto arbitrário do loop, e **pularia a auditoria** do que já foi gasto. Mesmo
+  motivo do `safeEmit` no gateway (validado por mutante nos dois).
+- 🔴 **`text_start` DESCARTA o buffer.** O modelo escreve um preâmbulo, pede a ferramenta e só
+  então redige — sem o reinício os dois apareceriam grudados e a tela divergiria do `answer`, que
+  é só o texto da última mensagem.
+- 🔴 **Stream sem `done` NÃO promove o texto parcial a resposta.** O `answer` canônico é o que vai
+  para o histórico enviado ao modelo na pergunta seguinte; um texto truncado ali envenenaria a
+  conversa seguinte em silêncio. Falta o `done` ⇒ erro de conexão interrompida.
+- 🔴 **A POLÍTICA DE FALLBACK É ESTREITA.** Só cai para a rota JSON em **404** (deploy sem a rota)
+  e em **200 sem `text/event-stream`** (proxy transformou o corpo) — casos em que nada foi cobrado.
+  403/429/5xx sobem como erro: reenviar faria a MESMA pergunta rodar duas vezes, cobrando dois
+  turnos por uma recusa que a segunda tentativa vai reencontrar.
+- **Acessibilidade:** chips e texto parcial ficam `aria-hidden` — eles mudam dezenas de vezes por
+  turno dentro do `role="log"` e seriam reanunciados a cada token. Quem usa leitor de tela recebe a
+  resposta uma vez, completa, quando ela vira `ChatEntry`; o progresso vem do rótulo textual
+  (`rotuloDoProgresso`), que muda pouco e diz algo verdadeiro.
+- ⚠️ **Headers `no-transform` + `X-Accel-Buffering: no` não são decoração:** um proxy que bufferize
+  anula o streaming por completo, e o sintoma ("funciona em dev, não em produção") é caro porque o
+  código está certo dos dois lados.
 
 **Widget do assistente (`frontend-vite`):** `organisms/AiChatWidget.tsx` (botão flutuante + **o
 estado da conversa**) montado **uma vez no `Layout`**, e **só quando `aiChatEnabled === true`**

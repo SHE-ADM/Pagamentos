@@ -9,9 +9,10 @@
 // só é baixado quando o usuário abre o chat de fato.
 import { lazy, Suspense, useRef, useState } from 'react';
 import { MessageCircle } from 'lucide-react';
-import { AiChatCancelledError, askAiChat, type ChatEntry } from '../../services/aiChat';
+import { AiChatCancelledError, askAiChatStream, type ChatEntry } from '../../services/aiChat';
 import { getErrorMessage } from '../../lib/getErrorMessage';
 import type { PanelFeedback } from './AiChatPanel';
+import type { StreamingState } from './aiChatProgress';
 
 const AiChatPanel = lazy(() => import('./AiChatPanel'));
 
@@ -20,6 +21,15 @@ export default function AiChatWidget() {
   const [entries, setEntries] = useState<ChatEntry[]>([]);
   const [loading, setLoading] = useState(false);
   const [feedback, setFeedback] = useState<PanelFeedback | null>(null);
+
+  /**
+   * O turno EM ANDAMENTO: texto parcial e ferramentas sendo consultadas.
+   *
+   * Estado à parte de `entries`, e não uma entrada provisória na conversa: uma entrada parcial
+   * entraria no `buildHistory` da pergunta seguinte e um texto pela metade seria enviado ao modelo
+   * como se fosse resposta. Só o `answer` canônico do evento `done` vira `ChatEntry`.
+   */
+  const [streaming, setStreaming] = useState<StreamingState | null>(null);
 
   /**
    * Geração da conversa. Incrementada em "Nova conversa" — respostas de uma geração anterior são
@@ -64,9 +74,55 @@ export default function AiChatWidget() {
     const next: ChatEntry[] = append ? [...entries, { role: 'user', content: question }] : entries;
     if (append) setEntries(next);
     setFeedback(null);
+    setStreaming(null);
     setLoading(true);
+
+    /**
+     * A MESMA guarda de geração vale para o progresso, não só para a resposta.
+     *
+     * O streaming emite dezenas de vezes por turno; sem esta checagem, clicar em "Nova conversa"
+     * com um turno em voo deixaria o texto parcial da conversa ANTIGA pingando na tela em branco
+     * até o abort chegar ao servidor — janela pequena, mas visível, e exatamente o defeito que a
+     * guarda de geração existe para impedir no caminho da resposta.
+     */
+    const vivo = (): boolean => generation === generationRef.current;
+
     try {
-      const res = await askAiChat(question, next, controller.signal);
+      const res = await askAiChatStream(
+        question,
+        next,
+        {
+          onText: (parcial) => {
+            if (!vivo()) return;
+            setStreaming((s) => ({ tools: s?.tools ?? [], text: parcial }));
+          },
+          onTool: (name) => {
+            if (!vivo()) return;
+            setStreaming((s) => ({
+              text: s?.text ?? '',
+              tools: [...(s?.tools ?? []), { name }],
+            }));
+          },
+          onToolEnd: (name, rows, error) => {
+            if (!vivo()) return;
+            setStreaming((s) => {
+              if (!s) return s;
+              const tools = [...s.tools];
+              // Fecha a ÚLTIMA pendente com esse nome: o modelo pode disparar a mesma ferramenta
+              // duas vezes em paralelo (duas empresas, dois períodos), e casar pelo primeiro
+              // encontrado marcaria a chamada errada como concluída.
+              for (let i = tools.length - 1; i >= 0; i -= 1) {
+                if (tools[i].name === name && tools[i].rows === undefined) {
+                  tools[i] = { name, rows, error };
+                  break;
+                }
+              }
+              return { ...s, tools };
+            });
+          },
+        },
+        controller.signal,
+      );
       if (generation !== generationRef.current) return; // conversa trocada: resposta obsoleta
       setEntries((cur) => [
         ...cur,
@@ -89,8 +145,10 @@ export default function AiChatWidget() {
     } finally {
       abortRef.current = null;
       // O loading é do widget, não da geração: precisa desligar mesmo em resposta descartada,
-      // senão o painel fica preso em "Consultando…" para sempre.
+      // senão o painel fica preso em "Consultando…" para sempre. O mesmo vale para o parcial —
+      // deixá-lo em tela mostraria um texto que não virou resposta, e que ninguém pode reenviar.
       setLoading(false);
+      setStreaming(null);
     }
   };
 
@@ -106,6 +164,7 @@ export default function AiChatWidget() {
     abortRef.current?.abort();
     setEntries([]);
     setFeedback(null);
+    setStreaming(null);
   };
 
   return (
@@ -127,6 +186,7 @@ export default function AiChatWidget() {
           <AiChatPanel
             entries={entries}
             loading={loading}
+            streaming={streaming}
             feedback={feedback}
             onSend={(q) => void ask(q, true)}
             onCancel={() => abortRef.current?.abort()}

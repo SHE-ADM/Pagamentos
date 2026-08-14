@@ -97,6 +97,39 @@ export interface ChatResult {
   iterations: number;
 }
 
+/**
+ * Observação LATERAL do turno, para quem quiser mostrar progresso enquanto ele acontece.
+ *
+ * 🔴 O desenho é deliberado: **não existe um segundo `runChat` para streaming**. O loop de tool use
+ * é o coração do gateway — duplicá-lo para servir a rota SSE criaria duas cópias do teto de
+ * iterações, do pareamento tool_use/tool_result, do acumulador de tokens e da tradução de erro, e
+ * elas passariam a divergir na primeira alteração. Aqui o streaming é apenas uma **observação** do
+ * mesmo loop: sem `events`, o comportamento é byte a byte o de antes (é o que a suíte existente do
+ * gateway continua provando).
+ *
+ * Todo callback é best-effort: uma exceção lançada por quem observa NUNCA pode derrubar o turno —
+ * ver `safeEmit`. Mesmo princípio de `logInteraction`, que nunca lança, e de `attachPartialRun`,
+ * que engole a própria falha.
+ */
+// ts-prune-ignore-next
+export interface ChatProgress {
+  /** Uma ferramenta vai executar. */
+  onToolStart?: (call: { name: string; params: Record<string, unknown> }) => void;
+  /** A ferramenta terminou (com `error` quando falhou — o loop segue, por contrato). */
+  onToolEnd?: (call: { name: string; rows: number; ms: number; error?: string }) => void;
+  /**
+   * Uma NOVA mensagem do assistente começou a emitir texto.
+   *
+   * Emitido uma vez por mensagem, não uma vez por turno: o modelo costuma escrever um preâmbulo,
+   * pedir a ferramenta e só então redigir a resposta. Quem observa deve DESCARTAR o texto acumulado
+   * a cada sinal destes — é o que mantém a tela igual ao `answer` final, que é apenas o texto da
+   * última mensagem (`extractText` da resposta que encerra o loop).
+   */
+  onTextStart?: () => void;
+  /** Um pedaço de texto recém-gerado. */
+  onTextDelta?: (text: string) => void;
+}
+
 let client: Anthropic | null = null;
 
 function getAnthropic(): Anthropic {
@@ -366,12 +399,15 @@ function toolResultText(rows: unknown[]): string {
  * @param signal   Aborta o run quando o cliente desiste (`request.signal` da rota). Sem ele o
  *   loop segue gastando tokens numa resposta que ninguém vai receber — ver o comentário de
  *   `throwIfAborted`.
+ * @param events   Observação opcional do progresso (rota SSE). Omitido, o turno se comporta
+ *   exatamente como antes — ver `ChatProgress`.
  */
 export async function runChat(
   supabase: SupabaseClient,
   token: string,
   req: ChatRequest,
   signal?: AbortSignal,
+  events?: ChatProgress,
 ): Promise<ChatResult> {
   const anthropic = getAnthropic();
   const toolCalls: LoggedToolCall[] = [];
@@ -402,6 +438,36 @@ export async function runChat(
       truncated: foiTruncado,
       iterations,
     };
+  };
+
+  /**
+   * Chama o modelo e devolve a mensagem final, repassando o texto em tempo real a quem observa.
+   *
+   * Existe para que o wiring do `on('text')` não seja copiado nas DUAS chamadas ao modelo — o loop
+   * e o fechamento por teto de iterações. Duplicado, o fechamento seria justamente o caminho que
+   * alguém esqueceria de manter, e ele é a resposta da pergunta MAIS CARA (a que estourou o teto):
+   * o usuário veria a tela parada exatamente no turno mais longo, que é quando o streaming importa.
+   *
+   * O tipo do parâmetro é derivado do próprio SDK (`Parameters<...>`) em vez de escrito à mão:
+   * assim uma mudança de assinatura numa atualização vira erro de compilação aqui, e não um `any`
+   * silencioso.
+   */
+  const chamarModelo = (
+    params: Parameters<typeof anthropic.messages.stream>[0],
+  ): Promise<Anthropic.Message> => {
+    const s = anthropic.messages.stream(params, { signal });
+    if (events) {
+      let emitiu = false;
+      s.on('text', (delta: string) => {
+        // O primeiro delta desta mensagem abre um bloco novo — ver `ChatProgress.onTextStart`.
+        if (!emitiu) {
+          emitiu = true;
+          safeEmit(() => events.onTextStart?.(), 'text_start');
+        }
+        safeEmit(() => events.onTextDelta?.(delta), 'delta');
+      });
+    }
+    return s.finalMessage();
   };
 
   // A data corrente vai AQUI (na mensagem), não no system prompt — ver SYSTEM_PROMPT.
@@ -437,22 +503,17 @@ export async function runChat(
       // é a mesma (JSON único), mas o socket recebe tokens continuamente em vez de ficar ocioso —
       // é o que evita timeout de request/proxy num turno longo, e é o ponto de onde a Fase 3
       // puxará o texto parcial para a tela.
-      const response = await anthropic.messages
-        .stream(
-          {
-            model: MODEL,
-            max_tokens: MAX_TOKENS,
-            // cache_control no bloco estável: só o system+tools é cacheado; a pergunta (volátil)
-            // vem depois e não invalida o prefixo.
-            system: [{ type: 'text', text: SYSTEM_PROMPT, cache_control: { type: 'ephemeral' } }],
-            tools: toolParams,
-            messages,
-          },
-          // O signal também vai à chamada EM VOO: sem ele o abort só seria notado na próxima
-          // iteração, e um turno longo continuaria streamando até terminar.
-          { signal },
-        )
-        .finalMessage();
+      // O signal vai à chamada EM VOO dentro de `chamarModelo`: sem ele o abort só seria notado na
+      // próxima iteração, e um turno longo continuaria streamando até terminar.
+      const response = await chamarModelo({
+        model: MODEL,
+        max_tokens: MAX_TOKENS,
+        // cache_control no bloco estável: só o system+tools é cacheado; a pergunta (volátil)
+        // vem depois e não invalida o prefixo.
+        system: [{ type: 'text', text: SYSTEM_PROMPT, cache_control: { type: 'ephemeral' } }],
+        tools: toolParams,
+        messages,
+      });
 
       accumulate(response.usage);
       iterations += 1;
@@ -491,6 +552,12 @@ export async function runChat(
           continue;
         }
 
+        // Só as chamadas VÁLIDAS viram progresso na tela. Os dois desvios acima (tool inexistente,
+        // parâmetro fora do schema) seguem no log e no `toolCalls`, mas não geram chip: são defeito
+        // nosso ou do modelo, não trabalho que o usuário pediu, e anunciá-los transformaria a barra
+        // de progresso num relatório de erro interno.
+        safeEmit(() => events?.onToolStart?.({ name: block.name, params: parsed.params }), 'tool');
+
         try {
           const rows = await runTool(supabase, token, block.name, parsed.params);
           rowCount += rows.length;
@@ -499,6 +566,12 @@ export async function runChat(
             name: block.name, params: parsed.params,
             rows: rows.length, ms: Date.now() - started,
           });
+          safeEmit(
+            () => events?.onToolEnd?.({
+              name: block.name, rows: rows.length, ms: Date.now() - started,
+            }),
+            'tool_end',
+          );
         } catch (e) {
           // Falha da tool volta ao modelo como tool_result com is_error (§17.6) — nunca omitir o
           // bloco, que quebraria o pareamento. O detalhe fica no log, não vai ao modelo.
@@ -509,6 +582,14 @@ export async function runChat(
             name: block.name, params: parsed.params, rows: 0,
             ms: Date.now() - started, error: detalhe,
           });
+          // O chip fecha com marca de falha. `detalhe` NÃO vai junto — é a mesma regra que já vale
+          // para o modelo e para a resposta HTTP: mensagem interna não chega ao cliente.
+          safeEmit(
+            () => events?.onToolEnd?.({
+              name: block.name, rows: 0, ms: Date.now() - started, error: 'falhou',
+            }),
+            'tool_end',
+          );
         }
       }
 
@@ -518,30 +599,28 @@ export async function runChat(
     // Saiu por MAX_ITERATIONS: pede uma resposta final SEM tools, para o usuário receber o que já
     // foi apurado em vez de um erro seco. Fica DENTRO do try — um 429 nesta chamada precisa da
     // mesma tradução das demais, senão vira 500 genérico justamente na pergunta mais cara.
-    const fechamento = await anthropic.messages
-      .stream({
-        model: MODEL,
-        max_tokens: MAX_TOKENS,
-        system: [{ type: 'text', text: SYSTEM_PROMPT, cache_control: { type: 'ephemeral' } }],
-        // As tools vão JUNTO, com `tool_choice: none` — não basta omiti-las (não regredir).
-        // Remover o array `tools` é uma mudança de DEFINIÇÃO de tool, que invalida os três níveis
-        // de cache (tools + system + messages): o fechamento é a chamada com o histórico mais
-        // longo, e pagaria prefixo cheio justamente aí. Trocar só o `tool_choice` preserva o
-        // cache. De quebra, o histórico contém blocos `tool_use`, que a API espera acompanhados
-        // da definição das tools.
-        tools: toolParams,
-        tool_choice: { type: 'none' },
-        messages: [
-          ...messages,
-          {
-            role: 'user',
-            content:
-              'Você atingiu o limite de consultas para esta pergunta. Responda agora com o que já '
-              + 'apurou, deixando claro o que ficou sem verificar.',
-          },
-        ],
-      }, { signal })
-      .finalMessage();
+    const fechamento = await chamarModelo({
+      model: MODEL,
+      max_tokens: MAX_TOKENS,
+      system: [{ type: 'text', text: SYSTEM_PROMPT, cache_control: { type: 'ephemeral' } }],
+      // As tools vão JUNTO, com `tool_choice: none` — não basta omiti-las (não regredir).
+      // Remover o array `tools` é uma mudança de DEFINIÇÃO de tool, que invalida os três níveis
+      // de cache (tools + system + messages): o fechamento é a chamada com o histórico mais
+      // longo, e pagaria prefixo cheio justamente aí. Trocar só o `tool_choice` preserva o
+      // cache. De quebra, o histórico contém blocos `tool_use`, que a API espera acompanhados
+      // da definição das tools.
+      tools: toolParams,
+      tool_choice: { type: 'none' },
+      messages: [
+        ...messages,
+        {
+          role: 'user',
+          content:
+            'Você atingiu o limite de consultas para esta pergunta. Responda agora com o que já '
+            + 'apurou, deixando claro o que ficou sem verificar.',
+        },
+      ],
+    });
     accumulate(fechamento.usage);
 
     return finish(extractText(fechamento.content), truncated);
@@ -601,6 +680,26 @@ function warnIfCachingDisabled(u: { cacheReadTokens: number; cacheCreationTokens
     + 'O prefixo system+tools provavelmente está abaixo do mínimo deste modelo — o cache_control é '
     + 'ignorado sem erro e o custo por pergunta sobe. Confira ANTHROPIC_MODEL.',
   );
+}
+
+/**
+ * Executa um callback de progresso sem deixar que ele derrube o turno.
+ *
+ * 🔴 Não é zelo excessivo: quem observa é a rota SSE, e `controller.enqueue` **lança** quando o
+ * cliente já fechou a conexão — o caso mais comum de todos, porque é exatamente o que acontece
+ * quando o usuário clica em "Parar" ou fecha a aba. Sem esta contenção, uma desconexão normal
+ * viraria exceção no meio do loop, abortaria o turno por um motivo que não é erro e — pior —
+ * pularia a auditoria, que é o único registro do que já foi gasto.
+ *
+ * O turno continua até o fim mesmo sem ninguém escutando: quem decide parar por desistência do
+ * cliente é o `throwIfAborted`, no limite da iteração, que é o ponto onde parar é seguro.
+ */
+function safeEmit(fn: () => void, rotulo: string): void {
+  try {
+    fn();
+  } catch (e) {
+    console.error(`[ai-chat] callback de progresso (${rotulo}) falhou:`, e);
+  }
 }
 
 function errorResult(id: string, message: string): Anthropic.ToolResultBlockParam {

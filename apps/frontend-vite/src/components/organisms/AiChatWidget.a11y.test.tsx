@@ -3,10 +3,10 @@ import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { axe } from '../../../tests/axe';
 
-const askAiChat = vi.fn();
+const askAiChatStream = vi.fn();
 vi.mock('../../services/aiChat', async () => {
   const actual = await vi.importActual<typeof import('../../services/aiChat')>('../../services/aiChat');
-  return { ...actual, askAiChat: (...a: unknown[]) => askAiChat(...a) };
+  return { ...actual, askAiChatStream: (...a: unknown[]) => askAiChatStream(...a) };
 });
 
 import AiChatWidget from './AiChatWidget';
@@ -14,7 +14,7 @@ import AiChatWidget from './AiChatWidget';
 describe('AiChatWidget — acessibilidade (WCAG AA)', () => {
   // Corpo em bloco — `mockReset()` devolve o mock e o Vitest usaria o retorno como teardown.
   beforeEach(() => {
-    askAiChat.mockReset();
+    askAiChatStream.mockReset();
   });
 
   it('fechado (só o botão flutuante) não tem violações', async () => {
@@ -23,7 +23,7 @@ describe('AiChatWidget — acessibilidade (WCAG AA)', () => {
   });
 
   it('aberto, com conversa e tabela na resposta, não tem violações', async () => {
-    askAiChat.mockResolvedValue({
+    askAiChatStream.mockResolvedValue({
       answer: '**Resumo**\n\n| Situação | Valor |\n| --- | --- |\n| vencido | R$ 10,00 |',
       tool_calls: [{ name: 'resumo_situacao', params: {}, rows: 4 }],
       truncated: true,

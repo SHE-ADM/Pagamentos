@@ -6,10 +6,10 @@ import userEvent from '@testing-library/user-event';
 // está sob teste. `...actual` mantém `AiChatCancelledError` REAL: o widget o usa em `instanceof`,
 // e uma classe ausente no mock daria `instanceof undefined`, que LANÇA (mesma armadilha
 // documentada no mock do SDK da Anthropic no api-backend).
-const askAiChat = vi.fn();
+const askAiChatStream = vi.fn();
 vi.mock('../../services/aiChat', async () => {
   const actual = await vi.importActual<typeof import('../../services/aiChat')>('../../services/aiChat');
-  return { ...actual, askAiChat: (...a: unknown[]) => askAiChat(...a) };
+  return { ...actual, askAiChatStream: (...a: unknown[]) => askAiChatStream(...a) };
 });
 
 import AiChatWidget from './AiChatWidget';
@@ -42,7 +42,7 @@ async function ask(text: string): Promise<void> {
  * interessa QUAIS mensagens foram passadas, não o formato do payload.
  */
 function lastConversation(): { role: string; content: string }[] {
-  const [, messages] = askAiChat.mock.lastCall as [string, { role: string; content: string }[]];
+  const [, messages] = askAiChatStream.mock.lastCall as [string, { role: string; content: string }[]];
   return messages.map((m) => ({ role: m.role, content: m.content }));
 }
 
@@ -51,7 +51,7 @@ describe('AiChatWidget', () => {
   // tratado como teardown — o mock seria chamado ao fim do teste (com mockRejectedValue ativo,
   // isso vira rejeição não tratada e o teste falha pelo erro, não pela asserção).
   beforeEach(() => {
-    askAiChat.mockReset();
+    askAiChatStream.mockReset();
   });
 
   it('mostra o botão flutuante e o painel só depois do clique', async () => {
@@ -63,7 +63,7 @@ describe('AiChatWidget', () => {
   });
 
   it('envia a pergunta e renderiza a resposta em markdown', async () => {
-    askAiChat.mockResolvedValue(
+    askAiChatStream.mockResolvedValue(
       ok('| Situação | Valor |\n| --- | --- |\n| vencido | R$ 10,00 |', {
         tool_calls: [{ name: 'resumo_situacao', params: {}, rows: 4 }],
       }),
@@ -76,24 +76,24 @@ describe('AiChatWidget', () => {
     expect(screen.getByText(/resumo_situacao · 4 linhas/)).toBeInTheDocument();
     // A conversa enviada INCLUI a pergunta atual: quem recorta é o buildHistory do serviço, que
     // descarta a pergunta sem par (é o formato que a rota exige).
-    expect(askAiChat.mock.lastCall?.[0]).toBe('como estamos?');
+    expect(askAiChatStream.mock.lastCall?.[0]).toBe('como estamos?');
     expect(lastConversation()).toEqual([{ role: 'user', content: 'como estamos?' }]);
   });
 
   // A 2ª pergunta precisa levar o par (pergunta, resposta) anterior — é o que faz
   // "e os 5 maiores?" ter contexto.
   it('manda o histórico da conversa na segunda pergunta', async () => {
-    askAiChat.mockResolvedValue(ok('primeira resposta'));
+    askAiChatStream.mockResolvedValue(ok('primeira resposta'));
     render(<AiChatWidget />);
     await ask('pergunta 1');
     await screen.findByText('primeira resposta');
 
-    askAiChat.mockResolvedValue(ok('segunda resposta'));
+    askAiChatStream.mockResolvedValue(ok('segunda resposta'));
     await userEvent.type(screen.getByLabelText('Sua pergunta'), 'pergunta 2');
     await userEvent.click(screen.getByRole('button', { name: /enviar/i }));
 
     await screen.findByText('segunda resposta');
-    expect(askAiChat.mock.lastCall?.[0]).toBe('pergunta 2');
+    expect(askAiChatStream.mock.lastCall?.[0]).toBe('pergunta 2');
     expect(lastConversation()).toEqual([
       { role: 'user', content: 'pergunta 1' },
       { role: 'assistant', content: 'primeira resposta' },
@@ -102,32 +102,32 @@ describe('AiChatWidget', () => {
   });
 
   it('avisa quando a resposta pode estar incompleta', async () => {
-    askAiChat.mockResolvedValue(ok('parcial', { truncated: true }));
+    askAiChatStream.mockResolvedValue(ok('parcial', { truncated: true }));
     render(<AiChatWidget />);
     await ask('pergunta longa');
     expect(await screen.findByText(/pode estar incompleta/i)).toBeInTheDocument();
   });
 
   it('mostra o erro e reenvia a MESMA pergunta no "Tentar novamente", sem duplicá-la', async () => {
-    askAiChat.mockRejectedValue(new Error('Muitas requisições. Aguarde um instante.'));
+    askAiChatStream.mockRejectedValue(new Error('Muitas requisições. Aguarde um instante.'));
     render(<AiChatWidget />);
     await ask('pergunta que falha');
     expect(await screen.findByText('Muitas requisições. Aguarde um instante.')).toBeInTheDocument();
 
-    askAiChat.mockResolvedValue(ok('agora foi'));
+    askAiChatStream.mockResolvedValue(ok('agora foi'));
     await userEvent.click(screen.getByRole('button', { name: /tentar novamente/i }));
 
     await screen.findByText('agora foi');
     expect(screen.getAllByText('pergunta que falha')).toHaveLength(1);
     // No retry a pergunta pendente NÃO entra no histórico (ela não tem par) — senão a rota
     // devolveria 422 por histórico ímpar.
-    expect(askAiChat.mock.lastCall?.[0]).toBe('pergunta que falha');
+    expect(askAiChatStream.mock.lastCall?.[0]).toBe('pergunta que falha');
     expect(lastConversation()).toEqual([{ role: 'user', content: 'pergunta que falha' }]);
     expect(screen.queryByText('Muitas requisições. Aguarde um instante.')).not.toBeInTheDocument();
   });
 
   it('"Nova conversa" limpa as mensagens', async () => {
-    askAiChat.mockResolvedValue(ok('resposta'));
+    askAiChatStream.mockResolvedValue(ok('resposta'));
     render(<AiChatWidget />);
     await ask('pergunta');
     await screen.findByText('resposta');
@@ -138,7 +138,7 @@ describe('AiChatWidget', () => {
   });
 
   it('a conversa sobrevive a fechar e reabrir o painel', async () => {
-    askAiChat.mockResolvedValue(ok('lembro de você'));
+    askAiChatStream.mockResolvedValue(ok('lembro de você'));
     render(<AiChatWidget />);
     await ask('oi');
     await screen.findByText('lembro de você');
@@ -151,7 +151,7 @@ describe('AiChatWidget', () => {
   });
 
   it('clicar numa sugestão envia direto', async () => {
-    askAiChat.mockResolvedValue(ok('resposta da sugestão'));
+    askAiChatStream.mockResolvedValue(ok('resposta da sugestão'));
     render(<AiChatWidget />);
     await openPanel();
     await userEvent.click(screen.getByRole('button', { name: 'Como estamos de contas a pagar?' }));
@@ -185,17 +185,17 @@ describe('AiChatWidget', () => {
   });
 
   it('Enter envia e Shift+Enter apenas quebra a linha', async () => {
-    askAiChat.mockResolvedValue(ok('enviada'));
+    askAiChatStream.mockResolvedValue(ok('enviada'));
     render(<AiChatWidget />);
     const field = await openPanel();
 
     await userEvent.type(field, 'linha 1{Shift>}{Enter}{/Shift}linha 2');
-    expect(askAiChat).not.toHaveBeenCalled();
+    expect(askAiChatStream).not.toHaveBeenCalled();
     expect(field.value).toBe('linha 1\nlinha 2');
 
     await userEvent.type(field, '{Enter}');
     await screen.findByText('enviada');
-    expect(askAiChat.mock.lastCall?.[0]).toBe('linha 1\nlinha 2');
+    expect(askAiChatStream.mock.lastCall?.[0]).toBe('linha 1\nlinha 2');
     expect(lastConversation()).toEqual([{ role: 'user', content: 'linha 1\nlinha 2' }]);
   });
 
@@ -205,7 +205,7 @@ describe('AiChatWidget', () => {
   // histórico começando em `assistant`.
   it('descarta a resposta que chega depois de "Nova conversa"', async () => {
     let resolver: ((v: unknown) => void) | undefined;
-    askAiChat.mockReturnValue(new Promise((r) => { resolver = r; }));
+    askAiChatStream.mockReturnValue(new Promise((r) => { resolver = r; }));
 
     render(<AiChatWidget />);
     await ask('pergunta abandonada');
@@ -228,7 +228,7 @@ describe('AiChatWidget', () => {
   // desabilita campo, botão de envio e "Tentar novamente", e nem renderiza as sugestões. É por isso
   // que o widget não carrega trava de reentrância — não haveria caminho que a exercitasse.
   it('trava os controles enquanto a requisição está em voo', async () => {
-    askAiChat.mockReturnValue(new Promise(() => { /* nunca resolve */ }));
+    askAiChatStream.mockReturnValue(new Promise(() => { /* nunca resolve */ }));
 
     render(<AiChatWidget />);
     await ask('pergunta longa');
@@ -237,7 +237,7 @@ describe('AiChatWidget', () => {
     expect(screen.getByLabelText('Sua pergunta')).toBeDisabled();
     expect(screen.getByRole('button', { name: /enviar/i })).toBeDisabled();
     expect(screen.queryByRole('button', { name: 'Como estamos de contas a pagar?' })).not.toBeInTheDocument();
-    expect(askAiChat).toHaveBeenCalledTimes(1);
+    expect(askAiChatStream).toHaveBeenCalledTimes(1);
   });
 
   /**
@@ -279,8 +279,9 @@ describe('AiChatWidget', () => {
    * promessa nunca resolveria e o teste estouraria por timeout em vez de passar por acidente.
    */
   it('"Parar" aborta a requisição e trata cancelamento como AVISO, não erro', async () => {
-    askAiChat.mockImplementation(
-      (_q: string, _m: unknown, signal: AbortSignal) =>
+    // O signal é o 4º parâmetro de `askAiChatStream` — o 3º são os handlers de progresso.
+    askAiChatStream.mockImplementation(
+      (_q: string, _m: unknown, _h: unknown, signal: AbortSignal) =>
         new Promise((_resolve, reject) => {
           signal.addEventListener('abort', () => reject(new AiChatCancelledError()));
         }),
@@ -307,7 +308,7 @@ describe('AiChatWidget', () => {
   // loop até o fim de uma resposta que a guarda de geração já ia descartar.
   it('"Nova conversa" aborta a requisição em voo', async () => {
     const signals: AbortSignal[] = [];
-    askAiChat.mockImplementation((_q: string, _m: unknown, signal: AbortSignal) => {
+    askAiChatStream.mockImplementation((_q: string, _m: unknown, _h: unknown, signal: AbortSignal) => {
       signals.push(signal);
       return new Promise((_resolve, reject) => {
         signal.addEventListener('abort', () => reject(new AiChatCancelledError()));
