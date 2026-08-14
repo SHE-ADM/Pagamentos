@@ -1111,6 +1111,15 @@ concisão é exatamente o que faria o modelo sacrificá-los, desfazendo o que as
 instalaram. A guarda de `regression.test.ts` trava as **duas** metades (validada por mutante: tirar
 só a cláusula da ressalva — a "otimização" plausível — deixa o teste vermelho).
 
+✅ **FUNCIONOU, e o número está aqui para que ninguém o reverta por achar que não fazia diferença.**
+A MESMA pergunta, depois do deploy: **53,2 s → 25,1 s (−53%)**, **4.970 → 2.102** tokens de saída,
+**167 → 15** linhas exibidas. O modelo de latência previu **24,9 s** contra os **25,05 s** medidos
+(erro de 0,6%) — 3ª validação independente da equação. ⚠️ **A próxima alavanca seria a LARGURA, não
+a altura:** dos 2.102 tokens restantes, ~1.100 são as 15 linhas (a ~70 tokens cada, com razão
+social por extenso e 8-9 colunas) e ~1.000 são introdução, ressalvas e fechamento. Enxugar as
+colunas levaria o turno a ~18-20 s. **Deliberadamente NÃO feito:** o ganho (~5-7 s) é pequeno perto
+do desta rodada, e menos coluna é menos informação — é decisão de conteúdo, não de desempenho.
+
 Invariantes do transporte:
 
 - 🔴 **A FRONTEIRA DO STATUS HTTP.** Tudo que pode ser recusado ANTES do corpo abrir (401/400/422
