@@ -4048,8 +4048,26 @@ local/agendada (ver flag `EMAIL_READER_ENABLED` acima e memória [[vercel-deploy
 ## Banco de dados (Supabase)
 
 Migrations em `supabase/migrations/`, aplicadas **manualmente no SQL Editor** (ou via Supabase
-MCP — ver a nota de cada uma) em ordem numérica (`001` → `125`). **Próxima migration = `126`**
+MCP — ver a nota de cada uma) em ordem numérica (`001` → `126`). **Próxima migration = `127`**
 (verificar sempre antes de criar nova).
+
+**A `126` corrige a classificação contábil de 48 contas da usuária `ester@otimotex.com.br`**
+(aplicada via Supabase MCP em 2026-08-14, idempotente, sem DDL). Contas gravadas em **72.1.06 —
+Estamparia** (chart_account_id 528/cc 10 — 15 contas) ou **21.1.01 — Mercadorias para Revenda**
+(chart_account_id 152/cc 19 — 33 contas) passaram para **83.1.01 — Acordos de Terceiros**
+(chart_account_id 631/cc 12), par validado contra `financial_chart_of_account.cost_center_id` —
+a mesma regra de `checkClassificationPair`. Escopo restrito a `created_by = ester` (WHERE
+casando o par ANTIGO, idempotente); contas de outros usuários para os mesmos fornecedores
+(792/611, também classificados nesses dois códigos) **não foram tocadas** — verificado antes e
+depois (8+13 contas de 792/152 e 2 de 611/528 permanecem intactas). O default de classificação
+dos 4 fornecedores envolvidos (`sk_supplier` 611, 792, 883, 1317 — Modart, Hyosung SC, Grife
+Têxtil, Singular) foi atualizado para 631/12, por decisão do usuário, para que contas NOVAS
+desses fornecedores não voltem a nascer na classificação antiga — decisão deliberada mesmo para
+792/611, cujo default também alimentava contas de outros usuários (efeito é só no
+pré-preenchimento futuro). `ator_via = 'servico'` na trilha de auditoria (Onda 7) — correção
+administrativa via SQL direto, não uma ação executada pela ester (o mesmo princípio do
+`OLD.updated_by` não ser fonte de ator: atribuir a um humano uma mudança que ele não fez é
+"acusação falsa, pior que ausência de dado").
 
 **A `125` estende o balde parcial a `pontualidade_pagamento` com `group_by='mes'`** (aplicada via
 psql em 2026-08-13, idempotente, ensaiada antes em `BEGIN … ROLLBACK`) — invariante e medições em
