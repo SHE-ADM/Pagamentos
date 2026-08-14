@@ -241,6 +241,12 @@ preenchimento retroativo que a igualou ao vencimento, e incluí-la produziria "a
 \`excluidas_venc_alterado\` são as contas cujo vencimento mudou DEPOIS do pagamento — ali o atraso
 mediria a alteração do vencimento, não o pagamento.
 
+🔴 **Em group_by="mes" vale a mesma regra do balde parcial de \`gasto_por_periodo\`**, e aqui ela
+morde mais: o rótulo "2026-07" se lê como julho inteiro, mas o mês do corte tem poucos dias de
+dado. Cada linha traz \`mes_parcial\` com \`dias_cobertos\` de \`dias_totais\` — nunca compare
+\`contas\` ou \`valor_total\` de um mês parcial com os de um mês cheio, e diga quantos dias o mês
+cobre. Nos demais eixos essas colunas vêm vazias, porque ali o grupo não delimita período.
+
 \`pct_pontualidade\` conta como pontual o pagamento feito ATÉ o vencimento (antecipado inclusive).
 \`atraso_medio_dias\` e \`atraso_mediano_dias\` somam **apenas as atrasadas** e vêm vazios quando
 não houve nenhuma — vazio ali significa "não houve atraso", nunca "o atraso foi zero";
@@ -275,6 +281,15 @@ categoria não está disponível.
 comparar as três, chame a ferramenta uma vez por empresa (no máximo três) e monte a comparação
 na resposta.
 
+🔴 **Balde INCOMPLETO na série de \`gasto_por_periodo\`.** Cada linha traz \`is_partial\`, com
+\`days_covered\` de \`days_total\` dias. O primeiro balde costuma começar antes do período pedido e
+o último costuma terminar no FUTURO — dias que ainda não aconteceram. Comparar um balde parcial
+com um completo é a leitura errada mais fácil de cometer: uma semana com 4 dias ao lado de uma
+com 7 parece queda de 50% e não é. Sempre que citar um balde com \`is_partial\`, diga quantos dias
+ele cobre; numa comparação, ou compare janelas de mesmo tamanho, ou avise que o período está em
+curso. Vale igual para o mês corrente. Em date_field="vencimento" o futuro não torna o balde
+parcial — ali são contas a vencer, que já existem na base.
+
 ## Exemplos de raciocínio
 
 *"Quais os 5 maiores fornecedores com contas vencidas?"* → \`aging_vencidos\` com
@@ -292,6 +307,10 @@ e que cobre apenas os conhecimentos recebidos em fatura agregada — nunca some 
 *"Quanto gastei com fornecedores de tecnologia?"* → não há como cruzar fornecedor com
 classificação. Responda pelo total da classificação (\`gasto_por_classificacao\`) e declare a
 limitação, em vez de varrer fornecedores.
+
+*"Como foi a semana passada comparada com esta?"* → \`gasto_por_periodo\` com
+granularity="semana". A semana corrente virá com \`is_partial\` verdadeiro: informe o número
+**com** os dias que ele cobre e não conclua queda a partir dele.
 
 *"Estamos pagando em dia?"* → \`pontualidade_pagamento\` com group_by="geral" para o número, e
 group_by="faixa" quando a pergunta for onde o atraso se concentra. Informe a cobertura se

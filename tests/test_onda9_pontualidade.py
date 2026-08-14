@@ -299,6 +299,100 @@ class G4bPeriodoSemCoberturaTest(unittest.TestCase):
                          "a sonda do piso nao chama a tool com o piso derivado do dado")
 
 
+def _colunas_do_returns() -> list[str]:
+    """Os NOMES das colunas do RETURNS TABLE, na ordem.
+
+    🔴 Extrai o nome em vez de procurar substring: `assertIn('mes_parcial', tabela)` casaria dentro
+    de `mes_parcial_MUT`, e renomear a coluna deixaria a guarda VERDE — medido na guarda irma da
+    migration 124, onde exatamente esse mutante passou antes de a leitura ser corrigida.
+    """
+    m = re.search(r"RETURNS TABLE \((.*?)\)\s*LANGUAGE", _codigo_sql(MIG_TOOL), re.DOTALL)
+    assert m, "nao achei o RETURNS TABLE (o formato mudou?)"
+    return re.findall(r"^\s+(\w+)\s+\w", m.group(1), re.MULTILINE)
+
+
+class G6MesParcialTest(unittest.TestCase):
+    """🔴 O eixo 'mes' declara o mes INCOMPLETO (migration 125).
+
+    Aqui a truncagem e pior que a de `gasto_por_periodo`: o rotulo "2026-07" se le como julho
+    inteiro, mas o mes do corte tem 3 dos 31 dias. Sao TRES truncagens que colapsam na mesma
+    janela — o corte de cobertura (que morde o primeiro mes, e e o mais invisivel), o presente
+    (que morde o mes corrente) e o filtro do usuario.
+    """
+
+    COLUNAS = ("dias_cobertos", "dias_totais", "mes_parcial")
+
+    def test_sanidade_do_parser_de_colunas(self):
+        colunas = _colunas_do_returns()
+        self.assertGreaterEqual(len(colunas), 15, f"esperava >= 15 colunas, li {colunas}")
+        self.assertEqual(colunas[0], "grupo", f"a 1a coluna deveria ser `grupo`, li {colunas}")
+
+    def test_a_funcao_devolve_as_tres_colunas(self):
+        colunas = set(_colunas_do_returns())
+        faltando = sorted(c for c in self.COLUNAS if c not in colunas)
+        self.assertEqual(
+            faltando, [],
+            f"a tool deixou de devolver {faltando} — o modelo compararia um mes de 3 dias com um "
+            f"mes cheio. Colunas lidas: {sorted(colunas)}",
+        )
+
+    def test_as_colunas_novas_vao_no_FIM(self):
+        colunas = _colunas_do_returns()
+        self.assertEqual(colunas[:3], ["grupo", "contas", "valor_total"],
+                         f"as colunas originais sairam do inicio: {colunas}")
+        self.assertLess(colunas.index("total_encontrado"), colunas.index("dias_cobertos"),
+                        "coluna nova entrou ANTES de total_encontrado")
+
+    def test_usa_o_fuso_de_sao_paulo_e_nao_current_date(self):
+        """A sessao do banco roda em UTC: `CURRENT_DATE` faria o mes corrente parecer COMPLETO
+        das 21h a meia-noite do ultimo dia do mes."""
+        sql = _codigo_sql(MIG_TOOL)
+        self.assertIn("America/Sao_Paulo", sql, "o corpo nao fixa o fuso do 'hoje'")
+        self.assertNotIn("CURRENT_DATE", sql, "o corpo voltou a usar CURRENT_DATE")
+
+    def test_a_janela_e_guardada_contra_NULL(self):
+        """🔴 `LEAST`/`GREATEST` IGNORAM NULL — ao contrario dos operadores aritmeticos.
+
+        Sem o `CASE WHEN mes_ini IS NULL`, fora do eixo 'mes' o `LEAST(NULL, p_date_to, hoje)`
+        devolve `hoje` e o `GREATEST(NULL, ..., corte)` devolve `corte`: `dias_cobertos` sai
+        preenchido com a largura da JANELA DA CONSULTA — um numero plausivel e sem sentido ali.
+        Reproduzido no ensaio da 125: 11 linhas de geral/faixa/fornecedor vieram assim.
+        """
+        corpo = _codigo_sql(MIG_TOOL)
+        # 🔴 A guarda tem de estar amarrada ao **LEAST**, que e a expressao vulneravel. Uma
+        # assercao solta ("existe um CASE WHEN mes_ini IS NULL em algum lugar") passa com a guarda
+        # do `cobertos` desativada, porque a do `totais` ainda casa — medido: esse mutante ficou
+        # VERDE ate esta assercao ser reescrita.
+        self.assertRegex(
+            corpo, r"CASE WHEN a\.mes_ini IS NULL THEN NULL ELSE\s*\n?\s*LEAST",
+            "o calculo de `dias_cobertos` (o LEAST/GREATEST) nao esta guardado contra mes_ini "
+            "nulo — fora do eixo 'mes' a coluna sairia preenchida com a largura da consulta",
+        )
+        # As DUAS colunas derivadas de mes_ini sao guardadas. `totais` ja seria NULL pela
+        # aritmetica, mas depender disso e depender de um detalhe que a proxima edicao desfaz.
+        self.assertEqual(
+            len(re.findall(r"CASE WHEN a\.mes_ini IS NULL THEN NULL", corpo)), 2,
+            "esperava a guarda de nulo nas DUAS colunas derivadas de mes_ini",
+        )
+
+    def test_a_sonda_do_NULL_fora_do_eixo_mes_existe(self):
+        self.assertIn("fora do eixo mes vieram com as colunas de periodo", _codigo_sql(MIG_TOOL))
+
+    def test_o_mes_sai_do_DADO_e_nao_do_ROTULO(self):
+        """Converter o rotulo de volta com `to_date` criaria 2a fonte de verdade: mudou o formato
+        do rotulo, a janela passa a ser calculada sobre outra coisa, sem erro."""
+        corpo = _codigo_sql(MIG_TOOL)
+        self.assertIn("min(date_trunc('month', f.payment_date))", corpo,
+                      "o inicio do mes nao sai da propria payment_date")
+
+    def test_a_camada_ts_manda_declarar(self):
+        descricao = _codigo_ts(TOOLS_TS)
+        for coluna in self.COLUNAS:
+            self.assertIn(coluna, descricao, f"tools.ts nao cita {coluna}")
+        self.assertIn("mes_parcial", _codigo_ts(GATEWAY_TS),
+                      "o SYSTEM_PROMPT nao fala do mes parcial")
+
+
 class G5GrantsTest(unittest.TestCase):
     """GRANT e REVOKE explicitos — o default do PostgreSQL concede EXECUTE a PUBLIC."""
 

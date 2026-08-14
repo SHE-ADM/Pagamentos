@@ -212,11 +212,17 @@ Estas regras se aplicam a **todo** código novo ou alterado neste projeto, sem e
   `test_contact_block_nonpayable.py`, `test_is_processed.py`,
   `test_onda8_gate_ia.py`, `test_react_versao_unica.py`). Cobre o
   pipeline de extração; rodar após mexer em `read_emails.py`/`extract_pdf.py` ou nos
-  scripts de reprocessamento. Não é incluída no `npm test` (que soma **1.468** no Node —
-  frontend-vite 855 · api-backend 579 · packages/shared 32 · portal-next 2, medidos em
-  2026-08-13 após a Onda 9). A suíte Python está em **1.367** — os **26** mais recentes são
+  scripts de reprocessamento. Não é incluída no `npm test` (que soma **1.470** no Node —
+  frontend-vite 855 · api-backend 581 · packages/shared 32 · portal-next 2, medidos em
+  2026-08-13 após a migration 125). A suíte Python está em **1.408** — os **18** mais recentes são
+  `test_gasto_por_periodo_parcial.py` (o balde parcial da série temporal: as 4 colunas lidas pelo
+  NOME e não por substring, o fuso de São Paulo, o domínio cross-layer Zod × SQL e a declaração na
+  descrição da tool e no prompt), mais os **8** que a **125** acrescentou a
+  `test_onda9_pontualidade.py` (que foi de 27 para **35**: mês parcial, fuso, a guarda de NULL
+  amarrada ao `LEAST` e o mês vindo do DADO, não do rótulo). Antes deles, os **39** de
   `test_roadmap_gatilhos.py` (o medidor mensal dos gatilhos: domínio cross-layer script × CHECK,
-  limiares nas duas bordas, isolamento entre medidores e a contagem pelo header). Os **25** da Onda 9 são
+  limiares nas duas bordas, isolamento entre medidores, contagem pelo header, retry de 429/5xx,
+  teto de tempo e desmembramento do lote). Os **25** da Onda 9 são
   `test_onda9_pontualidade.py` (assinatura cross-layer TS↔SQL, fonte única da data de corte e do
   domínio do eixo, a negação do nome DPO, o período sem cobertura, sondas e grants); os **31** da
   Onda 8, `test_onda8_gate_ia.py` (**28**) e
@@ -1123,7 +1129,7 @@ Plano completo em **[docs/roadmap-enriquecimento-dados.md](docs/roadmap-enriquec
 **ler antes de mexer em qualquer item abaixo.** Objetivo: ampliar a acurácia e a gama de perguntas
 do chat **sem quebrar o pipeline de extração**. Execução **uma onda por vez**, cada uma cumprindo o
 protocolo de 5 passos da §3 do plano (baseline → migration idempotente → não regredir o pipeline →
-verificação por oráculo diferencial → fechamento). Migrations usadas até aqui: **103–123** — a Onda
+verificação por oráculo diferencial → fechamento). Migrations usadas até aqui: **103–125** — a Onda
 6 ocupou **111–115** (o plano dizia 112–116, mas a 109/110 foram consumidas por trabalho não
 relacionado; deixar buraco na sequência seria pior). A **116** corrigiu a truncagem silenciosa das
 duas funções da 115 (achado B1 do review de 2026-08-10), a Onda 7 deslocou para **117–118** e a
@@ -1150,6 +1156,15 @@ Onda 5 (item 5.3) saiu na **119**.
   linhas, 2,4 MB), contra **8–30 s** de latência real do chat: o SQL é **0,04–0,3%** do tempo, o
   resto é a Claude API. Zerar o banco não mudaria a latência percebida. Gatilho para reabrir:
   alguma tool passar de **~500 ms** warm.
+  ✅ **Remedido em 2026-08-13, quando a pergunta voltou como "comparativos semanais para acessos
+  mais rápidos":** a série semanal por emissão custa **40 ms cold e 11 ms warm** — 45× de folga
+  contra o gatilho. A granularidade `semana` **já existe** em `gasto_por_periodo` desde a Fase 1,
+  então "comparativo semanal" também não era dado novo. 🔴 **O que faltava não era velocidade nem
+  série: era a RESSALVA** — e virou a migration **124** (balde parcial). Antes de reabrir a
+  decisão por desempenho, meça: quem vigia esse gatilho todo mês é a skill `roadmap-gatilhos`
+  (`tabelas_agregadas`), e o custo do outro lado é 2ª fonte de verdade + job de atualização +
+  pré-agregado que teria de respeitar `sees_only_own_accounts` — recorte por usuário e
+  pré-agregação por linha não convivem.
 - **SEM tabela de dados de boleto** — já estão na fato (`barcode`, `nosso_numero`, juros,
   descontos, `amount_charged`); duplicar criaria 2ª fonte de verdade.
 - **DRE completo DESCARTADO** (decisão do usuário — opção B): o sistema tem **0 receitas**, é
@@ -1180,6 +1195,30 @@ Onda 5 (item 5.3) saiu na **119**.
 - 🔴 **`gasto_por_fornecedor` é um RANKING TRUNCADO** (máx. 100 de 165 fornecedores): **somar suas
   linhas NÃO dá o total do período** — subestima em silêncio. Está proibido explicitamente no
   SYSTEM_PROMPT; para totais, `gasto_por_periodo` ou `demonstrativo_despesas`.
+- 🔴 **FUNÇÃO QUE AGRUPA POR PERÍODO DECLARA O BALDE PARCIAL** (migration **124**). Os baldes das
+  duas bordas quase sempre cobrem menos dias que os do meio — o primeiro é cortado por
+  `p_date_from`, o último pelo **presente**. `gasto_por_periodo` devolve `is_partial`,
+  `days_covered` e `days_total`, e o prompt manda **dizer quantos dias** o balde cobre. Medido: na
+  série semanal por emissão, a semana corrente tinha **42 contas em 4 dos 7 dias** ao lado de 84 da
+  anterior — sem a ressalva, "queda de 50%", que é falso. É a mesma família de
+  `fora_da_cobertura` (121) e de `total_encontrado`: **o número está certo, e a ausência da
+  ressalva faz o leitor concluir o oposto**. ⚠️ Em `date_field='vencimento'` o dia futuro **não**
+  torna o balde parcial — ali são contas a vencer, dado real. E o "hoje" é
+  `America/Sao_Paulo`: a sessão do banco roda em **UTC**, então `CURRENT_DATE` consideraria a
+  semana corrente COMPLETA das 21h à meia-noite.
+  ✅ **Estendido a `pontualidade_pagamento` com `group_by='mes'` (migration 125)** — `mes_parcial`,
+  `dias_cobertos`, `dias_totais`. Ali a truncagem é **pior**: o rótulo `2026-07` se lê como julho
+  inteiro e o mês tem **3 dos 31 dias**, porque quem o corta não é o filtro do usuário e sim o
+  próprio **corte de cobertura** da 121 — invisível por definição. Medido: 38 contas em julho
+  contra 187 em agosto, que sem a ressalva vira "agosto teve 5× mais contas". 🔴 Nos demais eixos
+  as três colunas vêm **NULL**: ali o grupo não delimita período, e preenchê-las com a janela da
+  consulta daria a impressão de uma ressalva por grupo que não existe.
+  🔴 **`LEAST` e `GREATEST` IGNORAM NULL** — ao contrário dos operadores aritméticos. Sem o
+  `CASE WHEN mes_ini IS NULL`, `LEAST(NULL, p_date_to, hoje)` devolve `hoje` e a coluna sai
+  preenchida com a largura da consulta: número plausível e sem sentido. Reproduzido no ensaio da
+  125 (11 linhas de `geral`/`faixa`/`fornecedor`) e travado por guarda **amarrada ao `LEAST`** —
+  a versão solta da asserção passava com a guarda daquela expressão desativada, porque a da outra
+  coluna ainda casava.
 - **Expor coluna na view não basta** — `fine_interest`/`discount` só viraram resposta quando foram
   ao **RETORNO** de `gasto_por_fornecedor`. Ao destravar dado novo, verificar se alguma tool o
   **agrega**, não só se a view o expõe.
@@ -1727,7 +1766,9 @@ antes de implementar qualquer outro item, e **remeça** em vez de confiar no nú
   o atraso real com o nome de atraso; quem quer o líquido tem `desvio_medio_dias`.
 - **Cobertura declarada no RETORNO** (`cobertura_desde`, `fora_da_cobertura`,
   `excluidas_venc_alterado`), repetida em cada linha como o `total_encontrado`: o consumidor é um
-  modelo de linguagem, e ressalva que não vem junto do número não é dita ao usuário.
+  modelo de linguagem, e ressalva que não vem junto do número não é dita ao usuário. ⚠️ A tool
+  ganhou **mais três colunas depois desta onda** (`mes_parcial`/`dias_cobertos`/`dias_totais`, na
+  migration 125) — a regra delas vive em "Chat de IA", não aqui, para não haver 2ª cópia.
 - 🔴 **Período 100% fora da cobertura devolve UMA LINHA DE AVISO, nunca vazio** *(achado da
   autorrevisão adversarial, reproduzido no banco antes de corrigir)*. Junho/2026 tem **113 contas
   pagas**, todas anteriores ao corte, e a 1ª versão devolvia **zero linhas** — o modelo responderia
@@ -3911,8 +3952,28 @@ local/agendada (ver flag `EMAIL_READER_ENABLED` acima e memória [[vercel-deploy
 ## Banco de dados (Supabase)
 
 Migrations em `supabase/migrations/`, aplicadas **manualmente no SQL Editor** (ou via Supabase
-MCP — ver a nota de cada uma) em ordem numérica (`001` → `123`). **Próxima migration = `124`**
+MCP — ver a nota de cada uma) em ordem numérica (`001` → `125`). **Próxima migration = `126`**
 (verificar sempre antes de criar nova).
+
+**A `125` estende o balde parcial a `pontualidade_pagamento` com `group_by='mes'`** (aplicada via
+psql em 2026-08-13, idempotente, ensaiada antes em `BEGIN … ROLLBACK`) — invariante e medições em
+"Chat de IA". Mesmo `DROP`+`CREATE`/42P13 e mesma reemissão de grants da 124. ⚠️ **A guarda da
+Onda 9 obrigou a 125 a RE-PROVAR os invariantes da 123** (oráculo diferencial, anti-vacuidade e a
+sonda do piso alto do achado B1): `test_onda9_pontualidade.py` ancora na definição **vigente**, e
+foi ela que reprovou a primeira versão da 125 por não trazer as sondas. É o comportamento
+desejado — quem reescreve o corpo herda o ônus de provar de novo o que aquele corpo garantia.
+
+**A `124` faz `analytics.gasto_por_periodo` DECLARAR o balde incompleto** (aplicada via psql em
+2026-08-13, idempotente, ensaiada antes em `BEGIN … ROLLBACK`). Acrescenta `bucket_end`,
+`days_covered`, `days_total` e `is_partial`; o invariante e o porquê estão em "Chat de IA".
+🔴 **Exigiu `DROP` + `CREATE`** — coluna nova no `RETURNS TABLE` muda o tipo de retorno e o
+PostgreSQL recusa `CREATE OR REPLACE` com **42P13** —, **e o DROP apaga os grants**: a ACL medida
+antes (`{postgres=X, authenticated=X}`) é reemitida ao fim do arquivo. É a lição da 116 pela
+terceira vez. De carona, fecha o **domínio** de `p_granularity` e `p_date_field`, que caíam em
+`ELSE 'month'`/`ELSE due_date` — granularidade inválida virava mês e campo inválido virava
+vencimento, **em silêncio**, contrariando o invariante da própria camada. A sonda que mais importa
+é o **oráculo diferencial**: os 7 agregados da série de exemplo saíram idênticos aos de antes, o
+que é o contrato desta migration — ela acrescenta ressalva, não mexe em número.
 
 **A `123` corrige DOIS achados do code review da Onda 9**
 ([docs/review/2026-08-13-Features-light-onda9.md](docs/review/2026-08-13-Features-light-onda9.md))
