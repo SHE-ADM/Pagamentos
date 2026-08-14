@@ -320,6 +320,75 @@ describe('bateria de regressão — perguntas sugeridas no painel', () => {
     expect(prompt).toMatch(/vazio ali significa/i);
   });
 
+  // ─────────────────────────────────────────────────────────────────────────────────────────
+  // GUARDA DO MÊS PARCIAL — pontualidade com group_by='mes' (migration 125).
+  //
+  // A truncagem aqui é pior que a de `gasto_por_periodo`: lá o balde vinha rotulado por uma DATA
+  // (2026-08-10) e dava para desconfiar; aqui o rótulo é "2026-07", que se lê como julho inteiro.
+  // Medido: o mês do corte tem 3 dos 31 dias e 38 contas, contra 187 do mês corrente — sem a
+  // ressalva, "agosto teve 5x mais contas", que é falso.
+  //
+  // 🔴 A coluna sozinha não resolve: quem não é MANDADO citar, não cita.
+  it('a pontualidade por mês manda declarar o mês parcial, na tool E no prompt', () => {
+    const tool = TOOL_DEFINITIONS.find((t) => t.name === 'pontualidade_pagamento');
+    expect(tool, 'pontualidade_pagamento sumiu do catálogo').toBeTruthy();
+
+    for (const coluna of ['mes_parcial', 'dias_cobertos', 'dias_totais']) {
+      expect(tool!.description, `a descrição não cita ${coluna}`).toContain(coluna);
+    }
+    // Proíbe a comparação que inverte a conclusão…
+    expect(tool!.description).toMatch(/NÃO se comparam com os de um mês cheio/i);
+    // …e diz que fora do eixo 'mes' as colunas vêm vazias, senão o modelo as leria como "completo"
+    expect(tool!.description).toMatch(/demais eixos as três colunas vêm vazias/i);
+
+    const gateway = readFileSync(resolve(import.meta.dirname, './gateway.ts'), 'utf8');
+    const prompt = /const SYSTEM_PROMPT = `[\s\S]*?[^\\]`;/.exec(gateway)?.[0];
+    expect(prompt, 'SYSTEM_PROMPT não encontrado — o gateway foi reestruturado?').toBeTruthy();
+    expect(prompt!.length).toBeGreaterThan(2000);   // sanidade do parser
+
+    expect(prompt).toMatch(/mes_parcial/);
+    expect(prompt).toMatch(/diga quantos dias o mês/i);
+  });
+
+  // ─────────────────────────────────────────────────────────────────────────────────────────
+  // GUARDA DO BALDE PARCIAL — série temporal (migration 124).
+  //
+  // A tool passou a devolver `is_partial`/`days_covered`/`days_total` porque os baldes das bordas
+  // quase sempre cobrem menos dias que os do meio: o primeiro é cortado pelo início do período e
+  // o último pelo PRESENTE. Medido na série semanal de 01/07 a 31/08: a semana de 10/08 tem 4 dos
+  // 7 dias e 42 contas, ao lado de 84 da anterior — lida sem a ressalva, "caiu 50%", que é falso.
+  //
+  // 🔴 A coluna sozinha não resolve nada: se nem a descrição da tool nem o prompt mandarem
+  // DECLARAR, o modelo recebe o campo e não o menciona — e o número volta a enganar, agora com o
+  // agravante de o dado estar lá. É a mesma lição de `fora_da_cobertura` na Onda 9.
+  //
+  // Lê a descrição REAL e o SYSTEM_PROMPT real — nunca uma cópia local, que divergiria sozinha.
+  it('a série temporal manda declarar o balde parcial, na tool E no prompt', () => {
+    const tool = TOOL_DEFINITIONS.find((t) => t.name === 'gasto_por_periodo');
+    expect(tool, 'gasto_por_periodo sumiu do catálogo').toBeTruthy();
+
+    // (a) a descrição nomeia as três colunas — sem elas o modelo não tem o que citar
+    for (const coluna of ['is_partial', 'days_covered', 'days_total']) {
+      expect(tool!.description, `a descrição não cita ${coluna}`).toContain(coluna);
+    }
+    // (b) e proíbe explicitamente a comparação que produz a conclusão errada
+    expect(tool!.description).toMatch(/NUNCA compare um balde parcial/i);
+    // (c) vencimento é a exceção: dia futuro ali é conta a vencer, não lacuna.
+    // `[\s\S]` em vez da flag `s`: o dotAll exige target es2018, e o tsconfig deste app é
+    // anterior — o vitest aceitaria, e o `typecheck` reprovaria (TS1501).
+    expect(tool!.description).toMatch(/vencimento[\s\S]{0,80}não torna o balde parcial/i);
+
+    const gateway = readFileSync(resolve(import.meta.dirname, './gateway.ts'), 'utf8');
+    const prompt = /const SYSTEM_PROMPT = `[\s\S]*?[^\\]`;/.exec(gateway)?.[0];
+    expect(prompt, 'SYSTEM_PROMPT não encontrado — o gateway foi reestruturado?').toBeTruthy();
+    expect(prompt!.length).toBeGreaterThan(2000);   // sanidade do parser
+
+    expect(prompt).toMatch(/is_partial/);
+    expect(prompt).toMatch(/days_covered/);
+    // O prompt tem de mandar DIZER quantos dias o balde cobre, não só saber que é parcial.
+    expect(prompt).toMatch(/diga quantos dias/i);
+  });
+
   // Pergunta que compara N entidades não pode ser registrada com UMA chamada filtrando uma só:
   // era exatamente o `sk_company: 2` em "compare as três empresas".
   it('pergunta comparativa entre empresas registra uma chamada por empresa', () => {
@@ -410,7 +479,7 @@ describe('bateria de regressão — perguntas sugeridas no painel', () => {
     // Nem tudo entre crases é tool: os exemplos também citam COLUNAS do retorno. A lista é
     // explícita (e não um filtro esperto) justamente para que um nome de tool digitado errado
     // continue caindo na asserção em vez de ser absorvido como "deve ser um campo".
-    const CAMPOS = new Set(['frete_rs', 'fora_da_cobertura']);
+    const CAMPOS = new Set(['frete_rs', 'fora_da_cobertura', 'is_partial']);
     const existentes = new Set(TOOL_DEFINITIONS.map((t) => t.name as string));
     const inexistentes = [...new Set(citadas)]
       .filter((n) => !CAMPOS.has(n))

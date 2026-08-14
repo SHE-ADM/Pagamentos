@@ -247,7 +247,17 @@ export const TOOL_DEFINITIONS: readonly ToolDefinition[] = [
     name: 'gasto_por_periodo',
     description:
       'Total agregado por período (série temporal). Use para "quanto paguei/devo em X", '
-      + 'evolução mensal, comparação entre meses.',
+      + 'evolução mensal, comparação entre meses. '
+      + '🔴 CADA BALDE DECLARA SE ESTÁ INCOMPLETO. Quando `is_partial` for verdadeiro, o balde '
+      + 'cobre apenas `days_covered` dos `days_total` dias — porque começa antes do início do '
+      + 'período pedido, ou porque termina no FUTURO e os dias que faltam ainda não aconteceram. '
+      + 'NUNCA compare um balde parcial com um completo sem dizer isso: uma semana de 4 dias ao '
+      + 'lado de uma de 7 parece "queda de 50%" e não é. Ao citar um balde parcial, diga quantos '
+      + 'dias ele tem (ex.: "a semana corrente, com 4 dos 7 dias"); se a pergunta for de '
+      + 'comparação, prefira comparar períodos de mesmo tamanho ou avise que o último está em '
+      + 'curso. O primeiro e o último balde da série são os que costumam vir parciais. '
+      + 'Em date_field="vencimento" o dia futuro NÃO torna o balde parcial — ali são contas a '
+      + 'vencer, que já existem na base.',
     input_schema: {
       type: 'object',
       properties: {
@@ -565,7 +575,16 @@ export const TOOL_DEFINITIONS: readonly ToolDefinition[] = [
       + '`fora_da_cobertura` maior que zero. Isso NÃO significa que não houve pagamento no '
       + 'período — significa que houve e não é mensurável. Diga isso ao usuário, com o número. '
       + 'Cada linha traz total_encontrado com a contagem REAL antes do limite — use esse número '
-      + 'para contar, nunca o número de linhas devolvidas.',
+      + 'para contar, nunca o número de linhas devolvidas. '
+      + '🔴 Em group_by="mes", cada linha declara se o MÊS está incompleto: `mes_parcial`, com '
+      + '`dias_cobertos` de `dias_totais`. O primeiro mês costuma ser cortado pelo início da '
+      + 'cobertura e o último pelo presente — hoje o mês do corte tem 3 dos 31 dias, e mesmo '
+      + 'assim vem rotulado "2026-07", que se lê como julho inteiro. `contas` e `valor_total` de '
+      + 'um mês de 3 dias NÃO se comparam com os de um mês cheio: dizer "agosto teve 5x mais '
+      + 'contas que julho" seria falso. Ao citar um mês parcial, diga quantos dias ele cobre. '
+      + 'As razões (`pct_pontualidade`, `atraso_medio_dias`) não encolhem com o número de dias, '
+      + 'mas ficam ruidosas em amostra pequena — cite `contas` junto. Nos demais eixos as três '
+      + 'colunas vêm vazias: ali o grupo não delimita período.',
     input_schema: {
       type: 'object',
       properties: {
