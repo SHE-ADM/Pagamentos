@@ -389,6 +389,36 @@ describe('bateria de regressão — perguntas sugeridas no painel', () => {
     expect(prompt).toMatch(/diga quantos dias/i);
   });
 
+  // ─────────────────────────────────────────────────────────────────────────────────────────
+  // TETO DE LINHAS NA RESPOSTA — a maior alavanca de latência (medido em 14/08/2026).
+  //
+  // A latência é ~linear no tamanho da RESPOSTA: `3,9 s fixos + ~10 ms por token de saída`. Uma
+  // pergunta que trouxe 167 linhas e as listou todas gerou 4.970 tokens e levou **53 s**; as
+  // demais do mesmo lote, com 200-1.000 tokens, levaram 6-15 s. Não é infra e não é o banco (as
+  // tools responderam em 44-230 ms): é o custo de gerar texto.
+  //
+  // 🔴 A guarda trava as DUAS metades porque elas se opõem. Apertar a concisão é justamente o que
+  // faria o modelo cortar as RESSALVAS — cobertura, balde parcial, total truncado —, que são uma
+  // frase e valem mais que a tabela inteira. Teto sem essa ressalva sobre a ressalva seria uma
+  // otimização que destrói o que as ondas 6 a 9 instalaram.
+  it('o prompt limita a ENUMERAÇÃO sem afrouxar a RESSALVA', () => {
+    const gateway = readFileSync(resolve(import.meta.dirname, './gateway.ts'), 'utf8');
+    const prompt = /const SYSTEM_PROMPT = `[\s\S]*?[^\\]`;/.exec(gateway)?.[0];
+    expect(prompt, 'SYSTEM_PROMPT não encontrado — o gateway foi reestruturado?').toBeTruthy();
+    expect(prompt!.length).toBeGreaterThan(2000); // sanidade do parser
+
+    // (a) existe um teto NUMÉRICO de linhas — "seja enxuto" não é acionável para um modelo
+    expect(prompt).toMatch(/NÃO ENUMERE MAIS DE \d+ LINHAS/i);
+    // (b) e ele manda dizer quantas existem no total, senão o corte vira omissão silenciosa.
+    // `\s+` entre as palavras porque o prompt é texto corrido e quebra onde couber: casar a frase
+    // exata deixaria a guarda refém da largura da linha, quebrando numa reformatação inofensiva.
+    expect(prompt).toMatch(/quantas\s+existem\s+no\s+total/i);
+    // (c) 🔴 e declara que o teto NÃO vale para a ressalva. `[\s\S]` em vez da flag `s`: o dotAll
+    // exige target es2018 e o tsconfig deste app é anterior (TS1501) — a mesma razão já registrada
+    // na guarda do balde parcial.
+    expect(prompt).toMatch(/vale para a LISTAGEM, nunca para a[\s\S]{0,20}RESSALVA/i);
+  });
+
   // Pergunta que compara N entidades não pode ser registrada com UMA chamada filtrando uma só:
   // era exatamente o `sk_company: 2` em "compare as três empresas".
   it('pergunta comparativa entre empresas registra uma chamada por empresa', () => {

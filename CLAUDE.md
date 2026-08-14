@@ -212,10 +212,11 @@ Estas regras se aplicam a **todo** código novo ou alterado neste projeto, sem e
   `test_contact_block_nonpayable.py`, `test_is_processed.py`,
   `test_onda8_gate_ia.py`, `test_react_versao_unica.py`). Cobre o
   pipeline de extração; rodar após mexer em `read_emails.py`/`extract_pdf.py` ou nos
-  scripts de reprocessamento. Não é incluída no `npm test` (que soma **1.540** no Node —
-  frontend-vite 873 · api-backend 612 · packages/shared 53 · portal-next 2, medidos em
-  2026-08-14 após o streaming SSE, que acrescentou **70**: 18 no cliente/rótulo, 31 na rota SSE e
-  no transporte, 6 no progresso do gateway e 15 no contrato compartilhado). A suíte Python está em
+  scripts de reprocessamento. Não é incluída no `npm test` (que soma **1.541** no Node —
+  frontend-vite 873 · api-backend 613 · packages/shared 53 · portal-next 2, medidos em
+  2026-08-14 após o streaming SSE, que acrescentou **71**: 18 no cliente/rótulo, 31 na rota SSE e
+  no transporte, 6 no progresso do gateway, 15 no contrato compartilhado e 1 no teto de linhas da
+  resposta). A suíte Python está em
   **1.409** — o mais recente é a guarda que exige `assertChatAllowed` em **toda** rota de chat
   (`test_onda8_gate_ia.py`, validada por mutante). Antes dele, os **18** de
   `test_gasto_por_periodo_parcial.py` (o balde parcial da série temporal: as 4 colunas lidas pelo
@@ -1079,12 +1080,38 @@ perguntas reais, 2 usuários, `error IS NULL` em todas, 4 tools distintas exerci
   dono do produto — ver o bloco da migration 096 na seção de banco.
 
 **Streaming da resposta (SSE — 2026-08-14):** a espera percebida caiu de ~12 s de tela parada para
-o texto surgindo conforme é gerado. **O tempo total não muda** — medido: `latência ≈ 6,8 s fixos +
-7,7 ms por token de saída`, e os 6,8 s são os dois round-trips ao modelo, que troca de modelo não
-resolve (Opus 5 → Sonnet 5 cortou 9%, não os 2–3× esperados: a geração dos dois é quase igual aqui,
-~65 × ~71 tok/s). Protocolo em `@sheild/shared/ai-chat-stream.ts`; transporte em
-`lib/ai-chat/sse.ts`; rota em `app/api/ai-chat/stream/route.ts`; cliente em `askAiChatStream`.
-Invariantes:
+o texto surgindo conforme é gerado; **o tempo total não muda**. Protocolo em
+`@sheild/shared/ai-chat-stream.ts`; transporte em `lib/ai-chat/sse.ts`; rota em
+`app/api/ai-chat/stream/route.ts`; cliente em `askAiChatStream`.
+
+🔴 **O CUSTO DO TURNO É O TAMANHO DA RESPOSTA — medido em produção (14/08, 8 turnos, Sonnet 5):**
+
+> **latência ≈ 3,9 s fixos + ~10 ms por token de SAÍDA**
+
+É o único modelo que se sustenta nos dados, e ele derruba as três explicações intuitivas:
+
+- **Não é o banco.** As tools respondem em **44–230 ms** — 0,4% do turno. É o que mantém de pé a
+  decisão "sem tabelas agregadas".
+- **Não é o input.** O turno mais lento levou **53.437 tokens** de input não-cacheado e ainda assim
+  o output sozinho explica quase toda a latência: processar entrada é paralelo, **gerar saída é
+  sequencial**.
+- 🔴 **Não é "a primeira pergunta", nem cold start.** Sintoma relatado e REFUTADO: a primeira de uma
+  sessão custou **10,5 s** com o mesmo cache miss (`cache_criado = 14.689`); a de 53 s foi lenta
+  pelo conteúdo. Cruzando o timestamp do Vercel com o `latency_ms`, o cold start é **~1 s**. Antes
+  de culpar a infra, some `output_tokens × 10 ms`.
+- **Trocar de modelo quase não move.** Opus 5 → Sonnet 5 cortou **9%**, não os 2–3× esperados: a
+  geração dos dois é quase igual aqui (~65 × ~71 tok/s). O ganho da troca é de custo, não de tempo.
+
+🔴 **DAÍ O TETO DE 15 LINHAS NO SYSTEM_PROMPT.** O caso real: uma pergunta trouxe **167 linhas**
+(`listar_contas` 50+50 + `gasto_por_fornecedor` 67), o modelo listou todas, gerou **4.970 tokens** e
+o turno levou **53 s** — contra 6–15 s dos demais, que geram 200–1.000. O prompt pedia "tabela
+enxuta" sem nenhum teto. ⚠️ **O teto vale para a LISTAGEM, nunca para a RESSALVA** — cobertura,
+balde parcial e `total_encontrado` são uma frase e valem mais que a tabela inteira; apertar a
+concisão é exatamente o que faria o modelo sacrificá-los, desfazendo o que as ondas 6 a 9
+instalaram. A guarda de `regression.test.ts` trava as **duas** metades (validada por mutante: tirar
+só a cláusula da ressalva — a "otimização" plausível — deixa o teste vermelho).
+
+Invariantes do transporte:
 
 - 🔴 **A FRONTEIRA DO STATUS HTTP.** Tudo que pode ser recusado ANTES do corpo abrir (401/400/422
   da sessão, **403 do gate, 429 da cota**) é recusado com JSON e status, igual à rota irmã — por
@@ -1212,6 +1239,10 @@ Onda 5 (item 5.3) saiu na **119**.
   linhas, 2,4 MB), contra **8–30 s** de latência real do chat: o SQL é **0,04–0,3%** do tempo, o
   resto é a Claude API. Zerar o banco não mudaria a latência percebida. Gatilho para reabrir:
   alguma tool passar de **~500 ms** warm.
+  ✅ **Reconfirmado em 2026-08-14 com 12 tools e medição em produção** (não mais em bancada): as
+  tools levaram **44–230 ms** em turnos de 5,9 a 53 s — **0,4%** do tempo. E a decomposição
+  registrada em "Streaming da resposta" fecha a porta de vez: o que domina é o número de tokens
+  **gerados**, que nenhuma pré-agregação reduz.
   ✅ **Remedido em 2026-08-13, quando a pergunta voltou como "comparativos semanais para acessos
   mais rápidos":** a série semanal por emissão custa **40 ms cold e 11 ms warm** — 45× de folga
   contra o gatilho. A granularidade `semana` **já existe** em `gasto_por_periodo` desde a Fase 1,
