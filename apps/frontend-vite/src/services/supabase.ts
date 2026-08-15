@@ -21,6 +21,7 @@ import {
   TYPE_GROUP_ID_DESPESA_FIXA,
   TYPE_GROUP_ID_DESPESA_VARIAVEL,
   TYPE_GROUP_ID_CUSTO_MERCADORIAS,
+  TYPE_GROUP_ID_CUSTO_IMPORTACAO,
 } from '@sheild/shared';
 import { supabase } from '../lib/supabaseClient';
 import { stableOrder } from '../lib/stableOrder';
@@ -1309,8 +1310,9 @@ export async function getDashboardData(month: number, year: number, scope: Dashb
 // com Natureza "Despesas" OU "Custo", i.e. group.type_group_id ∈ {TYPE_GROUP_ID_DESPESAS,
 // TYPE_GROUP_ID_CUSTO} — migration 094; decisão do usuário 2026-07-22). Mantém KPIs e
 // filtros (empresa/mês/escopo/KPI), mas NÃO tem o gráfico mês a mês (por isso lê só o mês,
-// não o ano); traz 4 donuts — Classificação Financeira (Tipo do subgrupo: Fixa/Variável/
-// Custos de Mercadorias) + os 3 por GRUPO recortados pelo Tipo (7/5/6) — e DOIS rankings
+// não o ano); traz 5 donuts — Classificação Financeira (Tipo do subgrupo: Fixa/Variável/
+// Custos de Mercadorias/Importação) + os 4 por GRUPO recortados pelo Tipo (7/9/5/6) — e DOIS
+// rankings
 // por VALOR (R$) — CENTRO DE CUSTO e SUBGRUPO — no lugar do ranking de fornecedores e das
 // "Contas críticas e prioritárias" (que seguem só no dashboard de vencimentos). Reusa os
 // helpers de getDashboardData (num, breakdownBy, matchesKpiFilter). `month` é 0-indexed.
@@ -1389,7 +1391,8 @@ export interface FinancialDashboardData {
   despesaFixaBreakdown: LabelSlice[];
   despesaVariavelBreakdown: LabelSlice[];
   custoMercadoriasBreakdown: LabelSlice[];
-  tipoBreakdown: LabelSlice[]; // Fixa/Variável/Custos de Mercadorias (type_group do subgrupo)
+  custoImportacaoBreakdown: LabelSlice[];
+  tipoBreakdown: LabelSlice[]; // Fixa/Variável/Custos de Mercadorias/Importação (type_group do subgrupo)
   costCenterRanking: SupplierRank[]; // top CENTROS DE CUSTO por VALOR
   subgroupRanking: SupplierRank[]; // top SUBGRUPOS de plano de contas por VALOR (card "Ranking de contas")
   // Linhas que alimentam os 5 gráficos (= fMonth, já recortado por escopo/empresa/KPI). O
@@ -1400,13 +1403,14 @@ export interface FinancialDashboardData {
 
 // Qual gráfico foi clicado. Donuts identificam o balde pelo `label`; rankings pela `bucketKey`.
 // 'grupoTipo' = os donuts POR GRUPO recortados pelo Tipo do subgrupo (Despesas Fixas /
-// Variáveis / Custos de Mercadorias) — genérico via `typeGroupId`, em vez de um case por donut.
+// Variáveis / Custos de Mercadorias / Importação) — genérico via `typeGroupId`, em vez de um
+// case por donut.
 type ExpenseDrillChart = 'tipo' | 'grupoTipo' | 'costCenter' | 'subgroup';
 export interface ExpenseDrillTarget {
   chart: ExpenseDrillChart;
   label?: string;       // donuts: rótulo da fatia clicada (pode ser 'outros' / 'não informado')
   bucketKey?: string;   // rankings: RankPick.key da linha clicada (SupplierRank.key)
-  typeGroupId?: number; // 'grupoTipo': o Tipo do subgrupo que recorta o donut (5/6/7)
+  typeGroupId?: number; // 'grupoTipo': o Tipo do subgrupo que recorta o donut (5/6/7/9)
 }
 
 // Casa as linhas de UM balde de donut (reproduz breakdownBy): fatia própria → rótulo igual;
@@ -1505,28 +1509,36 @@ export async function getFinancialDashboardData(month: number, year: number, sco
   // Filtro do KPI clicado: só afeta os gráficos (os cards mantêm os totais).
   const fMonth = filter === 'total' ? monthRows : monthRows.filter((r) => matchesKpiFilter(r, filter, todayStr, in7));
 
-  // Donuts "Despesas Fixas", "Despesas Variáveis" e "Custos de Mercadorias": mesma dimensão
-  // (GRUPO, group_description), recortada pelo Tipo do SUBGRUPO. O corte é pelo
-  // `type_group_id` (5/6/7, constantes do catálogo) e NÃO pela descrição — o texto é livre
-  // e renomear a linha do catálogo esvaziaria os donuts em silêncio.
+  // Donuts "Despesas Fixas", "Despesas Variáveis", "Custos de Mercadorias" e "Custos de
+  // Importação": mesma dimensão (GRUPO, group_description), recortada pelo Tipo do SUBGRUPO. O
+  // corte é pelo `type_group_id` (5/6/7/9, constantes do catálogo) e NÃO pela descrição — o
+  // texto é livre e renomear a linha do catálogo esvaziaria os donuts em silêncio.
+  // 🔴 O 4º donut foi acrescentado em 2026-08-14 (achado da migration 127/128): o tipo 9
+  // (Custos de Importação) existia no catálogo e contava certo no TOTAL do dashboard
+  // (isExpenseRow reconhece a NATUREZA do grupo, 2/8), mas não entrava em NENHUM dos 3 donuts
+  // de tipo — mesma classe de bug do `demonstrativo_despesas` (CASE hardcoded que não sabia do
+  // tipo novo), só que aqui do lado do TypeScript.
   // Partição numa passada só; conta com subgrupo não classificado (id 0 / embed ausente)
-  // não entra em nenhum dos três — não há balde residual, por decisão de produto.
+  // não entra em nenhum dos quatro — não há balde residual, por decisão de produto.
   const fixaRows: ExpenseMonthRow[] = [];
   const variavelRows: ExpenseMonthRow[] = [];
   const custoMercRows: ExpenseMonthRow[] = [];
+  const custoImpRows: ExpenseMonthRow[] = [];
   for (const r of fMonth) {
     const tipo = r.chart_account?.subgroup?.type_group?.type_group_id;
     if (tipo === TYPE_GROUP_ID_DESPESA_FIXA) fixaRows.push(r);
     else if (tipo === TYPE_GROUP_ID_DESPESA_VARIAVEL) variavelRows.push(r);
     else if (tipo === TYPE_GROUP_ID_CUSTO_MERCADORIAS) custoMercRows.push(r);
+    else if (tipo === TYPE_GROUP_ID_CUSTO_IMPORTACAO) custoImpRows.push(r);
   }
   const porGrupo = (rows: ExpenseMonthRow[]): LabelSlice[] =>
     breakdownBy(rows, (r) => r.chart_account?.group?.group_description ?? null);
   const despesaFixaBreakdown = porGrupo(fixaRows);
   const despesaVariavelBreakdown = porGrupo(variavelRows);
   const custoMercadoriasBreakdown = porGrupo(custoMercRows);
-  // Donut "Classificação Financeira": Fixa/Variável/Custos de Mercadorias (descrição do
-  // type_group do SUBGRUPO — vem do catálogo, sem literal; migrations 092/093).
+  const custoImportacaoBreakdown = porGrupo(custoImpRows);
+  // Donut "Classificação Financeira": Fixa/Variável/Custos de Mercadorias/Importação (descrição
+  // do type_group do SUBGRUPO — vem do catálogo, sem literal; migrations 092/093).
   const tipoBreakdown = breakdownBy(fMonth, (r) => r.chart_account?.subgroup?.type_group?.type_group_description ?? null);
 
   // Rankings por VALOR (R$) — mesma agregação, dimensões diferentes. Top 12 cada (o
@@ -1587,5 +1599,5 @@ export async function getFinancialDashboardData(month: number, year: number, sco
     ),
   );
 
-  return { month, year, scope, kpis, despesaFixaBreakdown, despesaVariavelBreakdown, custoMercadoriasBreakdown, tipoBreakdown, costCenterRanking, subgroupRanking, detailRows: fMonth };
+  return { month, year, scope, kpis, despesaFixaBreakdown, despesaVariavelBreakdown, custoMercadoriasBreakdown, custoImportacaoBreakdown, tipoBreakdown, costCenterRanking, subgroupRanking, detailRows: fMonth };
 }

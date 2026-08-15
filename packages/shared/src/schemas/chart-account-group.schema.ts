@@ -15,6 +15,10 @@ export const TYPE_GROUP_ID_CUSTO = 8; // Natureza do GRUPO ("Custo")
 export const TYPE_GROUP_ID_DESPESA_FIXA = 5; // Tipo do SUBGRUPO ("Despesas Fixas")
 export const TYPE_GROUP_ID_DESPESA_VARIAVEL = 6; // Tipo do SUBGRUPO ("Despesas Variáveis")
 export const TYPE_GROUP_ID_CUSTO_MERCADORIAS = 7; // Tipo do SUBGRUPO ("Custos de Mercadorias")
+// applies_to='both' (migration 094) — hoje só atribuído a SUBGRUPO (migration 127, achado
+// 2026-08-14). Nome do catálogo é "Custos de Importações" (plural); o rótulo do demonstrativo
+// (analytics.demonstrativo_despesas, migration 128) usa o singular via override.
+export const TYPE_GROUP_ID_CUSTO_IMPORTACAO = 9;
 
 // ── Leitura (linha do banco) ────────────────────────────────────────────────
 

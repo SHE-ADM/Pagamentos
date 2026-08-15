@@ -1,5 +1,10 @@
 import { describe, it, expect, vi } from 'vitest';
-import { TYPE_GROUP_ID_DESPESA_FIXA, TYPE_GROUP_ID_DESPESA_VARIAVEL, TYPE_GROUP_ID_CUSTO_MERCADORIAS } from '@sheild/shared';
+import {
+  TYPE_GROUP_ID_DESPESA_FIXA,
+  TYPE_GROUP_ID_DESPESA_VARIAVEL,
+  TYPE_GROUP_ID_CUSTO_MERCADORIAS,
+  TYPE_GROUP_ID_CUSTO_IMPORTACAO,
+} from '@sheild/shared';
 
 // O módulo importa o client (auth) no topo — mock leve, os testes aqui são 100% puros.
 vi.mock('../lib/supabaseClient', () => ({
@@ -45,6 +50,7 @@ const mkRow = (amount: number, o: Opts = {}): ExpenseDetailRow => ({
 const F = TYPE_GROUP_ID_DESPESA_FIXA;       // 5
 const V = TYPE_GROUP_ID_DESPESA_VARIAVEL;   // 6
 const CM = TYPE_GROUP_ID_CUSTO_MERCADORIAS; // 7
+const CI = TYPE_GROUP_ID_CUSTO_IMPORTACAO;  // 9
 
 describe('filterExpenseDetailRows — donut "Tipo"', () => {
   it('retorna só as linhas do type_group_description clicado', () => {
@@ -64,6 +70,7 @@ describe('filterExpenseDetailRows — donuts por GRUPO recortados pelo tipo (gru
     mkRow(300, { tipoId: F, groupDesc: 'Serviços', sgId: 2 }),
     mkRow(999, { tipoId: V, groupDesc: 'Folha', sgId: 3 }), // MESMO grupo, mas VARIÁVEL
     mkRow(777, { tipoId: CM, groupDesc: 'Custos', sgId: 4, tipoDesc: 'Custos de Mercadorias' }),
+    mkRow(888, { tipoId: CI, groupDesc: 'Importações', sgId: 5, tipoDesc: 'Custos de Importação' }),
   ];
   it('FIXA: só o grupo clicado E do tipo 5 (não vaza a linha variável de mesmo grupo)', () => {
     const out = filterExpenseDetailRows(rows, { chart: 'grupoTipo', typeGroupId: F, label: 'Folha' });
@@ -76,6 +83,10 @@ describe('filterExpenseDetailRows — donuts por GRUPO recortados pelo tipo (gru
   it('CUSTO DE MERCADORIAS: só o grupo clicado E do tipo 7', () => {
     const out = filterExpenseDetailRows(rows, { chart: 'grupoTipo', typeGroupId: CM, label: 'Custos' });
     expect(out.map((r) => r.amount)).toEqual([777]);
+  });
+  it('CUSTO DE IMPORTAÇÃO: só o grupo clicado E do tipo 9 (achado 2026-08-14)', () => {
+    const out = filterExpenseDetailRows(rows, { chart: 'grupoTipo', typeGroupId: CI, label: 'Importações' });
+    expect(out.map((r) => r.amount)).toEqual([888]);
   });
   it('sem typeGroupId, não casa nada (guarda contra alvo malformado)', () => {
     // A linha SEM subgrupo é o caso que fura sem a guarda: tipoOf() devolve undefined e

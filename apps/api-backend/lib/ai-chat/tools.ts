@@ -323,7 +323,8 @@ export const TOOL_DEFINITIONS: readonly ToolDefinition[] = [
           type: 'array',
           items: { type: 'integer' },
           description: 'Tipo do SUBGRUPO: 5 = Despesas Fixas, 6 = Despesas Variáveis, '
-            + '7 = Custos de Mercadorias. Dimensão distinta de nature_ids — não confundir.',
+            + '7 = Custos de Mercadorias, 9 = Custos de Importações. Dimensão distinta de '
+            + 'nature_ids — não confundir.',
         },
         sk_company: skCompany,
         limit: limitProp(DEFAULT_LIMIT),
@@ -334,8 +335,12 @@ export const TOOL_DEFINITIONS: readonly ToolDefinition[] = [
   {
     name: 'demonstrativo_despesas',
     description:
-      'Demonstrativo de Custos e Despesas do período: uma linha para Custos de Mercadorias, '
-      + 'Despesas Fixas, Despesas Variáveis, Tributos e Não classificado, mais o Total de saídas. '
+      'Demonstrativo de Custos e Despesas do período: uma linha por tipo cadastrado no catálogo '
+      + 'financeiro (hoje inclui Custos de Mercadorias, Custos de Importação, Despesas Fixas, '
+      + 'Despesas Variáveis e Tributos), mais Não classificado e o Total de saídas. 🔴 A LISTA DE '
+      + 'LINHAS É DINÂMICA (migration 128) — um tipo novo cadastrado no catálogo pode aparecer '
+      + 'aqui SEM aviso prévio nesta descrição; não assuma que só estas linhas existem, confie no '
+      + 'que a tool devolver. '
       + 'Use para "demonstrativo", "estrutura de custos", "para onde foi o dinheiro". '
       + 'As linhas são mutuamente exclusivas e exaustivas, então SEMPRE somam o total — NÃO '
       + 'recalcule o total, use a linha "Total de saídas" que a tool devolve. '
