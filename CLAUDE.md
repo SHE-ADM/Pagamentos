@@ -212,13 +212,15 @@ Estas regras se aplicam a **todo** código novo ou alterado neste projeto, sem e
   `test_contact_block_nonpayable.py`, `test_is_processed.py`,
   `test_onda8_gate_ia.py`, `test_react_versao_unica.py`). Cobre o
   pipeline de extração; rodar após mexer em `read_emails.py`/`extract_pdf.py` ou nos
-  scripts de reprocessamento. Não é incluída no `npm test` (que soma **1.548** no Node —
-  frontend-vite **880** em 145 arquivos · api-backend 613 · packages/shared 53 · portal-next 2,
-  medidos em 2026-08-15 com `--maxWorkers=1`. Os **7** daquele dia (873 → 880): **3** no próprio
+  scripts de reprocessamento. Não é incluída no `npm test` (que soma **1.550** no Node —
+  frontend-vite **882** em 145 arquivos · api-backend 613 · packages/shared 53 · portal-next 2,
+  medidos em 2026-08-15 com `--maxWorkers=1`. Os **9** daquele dia (873 → 882): **3** no próprio
   delta dos dashboards, **2** de PÁGINA em `Dashboard.test.tsx` (code review light — a ressalva de
-  filtro nos subtítulos e o wiring de "trocar de mês limpa o filtro") e **2** de BORDA da janela de
+  filtro nos subtítulos e o wiring de "trocar de mês limpa o filtro"), **2** de BORDA da janela de
   7 dias em `dashboard.test.ts` (code review max — ver o bloco de `isoDaysFromToday`; a suíte
-  ficava verde com a janela deslocada um dia). A medição anterior, **1.541** com frontend-vite
+  ficava verde com a janela deslocada um dia) e **2** de acesso por teclado à região rolável em
+  `DataGrid.test.tsx` (violação `serious` que só o scan em navegador via — ver o bloco do
+  `scrollable-region-focusable`). A medição anterior, **1.541** com frontend-vite
   873, é de 2026-08-14, depois do streaming SSE, que acrescentou **71**: 18 no cliente/rótulo, 31 na rota SSE
   e no transporte, 6 no progresso do gateway, 15 no contrato compartilhado e 1 no teto de linhas da
   resposta). A suíte Python está em
@@ -761,6 +763,20 @@ Alvo: **WCAG 2.1 Nível AA** em todas as telas. Regras práticas:
     `scrollable-region-focusable` já fica satisfeito pelos botões, em qualquer estado (loading/vazio,
     pois os 5 KPIs são um array estático). **Não** reintroduzir `tabIndex`/`role="region"` no
     contêiner nem transformar os KPIs em `<div onClick>` (voltaria a exigir o `tabIndex`).
+    🔴 **A MESMA regra mordeu o `DataGrid` em 2026-08-15, e ali a saída é a OPOSTA — não
+    confundir.** O viewport com `maxBodyHeight` (`<section>` em `DataGrid.tsx`) passou a levar
+    **`tabIndex={0}` + `aria-label`**, porque a primeira saída (ter conteúdo focável dentro) só
+    valia **de carona**: em `/consulta` e `/emails` há checkbox de seleção e cabeçalho ordenável,
+    mas no **`ExpenseDetailModal`** não há NADA focável (linhas não-selecionáveis, colunas não
+    ordenáveis, e no modo não-gerenciado o `<th>` é `<th onClick>`, não `<button>`) — quem navega
+    por teclado **não conseguia rolar** a lista do drill-down. Violação `serious` pega no primeiro
+    scan em navegador daquele `<dialog>`. É **sem opt-in** (todo grid com `maxBodyHeight` é
+    focável): uma prop opcional reintroduziria o mesmo modo de falha no próximo grid sem conteúdo
+    focável, e ninguém notaria. `<section>` **sem** nome acessível tem papel `generic`, então grid
+    sem `maxBodyHeight` não ganha landmark nem tab stop. ⚠️ **O jsdom NÃO pega isto** — a regra
+    do axe depende de layout para saber que o elemento rola; a rede em jsdom é a guarda
+    ESTRUTURAL de `DataGrid.test.tsx` (`getByRole('region')` + `tabindex`, validada por dois
+    mutantes), e a prova de comportamento é a camada e2e.
   - **Contraste do Dashboard sobre fundo claro:** legenda do donut `text-slate-400`→**`slate-600`**
     (2,57:1 sobre card branco) e a linha "vence …" da lista de prioridades `text-slate-500`→
     **`slate-600`** (4,35:1 sobre `bg-status-error-bg` #fef2f2 nas linhas críticas). Regra geral em

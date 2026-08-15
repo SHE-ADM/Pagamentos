@@ -324,3 +324,38 @@ PR, como aconteceu com o `PageState` do dashboard irmão, que **passou** no PR #
 
 `CLAUDE.md` atualizado no mesmo lote (seção de acessibilidade): a rota nova, os três estados, a
 regra da anotação e a do `count()` sem auto-wait.
+
+### O que o CI encontrou ao rodar o estado novo
+
+O `a11y.yml` do PR #240 **reprovou** — e não por defeito do `enter`: 11 dos 12 testes passaram,
+inclusive os dois primeiros estados da rota nova. O que falhou foi exatamente o estado que a
+dívida escondia:
+
+```
+[serious] scrollable-region-focusable: Scrollable region must have keyboard access (1 nó)
+  · .overflow-x-auto
+    html: <div class="overflow-x-auto" style="max-height: 55vh;">
+```
+
+É o **viewport do `DataGrid` dentro do `ExpenseDetailModal`** (WCAG 2.1.1): quem navega por
+teclado **não conseguia rolar** a lista de contas do drill-down. A regra do axe aceita duas
+saídas — ter conteúdo focável dentro, ou ser focável ele mesmo —, e a primeira valia só **de
+carona**: `/consulta` e `/emails` têm checkbox de seleção e cabeçalho ordenável, enquanto no modal
+não há nada focável (linhas não-selecionáveis, colunas não ordenáveis, e no modo não-gerenciado o
+`<th>` é `<th onClick>`, não `<button>`).
+
+**Corrigido em `DataGrid.tsx`**, sem opt-in: todo viewport com `maxBodyHeight` vira `<section>`
+focável e nomeado. Uma prop opcional reintroduziria o mesmo modo de falha no próximo grid sem
+conteúdo focável — que é precisamente como este passou despercebido. `<section>` **sem** nome
+acessível tem papel `generic`, então grid sem `maxBodyHeight` não ganha landmark nem tab stop.
+
+⚠️ **O jsdom não pega isto** — a regra depende de layout para saber que o elemento rola. A rede em
+jsdom é uma guarda **estrutural** (`getByRole('region')` + `tabindex` + o `maxHeight` no próprio
+viewport), validada por **dois mutantes**: remover o `tabIndex` → 1 vermelho; remover o
+`aria-label` (o `<section>` deixa de ser `region`) → 1 vermelho.
+
+**Esta é a justificativa retroativa do trabalho todo:** a rota estava fora da camada de navegador,
+e a primeira vez que entrou apontou uma violação `serious` de teclado que nenhum outro gate via —
+nem o jsdom, nem o ratchet de tokens, nem o `playwright --list`. O veredito `ENFRAQUECIDO` da
+contestação continua correto quanto ao **mecanismo** que eu havia alegado (adjacência de cards não
+existe para o axe); o que ele não podia prever era o que o scan encontraria.

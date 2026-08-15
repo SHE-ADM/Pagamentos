@@ -187,6 +187,39 @@ describe('DataGrid', () => {
     expect(screen.getByRole('table')).toBeInTheDocument();
   });
 
+  /**
+   * WCAG 2.1.1 — região rolável precisa de acesso por teclado (axe
+   * `scrollable-region-focusable`). Guarda ESTRUTURAL de propósito: a regra do axe depende de
+   * LAYOUT para saber que o elemento rola, e o jsdom não faz layout — ela nunca dispara aqui.
+   * Foi por isso que a violação real só apareceu no primeiro scan em NAVEGADOR do
+   * `ExpenseDetailModal` (2026-08-15), num grid sem nada focável dentro. Asseverar os
+   * atributos é o que dá rede em jsdom; a prova de comportamento fica com a camada e2e.
+   */
+  describe('acesso por teclado à região rolável', () => {
+    // `getByRole('region')` e não uma busca por tag: `<section>` só expõe o papel `region`
+    // QUANDO tem nome acessível, e é essa a combinação que satisfaz a regra — procurar a tag
+    // passaria mesmo com o `aria-label` removido.
+    it('com maxBodyHeight, o viewport é focável e nomeado', () => {
+      render(<DataGrid {...baseProps} maxBodyHeight="55vh" ariaLabel="Contas do balde" />);
+      const regiao = screen.getByRole('region', { name: 'Contas do balde' });
+      expect(regiao).toHaveAttribute('tabindex', '0');
+      // É o viewport que rola, não um ancestral qualquer: sem isto o caso passaria com o
+      // tabIndex num elemento que não é o que tem overflow.
+      expect(regiao.style.maxHeight).toBe('55vh');
+      expect(regiao).toContainElement(screen.getByRole('table'));
+    });
+
+    // O par: sem rolagem não há o que acessar, e um tab stop a mais em todo grid seria ruído
+    // na navegação por teclado. `<section>` sem nome acessível tem papel `generic`, então a
+    // árvore fica idêntica à do `<div>` anterior.
+    it('sem maxBodyHeight, NÃO vira região nem entra na ordem de tabulação', () => {
+      render(<DataGrid {...baseProps} ariaLabel="Registros" />);
+      expect(screen.queryByRole('region')).toBeNull();
+      const viewport = screen.getByRole('table').parentElement;
+      expect(viewport).not.toHaveAttribute('tabindex');
+    });
+  });
+
   describe('modo gerenciável (enableColumnManagement)', () => {
     it('renderiza a barra de ferramentas (botão Colunas)', () => {
       render(<DataGrid {...baseProps} gridId="test-grid" enableColumnManagement />);
