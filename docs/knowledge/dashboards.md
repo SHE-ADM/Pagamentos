@@ -50,7 +50,7 @@ cujo plano de contas tem grupo com Natureza "Despesas" **ou** "Custo"
 métrica.
 
 🔴 **Dashboard EXCLUSIVO do escopo — não regredir.** TODA métrica (os 5 KPIs valor+contagem, o card
-de total, os 4 donuts e os 2 rankings) é computada ÚNICA e EXCLUSIVAMENTE sobre linhas do escopo. O
+de total, os 5 donuts e os 2 rankings) é computada ÚNICA e EXCLUSIVAMENTE sobre linhas do escopo. O
 recorte é feito por `isExpenseRow` **ANTES de qualquer agregação** (`monthRows =
 monthRowsAll.filter(isExpenseRow)`; KPIs sobre `monthRows`, gráficos/rankings sobre `fMonth`,
 derivado dele). Conta **SEM classificação** — ou de outra natureza, ex. Passivo — fica FORA de tudo:
@@ -87,21 +87,30 @@ ranking de contas) e a folha `type_group`. `ExpenseDetailRow` é o alias públic
 
 ### Donuts — layout
 
-**4 donuts `size="sm"` + `dense`, em 2 LINHAS de 2** (`grid-cols-1 sm:grid-cols-2 gap-2 mb-2`,
-**sem** override no `xl` — o fluxo natural do grid já põe a 3ª/4ª posição na linha de baixo, sem
-reordenar o DOM; `dense` reduz o padding do card, mesmo padrão dos 4 donuts do
-`/dashboard_vencimentos`).
+**5 donuts `size="sm"` + `dense`, em 2 LINHAS de 2 + 1 solo** (`grid-cols-1 sm:grid-cols-2 gap-2
+mb-2`, **sem** override no `xl` — o fluxo natural do grid põe a 3ª/4ª posição na 2ª linha e a 5ª
+sozinha numa 3ª, sem reordenar o DOM; `dense` reduz o padding do card, mesmo padrão dos 4 donuts
+do `/dashboard_vencimentos`).
+
+🔴 **O 5º donut ("Custos de Importação") foi acrescentado em 2026-08-14** — achado do mesmo dia em
+que a função SQL `analytics.demonstrativo_despesas` ganhou a linha equivalente (migrations
+127/128, ver `CLAUDE.md`): o tipo 9 do catálogo (`TYPE_GROUP_ID_CUSTO_IMPORTACAO`) já existia e
+contava certo no TOTAL/KPIs (`isExpenseRow` olha a NATUREZA do grupo, não o Tipo do subgrupo),
+mas a partição client-side (`apps/frontend-vite/src/services/supabase.ts`) não o reconhecia —
+mesma classe de bug do CASE hardcoded da SQL, só que do lado TypeScript. O aceite foi
+deliberadamente CONTIDO: paridade com o que a SQL já mostra (mais um donut nomeado), não um
+layout dinâmico de N donuts — essa seria uma decisão de produto maior, não tomada.
 
 Compactos DE PROPÓSITO (decisão do usuário 2026-07-22, revertendo o `size="lg"` de uma iteração
 anterior no mesmo dia): sobrar altura de viewport para os **rankings abaixo**, que não têm scroll
 próprio e mostram até 12 linhas cada — donut menor = menos scroll até ver a lista inteira.
 
-**Diâmetro do anel DINÂMICO, mas ÚNICO entre os 4 donuts** (`diameterPx` em
+**Diâmetro do anel DINÂMICO, mas ÚNICO entre os 5 donuts** (`diameterPx` em
 `BreakdownDonut`/`DonutCard`, prop opcional que SOBREPÕE o token de `size` via inline style —
 nenhum outro call site usa). A página calcula `sumSliceValues`/`scaledDonutDiameter` (helpers
 locais, não exportados) e usa o MAIOR total (R$) do conjunto (`maxDonutTotal`) para gerar **um único
 `donutDiameter`** (`scaledDonutDiameter(maxDonutTotal, maxDonutTotal)`, que por ratio=1 sempre cai
-no `DONUT_MAX_PX`=124), reaplicado IGUAL nos quatro.
+no `DONUT_MAX_PX`=124), reaplicado IGUAL nos cinco.
 
 **Correção da 1ª versão** (escalava CADA donut proporcionalmente ao seu PRÓPRIO total, entre
 `DONUT_MIN_PX`=84 e `DONUT_MAX_PX`=124): com totais próximos entre si (ex.: Despesas Fixas R$ 340k
@@ -119,14 +128,31 @@ font-semibold` — decisão do usuário 2026-07-22): o escopo é só o número d
 
 ### Donuts — conteúdo
 
-Na ordem: **"Classificação Financeira"** (rótulo do card; Fixa/Variável/**Custos de Mercadorias**,
-`tipoBreakdown` pela descrição do `type_group` do SUBGRUPO — do catálogo, sem literal), **"Custos de
-Mercadorias"**, **"Despesas Fixas"** e **"Despesas Variáveis"**.
+Na ordem: **"Classificação Financeira"** (rótulo do card; Fixa/Variável/Custos de
+Mercadorias/**Importação**, `tipoBreakdown` pela descrição do `type_group` do SUBGRUPO — do
+catálogo, sem literal), **"Custos de Mercadorias"**, **"Custos de Importação"**, **"Despesas
+Fixas"** e **"Despesas Variáveis"** — nessa ordem, espelhando o `line_order` de
+`analytics.demonstrativo_despesas` (1 Mercadorias, 2 Importação, 3 Fixas, 4 Variáveis).
 
-Os três últimos são por GRUPO (`group_description`), particionados pelo Tipo do subgrupo via
-`type_group_id` 7/5/6:
-`custoMercadoriasBreakdown`/`despesaFixaBreakdown`/`despesaVariavelBreakdown`. Conta com subgrupo
-não classificado **não entra em nenhum dos três** — sem balde residual, por decisão de produto.
+Os quatro últimos são por GRUPO (`group_description`), particionados pelo Tipo do subgrupo via
+`type_group_id` 7/9/5/6:
+`custoMercadoriasBreakdown`/`custoImportacaoBreakdown`/`despesaFixaBreakdown`/`despesaVariavelBreakdown`.
+Conta com subgrupo não classificado **não entra em nenhum dos quatro** — sem balde residual, por
+decisão de produto.
+
+⚠️ **O título do 5º donut é hardcoded SINGULAR ("Custos de Importação"), mas o catálogo tem o
+texto no PLURAL** (`financial_type_group.type_group_description = 'Custos de Importações'`,
+medido no banco em 2026-08-14). Isso é uma pequena divergência COSMÉTICA, não um bug: a fatia
+correspondente dentro do donut "Classificação Financeira" (que lê `tipoBreakdown` **direto do
+catálogo**, sem override) mostra o texto real "Custos de Importações", enquanto o TÍTULO do donut
+dedicado (string fixa no JSX, mesmo padrão dos outros três) usa o singular — a mesma classe de
+acoplamento "hardcode segue o texto do catálogo no dia em que foi escrito" que já valia para
+Custos de Mercadorias (ver bullet "Os rótulos de tipo vêm do CATÁLOGO" mais abaixo). O lado SQL
+(`analytics.demonstrativo_despesas`, migration 128) tem um mecanismo de override
+(`demonstrativo_line_label`) para justamente fixar o singular ali; o frontend não tem
+equivalente — se isso incomodar visualmente, o ajuste é renomear a `type_group_description` no
+catálogo (afeta os dois lados de uma vez) ou hardcodar um `override` de rótulo no `DonutCard`,
+nenhum dos dois feito aqui.
 
 O subtítulo do donut "Classificação Financeira" mostra **mês + KPI ativo** (ex.: `Julho - A
 vencer`), via `KPI_FILTER_LABEL`; só o mês quando o filtro é `total`.
@@ -190,7 +216,7 @@ a fatia/linha contou, inclusive sob truncagem.
 **Identidade do balde:** donuts casam pelo **rótulo** (`topBucketLabels` — a mesma seleção top-N que
 o `breakdownBy` usa; a fatia "outros" = complemento do top-N; "não informado" = `pick(r) ?? 'não
 informado'`). Os donuts por-grupo usam o alvo genérico **`chart:'grupoTipo'` + `typeGroupId`**
-(5/6/7 — pré-filtra pelo Tipo do subgrupo antes do grupo; substituiu os antigos cases
+(5/6/7/9 — pré-filtra pelo Tipo do subgrupo antes do grupo; substituiu os antigos cases
 `'fixa'`/`'variavel'`). Rankings casam pela **`SupplierRank.key`** (`cc:<id>`/`sg:<id>`/`∅` — NUNCA
 o `name`, homônimo/prefixável; `∅` = sentinela id 0 / sem descrição).
 
@@ -227,7 +253,13 @@ vencimentos (map inline) grava `sup:<nome>`. O modal segue o padrão `<dialog>` 
   `topBucketLabels`) — top-6 categorias + a fatia sintética "outros" (quando houver sobra) = **no
   máximo 7 linhas visíveis** por donut (decisão do usuário 2026-07-22: "outros" CONTA como um dos 7).
 - Os rótulos de tipo vêm do CATÁLOGO (id 7 = **"Custos de Mercadorias"**, plural — fixtures e
-  comentários alinhados ao texto real do banco).
+  comentários alinhados ao texto real do banco). Exceção conhecida desde 2026-08-14: id 9 no
+  banco é **"Custos de Importações"** (plural), mas o TÍTULO do donut dedicado é hardcoded
+  **"Custos de Importação"** (singular) — ver o aviso em "Donuts — conteúdo" acima. Os testes
+  (`financialDashboard.test.ts`, `supabaseDrill.test.ts`) usam o singular na própria fixture do
+  `type_group_description`, então **não** reproduzem essa divergência — se um dia ela importar
+  (ex.: um teste que compare texto do donut "Classificação Financeira" ao vivo), alinhar a
+  fixture ao texto real (plural) primeiro.
 
 **Limitação conhecida (pré-existente):** se um `group_description` REAL for literalmente
 "outros"/"não informado" **e** estiver no top-N, o `breakdownBy` emite fatia duplicada e o detalhe
