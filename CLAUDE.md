@@ -673,23 +673,37 @@ Alvo: **WCAG 2.1 Nível AA** em todas as telas. Regras práticas:
 - **Camada de acessibilidade em NAVEGADOR REAL** (Playwright + `@axe-core/playwright`) — cobre o
   que o jsdom não vê: contraste sob render efetivo, ordem de foco e autofill. Config em
   `playwright.config.ts`, specs em `e2e/*.a11y.e2e.ts` (`public-auth` = login/forgot/reset sem
-  login; `protected` = `/consulta`/`/emails`/`/erros`/**`/dashboard_vencimentos`** + o **painel do
-  assistente de IA aberto** (o `<dialog>` só existe no DOM depois do clique; o caso NÃO envia
-  pergunta — a resposta viria da Claude API, paga e não-determinística) atrás de `A11Y_TEST_EMAIL`/
-  `A11Y_TEST_PASSWORD`, pulado sem credencial — o Dashboard entrou no scan pelo achado A3-8),
+  login; `protected` = `/consulta`/`/emails`/`/erros`/**`/dashboard_vencimentos`**/
+  **`/dashboard_despesas`** + o **painel do assistente de IA aberto** (o `<dialog>` só existe no DOM
+  depois do clique; o caso NÃO envia pergunta — a resposta viria da Claude API, paga e
+  não-determinística) atrás de `A11Y_TEST_EMAIL`/
+  `A11Y_TEST_PASSWORD`, pulado sem credencial — o Dashboard entrou no scan pelo achado A3-8, e
+  `/dashboard_despesas` só em 2026-08-15: era a rota com MAIS superfície exclusiva — os ramos
+  `<button>` do donut e do ranking (que só ela liga, via `onSliceSelect`/`onSelect`) e o
+  `ExpenseDetailModal` — e mesmo assim nunca fora escaneada em navegador),
   helper `e2e/axe.ts` (tags AA).
   🔴 **Rota cujo DOM muda por interação declara ESTADOS extras (`PageState`), um `test` cada** —
-  escanear só a abertura cobre metade do que a tela renderiza. Hoje o único é
-  **`/dashboard_vencimentos` "sem filtro de KPI"**, e ele não é enfeite: desde que as telas passaram
+  escanear só a abertura cobre metade do que a tela renderiza. São **três** (12 testes no total):
+  `/dashboard_vencimentos` "sem filtro de KPI" e, em `/dashboard_despesas`, "sem filtro de KPI" e
+  "card de detalhe aberto". Nenhum é enfeite: desde que as telas passaram
   a abrir em `vencendo7` (2026-08-15), a linha crítica do `PriorityList` — o ramo tintado
   `bg-status-error-bg` + `border-l-status-error-solid` — ficou **inalcançável em qualquer base**, já
-  que o filtro exige "a vencer" e `critical` exige "vencido". O `enter` do estado é **tolerante à
+  que o filtro exige "a vencer" e `critical` exige "vencido"; e o `<dialog>` do drill-down só existe
+  no DOM depois de um clique numa fatia/linha. O `enter` do estado é **tolerante à
   ausência** do gatilho (o default pode mudar de novo) e **intolerante à permanência** do estado que
   promete deixar: sem essa asserção, um `enter` que falhasse em silêncio faria o teste escanear o
   MESMO DOM duas vezes e reportar verde — pior que não existir, porque a suíte declararia cobertura
   que não tem. ⚠️ O estado restaura a cobertura anterior, **não** garante o dado: mês sem conta
   vencida não tem linha crítica para escanear, e assertar a presença dela acoplaria o CI ao dado de
-  produção. O reporter do `axe.ts` emite, por nó, o **`failureSummary`**
+  produção. 🔴 **Quando não há gatilho, o `enter` ANOTA em vez de silenciar**
+  (`test.info().annotations`, tipo `estado-nao-exercitado`) — é a terceira saída entre "falhar por
+  falta de dado" (acopla o CI à produção) e "escanear o mesmo DOM de novo" (verde por uma cobertura
+  que não houve). ⚠️ E o `enter` do detalhe espera um `h3` **antes** de contar os gatilhos:
+  `count()` não tem auto-wait, então um disparo cedo demais anotaria "sem dado" numa tela que só
+  não tinha pintado ainda. O seletor do gatilho é `button[title^="Ver contas de "]`, que casa a
+  fatia do donut **e** a linha do ranking (os dois componentes emitem o mesmo `title`) — o nome
+  acessível não serviria, porque é o conteúdo do botão e muda a cada carga.
+  O reporter do `axe.ts` emite, por nó, o **`failureSummary`**
   (para color-contrast: `foreground`/`background`/`ratio`/esperado) **+ o HTML do elemento**, além
   do seletor — a falha fica depurável só pelo **log do CI** (essencial, já que o navegador não
   roda no sandbox do agente). Scripts `test:e2e`/`test:e2e:headed`. Os

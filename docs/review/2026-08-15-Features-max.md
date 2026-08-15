@@ -282,3 +282,45 @@ Duas edições, `+11` linhas líquidas (5.502 → 5.513):
 `tests/test_doc_links.py` **4 passed** (nenhum ponteiro quebrado). `docs/knowledge/dashboards.md`
 **não** foi tocado: ele descreve os dashboards, não a derivação de datas, e a regra vive no
 `CLAUDE.md`. Nada foi commitado.
+
+---
+
+## Nota posterior 2 — O1 resolvido (a seu pedido)
+
+O achado **O1** (`/dashboard_despesas` fora da camada a11y de navegador), registrado acima como
+`⏸️ adiado` por veredito **ENFRAQUECIDO**, foi resolvido depois do merge do PR #239, por pedido
+explícito seu. A ressalva da contestação continua válida — era dívida **pré-existente**, e o
+mecanismo que eu havia alegado (adjacência de cards) estava errado —, mas o item que **sobrevivia**
+à contestação era real e é o que foi endereçado: o ratchet de contraste é lista curada à mão, e a
+rota tem superfície exclusiva que nunca rodou em navegador.
+
+**Entregue** (`e2e/protected.a11y.e2e.ts`): a rota entrou no `PROTECTED_PAGES` **com dois estados**
+— "sem filtro de KPI" (reusa o helper do dashboard irmão) e **"card de detalhe aberto"**, que é o
+que fecha a lacuna de verdade. Só `{ path, name }` teria entregado menos do que promete, como a
+própria contestação apontou.
+
+Robustez do `enter` novo, ponto a ponto:
+
+- **Um seletor para os DOIS gatilhos** — `button[title^="Ver contas de "]` casa a fatia da legenda
+  do donut (`BreakdownDonut`) **e** a linha do ranking (`RankingList`), que emitem o mesmo `title`.
+  O nome acessível não serviria: é o conteúdo do botão (posição + rótulo + R$ + %), que muda a cada
+  carga.
+- **Espera o render antes de contar** — `count()` não tem auto-wait. Sem esperar um `h3` da grade,
+  um disparo cedo demais anotaria "sem dado" numa tela que apenas não tinha pintado, e o estado
+  passaria a **mentir sobre o dado**. O papel (`heading level 3`) em vez do título do card sobrevive
+  a um card renomeado.
+- **Terceira saída para "sem gatilho"** — exigir a presença acoplaria o CI ao dado de produção
+  (vermelho num mês tranquilo); silenciar faria o teste escanear o mesmo DOM e reportar verde. O
+  `enter` **anota** (`test.info().annotations`, tipo `estado-nao-exercitado`), então o relatório do
+  Playwright registra que o `<dialog>` não foi medido naquela execução.
+- **Intolerante à permanência** — havendo gatilho, o modal **tem** de abrir
+  (`expect(dialog).toBeVisible()` com mensagem própria). É o par obrigatório da tolerância, e o que
+  impede um seletor obsoleto de virar cobertura fantasma.
+
+**Verificado aqui:** `tsc --strict` avulso sobre `e2e/` **exit 0**; `playwright --list` **exit 0**,
+**12 testes** (era 9) com os três novos nas posições certas; `npm run lint` **exit 0**.
+**Não executado:** o Chromium não sobe no sandbox — quem exercita de fato é o `a11y.yml` no próximo
+PR, como aconteceu com o `PageState` do dashboard irmão, que **passou** no PR #239.
+
+`CLAUDE.md` atualizado no mesmo lote (seção de acessibilidade): a rota nova, os três estados, a
+regra da anotação e a do `count()` sem auto-wait.
