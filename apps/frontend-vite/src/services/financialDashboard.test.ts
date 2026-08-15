@@ -5,6 +5,7 @@ import {
   TYPE_GROUP_ID_DESPESA_FIXA,
   TYPE_GROUP_ID_DESPESA_VARIAVEL,
   TYPE_GROUP_ID_CUSTO_MERCADORIAS,
+  TYPE_GROUP_ID_CUSTO_IMPORTACAO,
 } from '@sheild/shared';
 
 
@@ -33,11 +34,12 @@ type Row = {
   } | null;
 };
 
-// Tipo do SUBGRUPO: os donuts por grupo recortam pelo ID (5/6/7), não pelo texto.
+// Tipo do SUBGRUPO: os donuts por grupo recortam pelo ID (5/6/7/9), não pelo texto.
 const TIPO = {
   fixa: { id: TYPE_GROUP_ID_DESPESA_FIXA, desc: 'Despesas Fixas' },
   variavel: { id: TYPE_GROUP_ID_DESPESA_VARIAVEL, desc: 'Despesas Variáveis' },
   custoMerc: { id: TYPE_GROUP_ID_CUSTO_MERCADORIAS, desc: 'Custos de Mercadorias' },
+  custoImp: { id: TYPE_GROUP_ID_CUSTO_IMPORTACAO, desc: 'Custos de Importação' },
 } as const;
 
 const desp = (
@@ -68,6 +70,7 @@ const CC_PRO = { id: 5, code: '05', desc: 'Produção' };
 const CA_SAL = { id: 11, code: '6.1.01', desc: 'Salários e Ordenados', sg: { id: 61, code: '6.1', desc: 'Pessoal' } };
 const CA_FRE = { id: 22, code: '4.5.01', desc: 'Fretes sobre Compras', sg: { id: 45, code: '4.5', desc: 'Fretes' } };
 const CA_MER = { id: 33, code: '3.1.01', desc: 'Compras de Mercadorias', sg: { id: 31, code: '3.1', desc: 'Mercadorias' } };
+const CA_IMP = { id: 44, code: '23.2.02', desc: 'Assessoria em Importação', sg: { id: 98, code: '23.2', desc: 'Serviços de Importação' } };
 
 // Conta NÃO-despesa (Passivo, type_group_id=4) — deve ser EXCLUÍDA de tudo.
 const naoDespesa = (amount: number): Row => ({
@@ -111,6 +114,7 @@ describe('constantes de type_group (guarda — migration 094)', () => {
     expect(TYPE_GROUP_ID_DESPESA_FIXA).toBe(5);
     expect(TYPE_GROUP_ID_DESPESA_VARIAVEL).toBe(6);
     expect(TYPE_GROUP_ID_CUSTO_MERCADORIAS).toBe(7);
+    expect(TYPE_GROUP_ID_CUSTO_IMPORTACAO).toBe(9);
   });
 });
 
@@ -137,15 +141,39 @@ describe('getFinancialDashboardData', () => {
     expect(d.custoMercadoriasBreakdown).toEqual([
       expect.objectContaining({ label: 'Custos', count: 1, value: 200 }),
     ]);
-    // Cada recorte é exclusivo do seu tipo, e o Passivo fica fora dos três.
+    // MONTH_ROWS não tem conta do tipo 9 — o donut novo fica vazio, não "some" nem quebra.
+    expect(d.custoImportacaoBreakdown).toEqual([]);
+    // Cada recorte é exclusivo do seu tipo, e o Passivo fica fora dos quatro.
     const labels = [...d.despesaFixaBreakdown, ...d.despesaVariavelBreakdown].map((s) => s.label);
     expect(labels).not.toContain('Custos');
     expect(labels).not.toContain('Passivo Tributário');
   });
 
+  // 🔴 Achado de 2026-08-14 (mesma classe de bug da migration 127/128 do lado SQL): o tipo 9
+  // (Custos de Importação) existia no catálogo e contava certo no TOTAL do dashboard
+  // (isExpenseRow reconhece a NATUREZA do grupo), mas não entrava em NENHUM dos donuts por
+  // tipo — a partição client-side não sabia do tipo novo. Este teste trava o 4º donut.
+  it('Custos de Importação = GRUPO recortado pelo Tipo do subgrupo (tipo 9)', async () => {
+    serve([
+      desp(150, 3, 'Importações', CC_PRO, TIPO.custoImp, CA_IMP, '2026-01-18', TYPE_GROUP_ID_CUSTO),
+      desp(50, 3, 'Folha de Pagamento', CC_ADM, TIPO.fixa, CA_SAL),
+    ]);
+    const d = await getFinancialDashboardData(0, 2026);
+    expect(d.custoImportacaoBreakdown).toEqual([
+      expect.objectContaining({ label: 'Importações', count: 1, value: 150 }),
+    ]);
+    // Exclusivo do seu tipo: não vaza para os outros três donuts por grupo.
+    expect(d.despesaFixaBreakdown.map((s) => s.label)).not.toContain('Importações');
+    expect(d.custoMercadoriasBreakdown).toHaveLength(0);
+    expect(d.despesaVariavelBreakdown).toHaveLength(0);
+    // E aparece dinamicamente também no donut "Classificação Financeira" (esse já lia o
+    // catálogo sem hardcode — não precisou de correção).
+    expect(d.tipoBreakdown.map((s) => s.label)).toContain('Custos de Importação');
+  });
+
   // O recorte é pelo type_group_id (catálogo), não pela descrição: subgrupo não
-  // classificado (id 0) não entra em NENHUM dos três donuts por grupo.
-  it('conta com subgrupo não classificado fica fora dos três donuts por grupo', async () => {
+  // classificado (id 0) não entra em NENHUM dos quatro donuts por grupo.
+  it('conta com subgrupo não classificado fica fora dos quatro donuts por grupo', async () => {
     serve([{
       ...MONTH_ROWS[0],
       chart_account: {
@@ -157,6 +185,7 @@ describe('getFinancialDashboardData', () => {
     expect(d.despesaFixaBreakdown).toHaveLength(0);
     expect(d.despesaVariavelBreakdown).toHaveLength(0);
     expect(d.custoMercadoriasBreakdown).toHaveLength(0);
+    expect(d.custoImportacaoBreakdown).toHaveLength(0);
     expect(d.kpis.totalCount).toBe(1); // segue contando no escopo dos KPIs
   });
 

@@ -9,11 +9,14 @@
 //         por teste — não é código morto a remover
 //   lg  — sem call site atual; API do componente, coberto por teste
 // `diameterPx` (opcional) SOBREPÕE o círculo/furo de `size` com um diâmetro CONTÍNUO em px —
-// usado por /dashboard_despesas para escalar os 4 donuts PROPORCIONALMENTE ao valor total
-// (R$) de cada um entre si (o maior valor = o maior anel). Inline style, não classe: é um
-// número computado em runtime a partir do dado, sem token Tailwind discreto que sirva (mesma
-// exceção já adotada no gradiente cônico abaixo e nas barras de RankingList). Sem
-// `diameterPx`, o comportamento é 100% o de antes (token fixo via `size`).
+// usado por /dashboard_despesas, que passa o MESMO valor nos 5 donuts (gerado a partir do
+// MAIOR total R$ do conjunto), nunca um valor por donut — a 1ª versão escalava cada donut
+// proporcionalmente ao seu PRÓPRIO total e, com totais próximos entre si, a diferença de
+// diâmetro ficava em ~1px (nem igual, nem perceptivelmente proporcional); ver
+// DashboardFinanceiro.tsx. Inline style, não classe: é um número computado em runtime a partir
+// do dado, sem token Tailwind discreto que sirva (mesma exceção já adotada no gradiente cônico
+// abaixo e nas barras de RankingList). Sem `diameterPx`, o comportamento é 100% o de antes
+// (token fixo via `size`).
 import type { CSSProperties } from 'react';
 import { fmtMoney, fmtMoneyCompact } from '../../lib/format';
 

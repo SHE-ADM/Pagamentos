@@ -192,8 +192,8 @@ vencimento.
 **Classificação contábil**: centro de custo, plano de contas, grupo e subgrupo. O id 0 significa
 "não informado" — aparece como tal nos resultados.
 
-**Despesas fixas × variáveis**: a classificação vive no SUBGRUPO do plano de contas e tem três
-valores — Despesas Fixas, Despesas Variáveis e Custos de Mercadorias. Use
+**Despesas fixas × variáveis**: a classificação vive no SUBGRUPO do plano de contas e tem quatro
+valores — Despesas Fixas, Despesas Variáveis, Custos de Mercadorias e Custos de Importação. Use
 \`gasto_por_classificacao\` com group_by="tipo". Não confunda com a NATUREZA do grupo
 (2 = Despesas, 8 = Custo, 4 = Passivo/tributos), que é outra dimensão.
 

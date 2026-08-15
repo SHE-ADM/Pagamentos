@@ -12,6 +12,9 @@ O QUE ESTE ARQUIVO PROTEGE
   · O ISOLAMENTO entre medidores: um gatilho indisponivel nao pode custar a serie inteira, mas
     tambem nao pode ser engolido — tem de aparecer no exit code.
   · A CONTAGEM vem do header, nunca do corpo (a armadilha do "Max rows" da Onda 3).
+  · (Onda 10) A COMPARACAO DE ESTADO entre medicoes e diagnostica: falha nela nunca vira exit
+    code, mas tambem nunca e engolida em silencio (WARNING); e uma mudanca real de `fired` tem
+    de se destacar (ERROR) sem nunca alterar o contrato 0/1 do exit code da tarefa agendada.
 
 MECANISMO: o modulo e carregado por `importlib` com nome UNICO — varias skills tem `run.py`, e
 importar pelo nome curto colidiria em `sys.modules` (foi o que ja poluiu a suite quando o teste da
@@ -324,12 +327,20 @@ class G4IsolamentoEExitCodeTest(unittest.TestCase):
     """Falha de um gatilho nao derruba os outros — mas tambem nao passa despercebida."""
 
     def _roda(self, argv, medidores, esgotado=None):
-        """`gravar` devolve a lista de recusadas — o mock precisa devolver lista, nao Mock."""
+        """`gravar` devolve a lista de recusadas — o mock precisa devolver lista, nao Mock.
+
+        `_buscar_estado_anterior` tambem e mockada (Onda 10): sem isso, `main()` faria uma
+        requisicao HTTP REAL por gatilho medido com sucesso (a checagem roda a cada gatilho que a
+        medicao NAO derrubou). None e o suficiente para os testes que nao exercitam a comparacao
+        de estado — eles ficam com `mudou_desde_ultima_medicao = None`, que e o comportamento
+        correto de "sem estado anterior conhecido".
+        """
         esgotar = (mock.patch.object(R, "_tempo_esgotado", side_effect=esgotado)
                    if esgotado is not None else contextlib.nullcontext())
         with mock.patch.object(R, "_carrega_env", return_value=("http://x", "k")), \
              mock.patch.dict(R.MEDIDORES, medidores, clear=True), \
              mock.patch.object(R, "gravar", return_value=[]) as gravou, \
+             mock.patch.object(R, "_buscar_estado_anterior", return_value=None), \
              esgotar:
             codigo = R.main(argv)
         return codigo, gravou
@@ -372,7 +383,8 @@ class G4IsolamentoEExitCodeTest(unittest.TestCase):
         """Medir e nao gravar e pior que nao medir: a serie fica com buraco silencioso."""
         with mock.patch.object(R, "_carrega_env", return_value=("http://x", "k")), \
              mock.patch.dict(R.MEDIDORES, {"nfse": lambda u, k: (False, {}, "c")}, clear=True), \
-             mock.patch.object(R, "gravar", side_effect=R.MedicaoError("403")):
+             mock.patch.object(R, "gravar", side_effect=R.MedicaoError("403")), \
+             mock.patch.object(R, "_buscar_estado_anterior", return_value=None):
             self.assertEqual(R.main([]), 1)
 
     def test_linha_recusada_na_gravacao_reprova_a_execucao(self):
@@ -381,7 +393,8 @@ class G4IsolamentoEExitCodeTest(unittest.TestCase):
              mock.patch.dict(R.MEDIDORES, {"nfse": lambda u, k: (False, {}, "c"),
                                            "cfe_nfce": lambda u, k: (False, {}, "c")},
                              clear=True), \
-             mock.patch.object(R, "gravar", return_value=["cfe_nfce"]):
+             mock.patch.object(R, "gravar", return_value=["cfe_nfce"]), \
+             mock.patch.object(R, "_buscar_estado_anterior", return_value=None):
             with self.assertLogs(R.log, level="ERROR") as capturado:
                 codigo = R.main([])
         self.assertEqual(codigo, 1)
@@ -414,9 +427,13 @@ class G4IsolamentoEExitCodeTest(unittest.TestCase):
             "cfe_nfce": lambda u, k: (False, {"n": 2}, "criterio"),
             "text_to_sql": lambda u, k: (True, {"n": 3}, "criterio"),
         }
-        # False, False -> mede os dois primeiros; True -> para antes do terceiro.
+        # Cada gatilho MEDIDO com sucesso consulta o orcamento DUAS vezes (Onda 10): no topo do
+        # laco (antes de medir) e antes da checagem diagnostica de estado anterior (depois de
+        # medir). False, False, False, False -> mede nfse e cfe_nfce por inteiro (2 checks cada);
+        # True -> para no topo do laco de text_to_sql, antes mesmo de medi-lo.
         with self.assertLogs(R.log, level="ERROR") as capturado:
-            codigo, gravou = self._roda([], medidores, esgotado=[False, False, True])
+            codigo, gravou = self._roda(
+                [], medidores, esgotado=[False, False, False, False, True])
 
         self.assertEqual(codigo, 1, "gatilho nao medido tem de aparecer no exit code")
         gravadas = {l["trigger_key"] for l in gravou.call_args[0][2]}
@@ -433,6 +450,100 @@ class G4IsolamentoEExitCodeTest(unittest.TestCase):
             self.assertFalse(R._tempo_esgotado())
         finally:
             R._deadline = deadline_original
+
+    # -------------------------------------------------------------------
+    # Onda 10 — comparacao de estado entre medicoes consecutivas
+    # -------------------------------------------------------------------
+    def test_gatilho_mudou_de_estado_loga_error_e_grava_no_metrics(self):
+        """🔴 A mudanca de estado tem de se destacar no log E ficar gravada na propria linha."""
+        with mock.patch.object(R, "_carrega_env", return_value=("http://x", "k")), \
+             mock.patch.dict(R.MEDIDORES, {"cfe_nfce": lambda u, k: (True, {}, "c")},
+                             clear=True), \
+             mock.patch.object(R, "gravar", return_value=[]) as gravou, \
+             mock.patch.object(R, "_buscar_estado_anterior", return_value=False):
+            with self.assertLogs(R.log, level="ERROR") as capturado:
+                codigo = R.main([])
+
+        self.assertEqual(codigo, 0, "mudanca de estado NAO e falha — o exit code fica intocado")
+        self.assertTrue(any("MUDANCA DE ESTADO" in m and "cfe_nfce" in m
+                            for m in capturado.output))
+        linha = gravou.call_args[0][2][0]
+        self.assertIs(linha["metrics"]["mudou_desde_ultima_medicao"], True)
+
+    def test_gatilho_que_nao_mudou_nao_gera_o_log_de_mudanca(self):
+        with mock.patch.object(R, "_carrega_env", return_value=("http://x", "k")), \
+             mock.patch.dict(R.MEDIDORES, {"cfe_nfce": lambda u, k: (True, {}, "c")},
+                             clear=True), \
+             mock.patch.object(R, "gravar", return_value=[]) as gravou, \
+             mock.patch.object(R, "_buscar_estado_anterior", return_value=True):
+            with self.assertLogs(R.log, level="INFO") as capturado:
+                R.main([])
+
+        self.assertFalse(any("MUDANCA DE ESTADO" in m for m in capturado.output))
+        linha = gravou.call_args[0][2][0]
+        self.assertIs(linha["metrics"]["mudou_desde_ultima_medicao"], False)
+
+    def test_primeira_medicao_sem_estado_anterior_fica_None_e_nao_loga_mudanca(self):
+        """`_roda` ja mocka `_buscar_estado_anterior` para None — o caso "1a medicao"."""
+        with self.assertLogs(R.log, level="INFO") as capturado:
+            codigo, gravou = self._roda([], {"cfe_nfce": lambda u, k: (True, {}, "c")})
+
+        self.assertEqual(codigo, 0)
+        self.assertFalse(any("MUDANCA DE ESTADO" in m for m in capturado.output))
+        linha = gravou.call_args[0][2][0]
+        self.assertIsNone(linha["metrics"]["mudou_desde_ultima_medicao"])
+
+    def test_bug_interno_ao_buscar_estado_anterior_nao_derruba_o_gatilho(self):
+        """Bug NOVO (Onda 10) nao pode se disfarcar de 'gatilho com falha' — so WARNING."""
+        with mock.patch.object(R, "_carrega_env", return_value=("http://x", "k")), \
+             mock.patch.dict(R.MEDIDORES, {"nfse": lambda u, k: (False, {}, "c")}, clear=True), \
+             mock.patch.object(R, "gravar", return_value=[]) as gravou, \
+             mock.patch.object(R, "_buscar_estado_anterior",
+                               side_effect=RuntimeError("bug na checagem")):
+            with self.assertLogs(R.log, level="WARNING") as capturado:
+                codigo = R.main([])
+
+        self.assertEqual(codigo, 0, "bug na checagem diagnostica nao pode reprovar a execucao")
+        gravadas = {l["trigger_key"] for l in gravou.call_args[0][2]}
+        self.assertEqual(gravadas, {"nfse"}, "o gatilho tem de ser gravado assim mesmo")
+        self.assertTrue(any("falha inesperada" in m and "nfse" in m for m in capturado.output))
+
+    def test_checagem_de_estado_e_pulada_com_orcamento_esgotado(self):
+        """Esgotado o orcamento, a checagem diagnostica cede lugar — a medicao ja e o que importa.
+
+        `esgotado=[False, True]`: o 1o check (topo do laco) libera a medicao; o 2o (antes da
+        checagem diagnostica, apos medir) ja acusa esgotado — pula a checagem, `_buscar_estado_
+        anterior` NUNCA e chamada.
+        """
+        with mock.patch.object(R, "_carrega_env", return_value=("http://x", "k")), \
+             mock.patch.dict(R.MEDIDORES, {"nfse": lambda u, k: (False, {}, "c")}, clear=True), \
+             mock.patch.object(R, "gravar", return_value=[]) as gravou, \
+             mock.patch.object(R, "_buscar_estado_anterior") as busca, \
+             mock.patch.object(R, "_tempo_esgotado", side_effect=[False, True]):
+            codigo = R.main([])
+
+        self.assertEqual(codigo, 0)
+        busca.assert_not_called()
+        linha = gravou.call_args[0][2][0]
+        self.assertIsNone(linha["metrics"]["mudou_desde_ultima_medicao"])
+
+    def test_resumo_final_lista_os_gatilhos_que_mudaram(self):
+        # nfse: medidor devolve False, estado anterior era False -> nao mudou.
+        # cfe_nfce: medidor devolve True, estado anterior era False -> mudou.
+        anteriores = {"nfse": False, "cfe_nfce": False}
+        with mock.patch.object(R, "_carrega_env", return_value=("http://x", "k")), \
+             mock.patch.dict(R.MEDIDORES, {"nfse": lambda u, k: (False, {}, "c"),
+                                           "cfe_nfce": lambda u, k: (True, {}, "c")},
+                             clear=True), \
+             mock.patch.object(R, "gravar", return_value=[]), \
+             mock.patch.object(R, "_buscar_estado_anterior",
+                               side_effect=lambda u, k, chave: anteriores[chave]):
+            with self.assertLogs(R.log, level="INFO") as capturado:
+                R.main([])
+
+        resumo = next(m for m in capturado.output if "resumo:" in m)
+        self.assertIn("mudou de estado: cfe_nfce", resumo)
+        self.assertNotIn("nfse", resumo.rsplit("mudou de estado:", 1)[1])
 
 
 class G5GravacaoTest(unittest.TestCase):
@@ -532,6 +643,170 @@ class G5GravacaoTest(unittest.TestCase):
         with mock.patch.object(R, "_request", return_value=(400, {}, b"recusado")):
             with self.assertRaises(R.MedicaoError):
                 R.gravar("http://x", "k", self._linhas("a", "b"))
+
+
+class G6RequestLeveTest(unittest.TestCase):
+    """`_request_leve` (Onda 10) — UMA tentativa, sem retry/backoff, so para diagnostico.
+
+    Contraste deliberado com `_request` (G2bRetryHttpTest): aqui uma falha transitoria NAO e
+    repetida — a checagem de estado anterior nunca pode gastar o orcamento de tempo da medicao.
+    """
+
+    class _Resp:
+        """Resposta de sucesso: `_request_leve` usa `urlopen` como context manager."""
+
+        def __init__(self, status=200, corpo=b"[]"):
+            self.status, self._c = status, corpo
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def read(self):
+            return self._c
+
+    @staticmethod
+    def _erro(codigo: int, corpo: bytes = b"erro"):
+        return urllib.error.HTTPError("http://x", codigo, "erro", {}, io.BytesIO(corpo))
+
+    def test_sucesso_devolve_status_e_corpo(self):
+        with mock.patch.object(R.urllib.request, "urlopen",
+                               return_value=self._Resp(200, b'[{"fired":true}]')):
+            resultado = R._request_leve("http://x", "k")
+        self.assertEqual(resultado, (200, b'[{"fired":true}]'))
+
+    def test_uma_unica_tentativa_em_erro_transitorio(self):
+        """Ao contrario de `_request`, um 503 aqui NAO e repetido."""
+        with mock.patch.object(R.urllib.request, "urlopen",
+                               side_effect=self._erro(503)) as urlopen, \
+             mock.patch.object(R.time, "sleep") as dormiu:
+            resultado = R._request_leve("http://x", "k")
+        self.assertIsNone(resultado)
+        self.assertEqual(urlopen.call_count, 1, "diagnostico nao insiste")
+        dormiu.assert_not_called()
+
+    def test_timeout_curto_e_dedicado(self):
+        """Usa `HTTP_DIAG_TIMEOUT_SECONDS`, NUNCA o `HTTP_TIMEOUT_SECONDS` da medicao."""
+        capturado = {}
+
+        def falso(req, timeout=None):
+            capturado["timeout"] = timeout
+            return self._Resp(200, b"[]")
+
+        with mock.patch.object(R.urllib.request, "urlopen", side_effect=falso):
+            R._request_leve("http://x", "k")
+
+        self.assertEqual(capturado["timeout"], R.HTTP_DIAG_TIMEOUT_SECONDS)
+        self.assertNotEqual(R.HTTP_DIAG_TIMEOUT_SECONDS, R.HTTP_TIMEOUT_SECONDS,
+                            "sanidade: os dois timeouts tem de ser numeros DIFERENTES")
+
+    def test_falha_de_rede_devolve_None_sem_levantar(self):
+        with mock.patch.object(R.urllib.request, "urlopen",
+                               side_effect=urllib.error.URLError("indisponivel")):
+            resultado = R._request_leve("http://x", "k")
+        self.assertIsNone(resultado)
+
+    def test_status_fora_de_200_206_devolve_None(self):
+        """Blindagem: mesmo sem `HTTPError`, um status inesperado nao pode virar sucesso."""
+        with mock.patch.object(R.urllib.request, "urlopen", return_value=self._Resp(204, b"")):
+            resultado = R._request_leve("http://x", "k")
+        self.assertIsNone(resultado)
+
+    def test_envia_accept_profile_analytics(self):
+        """A tabela vive em `analytics` — sem o header, o PostgREST procura em `public`."""
+        capturado = {}
+
+        def falso(req, timeout=None):
+            capturado["req"] = req
+            return self._Resp(200, b"[]")
+
+        with mock.patch.object(R.urllib.request, "urlopen", side_effect=falso):
+            R._request_leve("http://x", "k")
+
+        # `Request.headers` normaliza a capitalizacao (Accept-profile).
+        self.assertEqual(capturado["req"].headers.get("Accept-profile"), R.ANALYTICS)
+
+
+class G7EstadoAnteriorTest(unittest.TestCase):
+    """`_buscar_estado_anterior` (Onda 10) — mesma abordagem de G2ContagemPeloHeaderTest: mocka
+    `_request_leve`, nao `urlopen`, para testar no nivel de abstracao certo.
+    """
+
+    def test_sem_registro_anterior_devolve_None(self):
+        """1a medicao deste gatilho — NORMAL, nao e falha."""
+        with mock.patch.object(R, "_request_leve", return_value=(200, b"[]")):
+            self.assertIsNone(R._buscar_estado_anterior("http://x", "k", "nfse"))
+
+    def test_registro_anterior_encontrado_devolve_o_fired(self):
+        with mock.patch.object(R, "_request_leve", return_value=(200, b'[{"fired": true}]')):
+            self.assertIs(R._buscar_estado_anterior("http://x", "k", "nfse"), True)
+        with mock.patch.object(R, "_request_leve", return_value=(200, b'[{"fired": false}]')):
+            self.assertIs(R._buscar_estado_anterior("http://x", "k", "nfse"), False)
+
+    def test_falha_de_rede_devolve_None_e_loga_warning(self):
+        with mock.patch.object(R, "_request_leve", return_value=None):
+            with self.assertLogs(R.log, level="WARNING") as capturado:
+                resultado = R._buscar_estado_anterior("http://x", "k", "cfe_nfce")
+        self.assertIsNone(resultado)
+        self.assertTrue(any("cfe_nfce" in m for m in capturado.output))
+
+    def test_json_ilegivel_devolve_None_e_loga_warning(self):
+        with mock.patch.object(R, "_request_leve", return_value=(200, b"nao e json")):
+            with self.assertLogs(R.log, level="WARNING") as capturado:
+                resultado = R._buscar_estado_anterior("http://x", "k", "nfse")
+        self.assertIsNone(resultado)
+        self.assertTrue(capturado.output)
+
+    def test_campo_fired_ausente_ou_nao_booleano_devolve_None_e_loga_warning(self):
+        for corpo in (b'[{"outro":1}]', b'[{"fired":"sim"}]'):
+            with mock.patch.object(R, "_request_leve", return_value=(200, corpo)):
+                with self.assertLogs(R.log, level="WARNING"):
+                    resultado = R._buscar_estado_anterior("http://x", "k", "nfse")
+            self.assertIsNone(resultado, f"corpo {corpo!r} tinha de degradar para None")
+
+    def test_monta_url_com_trigger_key_order_desc_limit_1_e_schema_analytics(self):
+        capturado = {}
+
+        def falso(alvo, key):
+            capturado["alvo"] = alvo
+            return (200, b"[]")
+
+        with mock.patch.object(R, "_request_leve", side_effect=falso):
+            R._buscar_estado_anterior("http://x", "k", "text_to_sql")
+
+        alvo = capturado["alvo"]
+        self.assertIn("trigger_key=eq.text_to_sql", alvo)
+        self.assertIn("order=measured_on.desc", alvo)
+        self.assertIn("limit=1", alvo)
+        self.assertIn(R.SNAPSHOT_TABLE, alvo)
+        self.assertIn("measured_on=lt.", alvo)
+
+    def test_exclui_o_registro_do_proprio_dia_da_comparacao(self):
+        """🔴 Reexecucao no MESMO dia nao pode comparar consigo mesma (code review 2026-08-14).
+
+        Sem o filtro `measured_on=lt.<hoje>`, a 2a execucao do dia leria a linha que a 1a
+        acabou de gravar (UNIQUE por dia + `order desc limit 1`), calcularia `mudou=false` e o
+        UPSERT com merge-duplicates APAGARIA o `mudou=true` da serie — a consulta-painel do
+        SKILL.md perderia a transicao, e o resumo negaria o alarme que motivou a reexecucao.
+        O filtro e `lt` (estritamente antes de hoje), nunca `lte`.
+        """
+        capturado = {}
+
+        def falso(alvo, key):
+            capturado["alvo"] = alvo
+            return (200, b"[]")
+
+        with mock.patch.object(R, "_request_leve", side_effect=falso):
+            R._buscar_estado_anterior("http://x", "k", "nfse")
+
+        hoje = R._hoje_serie()
+        self.assertRegex(hoje, r"^\d{4}-\d{2}-\d{2}$",
+                         "sanidade: a data da serie tem de ser ISO (como o DEFAULT da 122)")
+        self.assertIn(f"measured_on=lt.{hoje}", capturado["alvo"],
+                      "o registro do dia corrente tem de ficar FORA da busca")
+        self.assertNotIn("measured_on=lte.", capturado["alvo"])
 
 
 if __name__ == "__main__":

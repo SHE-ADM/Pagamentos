@@ -26,6 +26,7 @@ const MOCK: FinancialDashboardData = {
   despesaFixaBreakdown: [{ label: 'Folha de Pagamento', count: 30, value: 10000 }],
   despesaVariavelBreakdown: [{ label: 'Transporte', count: 40, value: 18000 }],
   custoMercadoriasBreakdown: [{ label: 'Custos', count: 10, value: 6000 }],
+  custoImportacaoBreakdown: [{ label: 'Importações', count: 5, value: 4000 }],
   tipoBreakdown: [
     { label: 'Despesas Variáveis', count: 55, value: 22000 },
     { label: 'Despesas Fixas', count: 35, value: 10000 },

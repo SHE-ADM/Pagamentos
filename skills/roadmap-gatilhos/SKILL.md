@@ -68,6 +68,17 @@ trocaria uma garantia de segurança por conveniência de diagnóstico.
   para sozinho, grava o que apurou e sai 1.
 - A data de corte da pontualidade vem da **fonte única** (`analytics.payment_date_confiavel_desde()`),
   nunca fixada aqui.
+- **Compara `fired` com a última medição de um dia ANTERIOR** daquele `trigger_key` e loga em
+  `ERROR` quando o veredito muda (Onda 10) — até aqui a única forma de notar era abrir a tabela
+  à mão. 🔴 **O registro do próprio dia fica FORA da busca** (`measured_on=lt.hoje`, fuso da
+  série): sem isso, a reexecução no mesmo dia — cenário normal, é a razão do UPSERT — compararia
+  consigo mesma e **sobrescreveria o `mudou=true` da 1ª execução com `false`**, apagando a
+  transição do painel e negando o alarme que motivou a reexecução (achado do code review de
+  2026-08-14). É uma checagem **diagnóstica**: falha nela (rede, JSON, campo ausente) nunca
+  conta para o exit code, só entra em `WARNING`; e é guardada pelo mesmo orçamento de tempo da
+  medição (busca leve, 1 tentativa, timeout curto — nunca o retry pesado de `_request`). A
+  mudança fica registrada em `metrics.mudou_desde_ultima_medicao` (`true`/`false`/`null` na 1ª
+  medição) — **sem migration nova**, porque `metrics` já é `jsonb` livre.
 
 ## Agendamento — 5ª tarefa, em PRODUÇÃO
 
@@ -103,6 +114,18 @@ SELECT measured_on, fired, metrics
  ORDER BY measured_on DESC;
 ```
 
-Guardas: `tests/test_roadmap_gatilhos.py` (**39 casos**, incluindo a guarda cross-layer que impede o
-script de gravar chave que o CHECK da migration recusa, o retry de 429/5xx, o teto de tempo e o
-desmembramento do lote de gravação).
+Todas as transições já gravadas na história (o "painel" — nenhuma UI nova é criada; a série
+enriquecida já responde a esta consulta):
+
+```sql
+SELECT trigger_key, measured_on, fired,
+       metrics->>'mudou_desde_ultima_medicao' AS mudou
+  FROM analytics.roadmap_trigger_snapshot
+ WHERE metrics->>'mudou_desde_ultima_medicao' = 'true'
+ ORDER BY measured_on DESC;
+```
+
+Guardas: `tests/test_roadmap_gatilhos.py` (**58 casos**, incluindo a guarda cross-layer que impede o
+script de gravar chave que o CHECK da migration recusa, o retry de 429/5xx, o teto de tempo, o
+desmembramento do lote de gravação e — desde a Onda 10 — a comparação de estado entre medições
+consecutivas, com a exclusão do registro do próprio dia).

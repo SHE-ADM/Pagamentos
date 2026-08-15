@@ -33,6 +33,9 @@ const MOCK: FinancialDashboardData = {
   custoMercadoriasBreakdown: [
     { label: 'Custos', count: 10, value: 6000 },
   ],
+  custoImportacaoBreakdown: [
+    { label: 'Importações', count: 5, value: 4000 },
+  ],
   tipoBreakdown: [
     { label: 'Despesas Variáveis', count: 55, value: 22000 },
     { label: 'Despesas Fixas', count: 35, value: 10000 },
@@ -49,7 +52,8 @@ const MOCK: FinancialDashboardData = {
   // Uma conta cujo cost_center_id (4) casa a linha 'Logística' (key cc:4) — o clique no
   // ranking filtra por essa key e o card de detalhe mostra o fornecedor dela. A 2ª conta
   // (CUSTO, subgrupo tipo 7) prova que o donut "Custos de Mercadorias" passa typeGroupId=7
-  // (o drill devolve SÓ ela, nunca a de tipo 6).
+  // (o drill devolve SÓ ela, nunca a de tipo 6). A 3ª (subgrupo tipo 9) prova o mesmo para o
+  // donut novo "Custos de Importação" — wiring, não só a função pura `filterExpenseDetailRows`.
   detailRows: [
     {
       id: 1, amount: 500, status_id: 3, due_date: '2026-07-10', cost_center_id: 4,
@@ -74,6 +78,19 @@ const MOCK: FinancialDashboardData = {
         subgroup: {
           chart_account_subgroup_id: 31, subgroup_code: '3.1', subgroup_description: 'Mercadorias',
           type_group: { type_group_id: 7, type_group_description: 'Custos de Mercadorias' },
+        },
+      },
+    },
+    {
+      id: 3, amount: 400, status_id: 3, due_date: '2026-07-14', cost_center_id: 5,
+      supplier: { trade_name: 'Fornecedor IMP', legal_name: null },
+      cost_center: { cost_center_code: '05', cost_center_description: 'Produção' },
+      chart_account: {
+        account_code: '23.2.02', account_description: 'Assessoria em Importação',
+        group: { group_description: 'Importações', type_group_id: 8 },
+        subgroup: {
+          chart_account_subgroup_id: 98, subgroup_code: '23.2', subgroup_description: 'Serviços de Importação',
+          type_group: { type_group_id: 9, type_group_description: 'Custos de Importação' },
         },
       },
     },
@@ -160,23 +177,27 @@ describe('DashboardFinanceiro', () => {
     );
   });
 
-  it('renderiza os 4 donuts na ordem Classificação → Custos de Mercadorias → Fixas → Variáveis', async () => {
+  it('renderiza os 5 donuts na ordem Classificação → Mercadorias → Importação → Fixas → Variáveis', async () => {
     render(<DashboardFinanceiro />);
     expect(await screen.findByRole('heading', { name: 'Classificação Financeira' })).toBeInTheDocument();
     const titulos = screen
       .getAllByRole('heading', { level: 3 })
       .map((h) => h.textContent);
-    expect(titulos.slice(0, 4)).toEqual(['Classificação Financeira', 'Custos de Mercadorias', 'Despesas Fixas', 'Despesas Variáveis']);
+    expect(titulos.slice(0, 5)).toEqual([
+      'Classificação Financeira', 'Custos de Mercadorias', 'Custos de Importação',
+      'Despesas Fixas', 'Despesas Variáveis',
+    ]);
     // fatias das legendas (cada donut com o seu recorte)
     expect(screen.getByText('Folha de Pagamento')).toBeInTheDocument();
     expect(screen.getByText('Transporte')).toBeInTheDocument();
     expect(screen.getByText('Custos')).toBeInTheDocument();
+    expect(screen.getByText('Importações')).toBeInTheDocument();
   });
 
-  it('os 4 anéis usam o MESMO diâmetro — o gerado para o maior valor (R$) do conjunto', async () => {
+  it('os 5 anéis usam o MESMO diâmetro — o gerado para o maior valor (R$) do conjunto', async () => {
     // Correção 2026-07-22: a 1ª versão escalava CADA donut proporcionalmente ao seu próprio
     // total, o que com valores próximos (ex.: 340k vs 324k) produzia uma diferença de ~1px —
-    // visualmente incoerente. Agora todos os 4 usam o diâmetro do MAIOR total (aqui o de
+    // visualmente incoerente. Agora todos os 5 usam o diâmetro do MAIOR total (aqui o de
     // "Classificação Financeira", superset dos demais) — nunca assimétrico, nunca por acaso.
     render(<DashboardFinanceiro />);
     await screen.findByRole('heading', { name: 'Classificação Financeira' });
@@ -185,19 +206,22 @@ describe('DashboardFinanceiro', () => {
         ?.querySelector<HTMLElement>('.relative.shrink-0') ?? null;
     const tipo = ringOf('Classificação Financeira');
     const custoMerc = ringOf('Custos de Mercadorias');
+    const custoImp = ringOf('Custos de Importação');
     const fixa = ringOf('Despesas Fixas');
     const variavel = ringOf('Despesas Variáveis');
-    // tipoBreakdown soma 38000 (22000+10000+6000) — é o MAIOR total dos 4 → diâmetro no MÁXIMO.
+    // tipoBreakdown soma 38000 (22000+10000+6000) — é o MAIOR total dos 5 → diâmetro no MÁXIMO.
     expect(tipo?.style.width).toBe('124px');
-    // Os outros três — de totais BEM diferentes entre si (6000/10000/22000) — recebem o
-    // MESMO diâmetro do maior, não um valor proporcional ao próprio total.
+    // Os outros quatro — de totais BEM diferentes entre si (4000/6000/10000/22000) — recebem
+    // o MESMO diâmetro do maior, não um valor proporcional ao próprio total.
     expect(custoMerc?.style.width).toBe('124px');
+    expect(custoImp?.style.width).toBe('124px');
     expect(fixa?.style.width).toBe('124px');
     expect(variavel?.style.width).toBe('124px');
     // Furo (inset) também igual — acompanha o diâmetro, que agora é único.
     const holeOf = (el: HTMLElement | null): string | undefined =>
       el?.closest<HTMLElement>('.relative')?.querySelector<HTMLElement>('.rounded-full.bg-white')?.style.inset;
     expect(holeOf(custoMerc)).toBe(holeOf(tipo));
+    expect(holeOf(custoImp)).toBe(holeOf(tipo));
     expect(holeOf(fixa)).toBe(holeOf(tipo));
     expect(holeOf(variavel)).toBe(holeOf(tipo));
   });
@@ -282,5 +306,20 @@ describe('DashboardFinanceiro', () => {
     // Só a conta de subgrupo tipo 7 entra; a de tipo 6 (Fornecedor ABC) fica fora.
     expect(screen.getByText('Fornecedor CM')).toBeInTheDocument();
     expect(screen.queryByText('Fornecedor ABC')).toBeNull();
+  });
+
+  // 🔴 Achado de 2026-08-14: o donut novo precisa ser provado pelo WIRING da tela (clique →
+  // drill), não só pela função pura `filterExpenseDetailRows` — é a mesma lição da Regra 2 do
+  // CLAUDE.md que o achado `fmtSupplierName` deixou registrada (função pura correta não prova
+  // que o call site passa o `typeGroupId` certo).
+  it('o donut "Custos de Importação" filtra o detalhe por typeGroupId=9', async () => {
+    render(<DashboardFinanceiro />);
+    await screen.findByRole('heading', { name: 'Custos de Importação' });
+    fireEvent.click(screen.getByRole('button', { name: /^ImportaçõesR\$/ }));
+    expect(await screen.findByRole('heading', { name: 'Custos de Importação · Importações' })).toBeInTheDocument();
+    // Só a conta de subgrupo tipo 9 entra; as de tipo 6/7 (Fornecedor ABC/CM) ficam fora.
+    expect(screen.getByText('Fornecedor IMP')).toBeInTheDocument();
+    expect(screen.queryByText('Fornecedor ABC')).toBeNull();
+    expect(screen.queryByText('Fornecedor CM')).toBeNull();
   });
 });

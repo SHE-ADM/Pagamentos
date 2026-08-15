@@ -897,6 +897,52 @@ existe. Os **sete foram medidos contra o banco** em 2026-08-13, e o resultado é
 
 ---
 
+### ONDA 10 — Robustecer o monitoramento dos gatilhos
+
+**Status: ✅ CONCLUÍDA (2026-08-14).** Não é dado novo — é a própria skill `roadmap-gatilhos`
+(§4 ONDA 9) que decide QUANDO implementar algo. Reconferidos os 7 gatilhos no banco no dia da
+onda: nenhum disparou desde a medição de 2026-08-13, então nenhum item da Onda 9 foi acionado por
+esta onda — o escopo é exclusivamente o **mecanismo** de monitoramento em si.
+
+**O problema real:** a série `analytics.roadmap_trigger_snapshot` é gravada mensalmente, mas
+nada detectava quando um `fired` MUDAVA de valor entre duas medições consecutivas — a única forma
+de notar era abrir a tabela à mão e comparar por olho, contrariando a própria premissa da skill
+("o valor de remedir está na SÉRIE").
+
+| # | Entrega | Migration |
+|---|---|---|
+| 10.1 | `run.py` ganha `_buscar_estado_anterior` (busca leve, 1 tentativa, sem o retry pesado de `_request`) e passa a gravar `mudou_desde_ultima_medicao` dentro de `metrics` (jsonb livre) | — (nenhuma) |
+| 10.2 | Log `ERROR` destacado quando um gatilho muda de estado; resumo final lista os que mudaram | — |
+| 10.3 | Consulta pronta em `SKILL.md` para listar toda a história de transições — o "painel" (sem UI nova) | — |
+
+#### O que a implementação decidiu (e o que ficou de fora)
+
+| # | Decisão | Por quê |
+|---|---|---|
+| D1 | **Sem migration** | `metrics jsonb NOT NULL` (migration 122) não tem CHECK sobre as chaves internas — só `trigger_key` tem domínio fechado. Acrescentar uma chave é enriquecimento de aplicação sobre coluna já schemaless |
+| D2 | **Exit code intocado** (0/1 continua significando só falha de medição) | A tarefa agendada trata qualquer exit ≠ 0 como falha operacional (tarefa vermelha, Event Log); "mudou de estado" é o **produto esperado** desta rotina, não um erro — usar um código à parte causaria falso alarme |
+| D3 | Busca de estado anterior é **diagnóstica**: falha nela nunca conta para o exit code, mas nunca é engolida (`WARNING`) | Mesma classe de decisão do rate limiter do chat de IA (fail-open só onde o custo do bloqueio é maior que o do erro) |
+| D4 | Busca **sem** o retry pesado de `_request` (1 tentativa, `HTTP_DIAG_TIMEOUT_SECONDS=10s`) | `_request` já soma ~15 requisições × 3 tentativas × 30s no pior caso (o que justifica o `BUDGET_SECONDS`); 7 buscas a mais com o mesmo retry estufariam esse pior caso desproporcionalmente para uma checagem que pode simplesmente desistir rápido |
+| D5 | Busca **guardada** pelo mesmo `_tempo_esgotado()` da medição | Sem o guard, o pior caso adicional (7 × 10s) não entraria na conta do orçamento de 600s — pequeno, mas evitável |
+| D6 | Os dois pontos cegos deliberados (`text_to_sql`, `tabelas_agregadas` por proxy) **não foram tocados** | São "honestidades embutidas" documentadas em `SKILL.md` como "não corrigir" — fechá-los contrariaria uma decisão já registrada |
+
+#### Verificação
+
+- `tests/test_roadmap_gatilhos.py`: 39 → **57 casos** (18 novos — comparação de estado, busca HTTP
+  leve sem retry, integração via `main()`). A contagem TOTAL da suíte não se repete aqui, de
+  propósito — o total vivo mora no `CLAUDE.md` § Regras mandatórias 2 (a lição da Onda 8).
+- **Validado por mutante**: `mudou = False` fixo (em vez do cálculo real) foi pego por 4 testes
+  distintos, em série, revertido em seguida — confirma que os testes travam o comportamento, não
+  decoram.
+- **Smoke test real** (`py -3 skills\roadmap-gatilhos\scripts\run.py --dry-run`) contra o Supabase
+  de produção: os 7 gatilhos compararam corretamente contra a medição de 2026-08-13
+  (`mudou_desde_ultima_medicao: false` em todos, nenhuma mudança real) — sem erro, sem gravação
+  (modo dry-run).
+
+**Esforço:** P.
+
+---
+
 ## 5. O que fica DELIBERADAMENTE fora
 
 | Descartado | Por quê |
@@ -973,6 +1019,7 @@ banco real**. O documento foi escrito olhando as 42 colunas da tabela; o chat v�
 | 7 — Auditoria | ✅ **concluída** | **117, 118** | 2026-08-11 | trilha por trigger + 10ª e 11ª tools; vazamento da `audit_log` fechado ANTES de popular. **Validada em produção no mesmo dia** |
 | 8 — Hardening | ✅ **concluída** | **120** | 2026-08-12 | gate de acesso ao chat por GRUPO (opt-in + cota), fail-closed no servidor; mais a **prova do recorte de RLS** que a onda devia (830 → 5) |
 | 9 — Condicional | ⚠️ **1 de 7 itens** | **121** | 2026-08-13 | os **7 gatilhos foram medidos**; só o de pontualidade ocorreu → 12ª tool. Os outros 6 seguem sem evidência — ver a tabela da onda |
+| 10 — Robustecer o monitoramento (roadmap-gatilhos) | ✅ **concluída** | — (nenhuma) | 2026-08-14 | comparação de estado entre medições consecutivas; `metrics.mudou_desde_ultima_medicao`; exit code intocado; suíte 39 → 57 casos (validado por mutante); smoke test real em produção |
 
 ---
 

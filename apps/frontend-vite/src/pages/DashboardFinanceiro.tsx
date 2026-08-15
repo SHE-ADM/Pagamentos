@@ -2,11 +2,17 @@
 // Dashboard financeiro escopado a DESPESAS + CUSTO (Indicadores de despesas — Naturezas do
 // GRUPO type_group_id 2 e 8). Mesma casca do dashboard de vencimentos (pages/Dashboard.tsx)
 // — 5 KPIs e filtros de empresa/mês/escopo/KPI (que aqui ABRE em "A vencer") — mas sem o
-// gráfico mês a mês e com os gráficos trocados para a dimensão contábil (4 donuts em 2 linhas
-// de 2, size="sm"+dense, top-6 + "outros" — no máximo 7 fatias visíveis cada; compactos de
-// propósito para sobrar altura de viewport aos rankings abaixo, que não têm scroll próprio):
-//   • donut "Classificação Financeira" — por Tipo do subgrupo (Fixa/Variável/Custos de Mercadorias)
+// gráfico mês a mês e com os gráficos trocados para a dimensão contábil (5 donuts — 2 linhas de
+// 2 + 1 solo, sm:grid-cols-2 sem override, size="sm"+dense, top-6 + "outros" — no máximo 7
+// fatias visíveis cada; compactos de propósito para sobrar altura de viewport aos rankings
+// abaixo, que não têm scroll próprio):
+//   • donut "Classificação Financeira" — por Tipo do subgrupo (Fixa/Variável/Custos de
+//     Mercadorias/Importação)
 //   • donut "Custos de Mercadorias" — custos (Tipo 7) por GRUPO do plano de contas
+//   • donut "Custos de Importação" — custos de importação (Tipo 9) por GRUPO — acrescentado em
+//     2026-08-14: existia no catálogo e contava certo no TOTAL do dashboard, mas não entrava em
+//     nenhum donut de tipo (mesma classe de bug do CASE hardcoded de `demonstrativo_despesas`,
+//     do lado do TypeScript — ver o comentário em services/supabase.ts)
 //   • donut "Despesas Fixas" — despesas FIXAS (Tipo 5) por GRUPO
 //   • donut "Despesas Variáveis" — idem, só as VARIÁVEIS (Tipo 6)
 //   • rankings por VALOR (R$): CENTROS DE CUSTO + PLANO DE CONTAS (no lugar do de fornecedores
@@ -23,6 +29,7 @@ import {
   TYPE_GROUP_ID_DESPESA_FIXA,
   TYPE_GROUP_ID_DESPESA_VARIAVEL,
   TYPE_GROUP_ID_CUSTO_MERCADORIAS,
+  TYPE_GROUP_ID_CUSTO_IMPORTACAO,
 } from '@sheild/shared';
 import {
   getFinancialDashboardData,
@@ -44,7 +51,7 @@ import { ExpenseDetailModal } from '../components/dashboard/ExpenseDetailModal';
 
 // Diâmetro (px) de um anel, escalado entre MIN e MAX conforme a razão value/maxValue —
 // utilitário genérico; a POLÍTICA de como `value`/`maxValue` são escolhidos (uniforme entre
-// os 4 donuts ou proporcional por donut) fica no call site (ver `donutDiameter` abaixo).
+// os 5 donuts ou proporcional por donut) fica no call site (ver `donutDiameter` abaixo).
 // `value===maxValue` (ratio=1) sempre devolve MAX; `maxValue<=0` (sem dado) devolve MIN.
 const DONUT_MIN_PX = 84;
 const DONUT_MAX_PX = 124;
@@ -115,17 +122,18 @@ export default function DashboardFinanceiro() {
   // "Julho - A vencer"). 'total' = sem filtro → só o mês, sem sufixo.
   const kpiSuffix = filter === 'total' ? '' : ` - ${KPI_FILTER_LABEL[filter]}`;
 
-  // Diâmetro ÚNICO para os 4 donuts: o tamanho que `scaledDonutDiameter` gera para o MAIOR
-  // valor total (R$) entre eles, reaplicado IGUAL nos outros três (decisão do usuário
+  // Diâmetro ÚNICO para os 5 donuts: o tamanho que `scaledDonutDiameter` gera para o MAIOR
+  // valor total (R$) entre eles, reaplicado IGUAL nos outros quatro (decisão do usuário
   // 2026-07-22 — corrige a 1ª tentativa de escala proporcional POR donut: com valores
   // próximos entre si — ex. Despesas Fixas R$340k vs Custos de Mercadorias R$324k — a
   // diferença de diâmetro ficava de ~1px, visualmente incoerente/aleatória, sem comunicar
   // nada). Continua "gerado dinamicamente" (não é uma constante hard-coded): varia com o
-  // maior total do período/filtro; só não varia mais ENTRE os 4 cards na mesma tela.
-  // Com `data` nulo (carregando) ou os 4 totais zerados, cai no MIN (scaledDonutDiameter).
+  // maior total do período/filtro; só não varia mais ENTRE os 5 cards na mesma tela.
+  // Com `data` nulo (carregando) ou os 5 totais zerados, cai no MIN (scaledDonutDiameter).
   const maxDonutTotal = Math.max(
     sumSliceValues(data?.tipoBreakdown),
     sumSliceValues(data?.custoMercadoriasBreakdown),
+    sumSliceValues(data?.custoImportacaoBreakdown),
     sumSliceValues(data?.despesaFixaBreakdown),
     sumSliceValues(data?.despesaVariavelBreakdown),
   );
@@ -158,14 +166,17 @@ export default function DashboardFinanceiro() {
         {/* Faixa de KPIs (cards clicáveis = filtro; ver KpiCard/KpiRow) */}
         <KpiRow items={kpis} filter={filter} onToggle={filters.toggleFilter} />
 
-        {/* Donuts (4, em 2 LINHAS de 2 — sm:grid-cols-2 sem override no xl, então o fluxo
-            natural do grid já põe Fixas/Variáveis na linha de baixo, sem reordenar o DOM):
+        {/* Donuts (5, em 2 LINHAS de 2 + 1 solo — sm:grid-cols-2 sem override no xl, então o
+            fluxo natural do grid deixa o 5º card sozinho na 3ª linha; aceito, é o menor diff):
             linha 1 = Classificação Financeira (por Tipo do subgrupo) + Custos de Mercadorias;
-            linha 2 = Despesas Fixas + Despesas Variáveis (GRUPO recortado por tipo).
-            size="sm" + dense (padding/gaps reduzidos — pedido do usuário 2026-07-22): os 4
+            linha 2 = Custos de Importação + Despesas Fixas;
+            linha 3 = Despesas Variáveis (GRUPO recortado por tipo).
+            Ordem segue o `line_order` de analytics.demonstrativo_despesas (migration 128):
+            1 Mercadorias, 2 Importação, 3 Fixas, 4 Variáveis.
+            size="sm" + dense (padding/gaps reduzidos — pedido do usuário 2026-07-22): os
             donuts ocupam menos altura para sobrar mais viewport para os rankings abaixo, que
             mostram até 12 linhas cada e não têm scroll próprio. `diameterPx` sobrepõe o
-            diâmetro de `size` com o MESMO valor `donutDiameter` nos 4 — gerado dinamicamente
+            diâmetro de `size` com o MESMO valor `donutDiameter` nos 5 — gerado dinamicamente
             a partir do maior total (R$) do conjunto, não proporcional POR donut (ver o
             comentário de `donutDiameter` acima — pedido do usuário 2026-07-22). */}
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 mb-2">
@@ -186,6 +197,15 @@ export default function DashboardFinanceiro() {
             dense
             diameterPx={donutDiameter}
             onSliceSelect={(label) => openDrill({ chart: 'grupoTipo', typeGroupId: TYPE_GROUP_ID_CUSTO_MERCADORIAS, label }, `Custos de Mercadorias · ${label}`)}
+          />
+          <DonutCard
+            title="Custos de Importação"
+            subtitle={`Por grupo · ${periodo}`}
+            slices={data?.custoImportacaoBreakdown}
+            size="sm"
+            dense
+            diameterPx={donutDiameter}
+            onSliceSelect={(label) => openDrill({ chart: 'grupoTipo', typeGroupId: TYPE_GROUP_ID_CUSTO_IMPORTACAO, label }, `Custos de Importação · ${label}`)}
           />
           <DonutCard
             title="Despesas Fixas"

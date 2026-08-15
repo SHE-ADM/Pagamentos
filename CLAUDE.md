@@ -198,7 +198,7 @@ Estas regras se aplicam a **todo** código novo ou alterado neste projeto, sem e
   sem ele os schemas sem teste próprio ficariam fora do lcov e o Sonar os leria como 0% — que foi
   a armadilha do PR #223. Medido: 5 de 14 arquivos no lcov sem o teste do barrel, **14 de 14** com
   ele. Ao criar schema novo, basta que o barrel o reexporte; não há include a manter.
-- **Suíte Python (pytest):** `py -3 -m pytest tests/` — **1.314 testes** (ex.:
+- **Suíte Python (pytest):** `py -3 -m pytest tests/` — **1.428 testes** (ex.:
   `test_link_extraction.py`, `test_email_body_extraction.py`, `test_body_amount.py`,
   `test_body_invoice_table.py`, `test_body_platform_invoice.py`,
   `test_body_supplier_override.py`, `test_arrecadacao_gnre.py`,
@@ -217,7 +217,11 @@ Estas regras se aplicam a **todo** código novo ou alterado neste projeto, sem e
   2026-08-14 após o streaming SSE, que acrescentou **71**: 18 no cliente/rótulo, 31 na rota SSE e
   no transporte, 6 no progresso do gateway, 15 no contrato compartilhado e 1 no teto de linhas da
   resposta). A suíte Python está em
-  **1.409** — o mais recente é a guarda que exige `assertChatAllowed` em **toda** rota de chat
+  **1.428** — o mais recente é a Onda 10 (comparação de estado entre medições consecutivas no
+  `roadmap-gatilhos`, **+19 casos**, validada por mutante — detalhe em `SKILL.md` da skill; o
+  19º entrou no code review de 2026-08-14, que corrigiu a exclusão do registro do próprio dia
+  na comparação).
+  Antes dela, a guarda que exige `assertChatAllowed` em **toda** rota de chat
   (`test_onda8_gate_ia.py`, validada por mutante). Antes dele, os **18** de
   `test_gasto_por_periodo_parcial.py` (o balde parcial da série temporal: as 4 colunas lidas pelo
   NOME e não por substring, o fuso de São Paulo, o domínio cross-layer Zod × SQL e a declaração na
@@ -232,6 +236,8 @@ Estas regras se aplicam a **todo** código novo ou alterado neste projeto, sem e
   Onda 8, `test_onda8_gate_ia.py` (**28**) e
   `test_react_versao_unica.py` (**3**), medidos contra `fbb2dc0` (1.283 → 1.314); os 56 anteriores
   são a Onda 5 e a barra na chave de acesso; os 34 antes disso, a Onda 7.
+  (`test_roadmap_gatilhos.py` foi de **39** para **58** casos — 57 na Onda 10, +1 no code
+  review de 2026-08-14.)
   > 🔴 **O TOTAL da suíte vive AQUI e em nenhum outro doc.** Registro de onda cita o INCREMENTO,
   > que é propriedade dela e não envelhece; total muda a cada PR, e a 2ª cópia diverge no dia
   > seguinte — foi o que aconteceu com o roadmap da Onda 8, errado nos **três** números 24 h depois
@@ -1281,12 +1287,29 @@ Onda 5 (item 5.3) saiu na **119**.
 
 - **7 tools** (as 6 da 098 + `demonstrativo_despesas`). A lista é travada em `tools.test.ts`:
   acrescentar tool invalida os 3 níveis de prompt cache, então tem de ser deliberado.
-- **`demonstrativo_despesas` SEMPRE FECHA** — as linhas (Custos de Mercadorias · Despesas Fixas ·
-  Despesas Variáveis · Tributos · Não classificado) são mutuamente exclusivas e exaustivas, e a
-  função devolve a própria linha "Total de saídas" para o modelo **não somar**. Verificado contra
-  a tabela base: R$ 8.854.971,36 dos dois lados. **`Não classificado` é LINHA, não filtro** — um
-  demonstrativo que omite o que não classificou não fecha, e número que não fecha destrói a
-  confiança em todos os outros. **NÃO é um DRE** (0 receitas) e o nome é deliberado.
+- **`demonstrativo_despesas` SEMPRE FECHA** — as linhas (Custos de Mercadorias · Custos de
+  Importação · Despesas Fixas · Despesas Variáveis · Tributos · Não classificado) são mutuamente
+  exclusivas e exaustivas, e a função devolve a própria linha "Total de saídas" para o modelo
+  **não somar**. Verificado contra a tabela base: R$ 8.854.971,36 dos dois lados. **`Não
+  classificado` é LINHA, não filtro** — um demonstrativo que omite o que não classificou não
+  fecha, e número que não fecha destrói a confiança em todos os outros. **NÃO é um DRE** (0
+  receitas) e o nome é deliberado.
+  🔴 **"Custos de Importação" (`chart_subgroup_type_id = 9`) foi ACRESCENTADO pela migration 127
+  (2026-08-14) — NAQUELE MOMENTO a lista de linhas não era fechada por natureza, era fechada pelo
+  `CASE` da função, e ele precisava ser ensinado toda vez que o catálogo `financial_type_group`
+  ganhasse um tipo novo.** O tipo 9 foi criado direto no banco (não há CRUD para
+  `financial_type_group`) e a função, escrita em 31/07, não sabia dele: 23 contas (R$ 1.900.565,19,
+  grupo de natureza Custos) caíam em "Não classificado" e 6 contas (R$ 633.683,10, grupo de
+  natureza Passivo) eram contadas como "Tributos" — inflando essa linha com custo de importação,
+  não tributo. **Achado pelo próprio assistente de IA**, que sinalizou a fatia de "Não
+  classificado" como incomum numa resposta ao usuário. `gasto_por_classificacao` com
+  `group_by='tipo'` **nunca teve esse problema** — lê o nome do tipo dinamicamente do catálogo, sem
+  `CASE` fechado; só `demonstrativo_despesas` (e o prompt do chat, que enumerava as linhas)
+  precisou de correção. ✅ **A versão DINÂMICA foi implementada NO MESMO DIA, pela migration 128**
+  (a função passou a ler `financial_type_group.demonstrativo_line_order`/`demonstrativo_line_label`
+  — ver "Banco de dados" → entrada da 128) — a frase "plano futuro, não implementada" que este
+  bullet trazia originalmente **não vale mais**; mantida aqui só como registro histórico da decisão
+  tomada na 127, revertida horas depois na mesma sessão.
 - **A linha "Tributos" sai da NATUREZA do grupo (`= 4`)**, nunca de ids de subgrupo hardcoded.
 - 🔴 **`gasto_por_fornecedor` é um RANKING TRUNCADO** (máx. 100 de 165 fornecedores): **somar suas
   linhas NÃO dá o total do período** — subestima em silêncio. Está proibido explicitamente no
@@ -2091,7 +2114,7 @@ apps/frontend-vite/src/components/
 ├── dashboard/                 # primitivos de gráfico compartilhados pelos DOIS dashboards (vencimentos + financeiro)
 │   ├── constants.ts           #   MONTHS/MONTHS_FULL
 │   ├── chartColors.ts         #   statusColor (semântico por status) + paletteColor (cíclica) — só tokens --color-status-*
-│   ├── BreakdownDonut.tsx (+ .test.tsx)  #   donut genérico (conic-gradient + furo + legenda), prop {segs:{key,label,value}[], colorFor, size?, diameterPx?}. Arcos + % + ORDEM das fatias por VALOR (R$) desc; legenda = R$ (fmtMoney, `font-mono`) + % em `text-xs` (SEM contagem de contas); furo central = TOTAL em R$ compacto (fmtMoneyCompact, ex.: "R$ 12,3 mil") rotulado "total", em **`font-sans font-normal`** (SEM negrito/mono — só o valor central, não a legenda). **`size: 'sm'|'md'|'lg'`** (tipo `DonutSize`, exportado — substituiu o booleano `dense`) controla SÓ o círculo, com o furo proporcional: `sm`=108px/inset-3 (4 donuts na mesma linha nos DOIS dashboards) · `md`=120px/inset-3 (default, = comportamento do antigo `dense={false}`) · `lg`=176px/inset-5 + número central `text-base` (sem call site — API do componente, coberto por teste). Classes LITERAIS por tamanho (mapa `SIZE_CLS`) — nome computado não é gerado pelo JIT e o donut ficaria sem tamanho, em silêncio (travado no teste). **`diameterPx?: number`** (opcional) SOBREPÕE `size` com um diâmetro CONTÍNUO em px via inline style (círculo + furo, razão `DYNAMIC_HOLE_RATIO=0.11`) — usado só por `/dashboard_despesas`, que passa o MESMO valor (gerado a partir do maior total R$ do conjunto) nos 4 donuts, nunca um valor por donut; sem ele, comportamento idêntico a antes (`/dashboard_vencimentos` inalterado)
+│   ├── BreakdownDonut.tsx (+ .test.tsx)  #   donut genérico (conic-gradient + furo + legenda), prop {segs:{key,label,value}[], colorFor, size?, diameterPx?}. Arcos + % + ORDEM das fatias por VALOR (R$) desc; legenda = R$ (fmtMoney, `font-mono`) + % em `text-xs` (SEM contagem de contas); furo central = TOTAL em R$ compacto (fmtMoneyCompact, ex.: "R$ 12,3 mil") rotulado "total", em **`font-sans font-normal`** (SEM negrito/mono — só o valor central, não a legenda). **`size: 'sm'|'md'|'lg'`** (tipo `DonutSize`, exportado — substituiu o booleano `dense`) controla SÓ o círculo, com o furo proporcional: `sm`=108px/inset-3 (4 donuts na mesma linha nos DOIS dashboards) · `md`=120px/inset-3 (default, = comportamento do antigo `dense={false}`) · `lg`=176px/inset-5 + número central `text-base` (sem call site — API do componente, coberto por teste). Classes LITERAIS por tamanho (mapa `SIZE_CLS`) — nome computado não é gerado pelo JIT e o donut ficaria sem tamanho, em silêncio (travado no teste). **`diameterPx?: number`** (opcional) SOBREPÕE `size` com um diâmetro CONTÍNUO em px via inline style (círculo + furo, razão `DYNAMIC_HOLE_RATIO=0.11`) — usado só por `/dashboard_despesas`, que passa o MESMO valor (gerado a partir do maior total R$ do conjunto) nos 5 donuts, nunca um valor por donut; sem ele, comportamento idêntico a antes (`/dashboard_vencimentos` inalterado)
 │   ├── DashboardHeader.tsx (+ .test.tsx, .a11y.test.tsx)  #   CASCA dos dois dashboards: título + "filtrando: X ✕" e a barra empresa · escopo · mês · ano · Atualizar. Apresentacional puro; recebe title/subject/idPrefix + o objeto `filters` (hooks/useDashboardFilters). Ver "Casca compartilhada dos dashboards" abaixo
 │   ├── KpiRow.tsx (+ .test.tsx)  #   faixa dos 5 cards de KPI (grid + map sobre KpiCard); concentra a regra "o KPI 'total' nunca fica ativo"
 │   ├── KpiCard.tsx (+ .test.tsx)  #   card de KPI CLICÁVEL (= filtro) da faixa superior, compartilhado pelos DOIS dashboards (antes o bloco era duplicado literalmente nas duas páginas). Apresentacional puro: props {icon,label,amount,count,tone,active,onClick}; a página decide o que está ativo. Contagem em pt-BR (Intl, milhar com ponto)
@@ -3296,7 +3319,7 @@ e-mails `status='falha'`, rebusca o corpo no IMAP, baixa o boleto pelo link e gr
 | `/tabelas/grupos-plano-de-contas` | `ChartAccountGroupsPage.tsx` | `financial_chart_of_account_group` (CRUD via Next API) |
 | `/tabelas/subgrupos-plano-de-contas` | `ChartAccountSubgroupsPage.tsx` | `financial_chart_of_account_subgroup` (CRUD via Next API) |
 | `/dashboard_vencimentos` | `Dashboard.tsx` | `financial_account_control` — KPIs/gráficos por mês ou geral (`getDashboardData`), filtro de EMPRESA aplicado nas DUAS leituras, 5 cards de KPI clicáveis (= filtro dos gráficos), 4 donuts, "Movimentações mês a mês" e "Contas críticas e prioritárias" (exclusivos desta tela). Abre em `total`, sem card marcado. Detalhe: [docs/knowledge/dashboards.md](docs/knowledge/dashboards.md) |
-| `/dashboard_despesas` | `DashboardFinanceiro.tsx` | `financial_account_control` **escopado a DESPESAS + CUSTO** (`getFinancialDashboardData`; grupo com `type_group_id ∈ {2,8}`, migration 094) — 5 KPIs, 4 donuts, 2 rankings (top 12) e **drill-down** por clique na fatia/linha (`ExpenseDetailModal`). Abre filtrado em "A vencer". Detalhe: [docs/knowledge/dashboards.md](docs/knowledge/dashboards.md) |
+| `/dashboard_despesas` | `DashboardFinanceiro.tsx` | `financial_account_control` **escopado a DESPESAS + CUSTO** (`getFinancialDashboardData`; grupo com `type_group_id ∈ {2,8}`, migration 094) — 5 KPIs, 5 donuts (o 5º, "Custos de Importação", acrescentado em 2026-08-14 — mesmo achado das migrations 127/128), 2 rankings (top 12) e **drill-down** por clique na fatia/linha (`ExpenseDetailModal`). Abre filtrado em "A vencer". Detalhe: [docs/knowledge/dashboards.md](docs/knowledge/dashboards.md) |
 | `/cobranca/envios` | `cobranca/CobrancaEnvios.tsx` | `cobranca_envios_log` (ver "Pipeline de cobrança de vencidos") |
 | `/cobranca/erros` | `cobranca/CobrancaErros.tsx` | `cobranca_erros_log` |
 
@@ -3304,7 +3327,7 @@ e-mails `status='falha'`, rebusca o corpo no IMAP, baixa o boleto pelo link e gr
 [docs/knowledge/dashboards.md](docs/knowledge/dashboards.md) — leia antes de mexer):**
 
 - 🔴 **`/dashboard_despesas` é EXCLUSIVO do escopo Despesas+Custo.** TODA métrica (5 KPIs, card de
-  total, 4 donuts, 2 rankings) sai de `isExpenseRow` aplicado **antes de qualquer agregação**.
+  total, 5 donuts, 2 rankings) sai de `isExpenseRow` aplicado **antes de qualquer agregação**.
   Conta sem classificação, ou de outra natureza, fica FORA de tudo.
 - 🔴 **Top-N de donut é por VALOR (R$), nunca por contagem de linhas** — o donut ordena por valor,
   então selecionar por contagem joga em "outros" um grupo que vale mais (bug real de 2026-07-22).
@@ -3313,7 +3336,7 @@ e-mails `status='falha'`, rebusca o corpo no IMAP, baixa o boleto pelo link e gr
   id 0 tem descrição NULL: `rankEntry` corta por `id > 0` **e** descrição não vazia.
 - 🔴 **Fatia/linha só vira `<button>` quando recebe `onSelect`** — `/dashboard_vencimentos` não
   passa e segue não-interativo (travado por teste; evita S1082).
-- **`diameterPx` é UM valor para os 4 donuts**, não um por donut (a versão proporcional dava ~1px
+- **`diameterPx` é UM valor para os 5 donuts**, não um por donut (a versão proporcional dava ~1px
   de diferença entre totais próximos — nem igual, nem perceptivelmente proporcional).
 
 - `services/supabase.ts` — fetch direto REST, `Prefer: count=exact` + `Content-Range` para paginação.
@@ -4048,8 +4071,74 @@ local/agendada (ver flag `EMAIL_READER_ENABLED` acima e memória [[vercel-deploy
 ## Banco de dados (Supabase)
 
 Migrations em `supabase/migrations/`, aplicadas **manualmente no SQL Editor** (ou via Supabase
-MCP — ver a nota de cada uma) em ordem numérica (`001` → `126`). **Próxima migration = `127`**
-(verificar sempre antes de criar nova).
+MCP/`psql` — ver a nota de cada uma) em ordem numérica (`001` → `128`). **Próxima migration =
+`129`** (verificar sempre antes de criar nova).
+
+**A `128` torna `analytics.demonstrativo_despesas` DINÂMICA** (aplicada via `psql`/
+`SUPABASE_DB_URL` em 2026-08-14 — MCP do Supabase indisponível na sessão; `CREATE OR REPLACE`,
+assinatura idêntica). A 127 tinha corrigido o caso do tipo 9 **acrescentando-o ao `CASE`** — o
+que garantia que o PRÓXIMO tipo novo (10, 11...) reproduziria o mesmo bug, porque a lista de
+linhas continuava decorada em código. A 128 fecha essa classe de bug: duas colunas novas em
+`public.financial_type_group` — **`demonstrativo_line_order`** (SMALLINT, nullable — NULL = "este
+tipo não vira linha própria", preservando Receitas/Despesas-genérico/Ativo/Custo-genérico/
+sentinela 0 em "Não classificado") e **`demonstrativo_line_label`** (override do rótulo; NULL usa
+`type_group_description` do próprio catálogo) — com **UNIQUE parcial** (`WHERE ... IS NOT NULL`)
+e **CHECK** reservando os sentinelas 900 ("Não classificado") e 999 ("Total de saídas"). A função
+passou de um `CASE` hardcoded para dois `LEFT JOIN` (subgrupo vence grupo na precedência, mesma
+regra da 104/127) filtrados por `demonstrativo_line_order IS NOT NULL` — um tipo novo cadastrado
+no catálogo (só via SQL/`service_role`, sem CRUD) passa a aparecer como linha nova **sem migration
+nenhuma**. 🔴 **Decisão de arquitetura deliberada: NADA de "dinamismo cego"** — só um tipo com
+`demonstrativo_line_order` preenchido vira linha; sem esse opt-in explícito, qualquer
+`type_group_id` presente nos dados (inclusive Receitas/Ativo, por erro de cadastro) vazaria como
+linha num relatório que é só de saídas. **8 sondas no `DO $$` (P0-P7)**: seed exato nos 5 tipos
+esperados (P0); **oráculo de regressão** — a saída nova bate, linha a linha, com uma réplica
+inline do `CASE` antigo da 127, sobre toda a base histórica (P1, zero divergências); soma das
+linhas fecha com o total (P2, invariante de origem da 104); **prova de dinamismo** — muda o rótulo
+de um tipo JÁ existente (id 6) sem tocar na função, mede a linha nova, restaura explicitamente e
+CONFIRMA a restauração antes de prosseguir (P3, no padrão "mutar/medir/restaurar/confirmar" da
+Regra 2); UNIQUE e CHECK disparam para duplicata/sentinela, via `BEGIN...EXCEPTION` (savepoint
+implícito, P4/P5); grants intactos (P6). 🔴 **P7 — guarda de ESCOPO por `applies_to`** (achado R1
+do `/meu-code-review` light de 2026-08-14, corrigido ANTES do primeiro merge — não uma migration
+129 à parte): os dois `LEFT JOIN` não validavam se o tipo casado pertencia ao lado GRUPO ou
+SUBGRUPO do catálogo — sem `AND sg_tg.applies_to IN ('subgroup','both')` /
+`AND g_tg.applies_to IN ('group','both')`, um subgrupo cadastrado por engano com o
+`type_group_id` de um tipo GROUP-only (ex.: id 4/Passivo) casaria pelo `LEFT JOIN` do subgrupo
+mesmo assim, classificando contas de forma cruzada; a sonda prova a guarda contra o catálogo
+(id 4 não casa via subgrupo, id 7 não casa via grupo) — no dado de hoje o oráculo P1 já provava
+que a lacuna era NO-OP (nenhum subgrupo real referencia um tipo `group`-only), então o achado era
+latente, não um bug ativo. Resultado no mesmo período medido na 127: **idêntico, centavo a
+centavo** (196 contas, R$ 5.097.447,64, as mesmas 6 linhas com os mesmos valores) — só o
+mecanismo mudou. `apps/api-backend/lib/ai-chat/tools.ts` deixou de prometer uma lista fechada de
+linhas ("a lista é dinâmica, pode ganhar categoria nova sem aviso"). **Fix irmão no mesmo commit**
+(achado ao mapear consumidores, mesma classe de bug do lado TypeScript): o dashboard
+`/dashboard_despesas` (`apps/frontend-vite/src/services/supabase.ts`) também decorava os ids
+5/6/7 na partição dos donuts e não reconhecia o tipo 9 — as contas contavam certo no TOTAL
+(`isExpenseRow` olha a NATUREZA do grupo, não o tipo do subgrupo) mas não apareciam em nenhum dos
+3 donuts de tipo. Ganharam um **4º donut** "Custos de Importação" (`TYPE_GROUP_ID_CUSTO_IMPORTACAO
+= 9` em `packages/shared`), na mesma ordem do `line_order` da SQL — escopo **deliberadamente
+contido** (paridade com o que a SQL já mostra; não virou N-donuts dinâmico, que seria redesenho
+de UI fora do pedido). Testado com o padrão da Regra 2 item 6 (teste de WIRING via clique na
+tela, não só a função pura `filterExpenseDetailRows`).
+
+**A `127` ensina `analytics.demonstrativo_despesas` sobre o tipo 9 do catálogo
+`financial_type_group`** ("Custos de Importações", aplicada via Supabase MCP em 2026-08-14,
+`CREATE OR REPLACE` — assinatura idêntica, sem DROP, grants preservados e verificados). O tipo 9
+foi criado direto no banco às 18:03 do mesmo dia (não há CRUD para `financial_type_group`) e a
+função, escrita em 31/07, não o reconhecia: contas do grupo "Despesas com Importação e Aquisição"
+(natureza Custos) caíam em "Não classificado" e as de natureza Passivo eram contadas como
+"Tributos" — achado pelo próprio assistente de IA numa resposta ao usuário, que sinalizou a fatia
+de "Não classificado" como incomum. Nova linha "Custos de Importação" com precedência sobre o
+teste de natureza=4 (mesma lógica dos tipos 7/5/6). **4 sondas no `DO $$`**, todas por oráculo
+diferencial (função × consulta de controle independente): a linha nova bate com
+`chart_subgroup_type_id=9 OR chart_group_nature_id=9` (>= 29 contas — o caso de origem); a linha
+Tributos recalculada bate com a MESMA exclusão; a soma das 6 linhas fecha com o Total de saídas
+(invariante de origem, 104); grants intactos. Medido no período do achado (01–14/08): "Não
+classificado" 24→1 conta, "Tributos" 15→9 contas, "Custos de Importação" nasce com 29 contas/
+R$ 2.534.248,29, total inalterado (R$ 5.097.447,64). `gasto_por_classificacao` com
+`group_by='tipo'` **nunca teve o problema** (lê o catálogo dinamicamente, sem `CASE` fechado) —
+só a tool `demonstrativo_despesas` e o texto do `SYSTEM_PROMPT`/descrição da tool (que enumeravam
+as linhas) precisaram de ajuste. A decisão registrada aqui ("tornar a função dinâmica ficou como
+plano futuro") **foi implementada na migration 128**, no mesmo dia — ver a entrada dela acima.
 
 **A `126` corrige a classificação contábil de 48 contas da usuária `ester@otimotex.com.br`**
 (aplicada via Supabase MCP em 2026-08-14, idempotente, sem DDL). Contas gravadas em **72.1.06 —
@@ -5299,6 +5388,11 @@ REST), sem recurso compartilhado, então rodam em paralelo sem conflito.
 > manual coincidindo com a agendada faz as duas redirecionarem para o MESMO arquivo e a segunda
 > morre ao abri-lo. O `MultipleInstancesPolicy=IgnoreNew` protege o Agendador contra si mesmo, não
 > contra alguém rodando o runner à mão.
+>
+> 🔴 **Desde a Onda 10 (2026-08-14), o medidor também compara `fired` com a última medição
+> gravada e loga `ERROR` quando muda de estado** — nunca altera o exit code (diagnóstico, não
+> falha). Detalhe completo (por quê, o campo `metrics.mudou_desde_ultima_medicao`, a consulta que
+> lista toda a história de transições) em `SKILL.md` da skill.
 
 `scheduler/run_reader.ps1` — intervalo de 5 min (`$INTERVAL_MIN` em
 `scheduler/setup-task.ps1`). Detecta Python com `pdfplumber` (ordem: `py -3.12`,
