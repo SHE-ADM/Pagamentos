@@ -25,3 +25,18 @@ export const MONTHS_FULL = [
 export const KPI_FILTER_LABEL: Record<KpiFilter, string> = {
   total: 'Todos', pago: 'Pagos', aVencer: 'A vencer', vencendo7: 'A vencer em 7 dias', vencidas: 'Vencidas',
 };
+
+/**
+ * Sufixo do filtro ativo para o subtítulo de um card — a RESSALVA de que o número exibido é
+ * um recorte. `'total'` (sem filtro) devolve string vazia: a ressalva aparece exatamente
+ * quando há o que ressalvar.
+ *
+ * Mora aqui, e não em cada página, porque as DUAS a usam e o separador é semântico: ` - `
+ * marca o recorte por KPI, enquanto ` · ` junta partes do rótulo ("Por status · Agosto").
+ * Com uma cópia por página, o primeiro ajuste em uma delas faria as telas divergirem num
+ * detalhe que ninguém olha — e a ressalva é justamente o que impede o leitor de concluir o
+ * oposto do dado (mesma família do balde parcial da migration 124).
+ */
+export function kpiFilterSuffix(filter: KpiFilter): string {
+  return filter === 'total' ? '' : ` - ${KPI_FILTER_LABEL[filter]}`;
+}

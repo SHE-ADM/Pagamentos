@@ -31,7 +31,6 @@ const MOCK: FinancialDashboardData = {
     { label: 'Despesas Variáveis', count: 55, value: 22000 },
     { label: 'Despesas Fixas', count: 35, value: 10000 },
   ],
-  costCenterRanking: [{ key: 'cc:4', name: 'Logística', value: 15000, count: 25 }],
   subgroupRanking: [{ key: 'sg:44', name: '4.4.01 — GNRE a Recolher', value: 12000, count: 8 }],
   detailRows: [],
 };
@@ -44,7 +43,7 @@ describe('DashboardFinanceiro — acessibilidade (WCAG AA)', () => {
 
   it('página (filtros + KPIs + donuts + ranking) não tem violações', async () => {
     const { container } = render(<DashboardFinanceiro />);
-    await screen.findByText('Ranking de centros de custo');
+    await screen.findByText('Ranking de contas');
     expect(await axe(container)).toHaveNoViolations();
   });
 });

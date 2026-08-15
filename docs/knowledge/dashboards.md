@@ -27,7 +27,19 @@ leituras (escopo + ano) — senão o gráfico anual mostraria as duas empresas. 
 
 **Cards de KPI clicáveis = filtro** (Total / Pagos / A vencer / A vencer em 7 dias / Vencidas):
 clicar aplica o filtro (`KpiFilter`) a TODOS os gráficos; os KPIs seguem com os totais completos.
-Abre em `total`, **sem card marcado** — diferente do financeiro.
+
+**ABRE FILTRADO em "A vencer em 7 dias"** (`useDashboardFilters('vencendo7')`, decisão do usuário
+2026-08-15 — antes abria em `total`, sem card marcado). Duas consequências que são da SEMÂNTICA do
+filtro, não defeitos, e foram aceitas explicitamente ao decidir:
+
+- o gráfico **anual** "Movimentações mês a mês" também é recortado (`fYear` passa pelo mesmo
+  `matchesKpiFilter`), então abre com ~1 barra;
+- **"Contas críticas e prioritárias" não mostra vencidas na abertura**: `vencendo7` exige
+  `status_id = a vencer`, e vencida é outro status.
+
+Um clique no card marcado (ou no ✕ do cabeçalho) devolve a visão completa. A alternativa —
+o anual ignorar o filtro sempre — foi descartada: faria o anual divergir dos demais gráficos em
+QUALQUER filtro, não só no default.
 
 **4 donuts:** situação · tipos de conta · **Tributos** (só guias tributárias, detalhadas) · formas
 de pagamento. O donut de tipos de conta **colapsa os tributários numa fatia "Tributos"** via
@@ -50,7 +62,7 @@ cujo plano de contas tem grupo com Natureza "Despesas" **ou** "Custo"
 métrica.
 
 🔴 **Dashboard EXCLUSIVO do escopo — não regredir.** TODA métrica (os 5 KPIs valor+contagem, o card
-de total, os 5 donuts e os 2 rankings) é computada ÚNICA e EXCLUSIVAMENTE sobre linhas do escopo. O
+de total, os 5 donuts e o ranking) é computada ÚNICA e EXCLUSIVAMENTE sobre linhas do escopo. O
 recorte é feito por `isExpenseRow` **ANTES de qualquer agregação** (`monthRows =
 monthRowsAll.filter(isExpenseRow)`; KPIs sobre `monthRows`, gráficos/rankings sobre `fMonth`,
 derivado dele). Conta **SEM classificação** — ou de outra natureza, ex. Passivo — fica FORA de tudo:
@@ -63,34 +75,71 @@ totais globais**.
 
 ### Estado inicial e leitura
 
-**ABRE FILTRADO no KPI "A vencer"** (`useState<KpiFilter>('aVencer')`, pedido do usuário): os CARDS
-seguem com os totais completos do mês e só os gráficos filtram, então o card "Despesas no mês" e o
-furo dos donuts mostram números diferentes **de propósito**. O card "A vencer" já abre com o
-destaque de selecionado (ver "Destaque dos cards de KPI" no `CLAUDE.md`) e o ✕ do cabeçalho — ou
-clicar no card — limpa para `total`.
+**ABRE FILTRADO no KPI "A vencer em 7 dias"** (`useDashboardFilters('vencendo7')`, decisão do
+usuário 2026-08-15 — antes era `'aVencer'`): os CARDS seguem com os totais completos do mês e só os
+gráficos filtram, então o card "Despesas no mês" e o furo dos donuts mostram números diferentes
+**de propósito**. O card abre com o destaque de selecionado (ver "Destaque dos cards de KPI" no
+`CLAUDE.md`) e o ✕ do cabeçalho — ou clicar no card — limpa para `total`.
+
+🔴 **Trocar de mês/ano LIMPA o filtro de KPI** (`useDashboardFilters`, mesma mudança). `vencendo7`
+é uma janela MÓVEL a partir de hoje, então só intersecta o mês corrente: mantendo-o grudado,
+navegar para outro mês devolveria "Sem contas no período." em TODOS os gráficos — mensagem que
+culpa o PERÍODO por um recorte que é do FILTRO, e o mês escolhido tem contas. A limpeza só dispara
+quando o valor MUDA de fato (clicar no mês já selecionado preserva o filtro) e vale para mês e ano;
+**escopo fica de fora**, porque "todas as contas" + próximos 7 dias é combinação válida.
 
 **NÃO tem o gráfico "Movimentações mês a mês"** (removido a pedido do usuário) — por isso faz
 **leitura ÚNICA** (só o mês). O read do ANO existia apenas para alimentar aquele gráfico e foi
 eliminado junto, com `monthlyFlow` fora de `FinancialDashboardData`.
 
-**Read do mês** traz os DOIS embeds de classificação — `cost_center` (código+descrição, do
-`cost_center_id` da CONTA) e `chart_account → group/subgroup → type_group` (+
-`account_code`/`account_description`) —, espelhando os aliases/FKs do `SELECT_WITH_EMBEDS`, mais os
-ids `cost_center_id`/`chart_account_id`, que são a chave dos rankings.
+**Read do mês** traz UM embed de classificação — `chart_account → group/subgroup → type_group`
+(+ `account_code`/`account_description`) —, espelhando os aliases/FKs do `SELECT_WITH_EMBEDS`, mais
+o `chart_account_id`. 🔴 **O embed `cost_center` e a coluna `cost_center_id` SAÍRAM da leitura em
+2026-08-15**, junto com o card "Ranking de centros de custo": eram a ÚNICA coisa que os lia nesta
+tela — nem o escopo (`isExpenseRow`), nem os KPIs, nem os donuts, nem o ranking de contas, nem as
+colunas do card de detalhe os consomem. Não reintroduzir "por precaução".
 
-`ExpenseMonthRow` **não herda `MonthRow`**: faz `Pick` de
-`id`/`amount`/`status_id`/`due_date`/`cost_center_id` + `supplier(trade_name,legal_name)` + os
-embeds de classificação (o `id`/`supplier` alimentam o card de detalhe). Do subgrupo vêm a
-identidade/rótulo (`chart_account_subgroup_id`/`subgroup_code`/`subgroup_description`, base do
-ranking de contas) e a folha `type_group`. `ExpenseDetailRow` é o alias público de
-`ExpenseMonthRow`.
+`ExpenseMonthRow` **não herda `MonthRow`**: faz `Pick` de `id`/`amount`/`status_id`/`due_date` +
+`supplier(trade_name,legal_name)` + o embed de classificação (o `id`/`supplier` alimentam o card de
+detalhe). Do subgrupo vêm a identidade/rótulo
+(`chart_account_subgroup_id`/`subgroup_code`/`subgroup_description`, base do ranking de contas) e a
+folha `type_group`. `ExpenseDetailRow` é o alias público de `ExpenseMonthRow`.
 
-### Donuts — layout
+### Cards — layout (GRADE ÚNICA 3×2)
 
-**5 donuts `size="sm"` + `dense`, em 2 LINHAS de 2 + 1 solo** (`grid-cols-1 sm:grid-cols-2 gap-2
-mb-2`, **sem** override no `xl` — o fluxo natural do grid põe a 3ª/4ª posição na 2ª linha e a 5ª
-sozinha numa 3ª, sem reordenar o DOM; `dense` reduz o padding do card, mesmo padrão dos 4 donuts
-do `/dashboard_vencimentos`).
+**6 cards numa grade só** (`grid-cols-1 sm:grid-cols-2 gap-2`) — 5 donuts `size="sm"` + `dense` e o
+"Ranking de contas". Reorganização de 2026-08-15 (decisão do usuário); antes eram DUAS grades irmãs
+(donuts, depois rankings), e um donut só divide a linha com o ranking estando na MESMA grade:
+
+| Linha | Esquerda | Direita |
+|---|---|---|
+| 1 | Classificação Financeira | Custos de Mercadorias |
+| 2 | Despesas Fixas | Custos de Importação |
+| 3 | Despesas Variáveis | **Ranking de contas** |
+
+A ordem VISUAL é a ordem do DOM (nenhuma classe `order-*`), então leitor de tela e ordem de
+tabulação seguem o que se vê. Travado por teste que fixa as **6** headings `h3` na sequência — um
+`.slice(0, 5)` continuaria verde com o ranking em qualquer posição.
+
+🔴 **`sm:grid-cols-2`, não o `lg:` que a grade dos rankings usava.** O donut é o card de largura
+CRÍTICA (anel de 124px + legenda com R$ que não quebra); a linha do ranking degrada truncando o
+nome. Manter o `lg:` colapsaria os 5 donuts numa coluna só entre 640px e 1024px para proteger 1
+card.
+
+🔴 **`dense` TAMBÉM no card de ranking** (a prop já existia no `ChartCard`, default `false`): agora
+ele é vizinho dos donuts na mesma grade, e os 2px de diferença de moldura (`p-3` × `p-2.5`)
+apareceriam lado a lado.
+
+🔴 **`self-start` SÓ no donut "Despesas Variáveis"** — o único que divide a linha com um card bem
+mais alto (o ranking, até 12 linhas sem scroll próprio). No `stretch` (padrão do grid) a moldura
+dele esticaria até a altura do ranking, deixando ~150px de BRANCO sob o anel — exatamente a altura
+de viewport que a decisão "donuts compactos de propósito" existe para poupar. **Não** subir isso
+para `items-start` no container: nas linhas 1 e 2 são dois donuts, e lá o `stretch` é o que mantém
+as molduras da mesma altura com legendas de tamanhos diferentes.
+
+⚠️ **A ordem NÃO espelha mais o `line_order` de `analytics.demonstrativo_despesas`** (1 Mercadorias,
+2 Importação, 3 Fixas, 4 Variáveis): Fixas passou à frente de Importação a pedido do usuário. Não
+"corrigir" de volta achando que é engano.
 
 🔴 **O 5º donut ("Custos de Importação") foi acrescentado em 2026-08-14** — achado do mesmo dia em
 que a função SQL `analytics.demonstrativo_despesas` ganhou a linha equivalente (migrations
@@ -102,8 +151,10 @@ deliberadamente CONTIDO: paridade com o que a SQL já mostra (mais um donut nome
 layout dinâmico de N donuts — essa seria uma decisão de produto maior, não tomada.
 
 Compactos DE PROPÓSITO (decisão do usuário 2026-07-22, revertendo o `size="lg"` de uma iteração
-anterior no mesmo dia): sobrar altura de viewport para os **rankings abaixo**, que não têm scroll
-próprio e mostram até 12 linhas cada — donut menor = menos scroll até ver a lista inteira.
+anterior no mesmo dia): poupar altura de viewport, já que o ranking não tem scroll próprio e mostra
+até 12 linhas — donut menor = menos scroll até ver a lista inteira. *(A redação original dizia
+"rankings ABAIXO"; desde a grade única de 2026-08-15 o ranking está AO LADO do último donut, mas a
+razão — não gastar altura — continua valendo, e é ela que sustenta o `self-start` acima.)*
 
 **Diâmetro do anel DINÂMICO, mas ÚNICO entre os 5 donuts** (`diameterPx` em
 `BreakdownDonut`/`DonutCard`, prop opcional que SOBREPÕE o token de `size` via inline style —
@@ -128,14 +179,14 @@ font-semibold` — decisão do usuário 2026-07-22): o escopo é só o número d
 
 ### Donuts — conteúdo
 
-Na ordem: **"Classificação Financeira"** (rótulo do card; Fixa/Variável/Custos de
+Na ordem do layout: **"Classificação Financeira"** (rótulo do card; Fixa/Variável/Custos de
 Mercadorias/**Importação**, `tipoBreakdown` pela descrição do `type_group` do SUBGRUPO — do
-catálogo, sem literal), **"Custos de Mercadorias"**, **"Custos de Importação"**, **"Despesas
-Fixas"** e **"Despesas Variáveis"** — nessa ordem, espelhando o `line_order` de
-`analytics.demonstrativo_despesas` (1 Mercadorias, 2 Importação, 3 Fixas, 4 Variáveis).
+catálogo, sem literal), **"Custos de Mercadorias"**, **"Despesas Fixas"**, **"Custos de
+Importação"** e **"Despesas Variáveis"** — ver a ressalva sobre o `line_order` em "Cards —
+layout" acima.
 
 Os quatro últimos são por GRUPO (`group_description`), particionados pelo Tipo do subgrupo via
-`type_group_id` 7/9/5/6:
+`type_group_id` 7/5/9/6:
 `custoMercadoriasBreakdown`/`custoImportacaoBreakdown`/`despesaFixaBreakdown`/`despesaVariavelBreakdown`.
 Conta com subgrupo não classificado **não entra em nenhum dos quatro** — sem balde residual, por
 decisão de produto.
@@ -157,15 +208,27 @@ nenhum dos dois feito aqui.
 O subtítulo do donut "Classificação Financeira" mostra **mês + KPI ativo** (ex.: `Julho - A
 vencer`), via `KPI_FILTER_LABEL`; só o mês quando o filtro é `total`.
 
-### Rankings
+### Ranking
 
-**DOIS rankings por VALOR (R$)** — **centros de custo** (`costCenterRanking`) e **subgrupo de plano
-de contas** (`subgroupRanking`, card rotulado "Ranking de contas") —, ambos **top 12**
-(`RANKING_TOP_N`, aproveitando o espaço do gráfico removido), via os helpers únicos `rankBy`
-(agrega + desambigua rótulo) e `rankEntry` (monta a entrada / corta o sentinela).
+**UM ranking por VALOR (R$)** — por **subgrupo de plano de contas** (`subgroupRanking`, card
+rotulado "Ranking de contas"), **top 12** (`RANKING_TOP_N`, aproveitando o espaço do gráfico
+removido), via os helpers `rankBy` (agrega + desambigua rótulo) e `rankEntry` (monta a entrada /
+corta o sentinela).
+
+🔴 **O ranking de CENTROS DE CUSTO foi REMOVIDO em 2026-08-15** (decisão do usuário). Com ele
+saíram `costCenterRanking`, o helper `ccKeyOf`, o alvo de drill `'costCenter'` e — porque nada mais
+nesta tela os lia — a coluna `cost_center_id` e o embed `cost_center` da leitura.
+⚠️ **Dois testes foram PORTADOS para o ranking de contas, não apagados**: o de **homônimos** (única
+cobertura do desempate por rótulo repetido do `rankBy`, que segue vivo) e o do **sentinela id 0 com
+e sem embed** (mais forte que o caso equivalente que já existia). Os outros dois — ordenação por
+valor e `pct` — já tinham equivalente e saíram. Apagar os quatro deixaria regras vivas sem teste,
+com a suíte verde: o modo de falha da Regra 2 do `CLAUDE.md`.
+
+`rankBy` continua um helper genérico com um só chamador, de propósito: `pick` é o ponto de extensão
+para uma dimensão nova, e é o que mantém a regra de agregação num lugar só.
 
 **Célula da direita = % do total de contas do escopo, não a contagem crua** (pedido do usuário
-2026-07-22 — só estes dois rankings): `rankBy` calcula `pct = count / fMonth.length * 100` para CADA
+2026-07-22 — só neste ranking): `rankBy` calcula `pct = count / fMonth.length * 100` para CADA
 balde, inclusive os fora do top-12 exibido — o denominador é o total do escopo, não a soma dos 12
 visíveis, então as % somam 100% entre TODOS os baldes, não necessariamente entre as linhas em tela.
 O valor vai em `SupplierRank.pct` (campo opcional). O `RankingList` troca a célula automaticamente:
@@ -182,24 +245,20 @@ revertida para esta intermediária a pedido do usuário (2026-07-22, "ficou muit
 padding zerado ganhava pouca altura extra (a linha de texto+barra já domina a altura sobre o badge
 nos dois casos) e o resultado ficou apertado demais.
 
-🔴 **A agregação é pela IDENTIDADE (o id da FK), NUNCA pelo texto** (`rankEntry`/`rankBy`): nem
-`financial_cost_center` nem `financial_chart_of_account` têm UNIQUE em descrição — só a PK (o CRUD
-valida o CÓDIGO, e só na aplicação) —, então agregar por texto fundiria dois cadastros homônimos
-numa linha somada, **em silêncio**. O texto é só RÓTULO: centro de custo mostra **a descrição** (as
-14 são distintas hoje), com o **código prefixado apenas se dois ids tiverem o mesmo rótulo**; o
-ranking de contas agrega pelo **SUBGRUPO** do plano (`chart_account_subgroup_id`) e mostra a
-descrição do subgrupo, com o mesmo tratamento de homônimo.
+🔴 **A agregação é pela IDENTIDADE (o id da FK), NUNCA pelo texto** (`rankEntry`/`rankBy`):
+`financial_chart_of_account_subgroup` não tem UNIQUE em descrição — só a PK (o CRUD valida o
+CÓDIGO, e só na aplicação) —, então agregar por texto fundiria dois cadastros homônimos numa linha
+somada, **em silêncio**. O texto é só RÓTULO: agrega pelo **SUBGRUPO** do plano
+(`chart_account_subgroup_id`) e mostra a descrição dele, com o **código prefixado apenas se dois
+ids tiverem o mesmo rótulo**.
 
-🔴 **O sentinela id 0 EXISTE nos dois cadastros com descrição NULL**, logo o embed vem PREENCHIDO —
+🔴 **O sentinela id 0 EXISTE no cadastro com descrição NULL**, logo o embed vem PREENCHIDO —
 por isso `rankEntry` corta por `id > 0` **e** descrição não vazia; senão a linha apareceria como um
 rótulo técnico (`#0`) em vez de cair no balde "não informado".
 
-O centro de custo vem da **própria conta** (`cost_center_id` + embed `cost_center`), não do plano:
-é a coluna que o CRUD grava e que `/consulta` exibe.
-
 ### Card de DETALHE (drill-down)
 
-Clicar numa **fatia da legenda** de qualquer donut ou numa **linha** de qualquer ranking abre o
+Clicar numa **fatia da legenda** de qualquer donut ou numa **linha** do ranking abre o
 **`ExpenseDetailModal`** (modal centralizado `<dialog>`) com um `DataGrid` enxuto
 (`getExpenseDetailColumns` — colunas **Fornecedor · Plano de conta · Vencimento · Valor ·
 Situação**, Situação por último como badge read-only via `StatusBadge` + `STATUS_NAME_BY_ID`) das
@@ -217,8 +276,9 @@ a fatia/linha contou, inclusive sob truncagem.
 o `breakdownBy` usa; a fatia "outros" = complemento do top-N; "não informado" = `pick(r) ?? 'não
 informado'`). Os donuts por-grupo usam o alvo genérico **`chart:'grupoTipo'` + `typeGroupId`**
 (5/6/7/9 — pré-filtra pelo Tipo do subgrupo antes do grupo; substituiu os antigos cases
-`'fixa'`/`'variavel'`). Rankings casam pela **`SupplierRank.key`** (`cc:<id>`/`sg:<id>`/`∅` — NUNCA
-o `name`, homônimo/prefixável; `∅` = sentinela id 0 / sem descrição).
+`'fixa'`/`'variavel'`). O ranking casa pela **`SupplierRank.key`** (`sg:<id>`/`∅` — NUNCA o `name`,
+homônimo/prefixável; `∅` = sentinela id 0 / sem descrição). O prefixo `cc:` e o alvo `'costCenter'`
+saíram com o card de centros de custo.
 
 🔴 **O top-N é por VALOR (R$), NUNCA por contagem de linhas** — bug real corrigido em 2026-07-22. O
 donut exibe arco/%/ordem por valor, então a SELEÇÃO do top-N precisa usar o MESMO critério; senão um

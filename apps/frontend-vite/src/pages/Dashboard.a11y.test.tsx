@@ -79,8 +79,10 @@ describe('Dashboard de vencimentos — acessibilidade (WCAG AA)', () => {
     const { container } = render(<Dashboard />);
     await screen.findByText('Total a pagar no mês');
     fireEvent.click(screen.getByRole('button', { name: /todas as contas/i }));
+    // O filtro de KPI da abertura ('vencendo7') SOBREVIVE à troca de escopo — só mês/ano o
+    // limpam (ver useDashboardFilters): "todas as contas" + próximos 7 dias é combinação válida.
     await waitFor(() => expect(supabase.getDashboardData).toHaveBeenCalledWith(
-      expect.any(Number), expect.any(Number), 'all', 'total', undefined,
+      expect.any(Number), expect.any(Number), 'all', 'vencendo7', undefined,
     ));
     expect(await axe(container)).toHaveNoViolations();
   });

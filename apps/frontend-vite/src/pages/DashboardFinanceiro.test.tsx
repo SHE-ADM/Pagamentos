@@ -41,24 +41,23 @@ const MOCK: FinancialDashboardData = {
     { label: 'Despesas Fixas', count: 35, value: 10000 },
     { label: 'Custos de Mercadorias', count: 10, value: 6000 },
   ],
-  costCenterRanking: [
-    { key: 'cc:4', name: 'Logística', value: 15000, count: 25, pct: 62.5 },
-    { key: 'cc:1', name: 'Administrativo', value: 9000, count: 15, pct: 37.5 },
-  ],
+  // 🔴 As `key` do ranking casam os `chart_account_subgroup_id` de `detailRows` (22 e 31) DE
+  // PROPÓSITO: `openDrill` não abre o modal com 0 linhas, então uma key sem linha
+  // correspondente faria o clique do teste de drill não fazer NADA — e o `findByRole`
+  // seguinte estouraria por timeout, num erro que não se parece com a causa.
   subgroupRanking: [
-    { key: 'sg:44', name: '4.4.01 — GNRE a Recolher', value: 12000, count: 8, pct: 80 },
-    { key: 'sg:64', name: '6.4.01 — IPTU', value: 3000, count: 2, pct: 20 },
+    { key: 'sg:22', name: 'Transportadoras', value: 12000, count: 8, pct: 80 },
+    { key: 'sg:31', name: 'Mercadorias', value: 3000, count: 2, pct: 20 },
   ],
-  // Uma conta cujo cost_center_id (4) casa a linha 'Logística' (key cc:4) — o clique no
-  // ranking filtra por essa key e o card de detalhe mostra o fornecedor dela. A 2ª conta
-  // (CUSTO, subgrupo tipo 7) prova que o donut "Custos de Mercadorias" passa typeGroupId=7
-  // (o drill devolve SÓ ela, nunca a de tipo 6). A 3ª (subgrupo tipo 9) prova o mesmo para o
-  // donut novo "Custos de Importação" — wiring, não só a função pura `filterExpenseDetailRows`.
+  // A 1ª conta (subgrupo 22) é a que o clique no ranking filtra — o card de detalhe mostra o
+  // fornecedor dela. A 2ª (CUSTO, subgrupo tipo 7) prova que o donut "Custos de Mercadorias"
+  // passa typeGroupId=7 (o drill devolve SÓ ela, nunca a de tipo 6). A 3ª (subgrupo tipo 9)
+  // prova o mesmo para o donut "Custos de Importação" — wiring, não só a função pura
+  // `filterExpenseDetailRows`.
   detailRows: [
     {
-      id: 1, amount: 500, status_id: 3, due_date: '2026-07-10', cost_center_id: 4,
+      id: 1, amount: 500, status_id: 3, due_date: '2026-07-10',
       supplier: { trade_name: 'Fornecedor ABC', legal_name: null },
-      cost_center: { cost_center_code: '04', cost_center_description: 'Logística' },
       chart_account: {
         account_code: '4.5.01', account_description: 'Fretes',
         group: { group_description: 'Transporte', type_group_id: 2 },
@@ -69,9 +68,8 @@ const MOCK: FinancialDashboardData = {
       },
     },
     {
-      id: 2, amount: 700, status_id: 3, due_date: '2026-07-12', cost_center_id: 5,
+      id: 2, amount: 700, status_id: 3, due_date: '2026-07-12',
       supplier: { trade_name: 'Fornecedor CM', legal_name: null },
-      cost_center: { cost_center_code: '05', cost_center_description: 'Produção' },
       chart_account: {
         account_code: '3.1.01', account_description: 'Compras de Mercadorias',
         group: { group_description: 'Custos', type_group_id: 8 },
@@ -82,9 +80,8 @@ const MOCK: FinancialDashboardData = {
       },
     },
     {
-      id: 3, amount: 400, status_id: 3, due_date: '2026-07-14', cost_center_id: 5,
+      id: 3, amount: 400, status_id: 3, due_date: '2026-07-14',
       supplier: { trade_name: 'Fornecedor IMP', legal_name: null },
-      cost_center: { cost_center_code: '05', cost_center_description: 'Produção' },
       chart_account: {
         account_code: '23.2.02', account_description: 'Assessoria em Importação',
         group: { group_description: 'Importações', type_group_id: 8 },
@@ -107,17 +104,26 @@ describe('DashboardFinanceiro', () => {
     ]);
   });
 
-  it('abre no mês atual, filtrado por "A vencer", e renderiza os KPIs de despesa', async () => {
+  it('abre no mês atual, filtrado por "A vencer em 7 dias", e renderiza os KPIs de despesa', async () => {
     render(<DashboardFinanceiro />);
     expect(await screen.findByText('Despesas no mês')).toBeInTheDocument();
     expect(screen.getByText('Vencidas')).toBeInTheDocument();
-    // Default de abertura = KPI "A vencer" (não 'total').
-    expect(supabase.getFinancialDashboardData).toHaveBeenCalledWith(new Date().getMonth(), new Date().getFullYear(), 'month', 'aVencer', undefined);
-    expect(screen.getByText(/filtrando: A vencer/i)).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: /A vencer em 7 dias/i })).toHaveAttribute('aria-pressed', 'false');
+    // Default de abertura = KPI "A vencer em 7 dias" (decisão do usuário 2026-08-15; antes
+    // era 'aVencer'). O card do filtro mais amplo "A vencer" NÃO fica marcado.
+    expect(supabase.getFinancialDashboardData).toHaveBeenCalledWith(new Date().getMonth(), new Date().getFullYear(), 'month', 'vencendo7', undefined);
+    expect(screen.getByText(/filtrando: A vencer em 7 dias/i)).toBeInTheDocument();
+    // O card do filtro MAIS AMPLO ("A vencer", sem os 7 dias) NÃO fica marcado — é o que
+    // distingue o default novo do antigo. Casa pelo texto do card, não pelo nome acessível
+    // (que concatena rótulo + valor + contagem).
+    const aVencerAmplo = screen
+      .getAllByRole('button')
+      .filter((b) => b.hasAttribute('aria-pressed'))
+      .find((b) => /A vencer(?! em 7)/.test(b.textContent ?? ''));
+    expect(aVencerAmplo).toBeDefined();
+    expect(aVencerAmplo).toHaveAttribute('aria-pressed', 'false');
   });
 
-  it('o card "A vencer" já ABRE visualmente marcado como ativo', async () => {
+  it('o card "A vencer em 7 dias" já ABRE visualmente marcado como ativo', async () => {
     render(<DashboardFinanceiro />);
     await screen.findByText('Despesas no mês');
     // Isola os 5 KpiCards pela INTERSEÇÃO: têm aria-pressed (como os botões de mês/ano/escopo
@@ -130,16 +136,16 @@ describe('DashboardFinanceiro', () => {
 
     const marcados = cards.filter((b) => b.getAttribute('aria-pressed') === 'true');
     expect(marcados).toHaveLength(1); // exatamente um card ativo na abertura
-    const aVencer = marcados[0];
-    expect(aVencer.textContent).toMatch(/A vencer(?! em 7)/);
-    expect(aVencer).toHaveAttribute('title', 'Limpar filtro');
-    expect(aVencer.className).toContain('ring-brand'); // anel de destaque (não o de foco)
-    expect(aVencer.textContent).toContain('filtrando'); // sinal não-cromático (WCAG 1.4.1)
+    const vencendo7 = marcados[0];
+    expect(vencendo7.textContent).toMatch(/A vencer em 7 dias/);
+    expect(vencendo7).toHaveAttribute('title', 'Limpar filtro');
+    expect(vencendo7.className).toContain('ring-brand'); // anel de destaque (não o de foco)
+    expect(vencendo7.textContent).toContain('filtrando'); // sinal não-cromático (WCAG 1.4.1)
   });
 
-  it('o ✕ do cabeçalho limpa o filtro inicial "A vencer"', async () => {
+  it('o ✕ do cabeçalho limpa o filtro inicial "A vencer em 7 dias"', async () => {
     render(<DashboardFinanceiro />);
-    fireEvent.click(await screen.findByText(/filtrando: A vencer/i));
+    fireEvent.click(await screen.findByText(/filtrando: A vencer em 7 dias/i));
     await vi.waitFor(() =>
       expect(supabase.getFinancialDashboardData).toHaveBeenLastCalledWith(
         expect.any(Number), expect.any(Number), 'month', 'total', undefined,
@@ -172,21 +178,38 @@ describe('DashboardFinanceiro', () => {
     fireEvent.change(screen.getByLabelText('Filtrar por empresa'), { target: { value: '2' } });
     await vi.waitFor(() =>
       expect(supabase.getFinancialDashboardData).toHaveBeenLastCalledWith(
-        expect.any(Number), expect.any(Number), 'month', 'aVencer', 2,
+        expect.any(Number), expect.any(Number), 'month', 'vencendo7', 2,
       ),
     );
   });
 
-  it('renderiza os 5 donuts na ordem Classificação → Mercadorias → Importação → Fixas → Variáveis', async () => {
+  // A grade é 3 linhas × 2 colunas e a ordem VISUAL é a ordem do DOM (sem `order-*`), então
+  // travar a sequência COMPLETA das 6 headings é o que prova o layout pedido — inclusive que
+  // o "Ranking de contas" divide a 3ª linha com o donut "Despesas Variáveis". Um `.slice(0,5)`
+  // continuaria verde com o ranking em qualquer posição, provando só metade.
+  it('renderiza os 6 cards na ordem do layout 3×2 (ranking na 3ª linha, ao lado de Variáveis)', async () => {
     render(<DashboardFinanceiro />);
     expect(await screen.findByRole('heading', { name: 'Classificação Financeira' })).toBeInTheDocument();
     const titulos = screen
       .getAllByRole('heading', { level: 3 })
       .map((h) => h.textContent);
-    expect(titulos.slice(0, 5)).toEqual([
-      'Classificação Financeira', 'Custos de Mercadorias', 'Custos de Importação',
-      'Despesas Fixas', 'Despesas Variáveis',
+    expect(titulos).toEqual([
+      'Classificação Financeira', 'Custos de Mercadorias',   // linha 1
+      'Despesas Fixas', 'Custos de Importação',              // linha 2
+      'Despesas Variáveis', 'Ranking de contas',             // linha 3
     ]);
+    // Os 6 cards vivem na MESMA grade — é o que permite donut e ranking dividirem a linha 3.
+    const grade = screen.getByRole('heading', { name: 'Ranking de contas' }).closest('.grid');
+    expect(grade).not.toBeNull();
+    expect(screen.getByRole('heading', { name: 'Classificação Financeira' }).closest('.grid')).toBe(grade);
+    // `self-start` SÓ no donut que divide a linha com o ranking: sem ele o `stretch` do grid
+    // esticaria a moldura até a altura do ranking, deixando ~150px de branco sob o anel.
+    // (jsdom não faz layout — o que dá para travar é a presença da classe, que impede a
+    // remoção silenciosa; o efeito visual é conferido no navegador.)
+    const cardDe = (t: string): HTMLElement | null =>
+      screen.getByRole('heading', { name: t }).closest<HTMLElement>('.card');
+    expect(cardDe('Despesas Variáveis')?.className).toContain('self-start');
+    expect(cardDe('Despesas Fixas')?.className).not.toContain('self-start');
     // fatias das legendas (cada donut com o seu recorte)
     expect(screen.getByText('Folha de Pagamento')).toBeInTheDocument();
     expect(screen.getByText('Transporte')).toBeInTheDocument();
@@ -228,44 +251,42 @@ describe('DashboardFinanceiro', () => {
 
   it('o subtítulo do donut "Classificação Financeira" mostra mês + KPI (sem "Por tipo…")', async () => {
     render(<DashboardFinanceiro />);
-    // Abre filtrado por "A vencer" → subtítulo = "<mês> - A vencer", SEM o prefixo antigo.
-    const sub = await screen.findByText(/ - A vencer$/);
+    // Abre filtrado → subtítulo = "<mês> - A vencer em 7 dias", SEM o prefixo antigo.
+    const sub = await screen.findByText(/ - A vencer em 7 dias$/);
     expect(sub.textContent).not.toMatch(/Por tipo/);
     // Limpar o filtro (✕) → volta a 'total' → só o mês, sem sufixo de KPI.
-    fireEvent.click(screen.getByText(/filtrando: A vencer/i));
-    await vi.waitFor(() => expect(screen.queryByText(/ - A vencer$/)).toBeNull());
+    fireEvent.click(screen.getByText(/filtrando: A vencer em 7 dias/i));
+    await vi.waitFor(() => expect(screen.queryByText(/ - A vencer em 7 dias$/)).toBeNull());
   });
 
-  it('renderiza os rankings de centros de custo e de plano de contas', async () => {
+  // O card "Ranking de centros de custo" foi REMOVIDO em 2026-08-15 (decisão do usuário).
+  it('renderiza o ranking de contas — e NÃO o de centros de custo, removido', async () => {
     render(<DashboardFinanceiro />);
-    expect(await screen.findByText('Ranking de centros de custo')).toBeInTheDocument();
-    expect(screen.getByText('Logística')).toBeInTheDocument();
-    expect(screen.getByText('Administrativo')).toBeInTheDocument();
+    expect(await screen.findByText('Ranking de contas')).toBeInTheDocument();
+    expect(screen.getByText('Transportadoras')).toBeInTheDocument();
+    expect(screen.getByText('Mercadorias')).toBeInTheDocument();
 
-    expect(screen.getByText('Ranking de contas')).toBeInTheDocument();
-    expect(screen.getByText('4.4.01 — GNRE a Recolher')).toBeInTheDocument();
-    expect(screen.getByText('6.4.01 — IPTU')).toBeInTheDocument();
+    expect(screen.queryByText('Ranking de centros de custo')).not.toBeInTheDocument();
   });
 
-  it('rankings de centro de custo e de contas mostram % de contas (não mais "N conta(s)") em linhas compactas', async () => {
+  it('o ranking de contas mostra % de contas (não mais "N conta(s)") em linhas compactas', async () => {
     render(<DashboardFinanceiro />);
-    const costCenterCard = (await screen.findByText('Ranking de centros de custo')).closest<HTMLElement>('.card');
-    const subgroupCard = screen.getByText('Ranking de contas').closest<HTMLElement>('.card');
-    if (!costCenterCard || !subgroupCard) throw new Error('card não encontrado');
+    const subgroupCard = (await screen.findByText('Ranking de contas')).closest<HTMLElement>('.card');
+    if (!subgroupCard) throw new Error('card não encontrado');
 
     // Célula da direita = percentual do total de contas do escopo, não mais a contagem crua.
-    expect(within(costCenterCard).getByText('63%')).toBeInTheDocument(); // Math.round(62.5)
-    expect(within(costCenterCard).getByText('38%')).toBeInTheDocument(); // Math.round(37.5)
     expect(within(subgroupCard).getByText('80%')).toBeInTheDocument();
     expect(within(subgroupCard).getByText('20%')).toBeInTheDocument();
-    // "conta(s)" não aparece mais DENTRO desses dois cards (segue existindo alhures na
-    // página, ex.: os cards de KPI — por isso o escopo é o card, não a página inteira).
-    expect(within(costCenterCard).queryByText(/conta\(s\)/)).not.toBeInTheDocument();
+    // "conta(s)" não aparece mais DENTRO deste card (segue existindo alhures na página,
+    // ex.: os cards de KPI — por isso o escopo é o card, não a página inteira).
     expect(within(subgroupCard).queryByText(/conta\(s\)/)).not.toBeInTheDocument();
 
-    // `dense`: as linhas dos dois rankings usam py-px (1px) — não `py-0.5` (2px, o normal).
-    expect(screen.getByRole('button', { name: /Logística/ }).className).toContain('py-px');
-    expect(screen.getByRole('button', { name: /Logística/ }).className).not.toContain('py-0.5');
+    // `dense`: as linhas do ranking usam py-px (1px) — não `py-0.5` (2px, o normal).
+    expect(screen.getByRole('button', { name: /Transportadoras/ }).className).toContain('py-px');
+    expect(screen.getByRole('button', { name: /Transportadoras/ }).className).not.toContain('py-0.5');
+    // A MOLDURA do card de ranking usa o mesmo padding dos donuts (`dense` → p-2.5): eles
+    // agora são vizinhos na MESMA grade, e 2px de diferença apareceriam lado a lado.
+    expect(subgroupCard.className).toContain('p-2.5');
   });
 
   it('não exibe mais as contas críticas e prioritárias', async () => {
@@ -276,13 +297,13 @@ describe('DashboardFinanceiro', () => {
 
   it('clicar numa linha do ranking abre o card de detalhe com as contas do balde', async () => {
     render(<DashboardFinanceiro />);
-    await screen.findByText('Ranking de centros de custo');
+    await screen.findByText('Ranking de contas');
     // O modal fica oculto até o clique.
-    expect(screen.queryByRole('heading', { name: /Centro de custo · Logística/ })).toBeNull();
+    expect(screen.queryByRole('heading', { name: /Conta · Transportadoras/ })).toBeNull();
 
-    fireEvent.click(screen.getByRole('button', { name: /Logística/ }));
+    fireEvent.click(screen.getByRole('button', { name: /Transportadoras/ }));
 
-    expect(await screen.findByRole('heading', { name: 'Centro de custo · Logística' })).toBeInTheDocument();
+    expect(await screen.findByRole('heading', { name: 'Conta · Transportadoras' })).toBeInTheDocument();
     expect(screen.getByText('Fornecedor ABC')).toBeInTheDocument();       // fornecedor da conta filtrada
     expect(screen.getByText('4.5.01 — Fretes')).toBeInTheDocument();      // plano de conta
     expect(screen.getByText('1 conta(s) · Total R$ 500,00')).toBeInTheDocument();

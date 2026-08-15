@@ -28,6 +28,11 @@ interface DonutCardProps {
   diameterPx?: number;
   /** Cor por fatia; o padrão é a paleta cíclica (situação usa a semântica). */
   colorFor?: (label: string, i: number) => string;
+  /** Classe extra da MOLDURA, repassada ao `ChartCard` (que a mescla com `cn`/tailwind-merge,
+   *  então a classe do chamador vence a da variante). Hoje só `/dashboard_despesas`, com
+   *  `self-start` no donut que divide a linha do grid com o card de ranking — ver o
+   *  comentário da grade lá. */
+  className?: string;
   /** Ao clicar numa fatia da legenda, recebe o RÓTULO da fatia (drill-down). Sem ele, o
    *  donut fica não-interativo (comportamento atual dos demais call sites). */
   onSliceSelect?: (label: string) => void;
@@ -41,6 +46,7 @@ export function DonutCard({
   dense = false,
   diameterPx,
   colorFor = paletteColor,
+  className,
   onSliceSelect,
 }: Readonly<DonutCardProps>) {
   // `key` = o próprio label: as fatias vêm de uma agregação por label (breakdownBy usa um
@@ -48,7 +54,7 @@ export function DonutCard({
   const segs = (slices ?? []).map((s) => ({ key: s.label, label: s.label, value: s.value }));
   // Sem `icon`: o donut nunca leva ícone (a casca com ícone serve aos rankings/listas).
   return (
-    <ChartCard title={title} subtitle={subtitle} dense={dense}>
+    <ChartCard title={title} subtitle={subtitle} dense={dense} className={className}>
       <BreakdownDonut
         segs={segs}
         colorFor={colorFor}

@@ -1142,7 +1142,18 @@ function matchesKpiFilter(
  * cada um tinha a sua copia, e um ajuste de borda em um deles nao chegaria ao outro.
  *
  * O mes usa UTC (a coluna do banco e `date`, sem hora, entao o fuso local deslocaria a
- * borda); `todayStr` usa a data corrente do ambiente, coerente com a baixa automatica.
+ * borda) — `first`/`last` devem CONTINUAR em `Date.UTC`.
+ *
+ * 🔴 `todayStr`/`in7` sao LOCAIS (`isoDaysFromToday`), nunca `toISOString()`. Ate 2026-08-15
+ * esta funcao derivava os dois em UTC e, em UTC−3, das ~21h a meia-noite a janela inteira
+ * deslizava um dia: a conta que vence HOJE saia do KPI "a vencer em 7 dias" e a de hoje+8
+ * entrava. So o irmao `aggregateFinancialStats` (de /consulta) tinha sido corrigido na
+ * varredura de 2026-08-08, e as duas telas passavam a responder numeros diferentes para a
+ * MESMA pergunta na janela noturna. Medido no dia da correcao: 72 contas na janela, 7
+ * vencendo no proprio dia — as 7 sumiam. No ULTIMO dia do mes era pior: a janela caia
+ * inteira no mes seguinte, sem interseccao com `first`/`last`, e o dashboard abria vazio.
+ * Regra do CLAUDE.md: "TODA data derivada de hoje passa por `isoDaysFromToday` — inclusive
+ * as JANELAS". Borda travada em `services/dashboard.test.ts`.
  */
 function dashboardWindow(
   month: number,
@@ -1152,8 +1163,8 @@ function dashboardWindow(
   return {
     first: iso(new Date(Date.UTC(year, month, 1))),
     last: iso(new Date(Date.UTC(year, month + 1, 0))), // dia 0 do mes seguinte = ultimo do mes
-    todayStr: iso(new Date()),
-    in7: iso(new Date(Date.now() + 7 * 86400000)),
+    todayStr: isoDaysFromToday(0),
+    in7: isoDaysFromToday(7),
   };
 }
 
@@ -1340,16 +1351,16 @@ type ExpenseChartAccount = {
 // Linha do mês no dashboard financeiro: só o que os KPIs/gráficos daqui consomem
 // (valor, situação, vencimento + classificação). Não herda MonthRow — os campos de
 // fornecedor/descrição só serviam às "Contas prioritárias", removidas desta tela.
-// O CENTRO DE CUSTO vem da própria conta (`cost_center_id`), não do plano: é a coluna que
-// o CRUD grava e que /consulta exibe — o plano tem um centro, mas quem manda é a conta.
+// `cost_center_id` e o embed `cost_center` saíram em 2026-08-15 junto com o card "Ranking
+// de centros de custo": eram a ÚNICA coisa que os lia nesta tela (nem o escopo, nem os
+// KPIs, nem os donuts, nem o ranking de contas, nem as colunas do card de detalhe os usam).
 type ExpenseMonthRow = Pick<
   FinancialAccountControl,
-  'id' | 'amount' | 'status_id' | 'due_date' | 'cost_center_id'
+  'id' | 'amount' | 'status_id' | 'due_date'
 > & {
   // `supplier` alimenta a coluna Fornecedor do card de detalhe (drill-down). Embed simples
   // (não `!inner`): `sk_supplier` é NOT NULL, então o objeto vem sempre.
   supplier?: { trade_name: string | null; legal_name: string | null } | null;
-  cost_center?: { cost_center_code: string | null; cost_center_description: string | null } | null;
   chart_account?: ExpenseChartAccount;
 };
 
@@ -1393,7 +1404,6 @@ export interface FinancialDashboardData {
   custoMercadoriasBreakdown: LabelSlice[];
   custoImportacaoBreakdown: LabelSlice[];
   tipoBreakdown: LabelSlice[]; // Fixa/Variável/Custos de Mercadorias/Importação (type_group do subgrupo)
-  costCenterRanking: SupplierRank[]; // top CENTROS DE CUSTO por VALOR
   subgroupRanking: SupplierRank[]; // top SUBGRUPOS de plano de contas por VALOR (card "Ranking de contas")
   // Linhas que alimentam os 5 gráficos (= fMonth, já recortado por escopo/empresa/KPI). O
   // card de detalhe (drill-down) filtra ESTE array em memória via filterExpenseDetailRows —
@@ -1401,11 +1411,11 @@ export interface FinancialDashboardData {
   detailRows: ExpenseDetailRow[];
 }
 
-// Qual gráfico foi clicado. Donuts identificam o balde pelo `label`; rankings pela `bucketKey`.
+// Qual gráfico foi clicado. Donuts identificam o balde pelo `label`; o ranking pela `bucketKey`.
 // 'grupoTipo' = os donuts POR GRUPO recortados pelo Tipo do subgrupo (Despesas Fixas /
 // Variáveis / Custos de Mercadorias / Importação) — genérico via `typeGroupId`, em vez de um
-// case por donut.
-type ExpenseDrillChart = 'tipo' | 'grupoTipo' | 'costCenter' | 'subgroup';
+// case por donut. ('costCenter' saiu em 2026-08-15 com o card de centros de custo.)
+type ExpenseDrillChart = 'tipo' | 'grupoTipo' | 'subgroup';
 export interface ExpenseDrillTarget {
   chart: ExpenseDrillChart;
   label?: string;       // donuts: rótulo da fatia clicada (pode ser 'outros' / 'não informado')
@@ -1429,9 +1439,6 @@ const tipoOf = (r: ExpenseDetailRow): number | null | undefined =>
 const tipoDescOf = (r: ExpenseDetailRow): string | null =>
   r.chart_account?.subgroup?.type_group?.type_group_description ?? null;
 const grupoOf = (r: ExpenseDetailRow): string | null => r.chart_account?.group?.group_description ?? null;
-const ccKeyOf = (r: ExpenseDetailRow): string =>
-  rankEntry('cc', r.cost_center_id, r.cost_center?.cost_center_description, r.cost_center?.cost_center_code)?.key
-  ?? UNRANKED.key;
 const sgKeyOf = (r: ExpenseDetailRow): string =>
   rankEntry('sg', r.chart_account?.subgroup?.chart_account_subgroup_id,
     r.chart_account?.subgroup?.subgroup_description, r.chart_account?.subgroup?.subgroup_code)?.key
@@ -1449,15 +1456,14 @@ export function filterExpenseDetailRows(
     case 'tipo':
       return matchDonutBucket(rows, tipoDescOf, label ?? '');
     case 'grupoTipo':
-      // Donut por GRUPO recortado pelo Tipo do subgrupo informado (5/6/7) — o MESMO
+      // Donut por GRUPO recortado pelo Tipo do subgrupo informado (5/6/7/9 — o 9, Custos de
+      // Importação, entrou em 2026-08-14 e faltava nesta lista) — o MESMO
       // pré-filtro da partição que gera os breakdowns, então reproduz a fatia exata.
       // Alvo sem typeGroupId é malformado → nada casa. A guarda é REAL (não só o teste):
       // sem ela, `tipoOf(r) === undefined` casaria linha SEM embed de subgrupo
       // (undefined === undefined) e o ramo "outros" devolveria as não-classificadas.
       if (typeGroupId == null) return [];
       return matchDonutBucket(rows.filter((r) => tipoOf(r) === typeGroupId), grupoOf, label ?? '');
-    case 'costCenter':
-      return rows.filter((r) => ccKeyOf(r) === bucketKey);
     case 'subgroup':
       return rows.filter((r) => sgKeyOf(r) === bucketKey);
     default:
@@ -1474,7 +1480,7 @@ const isExpenseRow = (r: { chart_account?: { group?: { type_group_id: number } |
   return tg === TYPE_GROUP_ID_DESPESAS || tg === TYPE_GROUP_ID_CUSTO;
 };
 
-// Linhas exibidas em cada ranking do dashboard financeiro (centro de custo e plano de contas).
+// Linhas exibidas no ranking do dashboard financeiro (subgrupo do plano de contas).
 const RANKING_TOP_N = 12;
 
 export async function getFinancialDashboardData(month: number, year: number, scope: DashboardScope = 'month', filter: KpiFilter = 'total', skCompany?: number): Promise<FinancialDashboardData> {
@@ -1485,9 +1491,8 @@ export async function getFinancialDashboardData(month: number, year: number, sco
   // classificação (grupo/subgrupo + type_group).
   const monthRowsAll = await query<ExpenseMonthRow[]>('financial_account_control', {
     select:
-      'id,amount,status_id,due_date,cost_center_id,' +
+      'id,amount,status_id,due_date,' +
       'supplier(trade_name,legal_name),' +
-      'cost_center:financial_cost_center(cost_center_code,cost_center_description),' +
       'chart_account:financial_chart_of_account(account_code,account_description,' +
       'group:financial_chart_of_account_group(group_description,type_group_id),' +
       'subgroup:financial_chart_of_account_subgroup(chart_account_subgroup_id,subgroup_code,subgroup_description,' +
@@ -1541,14 +1546,16 @@ export async function getFinancialDashboardData(month: number, year: number, sco
   // do type_group do SUBGRUPO — vem do catálogo, sem literal; migrations 092/093).
   const tipoBreakdown = breakdownBy(fMonth, (r) => r.chart_account?.subgroup?.type_group?.type_group_description ?? null);
 
-  // Rankings por VALOR (R$) — mesma agregação, dimensões diferentes. Top 12 cada (o
-  // espaço liberado pelo gráfico mês a mês passou a caber mais linhas).
+  // Ranking por VALOR (R$). Top 12 (o espaço liberado pelo gráfico mês a mês passou a caber
+  // mais linhas). Continua um helper genérico, e não inline no único chamador: `pick` é o
+  // ponto de extensão para uma dimensão nova, e é o que mantém a regra de agregação abaixo
+  // em UM lugar só.
   //
-  // Agrega pela IDENTIDADE do cadastro (o id da FK), NUNCA pelo texto: nem
-  // `financial_cost_center` nem `financial_chart_of_account` têm UNIQUE em descrição
-  // (só a PK; o CRUD valida o CÓDIGO, e só na aplicação). Agregando por texto, dois
-  // cadastros homônimos virariam UMA linha somada — dado errado e silencioso — e ainda
-  // colidiriam na `key` do RankingList. O texto entra só como RÓTULO.
+  // Agrega pela IDENTIDADE do cadastro (o id da FK), NUNCA pelo texto:
+  // `financial_chart_of_account_subgroup` não tem UNIQUE em descrição (só a PK; o CRUD
+  // valida o CÓDIGO, e só na aplicação). Agregando por texto, dois cadastros homônimos
+  // virariam UMA linha somada — dado errado e silencioso — e ainda colidiriam na `key` do
+  // RankingList. O texto entra só como RÓTULO.
   const rankBy = (pick: (r: ExpenseMonthRow) => RankPick | null): SupplierRank[] => {
     const map = new Map<string, { value: number; count: number; label: string; code: string | null }>();
     for (const r of fMonth) {
@@ -1580,11 +1587,6 @@ export async function getFinancialDashboardData(month: number, year: number, sco
       .slice(0, RANKING_TOP_N);
   };
 
-  // Ranking de CENTROS DE CUSTO — rótulo = só a descrição (hoje as 14 são distintas), com
-  // o código entrando apenas se dois centros forem homônimos.
-  const costCenterRanking = rankBy((r) =>
-    rankEntry('cc', r.cost_center_id, r.cost_center?.cost_center_description, r.cost_center?.cost_center_code),
-  );
   // Ranking por SUBGRUPO do plano de contas (o card mantém o rótulo "Ranking de contas"):
   // agrega pela IDENTIDADE do subgrupo (`chart_account_subgroup_id`) — nunca pelo texto, que
   // não é UNIQUE no cadastro —, com rótulo = descrição do subgrupo (código prefixado só quando
@@ -1599,5 +1601,5 @@ export async function getFinancialDashboardData(month: number, year: number, sco
     ),
   );
 
-  return { month, year, scope, kpis, despesaFixaBreakdown, despesaVariavelBreakdown, custoMercadoriasBreakdown, custoImportacaoBreakdown, tipoBreakdown, costCenterRanking, subgroupRanking, detailRows: fMonth };
+  return { month, year, scope, kpis, despesaFixaBreakdown, despesaVariavelBreakdown, custoMercadoriasBreakdown, custoImportacaoBreakdown, tipoBreakdown, subgroupRanking, detailRows: fMonth };
 }
