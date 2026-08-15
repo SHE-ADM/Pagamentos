@@ -26,6 +26,12 @@ EXIT CODE
     0  todos os 7 gatilhos medidos (e gravados, fora do --dry-run).
     1  algum gatilho falhou. Os demais continuam sendo medidos e gravados — falha isolada, no
        padrao do `cobranca-vencidos`: um gatilho indisponivel nao pode custar a serie inteira.
+
+    🔴 A COMPARACAO com a medicao anterior (`_buscar_estado_anterior`, Onda 10) NAO participa
+       deste contrato. E diagnostico — detecta quando um `fired` MUDOU de valor desde a ultima
+       medicao gravada, e loga alto quando isso acontece — mas falha nela NUNCA vira exit code 1.
+       A tarefa agendada trata qualquer exit != 0 como falha operacional; "mudou de estado" e o
+       PRODUTO esperado desta rotina, nao um erro, e nao pode acender o alarme errado.
 """
 
 from __future__ import annotations
@@ -39,6 +45,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable
 
@@ -58,6 +65,13 @@ RAIZ = Path(__file__).resolve().parents[3]
 HTTP_TIMEOUT_SECONDS = 30
 HTTP_MAX_ATTEMPTS = 3
 HTTP_RETRY_BACKOFF = 2.0
+
+# Caminho HTTP LEVE, so para a checagem DIAGNOSTICA de estado anterior (Onda 10) — nunca para
+# medicao. 1 tentativa, timeout curto: 7 buscas a mais com o retry pesado do `_request` (3 x 30s
+# cada) estufariam o pior caso que o comentario de BUDGET_SECONDS ja documenta ("~15 requisicoes
+# x 3 tentativas x 30s"). Aqui o pior caso adicional fica em 7 x 10s = 70s, e e essa a folga que
+# o guard de `_tempo_esgotado()` em torno da chamada considera.
+HTTP_DIAG_TIMEOUT_SECONDS = 10.0
 
 # 🔴 TETO DE TEMPO DA MEDICAO INTEIRA — a tarefa agendada tem `ExecutionTimeLimit` de 15 min
 # (setup-gatilhos-task.ps1), e o pior caso de rede passa disso: ~15 requisicoes x 3 tentativas x
@@ -80,6 +94,17 @@ def _tempo_esgotado() -> bool:
 
 SNAPSHOT_TABLE = "roadmap_trigger_snapshot"
 ANALYTICS = "analytics"
+
+# Fuso da SERIE: `measured_on` e gravado pelo banco com DEFAULT
+# `(NOW() AT TIME ZONE 'America/Sao_Paulo')::date` (migration 122). UTC-3 FIXO aqui e
+# deliberado: o Brasil nao tem mais horario de verao (desde 2019), e `zoneinfo` no Windows
+# exigiria o pacote `tzdata` — esta skill e zero-dependencia (so urllib + dotenv).
+_TZ_SERIE = timezone(timedelta(hours=-3))
+
+
+def _hoje_serie() -> str:
+    """A data de HOJE como o banco a grava em `measured_on` (America/Sao_Paulo), ISO."""
+    return datetime.now(_TZ_SERIE).date().isoformat()
 
 # Nomes de tabela em constantes: eles aparecem em varios medidores, e um typo so seria descoberto
 # na execucao agendada (HTTP 404 -> gatilho isolado falha). Fonte unica tambem deixa obvio, na
@@ -196,6 +221,31 @@ def _request(url: str, key: str, *, metodo: str = "GET", corpo: bytes | None = N
     raise MedicaoError(f"rede indisponivel apos {HTTP_MAX_ATTEMPTS} tentativas: {ultimo_erro}")
 
 
+def _request_leve(alvo: str, key: str) -> tuple[int, bytes] | None:
+    """GET de UMA tentativa, sem retry/backoff — so para checagem DIAGNOSTICA (Onda 10).
+
+    Ao contrario de `_request`, nunca insiste e nunca levanta: qualquer falha (rede, timeout,
+    HTTP fora de 200/206) devolve None. Quem chama decide como reportar — aqui a falha nao pode
+    custar o gatilho, entao nao ha por que repetir com backoff.
+    """
+    headers = {
+        "apikey": key,
+        "Authorization": f"Bearer {key}",
+        "Accept": "application/json",
+        "Accept-Profile": ANALYTICS,
+    }
+    req = urllib.request.Request(alvo, headers=headers, method="GET")
+    try:
+        with urllib.request.urlopen(req, timeout=HTTP_DIAG_TIMEOUT_SECONDS) as resp:
+            if resp.status not in (200, 206):
+                return None
+            return resp.status, resp.read()
+    except urllib.error.HTTPError:
+        return None
+    except (urllib.error.URLError, OSError, TimeoutError):
+        return None
+
+
 def _contar(url: str, key: str, tabela: str, filtros: str = "", *, schema: str = "public") -> int:
     """Contagem via `Content-Range`, sem trazer linha nenhuma.
 
@@ -235,6 +285,50 @@ def _rpc(url: str, key: str, funcao: str, params: dict[str, Any]) -> Any:
     if status != 200:
         raise MedicaoError(f"rpc {funcao}: HTTP {status} — {body[:160].decode('utf-8', 'replace')}")
     return json.loads(body or b"null")
+
+
+def _buscar_estado_anterior(url: str, key: str, chave: str) -> bool | None:
+    """`fired` do ultimo registro de um DIA ANTERIOR deste `trigger_key` (Onda 10).
+
+    🔴 O REGISTRO DO PROPRIO DIA FICA FORA da busca (`measured_on=lt.hoje`). Reexecucao no mesmo
+    dia e cenario NORMAL — e a razao de o UPSERT da migration 122 existir. Sem o filtro, a 2a
+    execucao do dia leria a linha que a 1a acabou de gravar, a comparacao viraria "hoje contra
+    hoje" (`mudou=false`) e o `merge-duplicates` SOBRESCREVERIA o `mudou=true` que a 1a execucao
+    registrou — apagando da serie o marcador de transicao, com o resumo negando o alarme que
+    motivou a reexecucao. Com o filtro, remedir no mesmo dia e idempotente tambem nesta metrica.
+
+    🔴 DIAGNOSTICO, nao faz parte do contrato de medicao: uma falha aqui NUNCA conta para o exit
+    code (ver docstring do modulo, secao EXIT CODE). Devolve None em duas situacoes bem
+    diferentes: (a) 1a medicao deste gatilho — sem registro de dia anterior, e isso e NORMAL,
+    nada e logado; ou (b) a busca falhou de qualquer forma (rede, HTTP inesperado, JSON
+    ilegivel, campo ausente ou nao-booleano) — aqui SIM entra em WARNING, para nao ficar
+    engolido em silencio.
+    """
+    alvo = (f"{url}/rest/v1/{SNAPSHOT_TABLE}?trigger_key=eq.{urllib.parse.quote(chave)}"
+            f"&select=fired&order=measured_on.desc&limit=1"
+            f"&measured_on=lt.{_hoje_serie()}")
+    resultado = _request_leve(alvo, key)
+    if resultado is None:
+        log.warning("%s: nao consegui checar o estado anterior (rede/HTTP) — sem comparacao "
+                    "nesta execucao", chave)
+        return None
+
+    _, corpo = resultado
+    try:
+        linhas = json.loads(corpo or b"[]")
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        log.warning("%s: resposta ilegivel ao checar o estado anterior — sem comparacao", chave)
+        return None
+
+    if not linhas:
+        return None                                    # 1a medicao: nada a comparar, e normal
+
+    anterior = linhas[0].get("fired")
+    if not isinstance(anterior, bool):
+        log.warning("%s: campo 'fired' anterior ausente ou nao-booleano (%r) — sem comparacao",
+                    chave, anterior)
+        return None
+    return anterior
 
 
 # ---------------------------------------------------------------------------
@@ -498,6 +592,28 @@ def main(argv: list[str] | None = None) -> int:
             falhas.append(chave)
             continue
 
+        # 🔴 COMPARACAO DE ESTADO (Onda 10) — diagnostica, nunca custa o gatilho. Guardada pelo
+        # mesmo orcamento de tempo da medicao: se ja estiver esgotado, pula em vez de gastar mais
+        # 10s por gatilho restante. `except Exception` e defesa em profundidade contra um bug na
+        # propria funcao nova — `_buscar_estado_anterior` ja engole tudo que espera, mas um erro
+        # de programacao aqui NAO pode disfarcar uma medicao boa de falha.
+        anterior: bool | None = None
+        if _tempo_esgotado():
+            log.info("%s: checagem de estado anterior pulada (orcamento esgotado)", chave)
+        else:
+            try:
+                anterior = _buscar_estado_anterior(url, key, chave)
+            except Exception:                                # noqa: BLE001 - ver comentario acima
+                log.warning("%s: falha inesperada ao checar o estado anterior", chave,
+                           exc_info=True)
+                anterior = None
+
+        mudou = None if anterior is None else (anterior != disparou)
+        metricas["mudou_desde_ultima_medicao"] = mudou
+        if mudou:
+            log.error("MUDANCA DE ESTADO: gatilho %s foi de %s para %s — releia o roadmap "
+                      "antes do proximo mes", chave, anterior, disparou)
+
         linhas.append({"trigger_key": chave, "fired": disparou,
                        "metrics": metricas, "criterion": criterio})
         log.info("%-22s %s  %s", chave, "DISPAROU" if disparou else "nao",
@@ -525,8 +641,10 @@ def main(argv: list[str] | None = None) -> int:
             falhas.append("gravacao")
 
     disparados = [l["trigger_key"] for l in linhas if l["fired"]]
-    log.info("resumo: %d medido(s), %d falha(s); disparado(s): %s",
-             len(linhas), len(falhas), ", ".join(disparados) or "nenhum")
+    mudaram = [l["trigger_key"] for l in linhas if l["metrics"].get("mudou_desde_ultima_medicao")]
+    log.info("resumo: %d medido(s), %d falha(s); disparado(s): %s; mudou de estado: %s",
+             len(linhas), len(falhas), ", ".join(disparados) or "nenhum",
+             ", ".join(mudaram) or "nenhum")
 
     if falhas:
         log.error("gatilho(s) com falha: %s", ", ".join(falhas))
