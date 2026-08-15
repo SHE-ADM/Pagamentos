@@ -1,30 +1,31 @@
 // src/pages/DashboardFinanceiro.tsx
 // Dashboard financeiro escopado a DESPESAS + CUSTO (Indicadores de despesas — Naturezas do
 // GRUPO type_group_id 2 e 8). Mesma casca do dashboard de vencimentos (pages/Dashboard.tsx)
-// — 5 KPIs e filtros de empresa/mês/escopo/KPI (que aqui ABRE em "A vencer") — mas sem o
-// gráfico mês a mês e com os gráficos trocados para a dimensão contábil (5 donuts — 2 linhas de
-// 2 + 1 solo, sm:grid-cols-2 sem override, size="sm"+dense, top-6 + "outros" — no máximo 7
-// fatias visíveis cada; compactos de propósito para sobrar altura de viewport aos rankings
-// abaixo, que não têm scroll próprio):
+// — 5 KPIs e filtros de empresa/mês/escopo/KPI (as DUAS telas ABREM em "A vencer em 7 dias")
+// — mas sem o gráfico mês a mês e com os gráficos trocados para a dimensão contábil. São 6
+// cards numa GRADE ÚNICA de 3 linhas × 2 colunas (5 donuts size="sm"+dense, top-6 + "outros"
+// — no máximo 7 fatias visíveis cada — mais o ranking):
 //   • donut "Classificação Financeira" — por Tipo do subgrupo (Fixa/Variável/Custos de
 //     Mercadorias/Importação)
 //   • donut "Custos de Mercadorias" — custos (Tipo 7) por GRUPO do plano de contas
+//   • donut "Despesas Fixas" — despesas FIXAS (Tipo 5) por GRUPO
 //   • donut "Custos de Importação" — custos de importação (Tipo 9) por GRUPO — acrescentado em
 //     2026-08-14: existia no catálogo e contava certo no TOTAL do dashboard, mas não entrava em
 //     nenhum donut de tipo (mesma classe de bug do CASE hardcoded de `demonstrativo_despesas`,
 //     do lado do TypeScript — ver o comentário em services/supabase.ts)
-//   • donut "Despesas Fixas" — despesas FIXAS (Tipo 5) por GRUPO
 //   • donut "Despesas Variáveis" — idem, só as VARIÁVEIS (Tipo 6)
-//   • rankings por VALOR (R$): CENTROS DE CUSTO + PLANO DE CONTAS (no lugar do de fornecedores
-//     e das "Contas críticas e prioritárias", que seguem só no de vencimentos) — linhas `dense`
+//   • "Ranking de contas" — por SUBGRUPO do plano de contas, por VALOR (R$) — linhas `dense`
 //     (mais compactas, cabem mais registros) e célula da direita em % do total de contas do
 //     escopo (`SupplierRank.pct`, calculado em `rankBy`), não mais "N conta(s)" — só aqui: o
 //     ranking de fornecedores de /dashboard_vencimentos não passa `dense` nem preenche `pct`
 //     e continua com a contagem
+// O card "Ranking de centros de custo" foi REMOVIDO em 2026-08-15 (decisão do usuário); com
+// ele saíram `costCenterRanking`, o alvo de drill 'costCenter' e as colunas/embed de centro
+// de custo da leitura — nada mais nesta tela os consumia.
 // Dados reais via getFinancialDashboardData (filtra group.type_group_id ∈ {Despesas, Custo}).
 // Estilo 100% Tailwind; primitivos de gráfico reusados de components/dashboard/.
 import { useEffect, useState, useCallback } from 'react';
-import { FileText, CheckCircle2, Clock, TrendingUp, AlertCircle, Building2, ListTree } from 'lucide-react';
+import { FileText, CheckCircle2, Clock, TrendingUp, AlertCircle, ListTree } from 'lucide-react';
 import {
   TYPE_GROUP_ID_DESPESA_FIXA,
   TYPE_GROUP_ID_DESPESA_VARIAVEL,
@@ -41,7 +42,7 @@ import {
 import { getErrorMessage } from '../lib/getErrorMessage';
 import { useDashboardFilters } from '../hooks/useDashboardFilters';
 import Alert from '../components/atoms/Alert';
-import { MONTHS_FULL, KPI_FILTER_LABEL } from '../components/dashboard/constants';
+import { MONTHS_FULL, kpiFilterSuffix } from '../components/dashboard/constants';
 import { ChartCard } from '../components/dashboard/ChartCard';
 import { DonutCard } from '../components/dashboard/DonutCard';
 import { DashboardHeader } from '../components/dashboard/DashboardHeader';
@@ -67,7 +68,7 @@ function scaledDonutDiameter(value: number, maxValue: number): number {
 }
 
 export default function DashboardFinanceiro() {
-  const filters = useDashboardFilters('aVencer');
+  const filters = useDashboardFilters('vencendo7');
   const { month, year, scope, filter } = filters;
   const [data, setData] = useState<FinancialDashboardData | null>(null);
   const [loading, setLoading] = useState(false);
@@ -115,12 +116,13 @@ export default function DashboardFinanceiro() {
     { icon: AlertCircle, label: 'Vencidas', amount: k?.vencidasValue ?? 0, count: k?.vencidasCount ?? 0, tone: 'danger', filter: 'vencidas' },
   ];
 
-  // Rótulo do período, repetido no subtítulo dos 3 donuts (extraído do JSX — ternário
+  // Rótulo do período, repetido no subtítulo dos donuts (extraído do JSX — ternário
   // inline repetido dispara S3358 no SonarLint).
   const periodo = scope === 'all' ? 'Todas as contas' : MONTHS_FULL[month];
   // Sufixo do KPI ativo no subtítulo do donut "Classificação Financeira" (ex.: mês +
-  // "Julho - A vencer"). 'total' = sem filtro → só o mês, sem sufixo.
-  const kpiSuffix = filter === 'total' ? '' : ` - ${KPI_FILTER_LABEL[filter]}`;
+  // "Julho - A vencer"). 'total' = sem filtro → só o mês, sem sufixo. O helper é
+  // compartilhado com /dashboard_vencimentos — ver `kpiFilterSuffix` em constants.ts.
+  const kpiSuffix = kpiFilterSuffix(filter);
 
   // Diâmetro ÚNICO para os 5 donuts: o tamanho que `scaledDonutDiameter` gera para o MAIOR
   // valor total (R$) entre eles, reaplicado IGUAL nos outros quatro (decisão do usuário
@@ -166,20 +168,26 @@ export default function DashboardFinanceiro() {
         {/* Faixa de KPIs (cards clicáveis = filtro; ver KpiCard/KpiRow) */}
         <KpiRow items={kpis} filter={filter} onToggle={filters.toggleFilter} />
 
-        {/* Donuts (5, em 2 LINHAS de 2 + 1 solo — sm:grid-cols-2 sem override no xl, então o
-            fluxo natural do grid deixa o 5º card sozinho na 3ª linha; aceito, é o menor diff):
-            linha 1 = Classificação Financeira (por Tipo do subgrupo) + Custos de Mercadorias;
-            linha 2 = Custos de Importação + Despesas Fixas;
-            linha 3 = Despesas Variáveis (GRUPO recortado por tipo).
-            Ordem segue o `line_order` de analytics.demonstrativo_despesas (migration 128):
-            1 Mercadorias, 2 Importação, 3 Fixas, 4 Variáveis.
-            size="sm" + dense (padding/gaps reduzidos — pedido do usuário 2026-07-22): os
-            donuts ocupam menos altura para sobrar mais viewport para os rankings abaixo, que
-            mostram até 12 linhas cada e não têm scroll próprio. `diameterPx` sobrepõe o
-            diâmetro de `size` com o MESMO valor `donutDiameter` nos 5 — gerado dinamicamente
-            a partir do maior total (R$) do conjunto, não proporcional POR donut (ver o
-            comentário de `donutDiameter` acima — pedido do usuário 2026-07-22). */}
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 mb-2">
+        {/* Grade ÚNICA 3×2 (5 donuts + o ranking de contas na 6ª célula) — decisão do usuário
+            2026-08-15. Antes eram DUAS grades irmãs (donuts, depois rankings); um donut e um
+            ranking só dividem a mesma linha estando na MESMA grade.
+              linha 1 = Classificação Financeira + Custos de Mercadorias
+              linha 2 = Despesas Fixas          + Custos de Importação
+              linha 3 = Despesas Variáveis      + Ranking de contas
+            A ordem VISUAL é a ordem do DOM — nenhuma classe `order-*` —, então leitor de tela
+            e ordem de tabulação seguem o que se vê.
+            ⚠️ A ordem NÃO espelha mais o `line_order` de analytics.demonstrativo_despesas
+            (1 Mercadorias, 2 Importação, 3 Fixas, 4 Variáveis): Fixas passou à frente de
+            Importação a pedido do usuário. Não "corrigir" de volta achando que é engano.
+            `sm:grid-cols-2` (não o `lg:` que a grade dos rankings usava): o donut é o card
+            com largura CRÍTICA — anel de 124px + legenda com R$ que não quebra —, enquanto a
+            linha do ranking degrada truncando o nome; manter o `lg:` colapsaria os 5 donuts
+            numa coluna só entre 640px e 1024px para proteger 1 card.
+            size="sm" + dense nos 5 donuts, e `dense` TAMBÉM no card de ranking: agora eles são
+            vizinhos na mesma grade, e 2px de diferença de moldura apareceriam lado a lado.
+            `diameterPx` sobrepõe o diâmetro de `size` com o MESMO valor `donutDiameter` nos 5
+            (ver o comentário de `donutDiameter` acima — pedido do usuário 2026-07-22). */}
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
           <DonutCard
             title="Classificação Financeira"
             subtitle={`${periodo}${kpiSuffix}`}
@@ -199,15 +207,6 @@ export default function DashboardFinanceiro() {
             onSliceSelect={(label) => openDrill({ chart: 'grupoTipo', typeGroupId: TYPE_GROUP_ID_CUSTO_MERCADORIAS, label }, `Custos de Mercadorias · ${label}`)}
           />
           <DonutCard
-            title="Custos de Importação"
-            subtitle={`Por grupo · ${periodo}`}
-            slices={data?.custoImportacaoBreakdown}
-            size="sm"
-            dense
-            diameterPx={donutDiameter}
-            onSliceSelect={(label) => openDrill({ chart: 'grupoTipo', typeGroupId: TYPE_GROUP_ID_CUSTO_IMPORTACAO, label }, `Custos de Importação · ${label}`)}
-          />
-          <DonutCard
             title="Despesas Fixas"
             subtitle={`Por grupo · ${periodo}`}
             slices={data?.despesaFixaBreakdown}
@@ -217,34 +216,37 @@ export default function DashboardFinanceiro() {
             onSliceSelect={(label) => openDrill({ chart: 'grupoTipo', typeGroupId: TYPE_GROUP_ID_DESPESA_FIXA, label }, `Despesas Fixas · ${label}`)}
           />
           <DonutCard
+            title="Custos de Importação"
+            subtitle={`Por grupo · ${periodo}`}
+            slices={data?.custoImportacaoBreakdown}
+            size="sm"
+            dense
+            diameterPx={donutDiameter}
+            onSliceSelect={(label) => openDrill({ chart: 'grupoTipo', typeGroupId: TYPE_GROUP_ID_CUSTO_IMPORTACAO, label }, `Custos de Importação · ${label}`)}
+          />
+          {/* `self-start` SÓ neste donut: é o único que divide a linha com um card de altura
+              bem maior (o ranking, até 12 linhas sem scroll próprio). No `stretch` — padrão do
+              grid — a moldura dele esticaria até a altura do ranking e deixaria ~150px de
+              BRANCO sob o anel, gastando exatamente a altura de viewport que a decisão
+              "donuts compactos de propósito" (2026-07-22) existe para poupar. Não subir isso
+              para `items-start` no container: as linhas 1 e 2 emparelham dois donuts, e lá o
+              `stretch` é o que mantém as molduras da mesma altura com legendas de tamanhos
+              diferentes. */}
+          <DonutCard
             title="Despesas Variáveis"
             subtitle={`Por grupo · ${periodo}`}
             slices={data?.despesaVariavelBreakdown}
             size="sm"
             dense
+            className="self-start"
             diameterPx={donutDiameter}
             onSliceSelect={(label) => openDrill({ chart: 'grupoTipo', typeGroupId: TYPE_GROUP_ID_DESPESA_VARIAVEL, label }, `Despesas Variáveis · ${label}`)}
           />
-        </div>
-
-        {/* Rankings por VALOR (R$): centros de custo + plano de contas */}
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
-          <ChartCard
-            title="Ranking de centros de custo"
-            subtitle="Maiores valores por centro de custo no período"
-            icon={Building2}
-          >
-            <RankingList
-              rows={data?.costCenterRanking ?? []}
-              onSelect={(row) => openDrill({ chart: 'costCenter', bucketKey: row.key }, `Centro de custo · ${row.name}`)}
-              dense
-            />
-          </ChartCard>
-
           <ChartCard
             title="Ranking de contas"
             subtitle="Maiores valores por sub grupo de contas no período"
             icon={ListTree}
+            dense
           >
             <RankingList
               rows={data?.subgroupRanking ?? []}

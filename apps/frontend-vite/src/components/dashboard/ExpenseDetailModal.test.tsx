@@ -6,9 +6,8 @@ import { ExpenseDetailModal } from './ExpenseDetailModal';
 import type { ExpenseDetailRow } from '../../services/supabase';
 
 const mk = (id: number, amount: number, trade: string | null, legal: string | null, code: string, desc: string, due: string): ExpenseDetailRow => ({
-  id, amount, status_id: 3, due_date: due, cost_center_id: 0,
+  id, amount, status_id: 3, due_date: due,
   supplier: { trade_name: trade, legal_name: legal },
-  cost_center: null,
   chart_account: { account_code: code, account_description: desc, group: null, subgroup: null },
 });
 
@@ -19,7 +18,7 @@ const ROWS: ExpenseDetailRow[] = [
 
 describe('ExpenseDetailModal', () => {
   it('renderiza as 5 colunas (Situação por último) e as linhas (fornecedor com fallback legal_name)', () => {
-    render(<ExpenseDetailModal open title="Centro de custo · Compras" rows={ROWS} onClose={vi.fn()} />);
+    render(<ExpenseDetailModal open title="Conta · Fretes" rows={ROWS} onClose={vi.fn()} />);
     const headers = ['Fornecedor', 'Plano de conta', 'Vencimento', 'Valor', 'Situação'];
     for (const h of headers) {
       expect(screen.getByRole('columnheader', { name: h })).toBeInTheDocument();
@@ -48,16 +47,16 @@ describe('ExpenseDetailModal', () => {
   });
 
   it('cabeçalho traz o título e o rodapé de contagem + total', () => {
-    render(<ExpenseDetailModal open title="Centro de custo · Compras" rows={ROWS} onClose={vi.fn()} />);
-    expect(screen.getByRole('heading', { name: 'Centro de custo · Compras' })).toBeInTheDocument();
+    render(<ExpenseDetailModal open title="Conta · Fretes" rows={ROWS} onClose={vi.fn()} />);
+    expect(screen.getByRole('heading', { name: 'Conta · Fretes' })).toBeInTheDocument();
     const footer = screen.getByText(/conta\(s\)/);
     expect(footer).toHaveTextContent('2 conta(s)');
     expect(footer).toHaveTextContent('R$ 400,00'); // 300 + 100
   });
 
   it('open=false não renderiza o conteúdo', () => {
-    render(<ExpenseDetailModal open={false} title="Centro de custo · Compras" rows={ROWS} onClose={vi.fn()} />);
-    expect(screen.queryByText('Centro de custo · Compras')).toBeNull();
+    render(<ExpenseDetailModal open={false} title="Conta · Fretes" rows={ROWS} onClose={vi.fn()} />);
+    expect(screen.queryByText('Conta · Fretes')).toBeNull();
     expect(screen.queryByRole('columnheader', { name: 'Fornecedor' })).toBeNull();
   });
 
@@ -69,7 +68,7 @@ describe('ExpenseDetailModal', () => {
   });
 
   it('ordena as linhas por vencimento ASCENDENTE (mais próximo primeiro)', () => {
-    render(<ExpenseDetailModal open title="Centro de custo · Compras" rows={ROWS} onClose={vi.fn()} />);
+    render(<ExpenseDetailModal open title="Conta · Fretes" rows={ROWS} onClose={vi.fn()} />);
     const rows = screen.getAllByRole('row').slice(1); // pula o header
     expect(rows[0]).toHaveTextContent('05/07/2026'); // id 2 vence antes
     expect(rows[1]).toHaveTextContent('10/07/2026'); // id 1 vence depois

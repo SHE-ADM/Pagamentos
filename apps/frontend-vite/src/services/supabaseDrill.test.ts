@@ -14,7 +14,6 @@ vi.mock('../lib/supabaseClient', () => ({
 import { filterExpenseDetailRows, topBucketLabels, type ExpenseDetailRow } from './supabase';
 
 type Opts = {
-  ccId?: number; ccDesc?: string; ccCode?: string;
   sgId?: number | null; sgDesc?: string; sgCode?: string;
   tipoId?: number; tipoDesc?: string;
   groupDesc?: string;
@@ -27,11 +26,7 @@ const mkRow = (amount: number, o: Opts = {}): ExpenseDetailRow => ({
   amount,
   status_id: 3,
   due_date: '2026-07-10',
-  cost_center_id: o.ccId ?? 0,
   supplier: { trade_name: 'Fornecedor X', legal_name: null },
-  cost_center: o.ccId
-    ? { cost_center_code: o.ccCode ?? String(o.ccId), cost_center_description: o.ccDesc ?? `Centro ${o.ccId}` }
-    : { cost_center_code: null, cost_center_description: null },
   chart_account: {
     account_code: '1.1', account_description: 'Conta',
     group: { group_description: o.groupDesc ?? 'Grupo', type_group_id: 2 },
@@ -97,21 +92,9 @@ describe('filterExpenseDetailRows — donuts por GRUPO recortados pelo tipo (gru
   });
 });
 
-describe('filterExpenseDetailRows — ranking de centros de custo (bucketKey)', () => {
-  const rows = [
-    mkRow(100, { ccId: 1, ccDesc: 'Compras', sgId: 1 }),
-    mkRow(200, { ccId: 4, ccDesc: 'Logística', sgId: 1 }),
-    mkRow(30, { ccId: 0, sgId: 1 }),  // sentinela → '∅'
-  ];
-  it('casa a linha pelo bucketKey cc:<id>', () => {
-    expect(filterExpenseDetailRows(rows, { chart: 'costCenter', bucketKey: 'cc:1' }).map((r) => r.amount)).toEqual([100]);
-    expect(filterExpenseDetailRows(rows, { chart: 'costCenter', bucketKey: 'cc:4' }).map((r) => r.amount)).toEqual([200]);
-  });
-  it('bucketKey "∅" casa a linha do sentinela (id 0)', () => {
-    expect(filterExpenseDetailRows(rows, { chart: 'costCenter', bucketKey: '∅' }).map((r) => r.amount)).toEqual([30]);
-  });
-});
-
+// O bloco irmão do ranking de CENTROS DE CUSTO saiu em 2026-08-15 com o card: este cobre os
+// MESMOS caminhos de `filterExpenseDetailRows` (era o mesmo `rankEntry`/`UNRANKED` por trás)
+// e vai além — testa também subgrupo ausente e descrição só de espaços.
 describe('filterExpenseDetailRows — ranking de contas / subgrupo (bucketKey)', () => {
   const rows = [
     mkRow(100, { sgId: 11, sgDesc: 'Compras de Mercadorias' }),
@@ -120,8 +103,9 @@ describe('filterExpenseDetailRows — ranking de contas / subgrupo (bucketKey)',
     mkRow(40, { sgId: null }),   // sem subgrupo → '∅'
     mkRow(50, { sgId: 33, sgDesc: '   ' }), // descrição vazia → '∅' (mesma regra do rankEntry)
   ];
-  it('casa a linha pelo bucketKey sg:<id>', () => {
+  it('casa a linha pelo bucketKey sg:<id> — e DISCRIMINA entre chaves distintas', () => {
     expect(filterExpenseDetailRows(rows, { chart: 'subgroup', bucketKey: 'sg:11' }).map((r) => r.amount)).toEqual([100]);
+    expect(filterExpenseDetailRows(rows, { chart: 'subgroup', bucketKey: 'sg:22' }).map((r) => r.amount)).toEqual([200]);
   });
   it('bucketKey "∅" casa sentinela id 0, subgrupo ausente E descrição vazia', () => {
     expect(filterExpenseDetailRows(rows, { chart: 'subgroup', bucketKey: '∅' }).map((r) => r.amount ?? 0).sort((a, b) => a - b)).toEqual([30, 40, 50]);

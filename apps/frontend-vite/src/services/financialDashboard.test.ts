@@ -18,12 +18,13 @@ vi.mock('../lib/supabaseClient', () => ({
 
 import { getFinancialDashboardData } from './supabase';
 
-// Linha do read do MÊS (embed de classificação de 3 níveis).
+// Linha do read do MÊS (embed de classificação de 3 níveis). Sem centro de custo: ele saiu
+// da leitura em 2026-08-15 junto com o card "Ranking de centros de custo" — manter os campos
+// aqui sugeriria que o serviço ainda os lê.
 type Row = {
   amount: number; status_id: number; due_date: string;
-  // Os ids sao a IDENTIDADE da agregacao dos rankings (o texto e so rotulo).
-  cost_center_id: number; chart_account_id: number;
-  cost_center: { cost_center_code: string | null; cost_center_description: string | null } | null;
+  // O id do plano é a IDENTIDADE da agregação do ranking (o texto é só rótulo).
+  chart_account_id: number;
   chart_account: {
     account_code: string | null; account_description: string | null;
     group: { group_description: string | null; type_group_id: number } | null;
@@ -44,15 +45,13 @@ const TIPO = {
 
 const desp = (
   amount: number, status_id: number, groupDesc: string,
-  cc: { id: number; code: string; desc: string },
   tipo: { id: number; desc: string },
   ca: { id: number; code: string; desc: string; sg: { id: number; code: string; desc: string } }, due = '2026-01-10',
   // Natureza do GRUPO — o escopo do dashboard aceita Despesas (2) OU Custo (8).
   groupTg: number = TYPE_GROUP_ID_DESPESAS,
 ): Row => ({
   amount, status_id, due_date: due,
-  cost_center_id: cc.id, chart_account_id: ca.id,
-  cost_center: { cost_center_code: cc.code, cost_center_description: cc.desc },
+  chart_account_id: ca.id,
   chart_account: {
     account_code: ca.code, account_description: ca.desc,
     group: { group_description: groupDesc, type_group_id: groupTg },
@@ -63,9 +62,6 @@ const desp = (
   },
 });
 
-const CC_ADM = { id: 1, code: '01', desc: 'Administrativo' };
-const CC_LOG = { id: 4, code: '04', desc: 'Logística' };
-const CC_PRO = { id: 5, code: '05', desc: 'Produção' };
 // O ranking de contas agrega pelo SUBGRUPO (sg) do plano; cada conta o carrega no `ca`.
 const CA_SAL = { id: 11, code: '6.1.01', desc: 'Salários e Ordenados', sg: { id: 61, code: '6.1', desc: 'Pessoal' } };
 const CA_FRE = { id: 22, code: '4.5.01', desc: 'Fretes sobre Compras', sg: { id: 45, code: '4.5', desc: 'Fretes' } };
@@ -75,8 +71,7 @@ const CA_IMP = { id: 44, code: '23.2.02', desc: 'Assessoria em Importação', sg
 // Conta NÃO-despesa (Passivo, type_group_id=4) — deve ser EXCLUÍDA de tudo.
 const naoDespesa = (amount: number): Row => ({
   amount, status_id: 3, due_date: '2026-01-20',
-  cost_center_id: 3, chart_account_id: 99,
-  cost_center: { cost_center_code: '03', cost_center_description: 'Fiscal' },
+  chart_account_id: 99,
   chart_account: {
     account_code: '2.1.01', account_description: 'Tributos a Recolher',
     group: { group_description: 'Passivo Tributário', type_group_id: 4 },
@@ -85,11 +80,11 @@ const naoDespesa = (amount: number): Row => ({
 });
 
 const MONTH_ROWS: Row[] = [
-  desp(100, 3, 'Folha de Pagamento', CC_ADM, TIPO.fixa, CA_SAL),
-  desp(300, 3, 'Transporte', CC_LOG, TIPO.variavel, CA_FRE, '2026-01-15'),
-  desp(50, 8, 'Transporte', CC_LOG, TIPO.variavel, CA_FRE, '2026-01-05'),
+  desp(100, 3, 'Folha de Pagamento', TIPO.fixa, CA_SAL),
+  desp(300, 3, 'Transporte', TIPO.variavel, CA_FRE, '2026-01-15'),
+  desp(50, 8, 'Transporte', TIPO.variavel, CA_FRE, '2026-01-05'),
   // Conta de CUSTO (grupo Natureza 8, subgrupo Custos de Mercadorias) — ENTRA no escopo.
-  desp(200, 3, 'Custos', CC_PRO, TIPO.custoMerc, CA_MER, '2026-01-12', TYPE_GROUP_ID_CUSTO),
+  desp(200, 3, 'Custos', TIPO.custoMerc, CA_MER, '2026-01-12', TYPE_GROUP_ID_CUSTO),
   naoDespesa(999),
 ];
 
@@ -155,8 +150,8 @@ describe('getFinancialDashboardData', () => {
   // tipo — a partição client-side não sabia do tipo novo. Este teste trava o 4º donut.
   it('Custos de Importação = GRUPO recortado pelo Tipo do subgrupo (tipo 9)', async () => {
     serve([
-      desp(150, 3, 'Importações', CC_PRO, TIPO.custoImp, CA_IMP, '2026-01-18', TYPE_GROUP_ID_CUSTO),
-      desp(50, 3, 'Folha de Pagamento', CC_ADM, TIPO.fixa, CA_SAL),
+      desp(150, 3, 'Importações', TIPO.custoImp, CA_IMP, '2026-01-18', TYPE_GROUP_ID_CUSTO),
+      desp(50, 3, 'Folha de Pagamento', TIPO.fixa, CA_SAL),
     ]);
     const d = await getFinancialDashboardData(0, 2026);
     expect(d.custoImportacaoBreakdown).toEqual([
@@ -197,63 +192,45 @@ describe('getFinancialDashboardData', () => {
     expect(labels).toContain('Custos de Mercadorias');
   });
 
-  it('ranking de CENTROS DE CUSTO ordenado por VALOR (sem o Passivo)', async () => {
-    const d = await getFinancialDashboardData(0, 2026);
-    expect(d.costCenterRanking[0]).toMatchObject({ name: 'Logística', value: 350, count: 2 });
-    expect(d.costCenterRanking[1]).toMatchObject({ name: 'Produção', value: 200, count: 1 });
-    expect(d.costCenterRanking[2]).toMatchObject({ name: 'Administrativo', value: 100, count: 1 });
-    // A conta fora do escopo (Passivo, centro "Fiscal") fica fora de tudo.
-    expect(d.costCenterRanking.map((r) => r.name)).not.toContain('Fiscal');
-  });
-
-  // `pct` = % do TOTAL de registros do ESCOPO (4 contas de Despesas/Custo — a de Passivo não
-  // entra no denominador), não da soma dos valores exibidos. 2/4=50%, 1/4=25%, 1/4=25%.
-  it('ranking de CENTROS DE CUSTO expõe `pct` = % do total de contas do escopo', async () => {
-    const d = await getFinancialDashboardData(0, 2026);
-    expect(d.costCenterRanking[0]).toMatchObject({ name: 'Logística', count: 2, pct: 50 });
-    expect(d.costCenterRanking[1]).toMatchObject({ name: 'Produção', count: 1, pct: 25 });
-    expect(d.costCenterRanking[2]).toMatchObject({ name: 'Administrativo', count: 1, pct: 25 });
-  });
-
-  // O sentinela id 0 EXISTE nos dois cadastros (descrição NULL no banco real), então o
-  // embed vem PREENCHIDO — testar só "embed != null" deixaria passar um rótulo técnico.
-  it('conta no sentinela (id 0) cai em "não informado", com ou sem embed', async () => {
+  // O sentinela id 0 EXISTE no cadastro (descrição NULL no banco real), então o embed vem
+  // PREENCHIDO — testar só "embed != null" deixaria passar um rótulo técnico (`#0`).
+  // Portado do ranking de CENTROS DE CUSTO (removido em 2026-08-15): a regra é do `rankEntry`,
+  // compartilhado, e o caso "com e sem embed" era mais forte que o do subgrupo abaixo.
+  it('subgrupo no sentinela (id 0) cai em "não informado", com ou sem embed', async () => {
+    const base = MONTH_ROWS[0];
     serve([
-      { ...MONTH_ROWS[0], cost_center_id: 0, cost_center: { cost_center_code: null, cost_center_description: null }, amount: 7 },
-      { ...MONTH_ROWS[0], cost_center_id: 0, cost_center: null, amount: 3 },
+      {
+        ...base, amount: 7,
+        chart_account: {
+          ...base.chart_account!,
+          subgroup: { chart_account_subgroup_id: 0, subgroup_code: null, subgroup_description: null, type_group: { type_group_id: TYPE_GROUP_ID_DESPESA_FIXA, type_group_description: 'Despesas Fixas' } },
+        },
+      },
+      { ...base, amount: 3, chart_account: { ...base.chart_account!, subgroup: null } },
     ]);
     const d = await getFinancialDashboardData(0, 2026);
-    expect(d.costCenterRanking).toHaveLength(1);
-    expect(d.costCenterRanking[0]).toMatchObject({ name: 'não informado', value: 10, count: 2 });
-    expect(d.costCenterRanking[0].name).not.toContain('#');
-  });
-
-  it('subgrupo no sentinela (id 0) vira "não informado" no ranking de contas', async () => {
-    serve([{
-      ...MONTH_ROWS[0], amount: 5,
-      chart_account: {
-        ...MONTH_ROWS[0].chart_account!,
-        subgroup: { chart_account_subgroup_id: 0, subgroup_code: '0', subgroup_description: null, type_group: { type_group_id: TYPE_GROUP_ID_DESPESA_FIXA, type_group_description: 'Despesas Fixas' } },
-      },
-    }]);
-    const d = await getFinancialDashboardData(0, 2026);
-    expect(d.subgroupRanking[0]).toMatchObject({ name: 'não informado', value: 5 });
+    expect(d.subgroupRanking).toHaveLength(1);
+    expect(d.subgroupRanking[0]).toMatchObject({ name: 'não informado', value: 10, count: 2 });
+    expect(d.subgroupRanking[0].name).not.toContain('#');
   });
 
   // O cadastro NÃO tem UNIQUE em descrição (só a PK) — agregar pelo texto fundiria dois
-  // centros distintos numa linha só, silenciosamente, e colidiria na `key` do RankingList.
-  it('centros HOMÔNIMOS não se fundem — viram linhas separadas, prefixadas pelo código', async () => {
-    const gemeo = { id: 9, code: '09', desc: CC_ADM.desc }; // mesma descrição, outro id
+  // subgrupos distintos numa linha só, silenciosamente, e colidiria na `key` do RankingList.
+  // Portado do ranking de CENTROS DE CUSTO (removido em 2026-08-15): era a ÚNICA cobertura do
+  // desempate por rótulo repetido do `rankBy`, que segue vivo servindo ao ranking de contas.
+  it('subgrupos HOMÔNIMOS não se fundem — viram linhas separadas, prefixadas pelo código', async () => {
+    // Mesma descrição de subgrupo, ids DIFERENTES (planos de conta distintos).
+    const gemeo = { id: 55, code: '6.9.01', desc: 'Outros Salários', sg: { id: 69, code: '6.9', desc: CA_SAL.sg.desc } };
     serve([
-      desp(100, 3, 'Folha de Pagamento', CC_ADM, TIPO.fixa, CA_SAL),
-      desp(250, 3, 'Folha de Pagamento', gemeo, TIPO.fixa, CA_SAL),
+      desp(100, 3, 'Folha de Pagamento', TIPO.fixa, CA_SAL),
+      desp(250, 3, 'Folha de Pagamento', TIPO.fixa, gemeo),
     ]);
     const d = await getFinancialDashboardData(0, 2026);
-    expect(d.costCenterRanking).toHaveLength(2);
-    expect(d.costCenterRanking[0]).toMatchObject({ name: '09 — Administrativo', value: 250 });
-    expect(d.costCenterRanking[1]).toMatchObject({ name: '01 — Administrativo', value: 100 });
+    expect(d.subgroupRanking).toHaveLength(2);
+    expect(d.subgroupRanking[0]).toMatchObject({ name: '6.9 — Pessoal', value: 250 });
+    expect(d.subgroupRanking[1]).toMatchObject({ name: '6.1 — Pessoal', value: 100 });
     // Rótulos únicos ⇒ `key` do RankingList sem colisão.
-    expect(new Set(d.costCenterRanking.map((r) => r.name)).size).toBe(2);
+    expect(new Set(d.subgroupRanking.map((r) => r.name)).size).toBe(2);
   });
 
   it('ranking de contas (por SUBGRUPO) ordenado por VALOR, sem o Passivo', async () => {
@@ -264,7 +241,8 @@ describe('getFinancialDashboardData', () => {
     expect(d.subgroupRanking[0]).toMatchObject({ name: 'Fretes', value: 350, count: 2 });
     expect(d.subgroupRanking[1]).toMatchObject({ name: 'Mercadorias', value: 200, count: 1 });
     expect(d.subgroupRanking[2]).toMatchObject({ name: 'Pessoal', value: 100, count: 1 });
-    // Mesmo `pct` (% do total de contas do escopo) do ranking de centros de custo.
+    // `pct` = % do TOTAL de registros do ESCOPO (4 contas de Despesas/Custo — a de Passivo
+    // não entra no denominador), não da soma dos valores exibidos: 2/4, 1/4, 1/4.
     expect(d.subgroupRanking[0]).toMatchObject({ pct: 50 });
     expect(d.subgroupRanking[1]).toMatchObject({ pct: 25 });
     expect(d.subgroupRanking[2]).toMatchObject({ pct: 25 });

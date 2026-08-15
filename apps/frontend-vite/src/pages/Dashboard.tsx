@@ -1,5 +1,11 @@
 // src/pages/Dashboard.tsx
-// Dashboard financeiro de contas a pagar. Abre SEMPRE no mês atual.
+// Dashboard financeiro de contas a pagar. Abre SEMPRE no mês atual, e desde 2026-08-15
+// FILTRADO no KPI "A vencer em 7 dias" (decisão do usuário; antes abria em 'total', sem
+// card marcado). O filtro recorta TODOS os gráficos, inclusive o ANUAL "Movimentações mês a
+// mês" — que por isso nasce com ~1 barra — e a lista "Contas críticas e prioritárias", que
+// não mostra vencidas na abertura ('vencendo7' exige situação "a vencer"). É a semântica
+// que o filtro já tinha; um clique no card (ou no ✕) devolve a visão completa. Trocar de
+// mês/ano limpa o filtro sozinho — ver useDashboardFilters.
 // Dados reais via getDashboardData (services/supabase.ts).
 // Estilo 100% Tailwind (Regra 1). Estilo inline só onde não há classe equivalente:
 // gradiente cônico do donut e larguras dinâmicas de barra (exceções justificadas).
@@ -9,7 +15,7 @@ import { getDashboardData, type DashboardData } from '../services/supabase';
 import { getErrorMessage } from '../lib/getErrorMessage';
 import { useDashboardFilters } from '../hooks/useDashboardFilters';
 import Alert from '../components/atoms/Alert';
-import { MONTHS_FULL } from '../components/dashboard/constants';
+import { MONTHS_FULL, kpiFilterSuffix } from '../components/dashboard/constants';
 import { statusColor } from '../components/dashboard/chartColors';
 import { ChartCard } from '../components/dashboard/ChartCard';
 import { DonutCard } from '../components/dashboard/DonutCard';
@@ -20,7 +26,7 @@ import { RankingList } from '../components/dashboard/RankingList';
 import { PriorityList } from '../components/dashboard/PriorityList';
 
 export default function Dashboard() {
-  const filters = useDashboardFilters();
+  const filters = useDashboardFilters('vencendo7');
   const { month, year, scope, filter } = filters;
   const [data, setData] = useState<DashboardData | null>(null);
   const [loading, setLoading] = useState(false);
@@ -56,6 +62,18 @@ export default function Dashboard() {
   // Rótulo do período, repetido no subtítulo dos 4 donuts (extraído do JSX — ternário
   // inline repetido dispara S3358 no SonarLint).
   const periodo = scope === 'all' ? 'Todas as contas' : MONTHS_FULL[month];
+  // Sufixo do KPI ativo, aplicado aos DOIS cards cujo subtítulo faz uma afirmação POSITIVA
+  // que o filtro pode tornar impossível — mesmo mecanismo (e mesmo formato) do donut
+  // "Classificação Financeira" de /dashboard_despesas. 'total' = sem filtro → sem sufixo.
+  //   • "Movimentações mês a mês" declara o ANO inteiro, mas `fYear` também é filtrado, então
+  //     no default 'vencendo7' o gráfico desenha 12 colunas com no máximo UMA barra;
+  //   • "Contas críticas e prioritárias" promete "…e vencidas", e `vencendo7` exige situação
+  //     "a vencer" enquanto `critical` exige "vencido" — mutuamente exclusivos POR CONSTRUÇÃO,
+  //     então a lista abre sem nenhuma vencida em qualquer base.
+  // Sem a ressalva no próprio card, os dois se leem como "2026 só teve movimento em agosto" e
+  // "não há conta vencida" — o oposto do que a base diz. O chip "filtrando: X" do cabeçalho é
+  // global; a afirmação está aqui.
+  const kpiSuffix = kpiFilterSuffix(filter);
 
   return (
     <div className="flex flex-col h-full">
@@ -92,7 +110,7 @@ export default function Dashboard() {
           <div className="flex items-center justify-between mb-2">
             <div>
               <h3 className="text-sm font-semibold text-slate-800">Movimentações mês a mês</h3>
-              <p className="text-xs text-slate-500">Total a pagar vs. pago por vencimento — {year}</p>
+              <p className="text-xs text-slate-500">Total a pagar vs. pago por vencimento — {year}{kpiSuffix}</p>
             </div>
             <span className="text-xs text-slate-500">valores em R$</span>
           </div>
@@ -146,7 +164,7 @@ export default function Dashboard() {
 
           <ChartCard
             title="Contas críticas e prioritárias"
-            subtitle="Água, luz, internet, aluguel, tributos e vencidas"
+            subtitle={`Água, luz, internet, aluguel, tributos e vencidas${kpiSuffix}`}
             icon={Zap}
             tone="danger"
           >

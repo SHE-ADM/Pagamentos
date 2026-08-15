@@ -14,7 +14,7 @@ histórico.
 | Regras mandatórias, invariantes 🔴, arquitetura, banco, comandos | **este arquivo** |
 | Detalhe das regras de extração (tipos de documento, fornecedor, corpo, dedup, filtros) | [docs/knowledge/pipeline-extracao.md](docs/knowledge/pipeline-extracao.md) |
 | Catálogo dos CRUDs da Next API, auth, papéis, anexos | [docs/knowledge/api-crud.md](docs/knowledge/api-crud.md) |
-| Detalhe dos dois dashboards (escopo, donuts, rankings, drill-down) | [docs/knowledge/dashboards.md](docs/knowledge/dashboards.md) |
+| Detalhe dos dois dashboards (escopo, donuts, ranking, layout, drill-down) | [docs/knowledge/dashboards.md](docs/knowledge/dashboards.md) |
 | O que cada deploy fez e a lição de cada um | [docs/deploy/historico-deploys.md](docs/deploy/historico-deploys.md) |
 | Deploy para produção · scripts de manutenção (reprocessar, backfill, purga) | skills **`deploy-producao`** e **`scripts-manutencao`** (`.claude/skills/`) |
 | Gate de qualidade por stack | [docs/padrao-execucao.md](docs/padrao-execucao.md) |
@@ -212,10 +212,15 @@ Estas regras se aplicam a **todo** código novo ou alterado neste projeto, sem e
   `test_contact_block_nonpayable.py`, `test_is_processed.py`,
   `test_onda8_gate_ia.py`, `test_react_versao_unica.py`). Cobre o
   pipeline de extração; rodar após mexer em `read_emails.py`/`extract_pdf.py` ou nos
-  scripts de reprocessamento. Não é incluída no `npm test` (que soma **1.541** no Node —
-  frontend-vite 873 · api-backend 613 · packages/shared 53 · portal-next 2, medidos em
-  2026-08-14 após o streaming SSE, que acrescentou **71**: 18 no cliente/rótulo, 31 na rota SSE e
-  no transporte, 6 no progresso do gateway, 15 no contrato compartilhado e 1 no teto de linhas da
+  scripts de reprocessamento. Não é incluída no `npm test` (que soma **1.548** no Node —
+  frontend-vite **880** em 145 arquivos · api-backend 613 · packages/shared 53 · portal-next 2,
+  medidos em 2026-08-15 com `--maxWorkers=1`. Os **7** daquele dia (873 → 880): **3** no próprio
+  delta dos dashboards, **2** de PÁGINA em `Dashboard.test.tsx` (code review light — a ressalva de
+  filtro nos subtítulos e o wiring de "trocar de mês limpa o filtro") e **2** de BORDA da janela de
+  7 dias em `dashboard.test.ts` (code review max — ver o bloco de `isoDaysFromToday`; a suíte
+  ficava verde com a janela deslocada um dia). A medição anterior, **1.541** com frontend-vite
+  873, é de 2026-08-14, depois do streaming SSE, que acrescentou **71**: 18 no cliente/rótulo, 31 na rota SSE
+  e no transporte, 6 no progresso do gateway, 15 no contrato compartilhado e 1 no teto de linhas da
   resposta). A suíte Python está em
   **1.428** — o mais recente é a Onda 10 (comparação de estado entre medições consecutivas no
   `roadmap-gatilhos`, **+19 casos**, validada por mutante — detalhe em `SKILL.md` da skill; o
@@ -672,7 +677,19 @@ Alvo: **WCAG 2.1 Nível AA** em todas as telas. Regras práticas:
   assistente de IA aberto** (o `<dialog>` só existe no DOM depois do clique; o caso NÃO envia
   pergunta — a resposta viria da Claude API, paga e não-determinística) atrás de `A11Y_TEST_EMAIL`/
   `A11Y_TEST_PASSWORD`, pulado sem credencial — o Dashboard entrou no scan pelo achado A3-8),
-  helper `e2e/axe.ts` (tags AA). O reporter do `axe.ts` emite, por nó, o **`failureSummary`**
+  helper `e2e/axe.ts` (tags AA).
+  🔴 **Rota cujo DOM muda por interação declara ESTADOS extras (`PageState`), um `test` cada** —
+  escanear só a abertura cobre metade do que a tela renderiza. Hoje o único é
+  **`/dashboard_vencimentos` "sem filtro de KPI"**, e ele não é enfeite: desde que as telas passaram
+  a abrir em `vencendo7` (2026-08-15), a linha crítica do `PriorityList` — o ramo tintado
+  `bg-status-error-bg` + `border-l-status-error-solid` — ficou **inalcançável em qualquer base**, já
+  que o filtro exige "a vencer" e `critical` exige "vencido". O `enter` do estado é **tolerante à
+  ausência** do gatilho (o default pode mudar de novo) e **intolerante à permanência** do estado que
+  promete deixar: sem essa asserção, um `enter` que falhasse em silêncio faria o teste escanear o
+  MESMO DOM duas vezes e reportar verde — pior que não existir, porque a suíte declararia cobertura
+  que não tem. ⚠️ O estado restaura a cobertura anterior, **não** garante o dado: mês sem conta
+  vencida não tem linha crítica para escanear, e assertar a presença dela acoplaria o CI ao dado de
+  produção. O reporter do `axe.ts` emite, por nó, o **`failureSummary`**
   (para color-contrast: `foreground`/`background`/`ratio`/esperado) **+ o HTML do elemento**, além
   do seletor — a falha fica depurável só pelo **log do CI** (essencial, já que o navegador não
   roda no sandbox do agente). Scripts `test:e2e`/`test:e2e:headed`. Os
@@ -2007,6 +2024,31 @@ subir só os apps Node, use os `dev:vite|dev:api|dev:portal` individuais.
 > JSON** (`dataApiCall` não achou `error` no corpo) — indica falha de infra/dev-server,
 > não erro de validação (que ecoa a mensagem curada do backend).
 
+> 🔴 **`typecheck` dos apps Next é `next typegen && tsc --noEmit`, e o `tsconfig` EXCLUI
+> `.next/dev/types` (não regredir — 2026-08-15).** O `include` que o Next gerencia traz
+> **dois** diretórios de tipos gerados: `.next/types/**` (produzido sob demanda por
+> `next typegen`/`next build`) e `.next/dev/types/**` (**cache do `next dev`**). O segundo
+> tornava o gate **não-determinístico**: ele é escrito quando o dev server roda e nunca
+> mais é revisado, então uma escrita parcial fica no disco e o `tsc` passa a acusar erro de
+> SINTAXE em código que ninguém escreveu. Caso real: `routes.d.ts` com 7 linhas duplicadas
+> terminando em `{ id } = await context.params` derrubou `npm run typecheck` por horas, com
+> os 5 erros apontando para um artefato **gitignored** — e ainda desatualizado (não conhecia
+> as rotas de anexo). Medido: `next typegen` regenerou `.next/types` **sem tocar** no cache do
+> dev numa invocação e tocando na seguinte; é exatamente por não dar para confiar nisso que a
+> exclusão existe. **`exclude` vence `include`**, então a regra sobrevive ao Next reescrever o
+> `include` (verificado). Custo: ~5 s por app.
+>
+> **Ganho não-óbvio:** num clone limpo `.next` não existe, o glob não casava nada e o
+> **`validator.ts`** — o arquivo gerado que confere a assinatura de cada `route.ts` contra as
+> rotas reais — **nunca era checado**; ele só entrava no programa se alguém tivesse rodado
+> `next dev`/`build` antes. Agora entra sempre. Provado por mutante nas duas direções:
+> corromper `.next/dev/types/routes.d.ts` **não** derruba o gate (exit 0), e trocar o
+> `params` de um handler por um nome errado **derruba** (exit 2, com o 1º erro vindo de
+> `.next/types/validator.ts`) — ou seja, o gate ficou imune ao cache **sem** ficar cego.
+> ⚠️ Ao medir gate, **nunca** encadeie `| tail`/`| grep`: o exit code do pipeline é o do
+> último comando e o `tsc` imprime erro em **stdout** — foi assim que este vermelho passou
+> despercebido em duas medições (memória `pipe-tail-masks-exit-code`).
+
 Acessibilidade em navegador (Playwright + axe) — **não** roda no `npm test`; runner
 separado em `apps/frontend-vite` (sobe o Vite dev sozinho via `webServer`):
 
@@ -2112,15 +2154,17 @@ apps/frontend-vite/src/components/
 │   ├── dataGrid.variants.ts   # cva por slot (header/row/cell/skeleton/empty/footer/pin/resize/grip/densidade/wrap) default|silver
 │   └── dataGrid.rows.ts       # buildRenderItems (achata linhas→itens row/second/footer/detail p/ virtualização)
 ├── dashboard/                 # primitivos de gráfico compartilhados pelos DOIS dashboards (vencimentos + financeiro)
-│   ├── constants.ts           #   MONTHS/MONTHS_FULL
+│   ├── constants.ts           #   MONTHS/MONTHS_FULL + KPI_FILTER_LABEL e `kpiFilterSuffix(filter)` (a ressalva de recorte no subtítulo do card — ver "Casca compartilhada dos dashboards"). Sem componente, para as páginas importarem sem disparar `react-refresh/only-export-components`
 │   ├── chartColors.ts         #   statusColor (semântico por status) + paletteColor (cíclica) — só tokens --color-status-*
-│   ├── BreakdownDonut.tsx (+ .test.tsx)  #   donut genérico (conic-gradient + furo + legenda), prop {segs:{key,label,value}[], colorFor, size?, diameterPx?}. Arcos + % + ORDEM das fatias por VALOR (R$) desc; legenda = R$ (fmtMoney, `font-mono`) + % em `text-xs` (SEM contagem de contas); furo central = TOTAL em R$ compacto (fmtMoneyCompact, ex.: "R$ 12,3 mil") rotulado "total", em **`font-sans font-normal`** (SEM negrito/mono — só o valor central, não a legenda). **`size: 'sm'|'md'|'lg'`** (tipo `DonutSize`, exportado — substituiu o booleano `dense`) controla SÓ o círculo, com o furo proporcional: `sm`=108px/inset-3 (4 donuts na mesma linha nos DOIS dashboards) · `md`=120px/inset-3 (default, = comportamento do antigo `dense={false}`) · `lg`=176px/inset-5 + número central `text-base` (sem call site — API do componente, coberto por teste). Classes LITERAIS por tamanho (mapa `SIZE_CLS`) — nome computado não é gerado pelo JIT e o donut ficaria sem tamanho, em silêncio (travado no teste). **`diameterPx?: number`** (opcional) SOBREPÕE `size` com um diâmetro CONTÍNUO em px via inline style (círculo + furo, razão `DYNAMIC_HOLE_RATIO=0.11`) — usado só por `/dashboard_despesas`, que passa o MESMO valor (gerado a partir do maior total R$ do conjunto) nos 5 donuts, nunca um valor por donut; sem ele, comportamento idêntico a antes (`/dashboard_vencimentos` inalterado)
+│   ├── BreakdownDonut.tsx (+ .test.tsx)  #   donut genérico (conic-gradient + furo + legenda), prop {segs:{key,label,value}[], colorFor, size?, diameterPx?}. Arcos + % + ORDEM das fatias por VALOR (R$) desc; legenda = R$ (fmtMoney, `font-mono`) + % em `text-xs` (SEM contagem de contas); furo central = TOTAL em R$ compacto (fmtMoneyCompact, ex.: "R$ 12,3 mil") rotulado "total", em **`font-sans font-normal`** (SEM negrito/mono — só o valor central, não a legenda). **`size: 'sm'|'md'|'lg'`** (tipo `DonutSize`, exportado — substituiu o booleano `dense`) controla SÓ o círculo, com o furo proporcional: `sm`=108px/inset-3 (os 4 donuts na mesma linha de `/dashboard_vencimentos`; em `/dashboard_despesas` os 5 donuts também usam `sm`, mas numa grade de 2 colunas e com `diameterPx` sobrepondo o valor) · `md`=120px/inset-3 (default, = comportamento do antigo `dense={false}`) · `lg`=176px/inset-5 + número central `text-base` (sem call site — API do componente, coberto por teste). Classes LITERAIS por tamanho (mapa `SIZE_CLS`) — nome computado não é gerado pelo JIT e o donut ficaria sem tamanho, em silêncio (travado no teste). **`diameterPx?: number`** (opcional) SOBREPÕE `size` com um diâmetro CONTÍNUO em px via inline style (círculo + furo, razão `DYNAMIC_HOLE_RATIO=0.11`) — usado só por `/dashboard_despesas`, que passa o MESMO valor (gerado a partir do maior total R$ do conjunto) nos 5 donuts, nunca um valor por donut; sem ele, comportamento idêntico a antes (`/dashboard_vencimentos` inalterado)
+│   ├── ChartCard.tsx (+ .test.tsx) / chartCard.variants.ts  #   MOLDURA de todo card de gráfico/lista (título + subtítulo + ícone opcional + `dense`); apresentacional puro, conteúdo por `children`. Existia duplicada em 10 blocos entre as duas páginas — duplicação em código novo reprova o quality gate do SonarCloud. A prop `className` é mesclada por `cn` (clsx + tailwind-merge), então a classe do CHAMADOR vence a da variante quando as duas mexem no mesmo utilitário (com `+` viraria "p-3 p-4" e quem ganha dependeria da ordem no CSS)
+│   ├── DonutCard.tsx (+ .test.tsx)  #   ChartCard + BreakdownDonut (converte `slices:{label,value}[]` em `segs`, `key` = o próprio label — a agregação já é por label); repassa `size`/`dense`/`diameterPx`/`colorFor`/`onSliceSelect` e o `className` da moldura. Único uso hoje do `className`: o `self-start` do donut que divide a linha do grid com o card de ranking em /dashboard_despesas
 │   ├── DashboardHeader.tsx (+ .test.tsx, .a11y.test.tsx)  #   CASCA dos dois dashboards: título + "filtrando: X ✕" e a barra empresa · escopo · mês · ano · Atualizar. Apresentacional puro; recebe title/subject/idPrefix + o objeto `filters` (hooks/useDashboardFilters). Ver "Casca compartilhada dos dashboards" abaixo
 │   ├── KpiRow.tsx (+ .test.tsx)  #   faixa dos 5 cards de KPI (grid + map sobre KpiCard); concentra a regra "o KPI 'total' nunca fica ativo"
 │   ├── KpiCard.tsx (+ .test.tsx)  #   card de KPI CLICÁVEL (= filtro) da faixa superior, compartilhado pelos DOIS dashboards (antes o bloco era duplicado literalmente nas duas páginas). Apresentacional puro: props {icon,label,amount,count,tone,active,onClick}; a página decide o que está ativo. Contagem em pt-BR (Intl, milhar com ponto)
 │   ├── kpiCard.variants.ts    #   cva do KpiCard (card/ícone/valor) por `tone` (neutral|success|muted|danger — tipo `KpiTone`, fonte única do array `kpis` das duas páginas) e `active`. Ver "Destaque dos cards de KPI" abaixo
 │   ├── MonthlyFlow.tsx        #   barras "mês a mês" (A pagar vs. Pago), prop {flow} — usado SÓ por /dashboard_vencimentos (o financeiro não tem esse gráfico)
-│   ├── RankingList.tsx (+ .test.tsx)  #   ranking horizontal top-N por valor, prop {rows:{name,value,count,key?}[]} (fornecedores | centros de custo | subgrupo de plano de contas). A `key` da linha inclui a POSIÇÃO — `name` não é garantidamente único (fornecedores homônimos; cadastros sem UNIQUE em descrição) e a key duplicada fazia o React descartar a 2ª linha, sumindo com o valor sem erro visível. Prop OPCIONAL `onSelect(row)` (drill-down): com ela a linha vira `<button>` real e devolve `row.key` (balde); sem ela, `<div>` não-interativo (vencimentos)
+│   ├── RankingList.tsx (+ .test.tsx)  #   ranking horizontal top-N por valor, prop {rows:{name,value,count,key?}[]} (fornecedores em /dashboard_vencimentos | subgrupo de plano de contas em /dashboard_despesas — o de CENTROS DE CUSTO saiu em 2026-08-15). A `key` da linha inclui a POSIÇÃO — `name` não é garantidamente único (fornecedores homônimos; cadastros sem UNIQUE em descrição) e a key duplicada fazia o React descartar a 2ª linha, sumindo com o valor sem erro visível. Prop OPCIONAL `onSelect(row)` (drill-down): com ela a linha vira `<button>` real e devolve `row.key` (balde); sem ela, `<div>` não-interativo (vencimentos)
 │   ├── PriorityList.tsx       #   lista de contas críticas/prioritárias, prop {rows: PriorityAccount[]} — usado SÓ por /dashboard_vencimentos
 │   └── ExpenseDetailModal.tsx (+ .test.tsx, .a11y.test.tsx)  #   card de DETALHE (drill-down) de /dashboard_despesas: modal <dialog> centralizado + DataGrid enxuto (getExpenseDetailColumns: Fornecedor/Plano de conta/Vencimento/Valor/Situação — Situação por último, badge read-only via StatusBadge+STATUS_NAME_BY_ID **SEM fallback local** — `status_id` é NOT NULL de domínio fechado (FK, ids 1-10), então o lookup nunca deveria vir `undefined`; o valor cru é passado direto ao `StatusBadge`, que já trata `undefined`/nulo sozinho (mesmo padrão de `r.keyword_matched` em `getConsultaColumns`) — **não** "alinhar" com o `String(id)` de `Consulta.tsx:applyStatusId`, que resolve um problema distinto (popular `status_dim.status_name` para persistência/CSV, não só exibição), célula com `className: 'whitespace-nowrap'` — grid SEM enableColumnManagement, onde `size` é ignorado; ver a nota "ColumnDef.size/minSize são IGNORADOS sem enableColumnManagement" na seção do DataGrid) das contas da fatia/linha clicada. Rows já filtradas pela página (filterExpenseDetailRows); ordena por VENCIMENTO asc (mais próximos primeiro; sem data vai ao fim; **sort estável** — empate de vencimento preserva a ordem original, travado por teste) + rodapé total. Ver "Card de DETALHE (drill-down)" na rota /dashboard_despesas
 ├── AuthLayout.tsx             # (gradient) wrapper full-page para Forgot/Reset
@@ -2264,7 +2308,16 @@ não recriar cópias locais.
 > `getFinancialStats` e o card "A vencer em 7 dias" derivavam a janela por `toISOString()` (UTC) e
 > `Date.now() + 7 * 86400000`. Em **UTC−3, das 21h à meia-noite**, o "hoje" em UTC já é o dia
 > seguinte: a janela andava um dia, o que vencia hoje sumia do KPI e **o card discordava do grid**
-> — divergência que só aparece à noite, ou seja, some quando se vai conferir de manhã. O
+> — divergência que só aparece à noite, ou seja, some quando se vai conferir de manhã.
+> ⚠️ **REINCIDIU nos DASHBOARDS — corrigido em 2026-08-15.** `dashboardWindow` ficou de fora
+> daquela varredura e seguia em `toISOString()`, então as duas telas discordavam de `/consulta`
+> sobre a MESMA pergunta. O defeito era pequeno até elas passarem a **abrir** em `vencendo7`, o
+> único filtro que consome a janela: aí ele virou o estado de abertura. Medido no dia: **7 das 72**
+> contas da janela sumiam, e na **virada do mês** a janela caía inteira no mês seguinte — dashboard
+> **vazio**. `first`/`last` do mês continuam em `Date.UTC`, de propósito (a coluna é `date`). Borda
+> travada em `services/dashboard.test.ts`, com relógio fixado às 23h30 locais — teste de janela sem
+> relógio fixado **não distingue** fuso, e sem caso de borda não distingue largura (os dois eixos
+> foram validados por mutante). O
 > deslocamento é por **`setDate`**, não por aritmética de milissegundos: `setDate` normaliza a
 > virada de mês sozinho (31/08 + 7 → 07/09) e respeita horário de verão, porque opera no
 > calendário local; somar `7 * 86400000` erra o dia na transição de fuso), `csv.ts` (`csvCell` — célula CSV segura: escapa aspas, remove CRLF e **neutraliza
@@ -2394,8 +2447,8 @@ Todos esses pares estão no `COMPLIANT` de `tests/contrast-usage.a11y.test.ts` (
 `color-contrast`, então a asserção numérica é a única rede aqui).
 
 **Ativo ≠ aberto filtrado:** o card só fica marcado quando `filter === kpiFilter` e o KPI não é
-`total`. `/dashboard_despesas` **abre** com "A vencer" marcado; `/dashboard_vencimentos` abre em
-`total`, sem nenhum card marcado.
+`total`. Desde 2026-08-15 as **DUAS** telas abrem com **"A vencer em 7 dias"** marcado (antes era
+"A vencer" no financeiro e nenhum card no de vencimentos).
 
 ### Casca compartilhada dos dashboards (`useDashboardFilters` + `DashboardHeader` + `KpiRow`) — não reduplicar
 
@@ -2406,7 +2459,7 @@ era **84 linhas duplicadas literalmente** (com 3 diferenças: título, assunto d
 
 | Peça | Papel |
 |---|---|
-| `hooks/useDashboardFilters.ts` | **Estado** mês/ano/escopo/filtro/empresa + `toggleFilter`/`clearFilter` + as opções de empresa. Parametrizado pelo filtro inicial (`'total'` no de vencimentos, `'aVencer'` no financeiro) |
+| `hooks/useDashboardFilters.ts` | **Estado** mês/ano/escopo/filtro/empresa + `toggleFilter`/`clearFilter` + as opções de empresa. Parametrizado pelo filtro inicial — hoje **`'vencendo7'` nas duas telas**. 🔴 **`setMonth`/`setYear` LIMPAM o filtro de KPI** (e só quando o valor muda de fato): `vencendo7` é uma janela MÓVEL a partir de hoje, então só intersecta o mês corrente — grudado, ele devolveria "Sem contas no período." em tudo ao trocar de mês, culpando o PERÍODO por um recorte que é do FILTRO. **`setScope` NÃO limpa**, de propósito: "todas as contas" + próximos 7 dias é combinação válida |
 | `DashboardHeader.tsx` | Título + "filtrando: X ✕" e a barra **empresa · escopo · mês · ano · Atualizar**. Recebe `title`/`subject`/`idPrefix` + o objeto `filters` |
 | `KpiRow.tsx` | A faixa dos 5 cards (grid + `map` sobre `KpiCard`). **A regra do "ativo" mora aqui**: o KPI `total` é a AUSÊNCIA de filtro, então nunca aparece selecionado |
 
@@ -2421,7 +2474,8 @@ realmente específico: o serviço que chamam, o array `kpis` e os gráficos.
   repetiriam a mesma lista linha a linha na chamada — foi exatamente o que reprovou o quality gate
   do SonarCloud por **duplicação no código novo** (6,3% > 3%) na primeira tentativa desta extração.
 - **Apresentacional puro:** o header não tem estado nem busca dados; só renderiza e delega.
-- **`KPI_FILTER_LABEL` mora em `components/dashboard/constants.ts`** (fonte única — constante PURA, sem componente, para ser importável por páginas sem disparar `react-refresh/only-export-components`). Consumido pelo `DashboardHeader` (chip "filtrando: X") **e** pelo subtítulo do donut "Classificação Financeira" de `/dashboard_despesas`, que mostra **mês + KPI ativo** — ex.: `Julho - A vencer` (só o mês quando o filtro é `total`).
+- **`KPI_FILTER_LABEL` mora em `components/dashboard/constants.ts`** (fonte única — constante PURA, sem componente, para ser importável por páginas sem disparar `react-refresh/only-export-components`). Consumido pelo `DashboardHeader` (chip "filtrando: X") e, via **`kpiFilterSuffix(filter)`** — o helper que vive no mesmo arquivo —, pelos subtítulos de card das **DUAS** telas: o donut "Classificação Financeira" de `/dashboard_despesas` e, desde 2026-08-15, "Movimentações mês a mês" + "Contas críticas e prioritárias" de `/dashboard_vencimentos`. Formato `Julho - A vencer`; `total` devolve string vazia.
+  🔴 **O sufixo é a RESSALVA de que o número exibido é um recorte, e o separador ` - ` é semântico** — ` · ` junta partes do rótulo ("Por status · Agosto"), ` - ` marca o filtro. Ele existe porque um card que afirma um escopo mais largo do que mostra faz o leitor concluir o oposto do dado: "Contas críticas e prioritárias" promete "…e vencidas" enquanto `vencendo7` exige situação "a vencer" (mutuamente exclusivos **por construção** — a lista abre sem nenhuma vencida), e "Movimentações mês a mês" declara o ANO inteiro desenhando ~1 barra, porque `fYear` também é filtrado. É a mesma família do balde parcial da migration 124. **Helper compartilhado de propósito:** com uma cópia por página, o primeiro ajuste numa delas faria as telas divergirem justamente na regra que existe para não enganar.
 - **`idPrefix`** gera `id`/`name` distintos por página (`dashboard-company` ·
   `dashboard-financeiro-company`): as telas não coexistem no DOM, mas ids separados mantêm o
   autofill/histórico do Chrome sem misturar.
@@ -3318,8 +3372,8 @@ e-mails `status='falha'`, rebusca o corpo no IMAP, baixa o boleto pelo link e gr
 | `/tabelas/plano-de-contas` | `ChartAccountsPage.tsx` | `financial_chart_of_account` (CRUD via Next API) |
 | `/tabelas/grupos-plano-de-contas` | `ChartAccountGroupsPage.tsx` | `financial_chart_of_account_group` (CRUD via Next API) |
 | `/tabelas/subgrupos-plano-de-contas` | `ChartAccountSubgroupsPage.tsx` | `financial_chart_of_account_subgroup` (CRUD via Next API) |
-| `/dashboard_vencimentos` | `Dashboard.tsx` | `financial_account_control` — KPIs/gráficos por mês ou geral (`getDashboardData`), filtro de EMPRESA aplicado nas DUAS leituras, 5 cards de KPI clicáveis (= filtro dos gráficos), 4 donuts, "Movimentações mês a mês" e "Contas críticas e prioritárias" (exclusivos desta tela). Abre em `total`, sem card marcado. Detalhe: [docs/knowledge/dashboards.md](docs/knowledge/dashboards.md) |
-| `/dashboard_despesas` | `DashboardFinanceiro.tsx` | `financial_account_control` **escopado a DESPESAS + CUSTO** (`getFinancialDashboardData`; grupo com `type_group_id ∈ {2,8}`, migration 094) — 5 KPIs, 5 donuts (o 5º, "Custos de Importação", acrescentado em 2026-08-14 — mesmo achado das migrations 127/128), 2 rankings (top 12) e **drill-down** por clique na fatia/linha (`ExpenseDetailModal`). Abre filtrado em "A vencer". Detalhe: [docs/knowledge/dashboards.md](docs/knowledge/dashboards.md) |
+| `/dashboard_vencimentos` | `Dashboard.tsx` | `financial_account_control` — KPIs/gráficos por mês ou geral (`getDashboardData`), filtro de EMPRESA aplicado nas DUAS leituras, 5 cards de KPI clicáveis (= filtro dos gráficos), 4 donuts, "Movimentações mês a mês" e "Contas críticas e prioritárias" (exclusivos desta tela). **Abre filtrado em "A vencer em 7 dias"** (2026-08-15). Detalhe: [docs/knowledge/dashboards.md](docs/knowledge/dashboards.md) |
+| `/dashboard_despesas` | `DashboardFinanceiro.tsx` | `financial_account_control` **escopado a DESPESAS + CUSTO** (`getFinancialDashboardData`; grupo com `type_group_id ∈ {2,8}`, migration 094) — 5 KPIs e **6 cards numa GRADE ÚNICA 3×2** (5 donuts + o "Ranking de contas", top 12), com **drill-down** por clique na fatia/linha (`ExpenseDetailModal`). **Abre filtrado em "A vencer em 7 dias"**. O card "Ranking de centros de custo" foi REMOVIDO em 2026-08-15 (com ele saíram `costCenterRanking`, o drill `costCenter` e o embed `cost_center` da leitura). Detalhe: [docs/knowledge/dashboards.md](docs/knowledge/dashboards.md) |
 | `/cobranca/envios` | `cobranca/CobrancaEnvios.tsx` | `cobranca_envios_log` (ver "Pipeline de cobrança de vencidos") |
 | `/cobranca/erros` | `cobranca/CobrancaErros.tsx` | `cobranca_erros_log` |
 
@@ -3327,7 +3381,7 @@ e-mails `status='falha'`, rebusca o corpo no IMAP, baixa o boleto pelo link e gr
 [docs/knowledge/dashboards.md](docs/knowledge/dashboards.md) — leia antes de mexer):**
 
 - 🔴 **`/dashboard_despesas` é EXCLUSIVO do escopo Despesas+Custo.** TODA métrica (5 KPIs, card de
-  total, 5 donuts, 2 rankings) sai de `isExpenseRow` aplicado **antes de qualquer agregação**.
+  total, 5 donuts, o ranking) sai de `isExpenseRow` aplicado **antes de qualquer agregação**.
   Conta sem classificação, ou de outra natureza, fica FORA de tudo.
 - 🔴 **Top-N de donut é por VALOR (R$), nunca por contagem de linhas** — o donut ordena por valor,
   então selecionar por contagem joga em "outros" um grupo que vale mais (bug real de 2026-07-22).
@@ -3338,6 +3392,20 @@ e-mails `status='falha'`, rebusca o corpo no IMAP, baixa o boleto pelo link e gr
   passa e segue não-interativo (travado por teste; evita S1082).
 - **`diameterPx` é UM valor para os 5 donuts**, não um por donut (a versão proporcional dava ~1px
   de diferença entre totais próximos — nem igual, nem perceptivelmente proporcional).
+- ⚠️ **As duas telas abrem FILTRADAS em "A vencer em 7 dias", e o filtro recorta TUDO** — inclusive
+  o gráfico ANUAL "Movimentações mês a mês" (abre com ~1 barra) e as "Contas críticas e
+  prioritárias", que não mostram vencidas na abertura (`vencendo7` exige situação "a vencer").
+  É a semântica que o filtro sempre teve, não regressão; o ✕ (ou o clique no card) devolve a visão
+  completa. Fazer o anual ignorar o filtro foi **descartado**: ele divergiria dos demais gráficos
+  em QUALQUER filtro, não só no default.
+- 🔴 **A grade 3×2 de `/dashboard_despesas` tem TRÊS escolhas que parecem enfeite e não são**
+  (2026-08-15): os 6 cards vivem na **MESMA** grade (donut e ranking só dividem linha assim);
+  o breakpoint é **`sm:grid-cols-2`**, não o `lg:` da grade antiga de rankings (o `lg:` colapsaria
+  os 5 donuts numa coluna entre 640 e 1024px para proteger 1 card); e **`self-start` SÓ no
+  "Despesas Variáveis"**, o único que divide a linha com um card bem mais alto — no `stretch` a
+  moldura dele esticaria e deixaria ~150px de branco sob o anel. ⚠️ A ordem dos donuts **NÃO
+  espelha mais o `line_order` de `analytics.demonstrativo_despesas`** (Fixas passou à frente de
+  Importação, a pedido do usuário) — não "corrigir" de volta.
 
 - `services/supabase.ts` — fetch direto REST, `Prefer: count=exact` + `Content-Range` para paginação.
   O total é parseado por `parsePaginationTotal` (resiliente): quando o PostgREST devolve a contagem

@@ -7,7 +7,7 @@
     "build": "next build",
     "start": "next start -p 3002",
     "lint": "eslint",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "next typegen && tsc --noEmit",
     "prune": "ts-prune --ignore \"next.config|vitest.config|\\.next|app.*(page|layout|route)\"",
     "test": "vitest run",
     "test:watch": "vitest"
