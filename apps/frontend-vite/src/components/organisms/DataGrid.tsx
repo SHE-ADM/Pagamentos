@@ -335,7 +335,11 @@ export default function DataGrid<T>({
   toolbarControlsTarget,
   toolbarSelectionTarget,
 }: Readonly<DataGridProps<T>>) {
-  const { ref: viewportRef, breakpoint } = useContainerBreakpoint<HTMLDivElement>();
+  // `HTMLElement`, não `HTMLDivElement`: o MESMO ref é anexado a um `<div>` ou a um
+  // `<section>`, conforme o viewport role ou não (ver `rolavel`, no fim do componente). Com o
+  // genérico estreito, uma incompatibilidade aqui degradaria em SILÊNCIO justo o que depende
+  // do ref — o `getScrollElement` da virtualização e o `ResizeObserver` do breakpoint.
+  const { ref: viewportRef, breakpoint } = useContainerBreakpoint<HTMLElement>();
   const [rowSelection, setRowSelection] = useState<Record<string, boolean>>({});
   const [bulkStatus, setBulkStatus] = useState<number | ''>('');
   const [applyingBulk, setApplyingBulk] = useState(false);
@@ -845,13 +849,44 @@ export default function DataGrid<T>({
   const tableClass = managed ? 'table-fixed border-collapse min-w-full' : 'w-full';
   const tableStyle: CSSProperties | undefined = managed ? { width: table.getTotalSize() } : undefined;
 
+  // 🔴 Região rolável PRECISA de acesso por teclado (WCAG 2.1.1 / axe
+  // `scrollable-region-focusable`). Com `maxBodyHeight` o viewport rola de fato, e a regra
+  // aceita duas saídas: ter conteúdo focável DENTRO, ou ser focável ele mesmo.
+  //
+  // A primeira saída não é garantida aqui e falhar nela é SILENCIOSO: em `/consulta` e
+  // `/emails` há checkbox de seleção e cabeçalho ordenável, então a região passava "de
+  // carona" no conteúdo; no `ExpenseDetailModal` não há NADA focável (as linhas do detalhe
+  // não são selecionáveis e as colunas não são ordenáveis, e no modo não-gerenciado o `<th>`
+  // é `<th onClick>`, não `<button>`) — quem navega por teclado não conseguia rolar a lista
+  // de contas do drill-down. Violação `serious` pega pela camada de a11y em NAVEGADOR
+  // (2026-08-15), no primeiro run em que aquele `<dialog>` foi escaneado; o jsdom não a vê.
+  //
+  // Por isso a saída escolhida é a SEGUNDA, e sem opt-in: quem tem `maxBodyHeight` é focável
+  // e nomeado, ponto. Uma prop opcional reintroduziria exatamente o modo de falha acima — o
+  // próximo grid sem conteúdo focável nasceria quebrado e ninguém notaria.
+  //
+  // `<section>` + `aria-label`, não `<div role="region">`: o papel `region` é implícito e o
+  // `role=` explícito dispara o S6819 do SonarCloud. Sem `maxBodyHeight` não há rolagem
+  // vertical, então nada muda para os grids que não a usam (segue `<div>`, sem tab stop novo).
+  // Um ÚNICO elemento, com os atributos condicionados — não dois ramos `<section>`/`<div>`:
+  // o mesmo `viewportRef` não tipa nos dois (`RefObject<HTMLElement>` não é atribuível a
+  // `Ref<HTMLDivElement>` e vice-versa), e duplicar o ref seria pior. `<section>` SEM nome
+  // acessível tem papel `generic` — idêntico ao `<div>` na árvore de acessibilidade —, então
+  // os grids sem `maxBodyHeight` não ganham landmark nem tab stop.
+  const rolavel = maxBodyHeight != null;
   const grid = (
-    <div ref={viewportRef} className={viewportClass} style={viewportStyle}>
+    <section
+      ref={viewportRef}
+      className={viewportClass}
+      style={viewportStyle}
+      aria-label={rolavel ? ariaLabel : undefined}
+      tabIndex={rolavel ? 0 : undefined}
+    >
       <table aria-label={ariaLabel} className={tableClass} style={tableStyle}>
         {head}
         <tbody>{body}</tbody>
       </table>
-    </div>
+    </section>
   );
 
   return (

@@ -212,13 +212,15 @@ Estas regras se aplicam a **todo** código novo ou alterado neste projeto, sem e
   `test_contact_block_nonpayable.py`, `test_is_processed.py`,
   `test_onda8_gate_ia.py`, `test_react_versao_unica.py`). Cobre o
   pipeline de extração; rodar após mexer em `read_emails.py`/`extract_pdf.py` ou nos
-  scripts de reprocessamento. Não é incluída no `npm test` (que soma **1.548** no Node —
-  frontend-vite **880** em 145 arquivos · api-backend 613 · packages/shared 53 · portal-next 2,
-  medidos em 2026-08-15 com `--maxWorkers=1`. Os **7** daquele dia (873 → 880): **3** no próprio
+  scripts de reprocessamento. Não é incluída no `npm test` (que soma **1.550** no Node —
+  frontend-vite **882** em 145 arquivos · api-backend 613 · packages/shared 53 · portal-next 2,
+  medidos em 2026-08-15 com `--maxWorkers=1`. Os **9** daquele dia (873 → 882): **3** no próprio
   delta dos dashboards, **2** de PÁGINA em `Dashboard.test.tsx` (code review light — a ressalva de
-  filtro nos subtítulos e o wiring de "trocar de mês limpa o filtro") e **2** de BORDA da janela de
+  filtro nos subtítulos e o wiring de "trocar de mês limpa o filtro"), **2** de BORDA da janela de
   7 dias em `dashboard.test.ts` (code review max — ver o bloco de `isoDaysFromToday`; a suíte
-  ficava verde com a janela deslocada um dia). A medição anterior, **1.541** com frontend-vite
+  ficava verde com a janela deslocada um dia) e **2** de acesso por teclado à região rolável em
+  `DataGrid.test.tsx` (violação `serious` que só o scan em navegador via — ver o bloco do
+  `scrollable-region-focusable`). A medição anterior, **1.541** com frontend-vite
   873, é de 2026-08-14, depois do streaming SSE, que acrescentou **71**: 18 no cliente/rótulo, 31 na rota SSE
   e no transporte, 6 no progresso do gateway, 15 no contrato compartilhado e 1 no teto de linhas da
   resposta). A suíte Python está em
@@ -673,23 +675,37 @@ Alvo: **WCAG 2.1 Nível AA** em todas as telas. Regras práticas:
 - **Camada de acessibilidade em NAVEGADOR REAL** (Playwright + `@axe-core/playwright`) — cobre o
   que o jsdom não vê: contraste sob render efetivo, ordem de foco e autofill. Config em
   `playwright.config.ts`, specs em `e2e/*.a11y.e2e.ts` (`public-auth` = login/forgot/reset sem
-  login; `protected` = `/consulta`/`/emails`/`/erros`/**`/dashboard_vencimentos`** + o **painel do
-  assistente de IA aberto** (o `<dialog>` só existe no DOM depois do clique; o caso NÃO envia
-  pergunta — a resposta viria da Claude API, paga e não-determinística) atrás de `A11Y_TEST_EMAIL`/
-  `A11Y_TEST_PASSWORD`, pulado sem credencial — o Dashboard entrou no scan pelo achado A3-8),
+  login; `protected` = `/consulta`/`/emails`/`/erros`/**`/dashboard_vencimentos`**/
+  **`/dashboard_despesas`** + o **painel do assistente de IA aberto** (o `<dialog>` só existe no DOM
+  depois do clique; o caso NÃO envia pergunta — a resposta viria da Claude API, paga e
+  não-determinística) atrás de `A11Y_TEST_EMAIL`/
+  `A11Y_TEST_PASSWORD`, pulado sem credencial — o Dashboard entrou no scan pelo achado A3-8, e
+  `/dashboard_despesas` só em 2026-08-15: era a rota com MAIS superfície exclusiva — os ramos
+  `<button>` do donut e do ranking (que só ela liga, via `onSliceSelect`/`onSelect`) e o
+  `ExpenseDetailModal` — e mesmo assim nunca fora escaneada em navegador),
   helper `e2e/axe.ts` (tags AA).
   🔴 **Rota cujo DOM muda por interação declara ESTADOS extras (`PageState`), um `test` cada** —
-  escanear só a abertura cobre metade do que a tela renderiza. Hoje o único é
-  **`/dashboard_vencimentos` "sem filtro de KPI"**, e ele não é enfeite: desde que as telas passaram
+  escanear só a abertura cobre metade do que a tela renderiza. São **três** (12 testes no total):
+  `/dashboard_vencimentos` "sem filtro de KPI" e, em `/dashboard_despesas`, "sem filtro de KPI" e
+  "card de detalhe aberto". Nenhum é enfeite: desde que as telas passaram
   a abrir em `vencendo7` (2026-08-15), a linha crítica do `PriorityList` — o ramo tintado
   `bg-status-error-bg` + `border-l-status-error-solid` — ficou **inalcançável em qualquer base**, já
-  que o filtro exige "a vencer" e `critical` exige "vencido". O `enter` do estado é **tolerante à
+  que o filtro exige "a vencer" e `critical` exige "vencido"; e o `<dialog>` do drill-down só existe
+  no DOM depois de um clique numa fatia/linha. O `enter` do estado é **tolerante à
   ausência** do gatilho (o default pode mudar de novo) e **intolerante à permanência** do estado que
   promete deixar: sem essa asserção, um `enter` que falhasse em silêncio faria o teste escanear o
   MESMO DOM duas vezes e reportar verde — pior que não existir, porque a suíte declararia cobertura
   que não tem. ⚠️ O estado restaura a cobertura anterior, **não** garante o dado: mês sem conta
   vencida não tem linha crítica para escanear, e assertar a presença dela acoplaria o CI ao dado de
-  produção. O reporter do `axe.ts` emite, por nó, o **`failureSummary`**
+  produção. 🔴 **Quando não há gatilho, o `enter` ANOTA em vez de silenciar**
+  (`test.info().annotations`, tipo `estado-nao-exercitado`) — é a terceira saída entre "falhar por
+  falta de dado" (acopla o CI à produção) e "escanear o mesmo DOM de novo" (verde por uma cobertura
+  que não houve). ⚠️ E o `enter` do detalhe espera um `h3` **antes** de contar os gatilhos:
+  `count()` não tem auto-wait, então um disparo cedo demais anotaria "sem dado" numa tela que só
+  não tinha pintado ainda. O seletor do gatilho é `button[title^="Ver contas de "]`, que casa a
+  fatia do donut **e** a linha do ranking (os dois componentes emitem o mesmo `title`) — o nome
+  acessível não serviria, porque é o conteúdo do botão e muda a cada carga.
+  O reporter do `axe.ts` emite, por nó, o **`failureSummary`**
   (para color-contrast: `foreground`/`background`/`ratio`/esperado) **+ o HTML do elemento**, além
   do seletor — a falha fica depurável só pelo **log do CI** (essencial, já que o navegador não
   roda no sandbox do agente). Scripts `test:e2e`/`test:e2e:headed`. Os
@@ -747,6 +763,20 @@ Alvo: **WCAG 2.1 Nível AA** em todas as telas. Regras práticas:
     `scrollable-region-focusable` já fica satisfeito pelos botões, em qualquer estado (loading/vazio,
     pois os 5 KPIs são um array estático). **Não** reintroduzir `tabIndex`/`role="region"` no
     contêiner nem transformar os KPIs em `<div onClick>` (voltaria a exigir o `tabIndex`).
+    🔴 **A MESMA regra mordeu o `DataGrid` em 2026-08-15, e ali a saída é a OPOSTA — não
+    confundir.** O viewport com `maxBodyHeight` (`<section>` em `DataGrid.tsx`) passou a levar
+    **`tabIndex={0}` + `aria-label`**, porque a primeira saída (ter conteúdo focável dentro) só
+    valia **de carona**: em `/consulta` e `/emails` há checkbox de seleção e cabeçalho ordenável,
+    mas no **`ExpenseDetailModal`** não há NADA focável (linhas não-selecionáveis, colunas não
+    ordenáveis, e no modo não-gerenciado o `<th>` é `<th onClick>`, não `<button>`) — quem navega
+    por teclado **não conseguia rolar** a lista do drill-down. Violação `serious` pega no primeiro
+    scan em navegador daquele `<dialog>`. É **sem opt-in** (todo grid com `maxBodyHeight` é
+    focável): uma prop opcional reintroduziria o mesmo modo de falha no próximo grid sem conteúdo
+    focável, e ninguém notaria. `<section>` **sem** nome acessível tem papel `generic`, então grid
+    sem `maxBodyHeight` não ganha landmark nem tab stop. ⚠️ **O jsdom NÃO pega isto** — a regra
+    do axe depende de layout para saber que o elemento rola; a rede em jsdom é a guarda
+    ESTRUTURAL de `DataGrid.test.tsx` (`getByRole('region')` + `tabindex`, validada por dois
+    mutantes), e a prova de comportamento é a camada e2e.
   - **Contraste do Dashboard sobre fundo claro:** legenda do donut `text-slate-400`→**`slate-600`**
     (2,57:1 sobre card branco) e a linha "vence …" da lista de prioridades `text-slate-500`→
     **`slate-600`** (4,35:1 sobre `bg-status-error-bg` #fef2f2 nas linhas críticas). Regra geral em

@@ -282,3 +282,80 @@ Duas edições, `+11` linhas líquidas (5.502 → 5.513):
 `tests/test_doc_links.py` **4 passed** (nenhum ponteiro quebrado). `docs/knowledge/dashboards.md`
 **não** foi tocado: ele descreve os dashboards, não a derivação de datas, e a regra vive no
 `CLAUDE.md`. Nada foi commitado.
+
+---
+
+## Nota posterior 2 — O1 resolvido (a seu pedido)
+
+O achado **O1** (`/dashboard_despesas` fora da camada a11y de navegador), registrado acima como
+`⏸️ adiado` por veredito **ENFRAQUECIDO**, foi resolvido depois do merge do PR #239, por pedido
+explícito seu. A ressalva da contestação continua válida — era dívida **pré-existente**, e o
+mecanismo que eu havia alegado (adjacência de cards) estava errado —, mas o item que **sobrevivia**
+à contestação era real e é o que foi endereçado: o ratchet de contraste é lista curada à mão, e a
+rota tem superfície exclusiva que nunca rodou em navegador.
+
+**Entregue** (`e2e/protected.a11y.e2e.ts`): a rota entrou no `PROTECTED_PAGES` **com dois estados**
+— "sem filtro de KPI" (reusa o helper do dashboard irmão) e **"card de detalhe aberto"**, que é o
+que fecha a lacuna de verdade. Só `{ path, name }` teria entregado menos do que promete, como a
+própria contestação apontou.
+
+Robustez do `enter` novo, ponto a ponto:
+
+- **Um seletor para os DOIS gatilhos** — `button[title^="Ver contas de "]` casa a fatia da legenda
+  do donut (`BreakdownDonut`) **e** a linha do ranking (`RankingList`), que emitem o mesmo `title`.
+  O nome acessível não serviria: é o conteúdo do botão (posição + rótulo + R$ + %), que muda a cada
+  carga.
+- **Espera o render antes de contar** — `count()` não tem auto-wait. Sem esperar um `h3` da grade,
+  um disparo cedo demais anotaria "sem dado" numa tela que apenas não tinha pintado, e o estado
+  passaria a **mentir sobre o dado**. O papel (`heading level 3`) em vez do título do card sobrevive
+  a um card renomeado.
+- **Terceira saída para "sem gatilho"** — exigir a presença acoplaria o CI ao dado de produção
+  (vermelho num mês tranquilo); silenciar faria o teste escanear o mesmo DOM e reportar verde. O
+  `enter` **anota** (`test.info().annotations`, tipo `estado-nao-exercitado`), então o relatório do
+  Playwright registra que o `<dialog>` não foi medido naquela execução.
+- **Intolerante à permanência** — havendo gatilho, o modal **tem** de abrir
+  (`expect(dialog).toBeVisible()` com mensagem própria). É o par obrigatório da tolerância, e o que
+  impede um seletor obsoleto de virar cobertura fantasma.
+
+**Verificado aqui:** `tsc --strict` avulso sobre `e2e/` **exit 0**; `playwright --list` **exit 0**,
+**12 testes** (era 9) com os três novos nas posições certas; `npm run lint` **exit 0**.
+**Não executado:** o Chromium não sobe no sandbox — quem exercita de fato é o `a11y.yml` no próximo
+PR, como aconteceu com o `PageState` do dashboard irmão, que **passou** no PR #239.
+
+`CLAUDE.md` atualizado no mesmo lote (seção de acessibilidade): a rota nova, os três estados, a
+regra da anotação e a do `count()` sem auto-wait.
+
+### O que o CI encontrou ao rodar o estado novo
+
+O `a11y.yml` do PR #240 **reprovou** — e não por defeito do `enter`: 11 dos 12 testes passaram,
+inclusive os dois primeiros estados da rota nova. O que falhou foi exatamente o estado que a
+dívida escondia:
+
+```
+[serious] scrollable-region-focusable: Scrollable region must have keyboard access (1 nó)
+  · .overflow-x-auto
+    html: <div class="overflow-x-auto" style="max-height: 55vh;">
+```
+
+É o **viewport do `DataGrid` dentro do `ExpenseDetailModal`** (WCAG 2.1.1): quem navega por
+teclado **não conseguia rolar** a lista de contas do drill-down. A regra do axe aceita duas
+saídas — ter conteúdo focável dentro, ou ser focável ele mesmo —, e a primeira valia só **de
+carona**: `/consulta` e `/emails` têm checkbox de seleção e cabeçalho ordenável, enquanto no modal
+não há nada focável (linhas não-selecionáveis, colunas não ordenáveis, e no modo não-gerenciado o
+`<th>` é `<th onClick>`, não `<button>`).
+
+**Corrigido em `DataGrid.tsx`**, sem opt-in: todo viewport com `maxBodyHeight` vira `<section>`
+focável e nomeado. Uma prop opcional reintroduziria o mesmo modo de falha no próximo grid sem
+conteúdo focável — que é precisamente como este passou despercebido. `<section>` **sem** nome
+acessível tem papel `generic`, então grid sem `maxBodyHeight` não ganha landmark nem tab stop.
+
+⚠️ **O jsdom não pega isto** — a regra depende de layout para saber que o elemento rola. A rede em
+jsdom é uma guarda **estrutural** (`getByRole('region')` + `tabindex` + o `maxHeight` no próprio
+viewport), validada por **dois mutantes**: remover o `tabIndex` → 1 vermelho; remover o
+`aria-label` (o `<section>` deixa de ser `region`) → 1 vermelho.
+
+**Esta é a justificativa retroativa do trabalho todo:** a rota estava fora da camada de navegador,
+e a primeira vez que entrou apontou uma violação `serious` de teclado que nenhum outro gate via —
+nem o jsdom, nem o ratchet de tokens, nem o `playwright --list`. O veredito `ENFRAQUECIDO` da
+contestação continua correto quanto ao **mecanismo** que eu havia alegado (adjacência de cards não
+existe para o axe); o que ele não podia prever era o que o scan encontraria.
