@@ -32,9 +32,14 @@
  * É o modelo PEDIDO — o que vai no request. O que a API respondeu ter usado é outra coisa, e é essa
  * que vai para o log (ver `ChatResult.model` e a migration 129).
  *
- * ⚠️ Lido do ambiente na carga do módulo, com default embutido. Ou seja: ambientes podem apontar
- * para modelos diferentes sem nenhum sintoma, e o default só entra em cena por ESQUECIMENTO — que é
- * justamente quando ninguém está olhando. É por isso que o modelo SERVIDO vai para o log; o default
- * aqui é só o piso. (Em 15/08/2026 dev e Vercel rodam ambos `claude-sonnet-5`.)
+ * 🔴 **O default espelha o que roda de fato** (dev e Vercel, ambos `claude-sonnet-5` em 15/08/2026).
+ * Ele valia `claude-opus-5` enquanto os dois ambientes já rodavam Sonnet — um valor que NENHUM
+ * ambiente usava e que, por isso, só entraria em cena por ESQUECIMENTO da env var: exatamente
+ * quando ninguém está olhando, e trocando o modelo em silêncio (preço diferente e mínimo de prefixo
+ * cacheável diferente — 512 no Opus 5 contra 1.024 no Sonnet 5). Ao trocar o modelo dos ambientes,
+ * TROQUE AQUI TAMBÉM: um default que ninguém usa é uma armadilha, não uma rede.
+ *
+ * ⚠️ Lido do ambiente na carga do módulo. Ambientes ainda podem apontar para modelos diferentes sem
+ * nenhum sintoma — o que detecta isso é o modelo SERVIDO no log, não este valor.
  */
-export const CONFIGURED_MODEL = process.env.ANTHROPIC_MODEL ?? 'claude-opus-5';
+export const CONFIGURED_MODEL = process.env.ANTHROPIC_MODEL ?? 'claude-sonnet-5';

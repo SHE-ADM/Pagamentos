@@ -1081,6 +1081,17 @@ perguntas reais, 2 usuários, `error IS NULL` em todas, 4 tools distintas exerci
   export is defined on the mock"). Ensinar cada mock a reexportá-la seria pior: duplicaria o valor,
   e a asserção sobre o payload passaria a comparar com uma ficção. **Configuração não fica refém do
   mock de um módulo de comportamento.**
+- 🔴 **O DEFAULT de `CONFIGURED_MODEL` espelha o que roda de fato** (hoje `claude-sonnet-5`). Ele
+  ficou em `claude-opus-5` enquanto dev e Vercel já rodavam Sonnet — valor que **nenhum ambiente
+  usava** e que, por isso, só entraria em cena por ESQUECIMENTO da env var: exatamente quando
+  ninguém está olhando, trocando o modelo em silêncio, com preço e mínimo de prefixo cacheável
+  diferentes. **Ao trocar o modelo dos ambientes, trocar o default junto** — um default que ninguém
+  usa é armadilha, não rede.
+  ⚠️ **A suíte roda SOBRE o default:** o `vitest.config.ts` do api-backend não carrega `.env`, então
+  `ANTHROPIC_MODEL` é `undefined` nos testes. Consequência: **nunca** asserte um literal de modelo
+  em teste — compare com `CONFIGURED_MODEL`. O caso do aviso de caching passava por coincidência
+  (o literal era igual ao default) e teria quebrado na troca, por um motivo sem relação com o que
+  ele afirma.
 - 🔴 **`accumulate` recebe a MENSAGEM inteira, não só o `usage`.** Mesmo motivo de o acumulador ser
   único: são dois pontos de chamada (o loop e o fechamento), e tudo que precise sair de uma resposta
   do modelo tem de sair dali. Passando só o `usage`, registrar o modelo viraria uma segunda linha a

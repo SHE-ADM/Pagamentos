@@ -467,7 +467,9 @@ describe('runChat — contabilidade de tokens', () => {
       expect(err).toHaveBeenCalledTimes(1);
       expect(err.mock.calls[0][0]).toContain('prompt caching NÃO ocorreu');
       // O modelo em vigor precisa aparecer: sem ele o aviso não diz o que trocar de volta.
-      expect(err.mock.calls[0][0]).toContain('claude-opus-5');
+      // Comparado contra a constante, não contra um literal: o default já mudou uma vez, e um
+      // literal aqui faria este caso quebrar por um motivo que nada tem a ver com o que ele afirma.
+      expect(err.mock.calls[0][0]).toContain(CONFIGURED_MODEL);
       err.mockRestore();
     });
 
