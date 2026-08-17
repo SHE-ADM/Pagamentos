@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
@@ -60,6 +62,102 @@ describe('AiChatWidget', () => {
 
     await openPanel();
     expect(screen.getByRole('heading', { name: /assistente de contas a pagar/i })).toBeInTheDocument();
+  });
+
+  // O lançador usa o logo do app (a MESMA imagem do favicon). A imagem é decorativa: quem nomeia
+  // o botão é o `aria-label` — um `alt` com texto duplicaria o nome acessível.
+  it('o botão flutuante exibe o logo do app, decorativo', () => {
+    const { container } = render(<AiChatWidget />);
+
+    const botao = screen.getByRole('button', { name: /abrir assistente/i });
+    const logo = container.querySelector('img');
+    expect(logo).toHaveAttribute('src', '/logos/otimotex.png');
+    expect(logo).toHaveAttribute('alt', '');
+    expect(botao).toContainElement(logo);
+    // Recorte do quadrado em círculo: sem isto, o PNG (fundo branco OPACO) apareceria com os
+    // cantos brancos para fora do disco do logo.
+    expect(botao.className).toContain('overflow-hidden');
+    expect(botao.className).toContain('rounded-full');
+  });
+
+  /**
+   * Largura do painel: 32rem até `lg`, metade da tela a partir dali.
+   *
+   * Guarda ESTRUTURAL — o jsdom não faz layout, então não há px a medir. O que ela trava não é a
+   * string das classes e sim a ARITMÉTICA que escolheu o breakpoint: 50% dele tem de ser igual à
+   * largura base, senão o painel ENCOLHE ao cruzá-lo (em `md`, 24rem contra os 32rem de antes) —
+   * o oposto do que a largura maior existe para fazer.
+   */
+  it('o painel cresce até metade da tela a partir de lg, sem encolher no breakpoint', async () => {
+    // Defaults do Tailwind v4 — CÓPIA, e por isso só valem enquanto o @theme do projeto não os
+    // redefinir (a guarda logo abaixo é quem sustenta essa premissa).
+    const BREAKPOINT_REM: Record<string, number> = { sm: 40, md: 48, lg: 64, xl: 80, '2xl': 96 };
+    const MAX_W_REM: Record<string, number> = { md: 28, lg: 32, xl: 36, '2xl': 42 };
+
+    // 🔴 A aritmética acima é medida contra o Tailwind, não contra o projeto — e no v4 CSS-first é
+    // o @theme de src/index.css que tem a última palavra. Um `--container-lg: 36rem` acrescentado
+    // ali faria o painel ENCOLHER de 36rem para 32rem ao cruzar `lg` (exatamente o defeito que
+    // este teste existe para impedir) com `64 / 2 === 32` ainda verdadeiro — verde para sempre.
+    // Guarda de AUSÊNCIA, então: se o @theme passar a declarar qualquer um dos tokens que as
+    // tabelas acima assumem, o teste para e manda atualizá-las.
+    // Ancorado no cwd (= raiz do workspace), como tests/contrast.a11y.test.ts já faz: sob jsdom o
+    // `import.meta.url` NÃO é uma URL `file:` e `fileURLToPath` lança. Caminho errado ⇒ readFileSync
+    // lança ⇒ teste VERMELHO — a leitura falha fechada, nunca vira ausência silenciosa.
+    const css = readFileSync(resolve(process.cwd(), 'src/index.css'), 'utf8');
+    const declara = (token: string): boolean => new RegExp(`^\\s*${token}\\s*:`, 'm').test(css);
+    // Sanidade do detector: sem isto, um @theme reformatado (ou o arquivo trocado de lugar) faria
+    // `declara` parar de casar e a guarda de ausência viraria `[] === []`, verde por vacuidade.
+    // `--color-brand-dark` é o mesmo token que tests/contrast-usage.a11y.test.ts consome.
+    expect(declara('--color-brand-dark'), 'o detector de token do @theme parou de casar').toBe(true);
+    const sobrescritos = [
+      ...Object.keys(BREAKPOINT_REM).map((k) => `--breakpoint-${k}`),
+      ...Object.keys(MAX_W_REM).map((k) => `--container-${k}`),
+    ].filter(declara);
+    expect(
+      sobrescritos,
+      'o @theme redefiniu tokens que este teste assume como default do Tailwind — '
+        + 'atualize BREAKPOINT_REM/MAX_W_REM com os valores reais',
+    ).toEqual([]);
+
+    render(<AiChatWidget />);
+    await openPanel();
+    const classes = document.querySelector('dialog')?.className ?? '';
+
+    const base = /(?:^|\s)max-w-([a-z0-9]+)(?:\s|$)/.exec(classes);
+    const grande = /(?:^|\s)([a-z0-9]+):max-w-\[50vw\](?:\s|$)/.exec(classes);
+    // Sanidade do parser: sem isto, um `className` reescrito faria os dois regex pararem de casar
+    // e o teste viraria uma comparação de `undefined` consigo mesmo — verde para sempre.
+    expect(base?.[1], `largura base não encontrada em "${classes}"`).toBeTruthy();
+    expect(grande?.[1], `largura de 50vw não encontrada em "${classes}"`).toBeTruthy();
+
+    const larguraBase = MAX_W_REM[base?.[1] ?? ''];
+    const breakpoint = BREAKPOINT_REM[grande?.[1] ?? ''];
+    expect(larguraBase).toBeDefined();
+    expect(breakpoint).toBeDefined();
+    expect(breakpoint / 2).toBe(larguraBase);
+  });
+
+  /**
+   * Abrir o painel deve mostrar a PRIMEIRA sugestão, não o fim da lista.
+   *
+   * jsdom não faz layout: `scrollHeight` é sempre 0 por padrão, então sem mockar esse valor o
+   * teste passaria mesmo com o bug (scrollTop = scrollHeight = 0 de qualquer jeito) — o mock
+   * simula a lista de sugestões sendo mais alta que a área visível do painel.
+   */
+  it('abre a lista de sugestões rolada para o TOPO', async () => {
+    const original = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'scrollHeight');
+    Object.defineProperty(HTMLElement.prototype, 'scrollHeight', {
+      configurable: true,
+      get: () => 900,
+    });
+    try {
+      render(<AiChatWidget />);
+      await openPanel();
+      const lista = screen.getByRole('log', { name: /conversa com o assistente/i });
+      expect(lista.scrollTop).toBe(0);
+    } finally {
+      if (original) Object.defineProperty(HTMLElement.prototype, 'scrollHeight', original);
+    }
   });
 
   it('envia a pergunta e renderiza a resposta em markdown', async () => {

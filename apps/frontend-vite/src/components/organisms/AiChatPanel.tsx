@@ -186,10 +186,15 @@ export default function AiChatPanel({
     return () => el.removeEventListener('click', onBackdrop);
   }, [onClose]);
 
-  // Mantém a conversa rolada no fim quando chega mensagem ou o "consultando" aparece.
+  // Mantém a conversa rolada no fim quando chega mensagem ou o "consultando" aparece; SEM
+  // conversa (mount inicial ou depois de "Nova conversa"), rola para o TOPO — é ali que fica a
+  // primeira sugestão, e sem este ramo o usuário abria o painel já no fim da lista de sugestões
+  // (efeito roda também no mount, com entries.length=0/loading=false — scrollTop virava
+  // scrollHeight de um conteúdo que o usuário ainda não pediu para ver).
   useEffect(() => {
     const el = listRef.current;
-    if (el) el.scrollTop = el.scrollHeight;
+    if (!el) return;
+    el.scrollTop = entries.length === 0 && !loading ? 0 : el.scrollHeight;
   }, [entries.length, loading]);
 
   const submit = (text: string): void => {
@@ -208,7 +213,17 @@ export default function AiChatPanel({
       onCancel={onClose}
       className={cn(
         // m-0 + ml-auto: cola o painel à direita (o default do <dialog> é centralizado).
-        'm-0 ml-auto h-dvh max-h-dvh w-full max-w-lg',
+        //
+        // LARGURA — 32rem até `lg`, METADE da tela a partir dali. O `w-full` é a largura pedida
+        // (o <dialog> modal vive na top layer, então seu bloco contêiner é o viewport) e os
+        // `max-w-*` é que a limitam. Em telas estreitas o painel ocupa tudo; a partir de `lg` a
+        // conversa ganha o espaço que as tabelas das respostas pediam.
+        //
+        // O breakpoint é `lg` (64rem) por ARITMÉTICA, não por hábito: 50vw de 1024px são
+        // exatamente os 32rem do `max-w-lg`, então a troca é CONTÍNUA — o painel cresce a partir
+        // da largura que já tinha. Em `md` (48rem) ele encolheria de 32rem para 24rem ao cruzar o
+        // breakpoint, que é o oposto do pedido.
+        'm-0 ml-auto h-dvh max-h-dvh w-full max-w-lg lg:max-w-[50vw]',
         'bg-white text-slate-700 shadow-2xl backdrop:bg-black/40',
         'flex flex-col overflow-hidden',
       )}

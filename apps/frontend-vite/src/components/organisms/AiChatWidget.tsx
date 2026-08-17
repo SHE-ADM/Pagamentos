@@ -8,7 +8,6 @@
 // conversa da sessão. O painel entra por lazy() — o launcher é um botão, e o parser de markdown
 // só é baixado quando o usuário abre o chat de fato.
 import { lazy, Suspense, useRef, useState } from 'react';
-import { MessageCircle } from 'lucide-react';
 import { AiChatCancelledError, askAiChatStream, type ChatEntry } from '../../services/aiChat';
 import { getErrorMessage } from '../../lib/getErrorMessage';
 import type { PanelFeedback } from './AiChatPanel';
@@ -174,9 +173,21 @@ export default function AiChatWidget() {
         onClick={() => setOpen(true)}
         aria-label="Abrir assistente de contas a pagar"
         title="Assistente de contas a pagar"
-        className="fixed bottom-5 right-5 z-30 flex h-12 w-12 items-center justify-center rounded-full bg-brand-dark text-white shadow-lg transition-all hover:shadow-xl hover:shadow-brand/30 focus-visible:ring-2 focus-visible:ring-brand-dark focus-visible:ring-offset-2 active:scale-95 motion-reduce:transition-none"
+        className="fixed bottom-5 right-5 z-30 flex h-12 w-12 items-center justify-center overflow-hidden rounded-full bg-white shadow-lg transition-all hover:shadow-xl hover:shadow-brand/30 focus-visible:ring-2 focus-visible:ring-brand-dark focus-visible:ring-offset-2 active:scale-95 motion-reduce:transition-none"
       >
-        <MessageCircle size={20} aria-hidden="true" />
+        {/*
+         * A MESMA imagem do favicon (`index.html`) — o logo é a identidade do app, então o
+         * lançador do assistente é reconhecido antes de ser lido.
+         *
+         * `alt=""` (decorativo): quem nomeia o botão é o `aria-label`; um alt com texto seria
+         * anunciado junto e duplicaria o nome acessível.
+         *
+         * O PNG tem fundo BRANCO OPACO (não é transparente) e o disco escuro do logo vai de 3 a
+         * 252 dos 256px — daí o `overflow-hidden` + `rounded-full` do botão (recorta os cantos
+         * brancos) e o `scale-105` na imagem (come a margem de ~1%, que a 48px apareceria como um
+         * fio branco em volta do disco).
+         */}
+        <img src="/logos/otimotex.png" alt="" className="h-full w-full scale-105 object-cover" />
       </button>
 
       {open && (
