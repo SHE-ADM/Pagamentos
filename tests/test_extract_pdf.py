@@ -73,7 +73,10 @@ class ImageAttachmentVisionTest(unittest.TestCase):
     def test_is_image_file_por_extensao(self):
         for ok in ("recibo.jpg", "foto.JPEG", "scan.png", "x.gif", "y.webp"):
             self.assertTrue(e._is_image_file(ok), ok)
-        for no in ("boleto.pdf", "nota.xml", "arquivo.txt"):
+        # `.docx` fica de FORA de propósito: ele tem ramo próprio em `process_pdf`. Enfiá-lo em
+        # `_IMAGE_MEDIA_TYPES` para "resolver" o roteamento faria o Vision montar um bloco
+        # `type:image` com bytes de ZIP — 400 da Anthropic. Este pino existe para impedir isso.
+        for no in ("boleto.pdf", "nota.xml", "arquivo.txt", "contrato.docx"):
             self.assertFalse(e._is_image_file(no), no)
 
     def test_vision_source_block_imagem(self):

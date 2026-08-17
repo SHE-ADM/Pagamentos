@@ -1,5 +1,53 @@
 # Histórico de deploys
 
+## 2026-08-17 — Anexo .docx com boleto (o descarte silencioso)
+
+**Sintoma enganoso.** O e-mail `email_control` 1516 ("BOLETO: 0003150-04.2023.8.26.0577") estava em
+`falha` com a nota *"Corpo sem sinal financeiro (sem valor nem documento)"* e `has_attachment =
+false` — ou seja, o registro **acusava o corpo do e-mail** por um documento que o próprio pipeline
+havia jogado fora. O filtro de `save_attachments` só conhecia PDF e imagem, e o `continue` do ramo
+não logava nada: sem anexo salvo, sem linha em lugar nenhum, sem rastro.
+
+**Causa:** allowlist de anexo fechada em PDF/imagem, com descarte mudo.
+
+**Como foi encontrado:** pelo usuário, que sabia que o anexo existia. **Nenhum sinal automático
+apontava para lá** — e essa é a lição que sobrevive a este deploy: o banco não registra anexo
+rejeitado (`attachment_names` fica NULL), então não havia como medir o que se perdia. Por isso o
+descarte passou a emitir `Anexo ignorado (tipo não suportado): <nome> | <content-type>`, hoje a
+única fonte possível de "que formatos estamos perdendo" (`.doc`, `.odt`, `.xlsx`, `.msg` seguem
+fora do escopo).
+
+**Arquivos:** `skills/pdf-contas-pagar/scripts/docx_content.py` (**ARQUIVO NOVO** — leitura de
+.docx, só stdlib) · `skills/pdf-contas-pagar/scripts/extract_pdf.py` (roteamento `_extract_docx`,
+`VISION_SOURCES`, `_vision_source_block` e `_try_barcode_vision` estritos) ·
+`skills/email-reader/scripts/read_emails.py` (`attachment_kind`/`attachment_ext` como fonte única,
+`_attachment_text`, `_UPLOAD_CONTENT_TYPES`) · `deploy-manifest.json` (31 → **32**).
+
+**Migrations 130 e 131**, aplicadas antes via psql — a 131 acrescenta `docx_text`/`docx_vision` ao
+domínio de `extraction_source`. Base compartilhada dev+prod, portanto **sem passo de banco** na
+máquina de produção.
+
+**Sem** `.env` novo, **sem** dependência nova (`zipfile` é stdlib), **sem** `setup-*-task.ps1`.
+
+**Validação:** `check_deploy_parity` **32/32** + smoke de import na própria máquina
+(`py -3 -c "import extract_pdf, docx_content; …"` → `ok True ('pdf_vision', 'image_vision',
+'docx_vision')`). Antes do deploy, os 3 e-mails afetados (1516, 1515, 1322) foram reprocessados do
+dev, gerando as contas **1076/1077/1078** — guias do TJSP/FEDTJ, com o código de barras conferido
+**dígito a dígito** contra a imagem do documento.
+
+⚠️ **`docx_content.py` estoura se faltar — o OPOSTO do `cte_content.py`.** Ele é importado no
+**topo** do `extract_pdf.py`, junto de `febraban`/`fiscal_key`: sem o arquivo, o import falha e
+**nenhum PDF é extraído**, não só os .docx. É mais barulhento e por isso mais seguro que a
+degradação silenciosa do `cte_content` — mas obriga a ORDEM de cópia: o módulo novo **primeiro**,
+o `extract_pdf.py` depois.
+
+📌 **O que a paridade não responde.** Ela compara bytes dos 32 arquivos (módulo esquecido aparece
+como `faltando`), mas não diz se o ambiente consegue **importar** — versão de Python, `__pycache__`
+antigo, dependência que só existe no dev. Com import no topo o modo de falha é total, e um
+`py -3 -c "import extract_pdf"` separa as duas perguntas em segundos.
+
+---
+
 ## 2026-08-12 — Barra na chave de acesso (61 CT-e perdidos) + conteúdo do CT-e (Onda 5)
 
 **Sintoma: nenhum.** É o que torna este deploy diferente dos outros desta página — não houve

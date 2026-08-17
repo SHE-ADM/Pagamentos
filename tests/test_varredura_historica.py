@@ -78,7 +78,12 @@ class DocumentPartsTest(unittest.TestCase):
     def test_seleciona_o_mesmo_conjunto_que_save_attachments(self):
         raw = _mensagem(
             anexos=[("dacte.pdf", _PDF, "application/pdf"),
-                    ("foto.jpg", b"\xff\xd8\xff" + b"x" * 100, "image/jpeg")],
+                    ("foto.jpg", b"\xff\xd8\xff" + b"x" * 100, "image/jpeg"),
+                    # .docx entrou no escopo em 2026-08-17 (e-mail 1516): a varredura historica
+                    # tem de recuperar Word tambem, senao o acervo antigo fica com o mesmo
+                    # buraco que o pipeline acabou de fechar.
+                    ("boleto.docx", b"PK\x03\x04" + b"z" * 100,
+                     "application/vnd.openxmlformats-officedocument.wordprocessingml.document")],
             inline=[("logo", b"\x89PNG" + b"y" * 50, "image/png")])
         msg = email.message_from_bytes(raw)
 
@@ -89,7 +94,18 @@ class DocumentPartsTest(unittest.TestCase):
 
         nossos = sorted(a["ext"] for a in V._document_parts(msg))
         self.assertEqual(nossos, nomes_reader)
-        self.assertEqual(nossos, [".jpg", ".pdf"])   # o PNG INLINE fica de fora nos dois
+        self.assertEqual(nossos, [".docx", ".jpg", ".pdf"])  # o PNG INLINE fica de fora nos dois
+
+    def test_content_type_do_upload_sai_do_mapa_do_pipeline(self):
+        # O objeto no bucket tem de subir com o MESMO mime que `register_attachment` grava em
+        # `financial_account_attachment.mime_type` — senao o Storage e a tabela discordam sobre
+        # o que o arquivo e. Mutante: voltar ao `ct` declarado pelo remetente.
+        raw = _mensagem(anexos=[("boleto.docx", b"PK\x03\x04" + b"z" * 100,
+                                 "application/octet-stream")])
+        partes = V._document_parts(email.message_from_bytes(raw))
+
+        self.assertEqual(len(partes), 1)
+        self.assertEqual(partes[0]["content_type"], R._UPLOAD_CONTENT_TYPES[".docx"])
 
     def test_ignora_parte_sem_payload(self):
         msg = EmailMessage()

@@ -65,6 +65,10 @@ export const EXTRACTION_SOURCES = [
   'pdf_text',
   'pdf_vision',
   'image_vision',
+  // Anexo .docx (Word) — migration 131. `docx_text` sai do XML do documento (zipfile + regex,
+  // determinístico); `docx_vision` é a leitura VISUAL da imagem embutida.
+  'docx_text',
+  'docx_vision',
   'falha',
 ] as const;
 
@@ -73,9 +77,12 @@ export const EXTRACTION_SOURCES = [
  * `extraction_confidence` (migration 112). O eixo é PROVENIÊNCIA, não probabilidade:
  *
  *   alta         `pdf_text`      — texto digital do PDF, determinístico, sem OCR no caminho
+ *                `docx_text`     — XML do Word (zipfile + regex), e só aceito quando o texto traz
+ *                                instrumento de pagamento com DV válido: oráculo mais forte que o
+ *                                do PDF, que é aceito por volume de texto
  *   media        `email_body`    — parsing de texto livre; o layout varia por remetente
- *   baixa        `pdf_vision` / `image_vision` — leitura VISUAL (origem dos 18 barcodes
- *                                corrompidos achados em 2026-08-07)
+ *   baixa        `pdf_vision` / `image_vision` / `docx_vision` — leitura VISUAL (origem dos 18
+ *                                barcodes corrompidos achados em 2026-08-07)
  *   manual       `extraction_source` NULL — digitado por pessoa no CRUD
  *   desconhecida `falha` e qualquer valor futuro que o CASE da 112 não mapeie
  *

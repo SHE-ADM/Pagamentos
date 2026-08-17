@@ -198,7 +198,7 @@ Estas regras se aplicam a **todo** código novo ou alterado neste projeto, sem e
   sem ele os schemas sem teste próprio ficariam fora do lcov e o Sonar os leria como 0% — que foi
   a armadilha do PR #223. Medido: 5 de 14 arquivos no lcov sem o teste do barrel, **14 de 14** com
   ele. Ao criar schema novo, basta que o barrel o reexporte; não há include a manter.
-- **Suíte Python (pytest):** `py -3 -m pytest tests/` — **1.428 testes** (ex.:
+- **Suíte Python (pytest):** `py -3 -m pytest tests/` — **1.486 testes** (ex.:
   `test_link_extraction.py`, `test_email_body_extraction.py`, `test_body_amount.py`,
   `test_body_invoice_table.py`, `test_body_platform_invoice.py`,
   `test_body_supplier_override.py`, `test_arrecadacao_gnre.py`,
@@ -210,7 +210,8 @@ Estas regras se aplicam a **todo** código novo ou alterado neste projeto, sem e
   `test_varredura_historica.py`,
   `test_vision_multi_boleto.py`, `test_barcode_self_refuted.py`,
   `test_contact_block_nonpayable.py`, `test_is_processed.py`,
-  `test_onda8_gate_ia.py`, `test_react_versao_unica.py`). Cobre o
+  `test_onda8_gate_ia.py`, `test_react_versao_unica.py`, `test_docx_content.py`,
+  `test_docx_extract.py`, `test_docx_pipeline.py`, `test_extraction_source_consistency.py`). Cobre o
   pipeline de extração; rodar após mexer em `read_emails.py`/`extract_pdf.py` ou nos
   scripts de reprocessamento. Não é incluída no `npm test` (que soma **1.557** no Node —
   frontend-vite **882** em 145 arquivos · api-backend **620** · packages/shared 53 · portal-next 2,
@@ -3224,13 +3225,84 @@ reusado da classificação de ICMS-ST), **assunto**, **corpo**, **anexo** e `des
 | `pdf_text` | PDF digital (pdfplumber) | `pdf anexado` |
 | `pdf_vision` | PDF escaneado (Claude Vision via base64 — não exige poppler) | `pdf anexado` |
 | `image_vision` | Anexo de IMAGEM (jpg/png/gif/webp) lido via Claude Vision — recibo/comprovante/foto (ex.: "Valor do porte" dos Correios). Migration 061 no CHECK | `imagem anexada` |
+| `docx_text` | Anexo **.docx** (Word) cujo XML traz o pagável — `zipfile` + regex, determinístico. Migration 131 | `word anexado` |
+| `docx_vision` | Anexo **.docx** cuja figura EMBUTIDA foi lida via Claude Vision (boleto colado como imagem). Migration 131 | `word anexado` |
 | `email_body` | Corpo do e-mail (sem PDF válido) | `corpo email` |
 | `falha` | Falha na extração | `falha` |
 
 > O rótulo amigável em pt-BR é resolvido por `badgeLabel()` (`statusBadge.variants.ts`),
 > usado pelo `StatusBadge` e pelo painel de detalhe de `/consulta` — `pdf_text` e `pdf_vision`
-> compartilham "pdf anexado" (para o usuário ambos são um PDF anexado; a distinção é interna).
+> compartilham "pdf anexado" (para o usuário ambos são um PDF anexado; a distinção é interna);
+> `docx_text`/`docx_vision` seguem a mesma regra com "word anexado".
 > Valores não mapeados caem no próprio texto.
+
+**Anexos .docx (Word) — aceitos desde 2026-08-17 (migration 131):** boleto anexado como documento
+do Word era **descartado em silêncio** por `save_attachments` — o `continue` do filtro não logava
+nada, o e-mail virava "sem anexo" e terminava em `falha` culpando o corpo. Caso de origem:
+`email_control` 1516 ("BOLETO: 0003150-04.2023.8.26.0577"); medidos **3 e-mails** com o mesmo
+padrão (1516, 1515, 1322 — guias do TJSP/FEDTJ), todos reprocessados. Invariantes:
+
+- **Módulo `skills/pdf-contas-pagar/scripts/docx_content.py`, SÓ STDLIB** (`zipfile` + regex),
+  mesmo espírito de `febraban.py`/`fiscal_key.py`/`cte_content.py` — .docx é ZIP com XML, e
+  nenhuma dependência nova entrou. Importado **no topo** do `extract_pdf` (como os outros três) e
+  **lazy com aviso** no `read_emails` (`_docx_content()`); a assimetria é a política do projeto.
+- 🔴 **TRÊS CAMADAS, nesta ordem:** texto do `word/document.xml` → maior imagem de `word/media/`
+  via Vision → falha explícita. **A camada 1 exige pagável PROVADO** (`_page_has_payable`: linha
+  digitável de 47, arrecadação de 48 ou PIX EMV, todos com DV) — ao contrário do PDF, que é aceito
+  por volume de texto. Um .docx não é documento financeiro por natureza (é carta, contrato,
+  proposta): mandar o texto de qualquer Word ao Claude gastaria dinheiro em prosa e criaria conta
+  espúria a partir dela. Afrouxar depois é fácil; o inverso não tem volta.
+- ⚠️ **Medido nos 3 casos reais: os documentos têm texto ZERO** e uma figura colada de ~68 KB —
+  quem responde é a **camada 2**. Se a camada 1 parecer código morto, não é: ela cobre o .docx
+  gerado por sistema, que é o formato mais barato de ler.
+- 🔴 **Sem parser XML, de propósito.** O texto sai por regex sobre as tags de conteúdo, o que torna
+  *billion laughs*/XXE **estruturalmente impossíveis** (não há expansor de entidade) sem
+  `defusedxml`. Demais defesas, porque o conteúdo vem de remetente não confiável: zip bomb em
+  **dois níveis** (soma declarada **e** leitura com teto real — o `file_size` do cabeçalho é
+  declarado pelo próprio arquivo e pode mentir), leitura só de entradas de nome conhecido, e o
+  arquivo de destino da imagem com **nome gerado por nós** (o do ZIP nunca toca o filesystem).
+- 🔴 **A concatenação dos runs é SEM separador dentro do parágrafo.** O Word parte a linha
+  digitável em vários `<w:t>`; um `" ".join` a destruiria. Travado por teste — e a fixture corta
+  **no meio dos dígitos**, porque cortando nos espaços o mutante `" ".join` deixava a suíte verde
+  (`extract_linha_digitavel` tolera espaço a mais).
+- 🔴 **`attachment_kind`/`attachment_ext` (`read_emails`) são a FONTE ÚNICA da seleção de anexo**,
+  consumida por `save_attachments`, pelo `_document_parts` da varredura histórica e pelo
+  `_describe_candidates` do `reprocess_message` — antes eram três cópias que só podiam concordar
+  por disciplina. O ramo `.docx` vem **antes** do de PDF: `is_pdf` casa `"pdf"` em qualquer lugar
+  do nome, então `boleto_pdf.docx` seria salvo como `.pdf` e morreria no pdfplumber. E o `.docx`
+  **não exige `attachment`** no Content-Disposition (Outlook manda como `octet-stream`, às vezes
+  sem disposition); a razão de a imagem exigir — logo/assinatura inline — não existe aqui.
+- 🔴 **O descarte de anexo não suportado agora LOGA** (`Anexo ignorado (tipo não suportado)`). O
+  banco não registra anexo rejeitado (`attachment_names` fica NULL), então essa linha é a única
+  fonte possível de "que formatos estamos perdendo" — e vale para `.doc`/`.odt`/`.xlsx`/`.msg`,
+  que **seguem fora do escopo** (`.doc` é OLE binário; a stdlib não lê).
+- 🔴 **`VISION_SOURCES` (`extract_pdf`) é a fonte única das fontes cuja resposta é JSON.**
+  `build_records` roteava por tupla literal `("pdf_vision","image_vision")`: sem `docx_vision` ali,
+  a resposta JSON do Vision cairia no parser de TEXTO, produzindo registro vazio que o pipeline
+  leria como "documento sem valor" — sem erro. ⚠️ O teste dessa guarda tem de assertar o
+  **conteúdo** do registro, não só a fonte: medido, `_build_records_text` engole a falha e
+  reconstrói por regex, devolvendo 1 registro que ainda carrega `extraction_source='docx_vision'`.
+- 🔴 **Dois pontos declaravam `application/pdf` para sufixo desconhecido** e foram fechados:
+  `_vision_source_block` (fallback silencioso) e **`_try_barcode_vision`** (bloco hardcoded,
+  alcançável pelo caminho `docx_text` via `_build_records_text` quando a linha digitável não casa).
+  O sintoma seria **400 remoto** depois de trafegar o base64, longe da causa; agora é recusa local
+  nomeada. O guard fica na função que carrega o media_type, não no call site.
+- **UI:** o `AttachmentViewer` não tenta `<iframe>` em `.docx` (o navegador não renderiza) —
+  mostra estado explícito e entrega Baixar / Nova aba.
+- ✅ **DEPLOY APLICADO E VERIFICADO em 2026-08-17** (paridade **32/32** + smoke de import na própria
+  máquina de produção, devolvendo `ok True ('pdf_vision', 'image_vision', 'docx_vision')`).
+  `docx_content.py` é arquivo **NOVO** (o manifesto foi de 31 para **32**); `DEPLOY_GLOBS` **não**
+  mudou (o glob `skills/pdf-contas-pagar/scripts/*.py` já o cobre). **Ordem de cópia:
+  `docx_content.py` PRIMEIRO**, depois `extract_pdf.py`, `read_emails.py` e o manifesto — o
+  `extract_pdf` o importa no TOPO, então o módulo ausente derruba **toda** a extração, não só a de
+  .docx. Nenhuma dependência nova (`zipfile` é stdlib). Detalhe em
+  [docs/deploy/historico-deploys.md](docs/deploy/historico-deploys.md).
+  ⚠️ **Paridade de hash e import são perguntas DIFERENTES.** O `check_deploy_parity` compara os
+  bytes de todos os 32 arquivos — módulo esquecido aparece ali como `faltando`, então ele cobre o
+  erro de cópia. O que ele **não** cobre é o ambiente: versão de Python da máquina, `__pycache__`
+  antigo, dependência que existe no dev e não lá. Com import no TOPO isso é falha total da
+  extração, e custa um comando distingui-la: `py -3 -c "import extract_pdf"` a partir de
+  `skills/pdf-contas-pagar/scripts`.
 
 **Anexos de IMAGEM (jpg/png/gif/webp) — lidos via Claude Vision (`image_vision`):** o
 pipeline trata imagem (recibo/comprovante/foto, ex.: "Valor do porte" dos Correios) como
@@ -3412,8 +3484,25 @@ e-mails `status='falha'`, rebusca o corpo no IMAP, baixa o boleto pelo link e gr
 - 🔴 **Confirmação de pagamento ENCAMINHADA** (assunto reescrito) é barrada no caminho do CORPO, lendo
   o `Assunto:` original do bloco encaminhado. **`lembrete` encaminhado NÃO é barrado** — pode ser a
   única fonte de uma fatura; reenvios repetidos são suprimidos pela dedup, não por este guard.
-- **`status_for_result` — prioridade:** conta do PDF → NF-e pura → CSV do PDF → conta do corpo →
-  **duplicidade** → anexo sem conta (`pendente`) → notificação → `falha`.
+- 🔴 **`status_for_result` — CONTA GRAVADA ⇒ STATUS QUE DECLARA CONTA.** Prioridade: conta do PDF
+  (`extraído`) → **conta do corpo (`recebido`)** → NF-e pura → não-pagável → CSV do PDF →
+  **duplicidade** → anexo sem conta (`pendente`) → notificação → `falha`. Nenhum sinal que descreve
+  o **ANEXO** (`pure_nfe`, `nonpayable`, `csv_generated`) pode ser avaliado antes dos dois sinais de
+  conta — nenhum deles refuta uma conta que existe no banco. **`body_created` subiu para o 2º lugar
+  em 2026-08-17**: estava abaixo de `nonpayable`, e um anexo NF pulado por `SKIP_ACCOUNT_TYPES`
+  mandava para `ignorado` — *"não-financeiro, nada a fazer"* — e-mail cuja conta o CORPO havia
+  gravado. Medido: **13 e-mails, ~R$ 80 mil** escondidos atrás do card "Ignorados" (caso de origem
+  1517 → conta 1059 de R$ 8.250,00; backfill: **migration 130**). Corrigir só o ramo `nonpayable`
+  seria remendo — `pure_nfe` reproduz o mesmo bug pela outra porta. A guarda é o **invariante
+  exaustivo** (2^8 combinações) em `InvarianteContaGravadaTest`, com anti-vacuidade dupla (o produto
+  tem de ser completo **e** os DOIS status têm de aparecer — senão "sempre `extraído`" passaria,
+  mentindo sobre a origem), mais `ProcessMessageAnexoNaoPagavelComCorpoTest`, que **executa**
+  `process_message` (§2 item 6: guarda por texto prova que a chamada existe, não que funciona).
+  ⚠️ **Efeito colateral deliberado:** PDF que gera CSV **sem nenhuma conta** + conta do corpo passou
+  de `extraído` para `recebido` — mais preciso, porque `extraído` significa "o PDF gerou conta". A
+  precedência *"o boleto sempre vence o corpo"* NÃO se perdeu: ela vive no gate
+  `if not attachment_account` de `process_message`, não nesta ordem. Os **13 e-mails históricos**
+  nesse estado seguem em `extraído` (não escondem conta — realinhá-los é decisão de produto).
 
 
 ### Frontend — rotas e serviços
@@ -4198,8 +4287,43 @@ local/agendada (ver flag `EMAIL_READER_ENABLED` acima e memória [[vercel-deploy
 ## Banco de dados (Supabase)
 
 Migrations em `supabase/migrations/`, aplicadas **manualmente no SQL Editor** (ou via Supabase
-MCP/`psql` — ver a nota de cada uma) em ordem numérica (`001` → `129`). **Próxima migration =
-`130`** (verificar sempre antes de criar nova).
+MCP/`psql` — ver a nota de cada uma) em ordem numérica (`001` → `131`). **Próxima migration =
+`132`** (verificar sempre antes de criar nova).
+
+**A `131` acrescenta `docx_text`/`docx_vision` ao domínio de `extraction_source`** (aplicada via
+psql em 2026-08-17; idempotente, reexecução verificada como no-op). Regra e invariantes do .docx em
+"`extraction_source` — origem dos dados". Três lições que a aplicação cobrou:
+🔴 **A migration abre transação EXPLÍCITA (`BEGIN`/`COMMIT`)** — o `psql` roda em autocommit, e a
+primeira tentativa deixou o banco em estado **parcial** (CHECK novo aplicado, coluna gerada ainda
+antiga) quando o `DROP VIEW` falhou; além disso, `CREATE TEMP TABLE … ON COMMIT DROP` fora de
+transação é destruída no commit implícito do próprio CREATE, e as sondas não achariam o baseline.
+🔴 **São DUAS views a dropar e recriar, não uma** — `analytics.vw_payables` (que lê
+`extraction_confidence`, coluna GERADA cuja regra só muda com DROP+ADD) **e**
+`analytics.vw_aging_vencidos`, que depende da primeira. A consulta que fiz em `pg_depend`
+perguntava quem depende da **COLUNA**, e a resposta ("só vw_payables") estava certa para a pergunta
+errada. Ao dropar view, pergunte pela VIEW — ou leia o erro do primeiro DROP, que nomeia a
+dependente. **Nunca `CASCADE`**: ele derrubaria a dependente em silêncio e o chat ficaria sem as
+tools que a leem. Os `GRANT` não sobrevivem ao DROP e são reemitidos.
+🔴 **Sonda não usa número mágico** — a P4 compara o conjunto de colunas das duas views com um
+baseline capturado ANTES do DROP, nos dois sentidos. A primeira versão escrevia "41 colunas" à mão,
+e o número **estava errado** (são 40): número mágico numa guarda testa a memória de quem o digitou,
+não o que o banco tinha.
+
+**A `130` desfaz o dano do bug de precedência de `status_for_result`** (backfill de dado, sem DDL;
+aplicada via Supabase MCP em 2026-08-17): **13 e-mails** em `ignorado` cujas contas vieram TODAS do
+corpo passaram a `recebido` — `recebido` 171 → **184**, e os e-mails com conta em `ignorado` caíram
+de 14 para **1**. Regra e caso de origem em "`status_for_result`" acima. Duas decisões que não
+devem ser desfeitas: 🔴 **o conjunto é CONGELADO por id numa TEMP TABLE antes do UPDATE** — o
+predicado inclui `status = 'ignorado'`, que o próprio UPDATE altera, então reavaliá-lo depois
+devolveria zero linhas e as sondas passariam **sem provar nada**; e 🔴 **o sufixo `#N` de múltiplos
+pagáveis casa por `starts_with`, NUNCA por `LIKE message_id || '#%'`** — Message-ID contém `_`, que
+é **curinga no LIKE**, e um e-mail casaria a conta de outro, mudando o status errado em silêncio
+(medido: **62 dos 1.462** Message-IDs têm `_`). As 4 sondas abortam a migration em divergência,
+incluindo um **controle negativo** (a população com conta de PDF/imagem tem de ficar intacta) e a
+reavaliação do predicado do zero, que a TEMP TABLE congelada não poderia dar. **Deliberadamente
+FORA:** o e-mail 1292 (conta criada por reprocessamento manual, `pdf_text` — outra causa) e os 13
+e-mails em `extraído` cuja única conta veio do corpo (imprecisos, mas não escondem conta).
+Reexecução verificada como **no-op**.
 
 **A `129` registra QUAL MODELO serviu cada turno do chat** (`analytics.ai_chat_log.model TEXT`,
 aplicada via psql em 2026-08-15; aditiva, idempotente, nullable, **sem backfill**). O log tinha
@@ -4920,7 +5044,7 @@ internet` ao CHECK de `document_type` e faz backfill — ver "Normalização de 
 
 | Tabela | Propósito |
 |---|---|
-| `email_control` | Dedup/controle. `status` ∈ (`extraído`, `recebido`, `pendente`, `falha`, `ignorado`, `duplicidade`) — **migrations 022/031**. `extraído`=PDF extraído (CSV gerado); `recebido`=sem PDF, conta via corpo; `pendente`=PDF salvo sem CSV (substitui `baixado`); `falha`=casou keyword mas sem PDF e sem conta no corpo; `ignorado`=não-financeiro (sem keyword) **ou NF-e pura sem conta a pagar** (`subject_is_pure_nfe`); `duplicidade`=pagável do corpo duplica conta já registrada por outro e-mail (**migration 031**; card/filtro próprios em `/emails`). O status é calculado em `process_message` pelo resultado real (conta/CSV/corpo/duplicata), não por `pdf_extracted`. **Visibilidade por REMETENTE (migration 078):** a policy SELECT (`authenticated`) filtra por `lower(sender_email)=lower(auth.email())` quando o grupo do usuário tem `sees_only_own_accounts` (Comercial) — `/emails` mostra só os e-mails de que o usuário é remetente; demais grupos veem tudo; `service_role` com bypass. **Corpo (migrations 105/106 — Onda 2):** `body_preview` segue TRUNCADO em 500 chars (é o preview da tela) e **`body_full`** guarda o corpo INTEIRO — não unificar os dois. **`body_search`** é `tsvector` GERADO de assunto+corpo (`to_tsvector('portuguese'::regconfig, left(…, 100000))` — regconfig explícito porque a versão de 1 argumento é STABLE; o `left` é teto contra o limite de 1 MB do tsvector, que **quebraria o INSERT**), com índice GIN e a tool `analytics.buscar_emails`. `body_full` **NULL significa "ainda não temos o corpo"** (e-mail antigo com preview truncado, ou sem keyword — que nem tem o corpo baixado), distinto de string vazia. **A Onda 4 recuperou 70 dos 506 candidatos (2026-08-03); os 436 restantes são IRRECUPERÁVEIS** — os e-mails já não estão na INBOX, e não há segunda passada que os traga. `authenticated` NÃO grava nessas colunas (o UPDATE dele é restrito a `reviewed_at`) |
+| `email_control` | Dedup/controle. `status` ∈ (`extraído`, `recebido`, `pendente`, `falha`, `ignorado`, `duplicidade`) — **migrations 022/031**. `extraído`=conta veio do PDF (ou CSV gerado sem conta nova); `recebido`=**conta veio do CORPO** — desde 2026-08-17 vale mesmo com anexo que gerou CSV, desde que nenhuma conta tenha saído dele (ver o invariante em "`status_for_result`"); `pendente`=PDF salvo sem CSV (substitui `baixado`); `falha`=casou keyword mas sem PDF e sem conta no corpo; `ignorado`=não-financeiro (sem keyword) **ou NF-e pura sem conta a pagar** (`subject_is_pure_nfe`); `duplicidade`=pagável do corpo duplica conta já registrada por outro e-mail (**migration 031**; card/filtro próprios em `/emails`). O status é calculado em `process_message` pelo resultado real (conta/CSV/corpo/duplicata), não por `pdf_extracted`. **Visibilidade por REMETENTE (migration 078):** a policy SELECT (`authenticated`) filtra por `lower(sender_email)=lower(auth.email())` quando o grupo do usuário tem `sees_only_own_accounts` (Comercial) — `/emails` mostra só os e-mails de que o usuário é remetente; demais grupos veem tudo; `service_role` com bypass. **Corpo (migrations 105/106 — Onda 2):** `body_preview` segue TRUNCADO em 500 chars (é o preview da tela) e **`body_full`** guarda o corpo INTEIRO — não unificar os dois. **`body_search`** é `tsvector` GERADO de assunto+corpo (`to_tsvector('portuguese'::regconfig, left(…, 100000))` — regconfig explícito porque a versão de 1 argumento é STABLE; o `left` é teto contra o limite de 1 MB do tsvector, que **quebraria o INSERT**), com índice GIN e a tool `analytics.buscar_emails`. `body_full` **NULL significa "ainda não temos o corpo"** (e-mail antigo com preview truncado, ou sem keyword — que nem tem o corpo baixado), distinto de string vazia. **A Onda 4 recuperou 70 dos 506 candidatos (2026-08-03); os 436 restantes são IRRECUPERÁVEIS** — os e-mails já não estão na INBOX, e não há segunda passada que os traga. `authenticated` NÃO grava nessas colunas (o UPDATE dele é restrito a `reviewed_at`) |
 | `financial_account_control` | Tabela principal de contas a pagar — uma linha por documento; alimentada pelo pipeline de e-mail **e** por CRUD manual (baixas, consolidações, dashboards). Substitui a antiga `financial_emails` (dropada na migration 020). O fornecedor é referenciado **só pela FK `sk_supplier`** (surrogate key snowflake, NOT NULL — **migration 042**, antes era `supplier_id`) — nome/CNPJ vêm do JOIN com `supplier` (colunas denormalizadas dropadas na **migration 041**). Tem `sender_email` (migration 023; backfill em 025) usado na resolução p/ alinhar `supplier.email`, e `subject` (migration 025) — exibidos/buscados em `/consulta`. **Classificação contábil** (migrations 047/048): `cost_center_id`/`chart_account_id` SMALLINT, NOT NULL DEFAULT 0 (FKs para os cadastros; id 0 = "não informado") — preenchidos no CRUD manual (cascata centro→plano). **Autoria** (migrations 076/077): `created_by` (DONO — base da visibilidade por dono), `updated_by`, `status_changed_by`, `status_changed_at` — UUID → `auth.users`, NOT NULL DEFAULT sentinela (hoje `financeiro@otimotex.com.br` — migration 110), carimbados pelo servidor/trigger `trg_fac_authorship` (ver "Visibilidade de contas por dono" / "Auditoria de autor"). 🔴 **Essas colunas guardam só o ÚLTIMO autor** — a penúltima alteração é sobrescrita. O HISTÓRICO (quem alterou o quê, com antes/depois) vive em **`audit_log`** desde a Onda 7; não tente reconstruí-lo a partir daqui. **`payment_date`** (DATE, migration 096): **a data de pagamento da conta** — carimbada pela trigger `trg_fac_payment_date` ao entrar em `status_id = 8` e limpa ao sair; escrita SÓ pela trigger (fora do grant de coluna de `authenticated` e do schema Zod de escrita). Usar como data de pagamento sem ressalva; a auditoria estrutural e o limite do histórico (backfill da 096 = vencimento) estão no bloco da 096 acima. 🔴 **`competence_date` é TEXT no formato `YYYY-MM` (mês de competência) e NUNCA deve ser convertida para DATE** — `'2026-06'::date` é erro de sintaxe, e o formato é contrato de 3 camadas (prompt do Claude em `extract_pdf.py`, template do CSV, schema Zod); converter faria **todo INSERT do reader falhar**. **Colunas DERIVADAS (Onda 6, migrations 112/114 — todas `GENERATED ALWAYS ... STORED`, só leitura, no `.omit()` do schema Zod):** `competence_month` (1º dia do mês de competência, via **`make_date`** — `to_date` é STABLE e o PostgreSQL a recusa), `days_late` (`payment_date - due_date`; negativo = antecipado; **não é DPO**), `extraction_confidence` (alta/media/baixa/manual/desconhecida), `installment_number`/`installment_base` (ordinal da parcela e documento do carnê; **não existe total** — use `analytics.parcelamentos()`) |
 | `financial_cost_center` / `financial_chart_of_account` | **Cadastros de classificação contábil** (pré-existentes, **preservados em limpezas**) usados como lookup no modal de contas. `financial_cost_center` é **gerenciado pelo CRUD de centros de custo** (`/tabelas/centros-de-custo` — PK `cost_center_id` SMALLINT IDENTITY ALWAYS; id 0 = sentinela "não informado", fora do CRUD; ver "CRUD de centros de custo"). `financial_chart_of_account` (também gerenciado pelo **CRUD de Plano de contas** — `/tabelas/plano-de-contas`) tem `cost_center_id` (relaciona o plano ao centro — base da CASCATA), `chart_account_subgroup_id` (FK → subgrupo) e `is_postable` (só os postáveis são lançáveis). Os cadastros `financial_bank`, `financial_account`, `financial_chart_of_account_group` e `financial_chart_of_account_subgroup` também ganharam CRUD próprio (grupo Tabelas — ver "CRUDs dos demais cadastros contábeis"). Lidos via `lib/lookups.ts` (service_role) **e** pelo frontend via embed REST (papel `authenticated`); RLS habilitado com policy de SELECT `TO authenticated` (migration 049 — sem ela o embed voltava null e a UI mostrava `#id`) |
 | `email_processing_errors` | Log de falhas com `raw_payload` JSON. **Visibilidade por REMETENTE (migration 078):** policy SELECT (`authenticated`) filtra por `lower(sender_email)=lower(auth.email())` para grupo com `sees_only_own_accounts` (Comercial) — `/erros` mostra só os erros de que o usuário é remetente; demais veem tudo; `service_role` com bypass |

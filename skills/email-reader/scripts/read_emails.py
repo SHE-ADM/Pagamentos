@@ -67,6 +67,7 @@ EMAILS_LOG     = CSV_OUTPUT / "emails_log.csv"
 _UPLOAD_CONTENT_TYPES = {
     ".pdf": "application/pdf", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
     ".png": "image/png", ".gif": "image/gif", ".webp": "image/webp",
+    ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
 }
 
 # Header PostgREST reutilizado (evita literal duplicado — S1192).
@@ -93,6 +94,12 @@ _FISCAL_KEY_WARNED = False
 # arquivo NOVO, e sem o aviso o deploy parcial deixaria de gravar peso/rota/frete em silencio.
 _CTE_CONTENT = None
 _CTE_CONTENT_WARNED = False
+
+# Idem para a leitura de .docx. Mesmo mecanismo, mesmo motivo: `docx_content` e arquivo NOVO, e
+# sem o aviso um deploy parcial deixaria a regra LEBIANCO e o gancho fiscal cegos ao Word — o
+# mesmo tipo de silencio que fez o boleto do e-mail 1516 sumir.
+_DOCX_CONTENT = None
+_DOCX_CONTENT_WARNED = False
 
 
 def _febraban():
@@ -157,6 +164,28 @@ def _cte_content():
         log.warning("  [FISCAL] modulo 'cte_content' indisponivel — peso/rota/frete do CT-e NAO "
                     "serao gravados. Deploy parcial (falta cte_content.py)?")
     return _CTE_CONTENT or None
+
+
+def _docx_content():
+    """Modulo `docx_content` (leitura de .docx), ou None AVISANDO UMA VEZ.
+
+    Sem fallback local: ler um ZIP+XML a mao aqui duplicaria as defesas contra zip bomb e path
+    traversal que o modulo concentra — e uma segunda copia dessas guardas e exatamente o tipo de
+    coisa que diverge e vira furo. Melhor nao ler o .docx e dizer isso no log."""
+    global _DOCX_CONTENT, _DOCX_CONTENT_WARNED  # noqa: PLW0603 — cache/aviso por processo
+    if _DOCX_CONTENT is None:
+        try:
+            if str(EXTRACT_SCRIPT.parent) not in sys.path:
+                sys.path.insert(0, str(EXTRACT_SCRIPT.parent))
+            import docx_content
+            _DOCX_CONTENT = docx_content
+        except Exception:
+            _DOCX_CONTENT = False
+    if not _DOCX_CONTENT and not _DOCX_CONTENT_WARNED:
+        _DOCX_CONTENT_WARNED = True
+        log.warning("  [DOCX] modulo 'docx_content' indisponivel — texto de anexo .docx NAO sera "
+                    "lido (regra LEBIANCO e chave fiscal ficam cegas). Deploy parcial?")
+    return _DOCX_CONTENT or None
 
 
 def _febraban_fn(name: str):
@@ -3012,6 +3041,22 @@ def _pdf_text(pdf_path) -> str:
     return ""
 
 
+def _attachment_text(path) -> str:
+    """Texto CRU do anexo — PDF via pdfplumber, .docx via `docx_content`. BEST-EFFORT.
+
+    Serve os dois consumidores de sempre (`_pdf_text` explica quais): a regra LEBIANCO e o
+    registro de documento fiscal da Onda 3. Sem o ramo de .docx, uma chave de acesso de CT-e ou
+    uma mencao a LEBIANCO dentro de um Word seriam perdidas exatamente como o boleto era — o
+    `pdfplumber` abre qualquer coisa como PDF e devolve "" no `except`, em nivel DEBUG.
+    """
+    if str(path).lower().endswith(_DOCX_ATTACHMENT_EXTS):
+        mod = _docx_content()
+        # Modulo ausente (deploy parcial) ja avisou uma vez; devolver "" e melhor que mandar um
+        # ZIP ao pdfplumber, que so produziria ruido no log.
+        return mod.docx_text(path) if mod is not None else ""
+    return _pdf_text(path)
+
+
 def _register_fiscal_documents(ctrl, pdf_text: str, storage_key: str,
                                ctx: dict | None = None) -> int:
     """Registra em `fiscal_document` toda chave de acesso valida do texto (Onda 3).
@@ -3898,6 +3943,13 @@ _IMAGE_ATTACHMENT_CTS  = {"image/jpeg", "image/png", "image/gif", "image/webp"}
 _IMAGE_INLINE_MIN_BYTES = 50_000
 
 
+# Anexos .docx (Word moderno): ZIP+XML, lidos por `docx_content` no extract_pdf. Caso de origem —
+# e-mail 1516, boleto judicial anexado como Word e descartado em silencio por esta allowlist.
+_DOCX_ATTACHMENT_EXTS = (".docx",)
+_DOCX_ATTACHMENT_CTS  = {
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document"}
+
+
 def _attachment_image_ext(content_type: str, filename_lower: str) -> str:
     """Extensão de imagem a usar no arquivo salvo (do nome do anexo ou do MIME)."""
     for ext in _IMAGE_ATTACHMENT_EXTS:
@@ -3905,6 +3957,48 @@ def _attachment_image_ext(content_type: str, filename_lower: str) -> str:
             return ext
     return {"image/jpeg": ".jpg", "image/png": ".png",
             "image/gif": ".gif", "image/webp": ".webp"}.get(content_type, ".img")
+
+
+def attachment_kind(content_type: str, filename_lower: str,
+                    content_disposition: str) -> "str | None":
+    """'pdf' | 'image' | 'docx' | None — REGRA ÚNICA de seleção de anexo-documento.
+
+    Fonte única de `save_attachments`, do `_document_parts` da varredura histórica e do
+    `_describe_candidates` do reprocess_message. As três eram cópias que só podiam concordar por
+    disciplina — e a guarda cross-layer de `test_varredura_historica` existe justamente porque
+    divergir ali significa subir ao bucket o que o pipeline nunca consideraria documento, ou
+    perder o documento que a varredura existe para recuperar.
+
+    Por que cada família tem um critério diferente:
+      - PDF   — MIME, extensão OU nome com "pdf" em anexo explícito (o mais permissivo: quase todo
+                PDF que chega aqui é cobrança).
+      - IMAGE — exige `attachment` no Content-Disposition, senão logo/assinatura inline entrariam.
+      - DOCX  — NÃO exige `attachment`: Outlook e webmails mandam .docx como
+                `application/octet-stream`, às vezes sem disposition. E .docx nunca é inline — a
+                razão de a regra de imagem exigir disposition simplesmente não existe aqui.
+    """
+    cd = (content_disposition or "").lower()
+    ct = (content_type or "").lower()
+    fl = (filename_lower or "").lower()
+    # DOCX vem ANTES do PDF de propósito: `is_pdf` casa "pdf" em qualquer lugar do nome, então
+    # um anexo chamado `boleto_pdf.docx` seria salvo com extensão .pdf e quebraria no pdfplumber.
+    if fl.endswith(_DOCX_ATTACHMENT_EXTS) or ct in _DOCX_ATTACHMENT_CTS:
+        return "docx"
+    if ct == "application/pdf" or fl.endswith(".pdf") or ("attachment" in cd and "pdf" in fl):
+        return "pdf"
+    if "attachment" in cd and (ct in _IMAGE_ATTACHMENT_CTS
+                               or fl.endswith(_IMAGE_ATTACHMENT_EXTS)):
+        return "image"
+    return None
+
+
+def attachment_ext(kind: str, content_type: str, filename_lower: str) -> str:
+    """Extensão IMPOSTA pelo pipeline ao arquivo salvo — nunca copiada do nome do anexo."""
+    if kind == "pdf":
+        return ".pdf"
+    if kind == "docx":
+        return _DOCX_ATTACHMENT_EXTS[0]
+    return _attachment_image_ext(content_type, filename_lower)
 
 
 def _unique_inbox_path(base_stem: str, ext: str) -> Path:
@@ -3929,18 +4023,19 @@ def save_attachments(msg, sender_email: str, subject: str,
         ct    = part.get_content_type()
         fname = decode_str(part.get_filename() or "")
         fl    = fname.lower()
-        is_pdf = (ct == "application/pdf"
-                  or fl.endswith(".pdf")
-                  or ("attachment" in cd and "pdf" in fl))
-        # Imagem: SÓ quando é anexo explícito (Content-Disposition: attachment) —
-        # evita salvar logos/assinaturas embutidas (inline / Content-ID), que não
-        # são documentos financeiros. Recibo/foto do documento vem como anexo.
-        is_image = ("attachment" in cd.lower()
-                    and (ct in _IMAGE_ATTACHMENT_CTS or fl.endswith(_IMAGE_ATTACHMENT_EXTS)))
-        if not (is_pdf or is_image):
+        kind  = attachment_kind(ct, fl, cd)
+        if kind is None:
+            # 🔴 O DESCARTE PRECISA DEIXAR RASTRO. Este `continue` era MUDO, e foi assim que o
+            # boleto .docx do e-mail 1516 sumiu: o anexo era jogado fora sem log, o e-mail virava
+            # "sem anexo" e terminava em 'falha' culpando o corpo. O banco não registra anexo
+            # rejeitado (`attachment_names` fica NULL), então esta linha é a ÚNICA fonte possível
+            # de "que formatos estamos perdendo" — vale para .doc/.odt/.xlsx/.msg, que seguem
+            # fora do escopo. Só loga anexo NOMEADO: parte sem filename é corpo/multipart.
+            if fname:
+                log.info(f"    Anexo ignorado (tipo não suportado): {fname} | {ct}")
             continue
 
-        ext       = ".pdf" if is_pdf else _attachment_image_ext(ct, fl)
+        ext       = attachment_ext(kind, ct, fl)
         orig      = safe_filename(Path(fname).stem, 20) if fname else "anexo"
         dest_path = _unique_inbox_path(f"{sender_tag}_{subject_tag}_{date_tag}_{orig}", ext)
 
@@ -4898,7 +4993,9 @@ def extract_and_store_accounts(saved_pdfs: list, message_id: str,
         # era exclusiva da LEBIANCO e era PULADA quando remetente/assunto/corpo ja tinham
         # decidido; agora e sempre feita, porque a chave de acesso precisa do texto de TODO
         # anexo. Best-effort: "" quando o PDF e imagem, e cifrado ou o pdfplumber falha.
-        pdf_raw_text = _pdf_text(pdf_path)
+        # `_attachment_text` (e nao `_pdf_text`) porque o anexo tambem pode ser .docx, que o
+        # pdfplumber so faria falhar em silencio.
+        pdf_raw_text = _attachment_text(pdf_path)
 
         if not pdf_lebianco and _has_lebianco_reference(pdf_raw_text):
             pdf_lebianco = True   # curto-circuito da FLAG (a leitura acima ja aconteceu)
@@ -5539,17 +5636,23 @@ def status_for_result(has_attachment: bool, csv_generated: bool,
                        duplicate: bool = False, nonpayable: bool = False) -> str:
     """Deriva email_control.status a partir do resultado real do processamento.
 
-    Prioridade (CHECK migration 022): conta do PDF > conta do corpo > NF-e pura
-    sem conta > CSV sem conta nova > anexo sem conta.
+    🔴 INVARIANTE QUE GOVERNA A ORDEM — **conta gravada ⇒ status que DECLARA conta**
+    ('extraído' quando veio do PDF, 'recebido' quando veio do corpo). Nenhum sinal que
+    descreve o DOCUMENTO ('pure_nfe', 'nonpayable') ou a AUSENCIA de resultado
+    ('duplicate', 'has_attachment', 'notification') pode ser avaliado antes dos dois
+    sinais de conta, porque nenhum deles refuta uma conta que existe no banco.
+
+    Prioridade: conta do PDF > conta do corpo > NF-e pura sem conta > nao-pagavel >
+    CSV sem conta nova > duplicidade > anexo sem conta > notificacao > falha.
 
       - accounts_saved -> 'extraído'  (conta(s) a pagar gravada(s) do PDF)
+      - body_created   -> 'recebido'  (conta extraida do corpo do e-mail)
       - pure_nfe       -> 'ignorado'  (assunto NF-e/NFS-e puro, sem pagavel e sem
                                        conta: notificacao fiscal, nao e conta a pagar)
       - nonpayable     -> 'ignorado'  (CT-e/transporte sem boleto — documento fiscal,
                                        nao e conta a pagar; vem ANTES de csv_generated
                                        porque o PDF do CT-e gera CSV sem conta)
       - csv_generated  -> 'extraído'  (PDF lido — conta nova ou reemissao deduplicada)
-      - body_created   -> 'recebido'     (conta extraida do corpo do e-mail)
       - duplicate      -> 'duplicidade'  (pagavel do corpo duplica conta ja registrada)
       - has_attachment -> 'pendente'  (PDF salvo, aguardando reprocessamento)
       - notification   -> 'ignorado'  (sem anexo/conta: notificacao/aviso, nao pagavel)
@@ -5558,13 +5661,34 @@ def status_for_result(has_attachment: bool, csv_generated: bool,
     'accounts_saved' vem primeiro para nao esconder conta real de um e-mail cujo
     assunto parece NF-e pura mas que de fato gerou conta (NF-e + boleto). NF-e/
     NFS-e estao em SKIP_ACCOUNT_TYPES (nunca viram conta), entao 'pure_nfe' vem
-    antes do 'csv_generated' que o PDF de NF-e sempre produz. 'csv_generated'
-    segue tendo precedencia sobre 'body_created' (comportamento da migration 022).
+    antes do 'csv_generated' que o PDF de NF-e sempre produz.
     'notification' fica no lugar do antigo 'falha' (sem anexo, sem CSV, sem conta):
     avisos/confirmacoes/informes sem pagavel viram 'ignorado' em vez de 'falha'.
+
+    🔴 'body_created' SUBIU para o 2o lugar em 2026-08-17 (antes ficava abaixo de
+    'pure_nfe'/'nonpayable'/'csv_generated'). Esses tres descrevem o **ANEXO**; o corpo
+    e outra metade do e-mail, e barrar um com o outro escondia conta REAL. Caso de
+    origem — e-mail 1517 (<000601dd2e4a$9cae5030$d60af090$@lebianco.com.br>): anexo
+    'NF_22020.pdf' pulado por SKIP_ACCOUNT_TYPES (nonpayable_only=True) e a conta 1059
+    (R$ 8.250,00) gravada pelo CORPO; o e-mail foi para 'ignorado', que em /emails
+    significa "nao-financeiro, nada a fazer". Medido: **13 e-mails** no mesmo estado,
+    ~R$ 80 mil em contas escondidas atras do card "Ignorados" (backfill: migration 130).
+    Corrigir so o ramo 'nonpayable' seria remendo — 'pure_nfe' reproduz o MESMO bug pela
+    outra porta (assunto de NF-e + pagavel no corpo). O invariante acima e o que fecha a
+    classe inteira, e ele e travado exaustivamente (2^8 combinacoes) em
+    tests/test_status_for_result.py::InvarianteContaGravadaTest.
+
+    Efeito colateral deliberado: com o PDF gerando CSV **sem nenhuma conta** e o corpo
+    gravando a conta, o status passa de 'extraído' para 'recebido' — mais preciso, porque
+    'extraído' significa "o PDF gerou conta" e ali ele nao gerou (o gate
+    `if not attachment_account` de process_message garante que o corpo so roda quando o
+    anexo nao respondeu por pagavel nenhum). NAO ha perda da precedencia "o boleto sempre
+    vence o corpo": ela vive naquele gate, nao nesta ordem.
     """
     if accounts_saved > 0:
         return "extraído"
+    if body_created:
+        return "recebido"
     if pure_nfe:
         return "ignorado"
     # CT-e/transporte sem boleto (ou NF-e/NFS-e pulada): documento nao-pagavel — vem
@@ -5580,13 +5704,11 @@ def status_for_result(has_attachment: bool, csv_generated: bool,
         # a perda do boleto T.R.T (conta 847) ficou INVISIVEL — e-mail verde, sem conta e
         # sem erro em /erros. Com o status proprio, 'extraído' volta a significar "gerou
         # conta" e o caso aparece no card "Duplicidades" de /emails.
-        # `not body_created` preserva a precedencia do corpo (teste existente): quando o
-        # corpo gravou conta nova, o e-mail nao e duplicata — e 'extraído', como antes.
-        if duplicate and not body_created:
+        # (A guarda `not body_created` que existia aqui virou codigo morto quando
+        # 'body_created' subiu para o 2o lugar: a conta nova do corpo ja retornou acima.)
+        if duplicate:
             return "duplicidade"
         return "extraído"
-    if body_created:
-        return "recebido"
     # Pagável do corpo duplica conta já registrada por outro e-mail: a conta
     # existe, então NÃO é falha — vira 'duplicidade' (status próprio). Vem antes
     # de 'has_attachment' porque "já registrada" descreve melhor que "pendente".

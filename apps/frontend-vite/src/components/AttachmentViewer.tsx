@@ -94,9 +94,28 @@ export default function AttachmentViewer({ sourceFile, title, onClose }: Readonl
     return () => el.removeEventListener('click', onBackdrop);
   }, [onClose]);
 
+  // Formatos que o navegador NÃO renderiza em <iframe>. Um .docx serviria como download
+  // pelo próprio iframe (ou mostraria um painel em branco, conforme o navegador) — o que se
+  // lê na tela como "o anexo sumiu". Estado explícito + os botões Baixar/Nova aba, que já
+  // existem no cabeçalho, entregam o arquivo sem fingir uma pré-visualização que não há.
+  const previewUnavailable = /\.docx$/i.test(sourceFile);
+
   function renderBody() {
     if (state === 'loading') {
       return <div className="flex h-full items-center justify-center text-sm text-slate-500">Carregando anexo…</div>;
+    }
+    if (state === 'ok' && previewUnavailable) {
+      return (
+        <div className="flex h-full flex-col items-center justify-center gap-3 text-center">
+          <div className="flex h-14 w-14 items-center justify-center rounded-full bg-status-info-bg text-status-info-fg">
+            <FileWarning size={26} />
+          </div>
+          <p className="max-w-xs text-sm text-slate-600">
+            Documento do Word (.docx) — pré-visualização não disponível no navegador.
+            Use <span className="font-medium">Baixar</span> ou <span className="font-medium">Nova aba</span> para abrir o arquivo.
+          </p>
+        </div>
+      );
     }
     if (state === 'notfound') {
       return (
