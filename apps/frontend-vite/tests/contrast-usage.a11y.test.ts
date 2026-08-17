@@ -128,7 +128,9 @@ const COMPLIANT: Pair[] = [
   { fg: 'slate-700', bg: 'slate-50', min: 4.5, where: 'botão de sugestão no hover (chat)' },
   { fg: 'slate-700', bg: 'slate-100', min: 4.5, where: 'código inline na resposta (MarkdownMessage)' },
   { fg: 'slate-800', bg: 'white', min: 4.5, where: 'subtítulo em negrito da resposta (MarkdownMessage)' },
-  { fg: 'white', bg: 'brand-dark', min: 4.5, where: 'bolha da pergunta do usuário e botão flutuante (chat)' },
+  // O botão flutuante saiu daqui: hoje é o LOGO do app sobre branco (imagem, não texto/ícone
+  // de cor) — o par abaixo cobre só a bolha da pergunta.
+  { fg: 'white', bg: 'brand-dark', min: 4.5, where: 'bolha da pergunta do usuário (chat)' },
   { fg: 'amber-600', bg: 'white', min: 3, where: 'ícone KPI "Sem valor" (Erros)' },
   { fg: 'amber-600', bg: 'amber-50', min: 3, where: 'ícone FileWarning "anexo não encontrado" (AttachmentViewer)' },
   { fg: 'orange-600', bg: 'white', min: 3, where: 'ícone KPI "Sem fornecedor" (Erros)' },
