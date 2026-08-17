@@ -65,17 +65,23 @@ const STATUS_VARIANT: Record<string, BadgeVariant> = {
 const DOCUMENT_TYPES = new Set<string>(SCHEMA_DOCUMENT_TYPES);
 
 // Origem da extração (extraction_source) — teal + ícone de origem.
-const SOURCE_TYPES = new Set(['email_body', 'pdf_text', 'pdf_vision', 'image_vision']);
+const SOURCE_TYPES = new Set([
+  'email_body', 'pdf_text', 'pdf_vision', 'image_vision', 'docx_text', 'docx_vision',
+]);
 
 // Rótulos pt-BR exibidos no badge para a origem da extração — o valor cru do
 // banco (snake_case técnico) não é amigável ao usuário. pdf_text e pdf_vision
 // compartilham o rótulo: para o usuário ambos são um PDF anexado (a distinção
 // texto/escaneado é interna ao pipeline). image_vision = anexo de imagem (recibo/foto).
+// docx_text/docx_vision seguem a MESMA regra — para quem lê o grid, os dois são um
+// documento do Word anexado; ler do XML ou da figura embutida é decisão interna.
 const SOURCE_LABELS: Record<string, string> = {
   email_body: 'corpo email',
   pdf_text: 'pdf anexado',
   pdf_vision: 'pdf anexado',
   image_vision: 'imagem anexada',
+  docx_text: 'word anexado',
+  docx_vision: 'word anexado',
 };
 
 /** Rótulo de exibição do valor (traduz extraction_source); fallback = valor original. */

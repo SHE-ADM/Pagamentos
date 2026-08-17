@@ -134,11 +134,14 @@ def _storage_list(com_metadata: bool = False):
 # =============================================================================================
 
 def _document_parts(msg) -> list:
-    """Anexos que sao DOCUMENTO: PDF, ou imagem com `Content-Disposition: attachment`.
+    """Anexos que sao DOCUMENTO: PDF, .docx, ou imagem com `Content-Disposition: attachment`.
 
-    Espelha o criterio de `read_emails.save_attachments` — e importa as constantes REAIS do
-    reader (`_IMAGE_ATTACHMENT_CTS`/`_EXTS`) em vez de redefini-las, para nao haver duas listas
-    que possam divergir. Imagem INLINE fica de fora: e logo/assinatura, nao documento.
+    Delega a decisao a `read_emails.attachment_kind`/`attachment_ext` — a FONTE UNICA da regra.
+    Antes, o criterio era reimplementado aqui (e num terceiro lugar, o `reprocess_message`), e as
+    copias so podiam concordar por disciplina; a guarda cross-layer de `test_varredura_historica`
+    existe justamente porque divergir significa subir ao bucket o que o pipeline nunca
+    consideraria documento, ou perder o documento que a varredura existe para recuperar.
+    Imagem INLINE fica de fora: e logo/assinatura, nao documento.
 
     Devolve dicts `{filename, ext, content_type, payload}` — bytes em memoria, nunca disco.
     """
@@ -148,20 +151,21 @@ def _document_parts(msg) -> list:
         ct = part.get_content_type()
         fname = R.decode_str(part.get_filename() or "")
         fl = fname.lower()
-        is_pdf = (ct == "application/pdf" or fl.endswith(".pdf")
-                  or ("attachment" in cd and "pdf" in fl))
-        is_image = ("attachment" in cd.lower()
-                    and (ct in R._IMAGE_ATTACHMENT_CTS
-                         or fl.endswith(R._IMAGE_ATTACHMENT_EXTS)))
-        if not (is_pdf or is_image):
+        kind = R.attachment_kind(ct, fl, cd)
+        if kind is None:
             continue
         payload = part.get_payload(decode=True)
         if not payload:
             continue
+        ext = R.attachment_ext(kind, ct, fl)
         achados.append({
             "filename": fname,
-            "ext": ".pdf" if is_pdf else R._attachment_image_ext(ct, fl),
-            "content_type": "application/pdf" if is_pdf else (ct or "application/octet-stream"),
+            "ext": ext,
+            # O content-type do upload sai do MESMO mapa que o pipeline usa, em vez do que o
+            # remetente declarou: e o que mantem o objeto no bucket coerente com o que o
+            # `register_attachment` grava em `financial_account_attachment.mime_type`.
+            "content_type": R._UPLOAD_CONTENT_TYPES.get(
+                ext, ct or "application/octet-stream"),
             "payload": payload,
         })
     return achados

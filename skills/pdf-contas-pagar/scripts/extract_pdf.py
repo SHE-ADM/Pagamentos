@@ -51,6 +51,17 @@ def _is_image_file(path) -> bool:
     return Path(path).suffix.lower() in _IMAGE_MEDIA_TYPES
 
 
+# 🔴 FONTE UNICA das fontes cuja resposta e JSON (o modelo LEU o documento e devolveu campos),
+# em oposicao as de TEXTO cru, que ainda passam por Claude/regex em `_build_records_text`.
+#
+# O motivo de existir: `build_records` roteava por `source in ("pdf_vision", "image_vision")`.
+# Ao acrescentar `docx_vision`, esquecer aquela tupla mandaria uma resposta JSON para o parser de
+# TEXTO — sem erro, sem excecao, produzindo registro vazio que o pipeline leria como "documento
+# sem valor". Falha silenciosa e a pior classe possivel aqui, entao a lista virou constante e
+# ganhou guarda de teste.
+VISION_SOURCES = ("pdf_vision", "image_vision", "docx_vision")
+
+
 # Modelo Claude usado tanto na extracao por texto quanto na visao.
 CLAUDE_MODEL = "claude-sonnet-4-6"
 
@@ -437,6 +448,15 @@ from fiscal_key import (  # noqa: F401 — reexport intencional
     parse_access_key,
 )
 
+# Anexo .docx (ZIP+XML): mesmo padrao dos tres acima — modulo sem dependencia, importado NO TOPO.
+# A assimetria com o `read_emails` (que resolve `cte_content` de forma lazy, degradando com aviso)
+# e deliberada: aqui um deploy que esqueca `docx_content.py` estoura no import, alto e cedo, em vez
+# de produzir extracao silenciosamente pior. Por isso a ORDEM DE COPIA do deploy manda o modulo
+# novo PRIMEIRO — ver a skill `deploy-producao`.
+from docx_content import (  # noqa: F401 — reexport intencional
+    docx_largest_image, docx_text, is_docx,
+)
+
 
 
 
@@ -652,8 +672,19 @@ def _try_barcode_vision(pdf_path: Path) -> str | None:
     Envia o PDF diretamente para o Claude (sem pdftoppm/poppler).
     Claude renderiza internamente e lê fontes OCR-B ilegíveis pelo pdfplumber.
     Retorna 47 ou 44 dígitos, ou None se não encontrada.
+
+    🔴 SÓ ACEITA PDF — o bloco abaixo é `application/pdf` HARDCODED.
+    O guard fica AQUI, e não no call site, porque é esta função que carrega o media_type fixo:
+    quem chamasse com outro formato mandaria os bytes declarados como PDF (um .docx é um ZIP)
+    e receberia 400 da Anthropic — requisição paga, erro remoto e longe da causa. É o mesmo
+    defeito que `_vision_source_block` tinha, por outra porta. Chegou a ser alcançável: o
+    caminho `docx_text` passa por `_build_records_text`, que chama esta função quando
+    `extract_linha_digitavel` não casa (boleto de arrecadação de 48 dígitos, por exemplo).
     """
     import base64, anthropic
+    if Path(pdf_path).suffix.lower() != ".pdf":
+        log.debug(f"  barcode Vision pulado ({Path(pdf_path).name}): o bloco é application/pdf")
+        return None
     api_key = os.getenv("ANTHROPIC_API_KEY")
     if not api_key:
         return None
@@ -883,14 +914,25 @@ def _vision_source_block(path: Path):
 
     - Imagem (jpg/png/...): bloco type=image + media_type da imagem → 'image_vision'.
     - PDF: bloco type=document + application/pdf → 'pdf_vision' (Claude renderiza).
+
+    🔴 SUFIXO DESCONHECIDO E RECUSADO — antes caia no bloco de PDF por default.
+    Qualquer arquivo que nao fosse imagem era declarado `application/pdf` a Anthropic, ainda que
+    fosse .docx/.txt/.xml. O sintoma disso nao e um erro local legivel: e um **400 remoto** depois
+    de montar e trafegar o base64 inteiro, com mensagem sobre o formato do documento — longe da
+    causa, que e o roteamento daqui. Recusar torna a falha imediata e nomeavel.
     """
     import base64
-    data = base64.standard_b64encode(path.read_bytes()).decode()
     suffix = path.suffix.lower()
     if suffix in _IMAGE_MEDIA_TYPES:
+        data = base64.standard_b64encode(path.read_bytes()).decode()
         block = {"type": "image", "source": {"type": "base64",
                  "media_type": _IMAGE_MEDIA_TYPES[suffix], "data": data}}
         return block, "image_vision"
+    if suffix != ".pdf":
+        raise ValueError(
+            f"Vision nao aceita '{suffix or path.name}' — envie PDF ou imagem "
+            f"({', '.join(sorted(_IMAGE_MEDIA_TYPES))})")
+    data = base64.standard_b64encode(path.read_bytes()).decode()
     block = {"type": "document", "source": {"type": "base64",
              "media_type": "application/pdf", "data": data}}
     return block, "pdf_vision"
@@ -1242,7 +1284,7 @@ def build_records(pdf_path, raw, source) -> list:
     `process_pdf` ja devolve lista, entao N registros aqui viram N contas sem
     nenhuma mudanca a jusante. Fonte unica: `build_record` e um wrapper desta.
     """
-    if source in ("pdf_vision", "image_vision"):
+    if source in VISION_SOURCES:
         try:
             data = _parse_json_payload(raw)
         except json.JSONDecodeError:
@@ -1492,6 +1534,15 @@ def process_pdf(pdf_path, force_vision=False, pdf_passwords=None):
             rec["source_file"] = pdf_path.name
         return recs
 
+    # Anexo .docx (Word): ZIP+XML, NUNCA um PDF. Roteado antes de descriptografia/`_payable_pages`/
+    # pdfplumber (todos abrem o arquivo como PDF) e antes de qualquer caminho Vision, cujo bloco
+    # declararia `application/pdf` para bytes de ZIP.
+    if is_docx(pdf_path):
+        recs = _extract_docx(pdf_path)
+        for rec in recs:
+            rec["source_file"] = pdf_path.name
+        return recs
+
     tmps: list[Path] = []
     work = pdf_path
     try:
@@ -1611,6 +1662,53 @@ def _extract_image(img_path) -> list:
         return [_failure_record(img_path, str(e))]
 
 
+# --- Extrair os documentos de um .docx (Word) ---
+def _extract_docx(docx_path) -> list:
+    """Processa um anexo .docx → 1+ registros. NUNCA levanta (igual `_extract_image`).
+
+    Camada 1 TEXTO  → só com pagável PROVADO; `extraction_source = 'docx_text'`
+    Camada 2 IMAGEM → a MAIOR figura embutida vai ao Vision; `docx_vision`
+    Camada 3 FALHA  → `_failure_record` com o motivo (o read_emails cai no corpo)
+
+    🔴 POR QUE A CAMADA 1 EXIGE PAGÁVEL PROVADO — e o PDF não exige.
+    Um .docx não é documento financeiro por natureza: é carta, contrato, proposta, currículo.
+    Mandar o texto de qualquer Word ao Claude gastaria dinheiro em prosa e criaria conta espúria
+    a partir dela. O PDF pode ser permissivo porque quase todo PDF que chega aqui É cobrança; o
+    .docx não tem essa propriedade. A prova exigida é a mesma de `_payable_pages` —
+    `_page_has_payable`: linha digitável de 47, arrecadação de 48 ou PIX Copia-e-Cola, todos com
+    DV validado. Afrouxar depois, com evidência de demanda, é fácil; o inverso não tem volta.
+
+    A camada 2, ao contrário, aceita o que `build_records` produzir: as regras de não-pagável já
+    existem a jusante (Passo 2 de `extract_and_store_accounts`, `skipped_nonpayable`).
+    """
+    log.info(f"Processando .docx: {docx_path.name}")
+    try:
+        texto = docx_text(docx_path)
+        if texto and _page_has_payable(texto):
+            log.info("  → texto do .docx traz instrumento de pagamento")
+            return build_records(docx_path, texto, "docx_text")
+
+        # Camada 2: o documento é um print do boleto colado no Word.
+        with tempfile.TemporaryDirectory() as td:
+            imagem = docx_largest_image(docx_path, td)
+            if imagem is None:
+                motivo = ("DOCX sem instrumento de pagamento no texto e sem imagem embutida"
+                          if texto else "DOCX sem texto legível e sem imagem embutida")
+                log.warning(f"  ✗ {docx_path.name}: {motivo}")
+                return [_failure_record(docx_path, motivo)]
+            log.info("  → Claude Vision sobre a imagem embutida no .docx")
+            raw, _src = extract_with_vision(imagem)
+        # `build_records` recebe o DOCX (não o temporário): é o .docx que vira `source_file`,
+        # e o temporário já não existe fora do bloco acima.
+        return build_records(docx_path, raw, "docx_vision")
+    except Exception as e:
+        if _is_api_unavailable(e):
+            log.exception(f"  ✗ API Anthropic indisponível ({docx_path.name}): {e}")
+            return [_api_error_record(docx_path, str(e))]
+        log.exception(f"  ✗ {docx_path.name}: {e}")
+        return [_failure_record(docx_path, str(e))]
+
+
 # --- Núcleo reutilizável (CLI + in-process) ---
 def extract_to_csv(input_path, output_dir, *, batch=False, force_vision=False, pdf_passwords=None):
     """Extrai PDF(s) e grava o CSV de registros. Retorna o Path do CSV gerado
@@ -1629,7 +1727,7 @@ def extract_to_csv(input_path, output_dir, *, batch=False, force_vision=False, p
     if batch or inp.is_dir():
         # Lote/diretório: PDFs + imagens suportadas (jpg/png/...).
         files = sorted(p for p in inp.glob("*")
-                       if p.suffix.lower() == ".pdf" or _is_image_file(p))
+                       if p.suffix.lower() == ".pdf" or _is_image_file(p) or is_docx(p))
     else:
         files = [inp]
     if not files:

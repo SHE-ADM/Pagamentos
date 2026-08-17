@@ -20,6 +20,8 @@ export const ATTACHMENT_MIME_TYPES = [
   'image/png',
   'image/gif',
   'image/webp',
+  // .docx (Word) — o pipeline passou a aceitar boleto anexado como documento do Word.
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
 ] as const;
 
 // Extensão canônica por mime — a chave do objeto usa a extensão do MIME VALIDADO, nunca a
@@ -30,6 +32,7 @@ export const ATTACHMENT_MIME_TO_EXT: Record<(typeof ATTACHMENT_MIME_TYPES)[numbe
   'image/png': '.png',
   'image/gif': '.gif',
   'image/webp': '.webp',
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document': '.docx',
 };
 
 export const ATTACHMENT_ORIGINS = ['manual', 'pipeline'] as const;

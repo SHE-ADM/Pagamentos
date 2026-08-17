@@ -50,21 +50,26 @@ def _find_uid(mail, mid: str):
 
 
 def _describe_candidates(msg) -> list:
-    """Dry-run (read-only): descreve o que o pipeline salvaria — anexos PDF/imagem
-    (Content-Disposition: attachment) e a MAIOR imagem inline >= limiar. Não escreve
-    nada. Espelha as regras de save_attachments / save_inline_images."""
+    """Dry-run (read-only): descreve o que o pipeline salvaria — anexos PDF/.docx/imagem
+    e a MAIOR imagem inline >= limiar. Não escreve nada.
+
+    Delega a `R.attachment_kind`, a FONTE ÚNICA da regra (mesma de save_attachments e da
+    varredura histórica). Este é o script que o operador roda primeiro quando um e-mail falha:
+    deixá-lo cego para um formato reproduziria a confusão do e-mail 1516, em que o dry-run não
+    mencionava o .docx que o pipeline havia descartado. Anexo de tipo NÃO suportado passou a
+    aparecer explicitamente, pelo mesmo motivo."""
     out, inline = [], []
     for part in msg.walk():
         cd = str(part.get("Content-Disposition", ""))
         ct = part.get_content_type()
         fn = R.decode_str(part.get_filename() or "")
         fl = fn.lower()
-        is_pdf = (ct == "application/pdf" or fl.endswith(".pdf")
-                  or ("attachment" in cd and "pdf" in fl))
-        is_img_att = ("attachment" in cd.lower()
-                      and (ct in R._IMAGE_ATTACHMENT_CTS or fl.endswith(R._IMAGE_ATTACHMENT_EXTS)))
-        if is_pdf or is_img_att:
-            out.append(f"anexo: {ct} | {fn or '(sem nome)'}")
+        kind = R.attachment_kind(ct, fl, cd)
+        if kind:
+            out.append(f"anexo [{kind}]: {ct} | {fn or '(sem nome)'}")
+            continue
+        if fn:
+            out.append(f"anexo IGNORADO (tipo não suportado): {ct} | {fn}")
             continue
         if ct.startswith("image/") and "attachment" not in cd.lower():
             payload = part.get_payload(decode=True) or b""
