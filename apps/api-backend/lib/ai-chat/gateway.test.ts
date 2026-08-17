@@ -56,6 +56,7 @@ vi.mock('./tools', async () => {
 });
 
 import { runChat } from './gateway';
+import { CONFIGURED_MODEL } from './model';
 import { AiChatAbortedError, AiChatError, readPartialRun } from './errors';
 
 const supabase = {} as never;
@@ -557,6 +558,57 @@ describe('runChat — estado parcial anexado ao erro (auditoria de falha)', () =
     expect(readPartialRun(new Error('qualquer'))).toBeNull();
     expect(readPartialRun(null)).toBeNull();
     expect(readPartialRun('texto')).toBeNull();
+  });
+});
+
+/**
+ * Atribuição de modelo (migration 129). O `ai_chat_log` é a única fonte para comparar modelos entre
+ * si; antes desta coluna a única separação possível era por DATA — inferência que morre assim que
+ * alguém troca `ANTHROPIC_MODEL` sem anotar, e que não separa dois modelos ativos no mesmo dia.
+ */
+describe('runChat — qual modelo serviu o turno', () => {
+  it('registra o modelo SERVIDO, não o pedido', async () => {
+    const servido = 'claude-sonnet-5-fixture';
+    reply({ ...textReply('ok'), model: servido });
+
+    const r = await runChat(supabase, TOKEN, { question: 'como estamos?' });
+
+    expect(r.model).toBe(servido);
+    // Anti-vacuidade: se o fixture coincidisse com o configurado, este caso passaria MESMO com o
+    // gateway gravando o pedido — que é exatamente o defeito que ele existe para pegar.
+    expect(servido).not.toBe(CONFIGURED_MODEL);
+  });
+
+  // Com `fallbacks` server-side, um turno recusado é reexecutado em OUTRO modelo e responde 200:
+  // quem serviu é a ÚLTIMA resposta, não a primeira nem o que foi pedido.
+  it('a última resposta é a que vale quando o modelo muda no meio do turno', async () => {
+    reply(
+      { ...toolReply([{ id: 't1', name: 'resumo_situacao', input: {} }]), model: 'modelo-a' },
+      { ...textReply('pronto'), model: 'modelo-b' },
+    );
+    runToolMock.mockResolvedValueOnce([{ status_name: 'pago' }]);
+
+    const r = await runChat(supabase, TOKEN, { question: 'como estamos?' });
+
+    expect(r.model).toBe('modelo-b');
+  });
+
+  it('cai para o configurado quando a resposta não traz modelo', async () => {
+    reply(textReply('ok')); // fixture padrão, sem `model`
+    const r = await runChat(supabase, TOKEN, { question: 'oi' });
+    expect(r.model).toBe(CONFIGURED_MODEL);
+  });
+
+  // Sem modelo, a linha de erro fica FORA de todo agregado por modelo — justamente onde a pergunta
+  // "qual modelo está derrubando turnos?" é feita. Por isso o configurado entra também aqui.
+  it('falha antes de qualquer resposta ainda audita o modelo', async () => {
+    reply(new Error('socket hang up'));
+
+    const erro: unknown = await runChat(supabase, TOKEN, { question: 'oi' }).catch((e: unknown) => e);
+    const parcial = readPartialRun(erro);
+
+    expect(parcial).not.toBeNull();
+    expect(parcial?.model).toBe(CONFIGURED_MODEL);
   });
 });
 

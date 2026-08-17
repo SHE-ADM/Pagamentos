@@ -47,6 +47,7 @@ const okResult = {
   cacheCreationTokens: 0,
   truncated: false,
   iterations: 2,
+  model: 'claude-sonnet-5',
 };
 
 /** Lê o corpo SSE inteiro e devolve os eventos já parseados. */
@@ -260,7 +261,7 @@ describe('POST /api/ai-chat/stream — falha DEPOIS de abrir', () => {
   it('a falha é auditada com o que JÁ havia sido gasto, não com zeros', async () => {
     chat.mockRejectedValue(attachPartialRun(new AiChatError('Muitas requisições.', 429), {
       inputTokens: 900, outputTokens: 120, cacheReadTokens: 7000, cacheCreationTokens: 0,
-      toolCalls: [{ name: 'resumo_situacao', params: {}, rows: 3, ms: 20 }], rowCount: 3, iterations: 5,
+      toolCalls: [{ name: 'resumo_situacao', params: {}, rows: 3, ms: 20 }], rowCount: 3, iterations: 5, model: 'claude-sonnet-5',
     }));
 
     await (await POST(req({ question: 'pergunta cara' }))).text();

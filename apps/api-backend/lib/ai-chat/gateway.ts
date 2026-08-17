@@ -11,23 +11,9 @@ import Anthropic from '@anthropic-ai/sdk';
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { TOOL_DEFINITIONS, isToolName, parseToolInput, runTool } from './tools';
 import { AiChatAbortedError, attachPartialRun, translateAnthropicError } from './errors';
+import { CONFIGURED_MODEL } from './model';
 import type { LoggedToolCall } from './log';
 
-/**
- * O modelo padrão do projeto. Configurável por env para permitir troca sem deploy de código.
- *
- * ATENÇÃO AO TROCAR: o prompt caching tem um tamanho MÍNIMO de prefixo que varia por modelo e
- * **não é monotônico entre gerações** (512 no Opus 5; 4.096 no Opus 4.6 e no Haiku 4.5). Abaixo do
- * mínimo o `cache_control` é ignorado **em silêncio** — sem erro, só a conta subindo.
- *
- * NÃO há número a decorar aqui, e isso é deliberado: o prefixo (system + tools) **cresce a cada
- * tool acrescentada** — medido 3.653 tokens com 6 tools (30/07/2026) e 7.408 com 9 tools
- * (10/08/2026), o que inverteu a conclusão sobre o risco em 11 dias. Valor anotado em comentário
- * envelhece e, pior, dá a impressão de que alguém está conferindo. Quem confere é
- * `warnIfCachingDisabled`, a cada turno. Série histórica em
- * `docs/arquitetura-chat-ia-pagamentos.md` §19.10.
- */
-const MODEL = process.env.ANTHROPIC_MODEL ?? 'claude-opus-5';
 
 /**
  * Teto de iterações do loop (§17.2 — não remover).
@@ -40,8 +26,9 @@ const MODEL = process.env.ANTHROPIC_MODEL ?? 'claude-opus-5';
 const MAX_ITERATIONS = 6;
 
 /**
- * Teto de saída por turno. Cobre thinking + texto: no Opus 5 o thinking está LIGADO por padrão e
- * consome deste orçamento (§17.5). Dimensionar apertado trunca a resposta no meio.
+ * Teto de saída por turno. Cobre thinking + texto: tanto no Opus 5 quanto no Sonnet 5 o thinking
+ * adaptativo está LIGADO por padrão (omitir o parâmetro não o desliga) e consome deste orçamento
+ * (§17.5). Dimensionar apertado trunca a resposta no meio.
  */
 const MAX_TOKENS = 8192;
 
@@ -95,6 +82,18 @@ export interface ChatResult {
    * a mais informativa (§11: candidata a tool nova), antes indistinguível de um run limpo.
    */
   iterations: number;
+  /**
+   * Modelo que SERVIU o turno (`response.model`), não o pedido — auditado desde a migration 129.
+   *
+   * A distinção não é preciosismo: o pedido é um alias que a API resolve, e com `fallbacks`
+   * server-side um turno recusado é reexecutado em OUTRO modelo e responde 200 — registrar o pedido
+   * gravaria justamente o modelo que NÃO respondeu.
+   *
+   * Nunca vazio: sem nenhuma resposta (falha na 1ª iteração, cancelamento antes do 1º token) cai
+   * para `CONFIGURED_MODEL`. É o que dá a `model IS NULL` no banco um sentido único — "linha
+   * anterior à 129" — em vez de confundir-se com "não sei".
+   */
+  model: string;
 }
 
 /**
@@ -423,11 +422,25 @@ export async function runChat(
   // Acumulador único: com dois pontos de soma (loop e fechamento), somar campo a campo em cada um
   // é o tipo de duplicação que passa a divergir na primeira alteração.
   const usage = { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0 };
-  const accumulate = (u: Anthropic.Usage) => {
-    usage.inputTokens += u.input_tokens;
-    usage.outputTokens += u.output_tokens;
-    usage.cacheReadTokens += u.cache_read_input_tokens ?? 0;
-    usage.cacheCreationTokens += u.cache_creation_input_tokens ?? 0;
+  /**
+   * Modelo que a API disse ter usado na última resposta. `null` enquanto nenhuma chegou.
+   *
+   * Guardado aqui, e não derivado no fim, porque é a ÚNICA janela em que ele existe: o objeto de
+   * resposta é descartado a cada iteração.
+   */
+  let servedModel: string | null = null;
+  /**
+   * Recebe a MENSAGEM inteira, não só o `usage`, pelo mesmo motivo que o acumulador é único: são
+   * dois pontos de chamada (o loop e o fechamento), e tudo que precise ser extraído de uma resposta
+   * do modelo tem de sair daqui. Passando só o `usage`, registrar o modelo viraria uma segunda linha
+   * a lembrar em cada call site — e o fechamento é exatamente o que alguém esqueceria.
+   */
+  const accumulate = (m: Anthropic.Message) => {
+    usage.inputTokens += m.usage.input_tokens;
+    usage.outputTokens += m.usage.output_tokens;
+    usage.cacheReadTokens += m.usage.cache_read_input_tokens ?? 0;
+    usage.cacheCreationTokens += m.usage.cache_creation_input_tokens ?? 0;
+    if (m.model) servedModel = m.model;
   };
   let rowCount = 0;
 
@@ -446,6 +459,7 @@ export async function runChat(
       ...usage,
       truncated: foiTruncado,
       iterations,
+      model: servedModel ?? CONFIGURED_MODEL,
     };
   };
 
@@ -515,7 +529,7 @@ export async function runChat(
       // O signal vai à chamada EM VOO dentro de `chamarModelo`: sem ele o abort só seria notado na
       // próxima iteração, e um turno longo continuaria streamando até terminar.
       const response = await chamarModelo({
-        model: MODEL,
+        model: CONFIGURED_MODEL,
         max_tokens: MAX_TOKENS,
         // cache_control no bloco estável: só o system+tools é cacheado; a pergunta (volátil)
         // vem depois e não invalida o prefixo.
@@ -524,7 +538,7 @@ export async function runChat(
         messages,
       });
 
-      accumulate(response.usage);
+      accumulate(response);
       iterations += 1;
 
       // Preserva a resposta INTEIRA (inclui os blocos tool_use) — extrair só o texto quebraria
@@ -609,7 +623,7 @@ export async function runChat(
     // foi apurado em vez de um erro seco. Fica DENTRO do try — um 429 nesta chamada precisa da
     // mesma tradução das demais, senão vira 500 genérico justamente na pergunta mais cara.
     const fechamento = await chamarModelo({
-      model: MODEL,
+      model: CONFIGURED_MODEL,
       max_tokens: MAX_TOKENS,
       system: [{ type: 'text', text: SYSTEM_PROMPT, cache_control: { type: 'ephemeral' } }],
       // As tools vão JUNTO, com `tool_choice: none` — não basta omiti-las (não regredir).
@@ -630,7 +644,7 @@ export async function runChat(
         },
       ],
     });
-    accumulate(fechamento.usage);
+    accumulate(fechamento);
 
     return finish(extractText(fechamento.content), truncated);
   } catch (e) {
@@ -644,7 +658,10 @@ export async function runChat(
     // assistente e poluindo a fonte que serve para achar o que está realmente quebrado. O estado
     // parcial vai junto: cancelar não devolve os tokens já gastos, e a auditoria de custo os quer.
     const erro = signal?.aborted ? new AiChatAbortedError() : translateAnthropicError(e);
-    throw attachPartialRun(erro, { ...usage, toolCalls, rowCount, iterations });
+    throw attachPartialRun(erro, {
+      ...usage, toolCalls, rowCount, iterations,
+      model: servedModel ?? CONFIGURED_MODEL,
+    });
   }
 }
 
@@ -662,7 +679,7 @@ function throwIfAborted(signal: AbortSignal | undefined): void {
 }
 
 /**
- * Detecta EM RUNTIME o modo de falha descrito no comentário de `MODEL`: prefixo abaixo do mínimo do
+ * Detecta EM RUNTIME o modo de falha descrito no comentário de `CONFIGURED_MODEL`: prefixo abaixo do mínimo do
  * modelo faz a API ignorar o `cache_control` **sem erro nenhum** — o turno responde normalmente e
  * só a fatura acusa.
  *
@@ -685,7 +702,7 @@ function throwIfAborted(signal: AbortSignal | undefined): void {
 function warnIfCachingDisabled(u: { cacheReadTokens: number; cacheCreationTokens: number }): void {
   if (u.cacheReadTokens > 0 || u.cacheCreationTokens > 0) return;
   console.error(
-    `[ai-chat] prompt caching NÃO ocorreu (modelo ${MODEL}): cache_read e cache_creation zerados. `
+    `[ai-chat] prompt caching NÃO ocorreu (modelo ${CONFIGURED_MODEL}): cache_read e cache_creation zerados. `
     + 'O prefixo system+tools provavelmente está abaixo do mínimo deste modelo — o cache_control é '
     + 'ignorado sem erro e o custo por pergunta sobe. Confira ANTHROPIC_MODEL.',
   );
