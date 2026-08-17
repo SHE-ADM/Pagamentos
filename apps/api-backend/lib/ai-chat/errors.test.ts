@@ -71,6 +71,7 @@ describe('attachPartialRun / readPartialRun', () => {
     toolCalls: [],
     rowCount: 0,
     iterations: 3,
+    model: 'claude-sonnet-5',
   };
 
   it('anexa sem aparecer em JSON.stringify (não polui log de outra camada)', () => {

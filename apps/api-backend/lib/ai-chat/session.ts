@@ -21,6 +21,7 @@ import { logInteraction } from '@/lib/ai-chat/log';
 import { AiChatAbortedError, readPartialRun } from '@/lib/ai-chat/errors';
 import { assertWithinRateLimit } from '@/lib/ai-chat/rate-limit';
 import { assertAiChatAllowed } from '@/lib/ai-chat/gate';
+import { CONFIGURED_MODEL } from '@/lib/ai-chat/model';
 import type { ChatRequest, ChatResult } from '@/lib/ai-chat/gateway';
 
 const bodySchema = z.object({
@@ -136,6 +137,7 @@ export async function auditSuccess(p: {
     cacheCreationTokens: p.result.cacheCreationTokens,
     truncated: p.result.truncated,
     iterations: p.result.iterations,
+    model: p.result.model,
   });
 }
 
@@ -177,6 +179,10 @@ export async function auditFailure(p: {
     // muito: é ele que mostra ONDE a pergunta cara parou.
     truncated: false,
     iterations: partial?.iterations ?? 0,
+    // Sem estado parcial (falha ANTES de o gateway chegar a anexá-lo), o configurado é a melhor
+    // informação disponível — e é o que impede a linha de erro de sair sem modelo, o que a tiraria
+    // de qualquer agregado por modelo justamente onde a atribuição mais importa.
+    model: partial?.model ?? CONFIGURED_MODEL,
     error: aborted ? 'cancelado pelo cliente' : detalhe,
   });
 }

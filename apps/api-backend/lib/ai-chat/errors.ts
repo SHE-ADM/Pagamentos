@@ -121,6 +121,14 @@ export interface PartialRun {
   rowCount: number;
   /** Chamadas ao modelo já concluídas — mostra ONDE a pergunta cara parou (migration 102). */
   iterations: number;
+  /**
+   * Modelo servido até a falha, ou o configurado quando nenhuma resposta chegou (migration 129).
+   *
+   * Preenchido também aqui, e não só no sucesso, porque a falha é justamente onde a atribuição
+   * importa: "este modelo está estourando o teto/derrubando turnos" é uma pergunta sobre as linhas
+   * COM erro, e sem o modelo elas não entram em nenhum agregado por modelo.
+   */
+  model: string;
 }
 
 // Símbolo, não propriedade nomeada: não colide com nada do SDK e não aparece em `JSON.stringify`

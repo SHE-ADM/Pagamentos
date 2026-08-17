@@ -57,6 +57,12 @@ export interface ChatLogEntry {
    */
   truncated: boolean;
   iterations: number;
+  /**
+   * Modelo que SERVIU o turno (migration 129). Nunca vazio — o gateway cai para o configurado
+   * quando nenhuma chamada respondeu, para que `model IS NULL` no banco signifique uma coisa só:
+   * linha anterior à 129.
+   */
+  model: string;
   error?: string;
 }
 
@@ -82,6 +88,7 @@ export async function logInteraction(entry: ChatLogEntry): Promise<void> {
         cache_creation_input_tokens: entry.cacheCreationTokens,
         truncated: entry.truncated,
         iterations: entry.iterations,
+        model: entry.model,
         error: entry.error ?? null,
       });
     if (error) console.error('[ai-chat] falha ao gravar ai_chat_log:', error.message);

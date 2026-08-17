@@ -212,9 +212,13 @@ Estas regras se aplicam a **todo** código novo ou alterado neste projeto, sem e
   `test_contact_block_nonpayable.py`, `test_is_processed.py`,
   `test_onda8_gate_ia.py`, `test_react_versao_unica.py`). Cobre o
   pipeline de extração; rodar após mexer em `read_emails.py`/`extract_pdf.py` ou nos
-  scripts de reprocessamento. Não é incluída no `npm test` (que soma **1.550** no Node —
-  frontend-vite **882** em 145 arquivos · api-backend 613 · packages/shared 53 · portal-next 2,
-  medidos em 2026-08-15 com `--maxWorkers=1`. Os **9** daquele dia (873 → 882): **3** no próprio
+  scripts de reprocessamento. Não é incluída no `npm test` (que soma **1.557** no Node —
+  frontend-vite **882** em 145 arquivos · api-backend **620** · packages/shared 53 · portal-next 2,
+  medidos em 2026-08-15 com `--maxWorkers=1`. Os **7** do api-backend naquele dia (613 → 620) são a
+  migration 129: 4 de atribuição de modelo em `gateway.test.ts` (servido × pedido, última resposta
+  vale, fallback, falha antes de qualquer resposta), 2 em `log.test.ts` (modelo na linha de erro +
+  a sanidade NEGATIVA do parser de migrations) e 1 em `route.test.ts` (o fallback que o TypeScript
+  não protege). Todos validados por mutante. Os **9** daquele dia (873 → 882): **3** no próprio
   delta dos dashboards, **2** de PÁGINA em `Dashboard.test.tsx` (code review light — a ressalva de
   filtro nos subtítulos e o wiring de "trocar de mês limpa o filtro"), **2** de BORDA da janela de
   7 dias em `dashboard.test.ts` (code review max — ver o bloco de `isoDaysFromToday`; a suíte
@@ -946,7 +950,8 @@ implementar qualquer parte.** Aqui ficam só os invariantes.
 
 **Estado:** a migration **098** criou o schema `analytics` (2 views, funções de tool calling,
 `ai_chat_log` com RLS); o gateway vive em `apps/api-backend/lib/ai-chat/`
-(`tools.ts` · `errors.ts` · `gateway.ts` · `log.ts` · `rate-limit.ts`) + `app/api/ai-chat/route.ts`;
+(`tools.ts` · `errors.ts` · `gateway.ts` · `log.ts` · `model.ts` · `rate-limit.ts` · `gate.ts` ·
+`session.ts` · `sse.ts`) + `app/api/ai-chat/route.ts` e `app/api/ai-chat/stream/route.ts`;
 a UI é o widget global do `frontend-vite`. **Validado em produção em 30/07/2026** (§20.9): 5
 perguntas reais, 2 usuários, `error IS NULL` em todas, 4 tools distintas exercitadas e
 `cache_read_input_tokens > 0` em 5 de 5. Pilares: **nunca `service_role` no caminho de leitura** ·
@@ -1069,16 +1074,29 @@ perguntas reais, 2 usuários, `error IS NULL` em todas, 4 tools distintas exerci
 - **O log registra os QUATRO campos de token.** `usage.input_tokens` é só o **resto não-cacheado**;
   sem `cache_read_input_tokens` não há como estimar custo nem **notar um invalidador silencioso do
   cache**, que não gera erro — só zera o número e aumenta a fatura (migration 101).
+- 🔴 **O log registra QUAL MODELO serviu o turno** (`response.model`, migration 129) — e o
+  `CONFIGURED_MODEL` vive em **`lib/ai-chat/model.ts`, não no gateway**. A constante é
+  CONFIGURAÇÃO, e mantê-la no gateway fazia todo teste que mockasse `runChat` perder o fallback da
+  auditoria com um erro que não tinha nada a ver com o que ele verificava ("No CONFIGURED_MODEL
+  export is defined on the mock"). Ensinar cada mock a reexportá-la seria pior: duplicaria o valor,
+  e a asserção sobre o payload passaria a comparar com uma ficção. **Configuração não fica refém do
+  mock de um módulo de comportamento.**
+- 🔴 **`accumulate` recebe a MENSAGEM inteira, não só o `usage`.** Mesmo motivo de o acumulador ser
+  único: são dois pontos de chamada (o loop e o fechamento), e tudo que precise sair de uma resposta
+  do modelo tem de sair dali. Passando só o `usage`, registrar o modelo viraria uma segunda linha a
+  lembrar em cada call site — e o fechamento é justamente o que alguém esqueceria.
 - **A falha leva o estado parcial até a auditoria.** Sem isso, a falha de uma pergunta que custou 5
   iterações era logada como "0 tokens, 0 tools". O `attachPartialRun` **engole a própria falha**
   (`try/catch` + log): `defineProperty` lança em erro não-extensível e, como é chamado DENTRO do
   `throw`, essa exceção substituiria o erro traduzido (429 → `TypeError` genérico). Perde-se a
   auditoria parcial, nunca o erro.
 - 🔴 **TROCAR `ANTHROPIC_MODEL` pode desligar o prompt caching EM SILÊNCIO.** O mínimo de prefixo
-  cacheável varia por modelo e **não é monotônico entre gerações**: 512 no Opus 5, mas **4.096** no
-  Opus 4.6 e no Haiku 4.5. Abaixo do mínimo o `cache_control` é ignorado sem erro — só
-  `cache_read_input_tokens` zerado e a conta subindo. **Depois de qualquer troca de modelo, conferir
-  essa coluna em `analytics.ai_chat_log`.**
+  cacheável varia por modelo e **não é monotônico entre gerações**: 512 no Opus 5 e **1.024 no
+  Sonnet 5**, mas **4.096** no Opus 4.6 e no Haiku 4.5. Abaixo do mínimo o `cache_control` é ignorado
+  sem erro — só `cache_read_input_tokens` zerado e a conta subindo. **Depois de qualquer troca de
+  modelo, conferir essa coluna em `analytics.ai_chat_log`.** Desde a migration **129** a conferência
+  é ATRIBUÍVEL: agrupe por `model` em vez de adivinhar a data em que a env var mudou —
+  `SELECT model, count(*), sum(cache_read_input_tokens) FROM analytics.ai_chat_log GROUP BY 1`.
   ⚠️ **O prefixo NÃO é constante: cresce a cada tool** (as definições entram no bloco cacheado —
   ~1,2k tokens por tool; é o outro lado de "acrescentar tool invalida os 3 níveis de cache").
   Medido: **3.653** com 6 tools (30/07) → **7.408** com 9 tools (10/08) — e 11 tools desde 11/08; dobrou em 11 dias e
@@ -4169,8 +4187,30 @@ local/agendada (ver flag `EMAIL_READER_ENABLED` acima e memória [[vercel-deploy
 ## Banco de dados (Supabase)
 
 Migrations em `supabase/migrations/`, aplicadas **manualmente no SQL Editor** (ou via Supabase
-MCP/`psql` — ver a nota de cada uma) em ordem numérica (`001` → `128`). **Próxima migration =
-`129`** (verificar sempre antes de criar nova).
+MCP/`psql` — ver a nota de cada uma) em ordem numérica (`001` → `129`). **Próxima migration =
+`130`** (verificar sempre antes de criar nova).
+
+**A `129` registra QUAL MODELO serviu cada turno do chat** (`analytics.ai_chat_log.model TEXT`,
+aplicada via psql em 2026-08-15; aditiva, idempotente, nullable, **sem backfill**). O log tinha
+latência, os quatro campos de token, `truncated` e `iterations` — tudo menos quem produziu a linha,
+e a base **já misturava dois modelos** (Opus 5 até 10/08, Sonnet 5 a partir de 14/08). A única
+separação possível era por DATA: inferência que morre assim que alguém troca `ANTHROPIC_MODEL` sem
+anotar, que não separa dois modelos ativos no mesmo dia, e que produz resposta confiante e
+não-falsificável. Mesma classe da 101 (tokens de cache) e da 102 (`truncated`/`iterations`) — número
+que já existia no processo e não era persistido, cuja ausência não gera erro, só análise errada.
+- 🔴 **É o modelo SERVIDO (`response.model`), não o pedido.** O pedido é um alias que a API resolve,
+  e com `fallbacks` server-side um turno recusado é reexecutado em OUTRO modelo e responde 200 —
+  gravar o pedido registraria justamente quem NÃO respondeu.
+- 🔴 **A coluna nunca sai vazia: sem nenhuma resposta, cai para `CONFIGURED_MODEL`.** É isso que dá
+  a `model IS NULL` um sentido ÚNICO — "linha anterior à 129" — em vez de confundir-se com "não
+  sei". Travado por caso próprio em `route.test.ts` porque o TypeScript **não** protege: um
+  `?? ''` compila igual e reintroduz a ambiguidade.
+- **Sem backfill** por data: reproduziria no banco a mesma inferência que a migration elimina, com o
+  agravante de virar dado de aparência autoritativa. Mesma decisão da 102.
+- ⚠️ **Verificado pelo caminho REAL de gravação** (PostgREST + `service_role`), não só por SQL: o
+  PostgREST mantém cache de schema e poderia rejeitar a coluna nova com `PGRST204` — que
+  `logInteraction` engoliria, matando a auditoria em silêncio. Sonda gravou e leu de volta; a linha
+  foi removida em seguida (42 linhas, 0 com modelo, estado idêntico ao anterior).
 
 **A `128` torna `analytics.demonstrativo_despesas` DINÂMICA** (aplicada via `psql`/
 `SUPABASE_DB_URL` em 2026-08-14 — MCP do Supabase indisponível na sessão; `CREATE OR REPLACE`,

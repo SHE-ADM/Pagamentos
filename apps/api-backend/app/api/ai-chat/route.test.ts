@@ -26,6 +26,7 @@ import { logInteraction } from '@/lib/ai-chat/log';
 import { assertWithinRateLimit } from '@/lib/ai-chat/rate-limit';
 import { assertAiChatAllowed, MENSAGEM_SEM_ACESSO } from '@/lib/ai-chat/gate';
 import { AiChatAbortedError, AiChatError, attachPartialRun } from '@/lib/ai-chat/errors';
+import { CONFIGURED_MODEL } from '@/lib/ai-chat/model';
 
 const getUser = vi.mocked(getAuthenticatedUser);
 const getToken = vi.mocked(getBearerToken);
@@ -53,6 +54,7 @@ const okResult = {
   cacheCreationTokens: 0,
   truncated: false,
   iterations: 2,
+  model: 'claude-sonnet-5',
 };
 
 beforeEach(() => {
@@ -259,6 +261,7 @@ describe('POST /api/ai-chat — auditoria (§17.3)', () => {
       cacheCreationTokens: 0,
       toolCalls: [{ name: 'resumo_situacao', params: {}, rows: 3, ms: 12 }],
       rowCount: 3,
+      model: 'claude-sonnet-5',
       iterations: 5,
     });
     chat.mockRejectedValue(erro);
@@ -287,6 +290,7 @@ describe('POST /api/ai-chat — auditoria (§17.3)', () => {
       cacheCreationTokens: 0,
       toolCalls: [{ name: 'resumo_situacao', params: {}, rows: 5, ms: 30 }],
       rowCount: 5,
+      model: 'claude-sonnet-5',
       iterations: 3,
     });
     chat.mockRejectedValue(erro);
@@ -355,6 +359,24 @@ describe('POST /api/ai-chat — gate de acesso', () => {
     expect(log).toHaveBeenCalledWith(
       expect.objectContaining({ userId: USER.id, error: MENSAGEM_SEM_ACESSO, iterations: 0 }),
     );
+  });
+
+  /**
+   * O gate lança ANTES do gateway, então não há estado parcial e o modelo servido não existe — este
+   * é o único caminho que exercita o fallback de `auditFailure`.
+   *
+   * Vale um caso próprio porque o TypeScript NÃO o protege: `partial?.model ?? ''` compila igual e
+   * grava vazio, e aí `model IS NULL`/vazio deixaria de significar só "linha anterior à 129" —
+   * passaria a se confundir com "não sei", que é exatamente a ambiguidade que a migration eliminou.
+   */
+  it('tentativa barrada é auditada COM modelo, nunca vazio', async () => {
+    gate.mockRejectedValue(new AiChatError(MENSAGEM_SEM_ACESSO, 403));
+
+    await POST(req({ question: 'quanto devo?' }));
+
+    const entrada = log.mock.calls[0][0] as { model: string };
+    expect(entrada.model).toBe(CONFIGURED_MODEL);
+    expect(entrada.model).not.toBe('');
   });
 
   it('falha de verificação vira 500 genérico, sem vazar detalhe, e ainda audita', async () => {
