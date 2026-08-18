@@ -11,6 +11,7 @@
 import { useState, useEffect, useId, useRef } from 'react';
 import { X, Download, ExternalLink, FileWarning } from 'lucide-react';
 import { supabase } from '../lib/supabaseClient';
+import { extractLargestDocxImage } from '../lib/docxPreview';
 
 const BUCKET = 'attachments';
 const SIGNED_URL_TTL = 300; // segundos de validade da URL assinada
@@ -34,6 +35,14 @@ export default function AttachmentViewer({ sourceFile, title, onClose }: Readonl
   const [state, setState] = useState<LoadState>('loading');
   const [url, setUrl] = useState<string | null>(null);
   const [downloadUrl, setDownloadUrl] = useState<string | null>(null);
+  // Pré-visualização de .docx: object URL da imagem embutida, e o flag de "já tentei" — sem
+  // ele não dá para distinguir "ainda extraindo" de "não há imagem".
+  const [docxImage, setDocxImage] = useState<string | null>(null);
+  const [docxDone, setDocxDone] = useState(false);
+  // 🔴 TERCEIRO estado, e ele não é redundante com os dois de cima: `docxDone` sem imagem tem
+  // DUAS causas opostas — o documento não tem figura (fato sobre o arquivo) ou não conseguimos
+  // lê-lo (fato sobre a leitura). Afirmar a primeira quando vale a segunda é mentir na tela.
+  const [docxFalhou, setDocxFalhou] = useState(false);
   const titleId = useId();
   const dialogRef = useRef<HTMLDialogElement>(null);
 
@@ -94,24 +103,112 @@ export default function AttachmentViewer({ sourceFile, title, onClose }: Readonl
     return () => el.removeEventListener('click', onBackdrop);
   }, [onClose]);
 
-  // Formatos que o navegador NÃO renderiza em <iframe>. Um .docx serviria como download
-  // pelo próprio iframe (ou mostraria um painel em branco, conforme o navegador) — o que se
-  // lê na tela como "o anexo sumiu". Estado explícito + os botões Baixar/Nova aba, que já
-  // existem no cabeçalho, entregam o arquivo sem fingir uma pré-visualização que não há.
-  const previewUnavailable = /\.docx$/i.test(sourceFile);
+  // Nenhum navegador renderiza .docx em <iframe> — ele mostraria um painel em branco ou
+  // dispararia um download, o que se lê na tela como "o anexo sumiu".
+  const isDocx = /\.docx$/i.test(sourceFile);
+
+  // …mas o .docx que chega aqui É o boleto: medido nos 3 casos reais (guias do TJSP), os
+  // documentos têm texto ZERO e uma única imagem embutida. Então em vez de mandar o usuário
+  // baixar e abrir o Word, abrimos o ZIP no próprio navegador e exibimos a figura.
+  // `docxImage`: object URL da imagem · null + docxDone = não havia imagem (cai na mensagem).
+  useEffect(() => {
+    if (!isDocx || state !== 'ok' || !url) return;
+    let active = true;
+    let objectUrl: string | null = null;
+    const extrair = async () => {
+      try {
+        // `fetch` NÃO lança em 403/404 — e a signed URL expira em SIGNED_URL_TTL com o modal
+        // aberto. Sem esta checagem, o corpo XML de erro do Storage seguiria como "ZIP" e o
+        // extrator o classificaria como `nao-e-zip`: um diagnóstico sobre o CONTEÚDO quando o
+        // que houve foi **403 na URL assinada**. A tela hoje acerta nos dois casos (ambos caem
+        // em "não foi possível ler"), mas o log mandaria o suporte investigar o arquivo em vez
+        // da expiração — e o arquivo está intacto no Storage.
+        const res = await fetch(url);
+        if (!res.ok) throw new Error(`download do .docx falhou: HTTP ${res.status}`);
+        const bytes = await res.arrayBuffer();
+        const resultado = await extractLargestDocxImage(bytes);
+        if (!active) return;
+        if (resultado.image) {
+          objectUrl = URL.createObjectURL(resultado.image.blob);
+          setDocxImage(objectUrl);
+        }
+        // 🔴 `failure` NÃO é erro do chamador — a extração é best-effort por contrato. Ele é a
+        // diferença entre "não tem imagem" e "não deu para ler", e existe para NÃO deixar a
+        // tela afirmar a primeira quando vale a segunda. `image` presente com `failure` é
+        // anomalia parcial: mostra a imagem e registra o motivo, sem alarmar o usuário.
+        if (resultado.failure) {
+          if (!resultado.image) setDocxFalhou(true);
+          console.error(
+            `[AttachmentViewer] leitura do .docx: ${resultado.failure}`,
+            resultado.error,
+          );
+        }
+      } catch (e) {
+        // Degrada para a mensagem de download (Baixar/Nova aba seguem no cabeçalho), mas
+        // nunca em silêncio — sem rastro, um erro de rede vira diagnóstico no lugar errado.
+        if (active) setDocxFalhou(true);
+        console.error('[AttachmentViewer] pré-visualização de .docx indisponível', e);
+      } finally {
+        if (active) setDocxDone(true);
+      }
+    };
+    void extrair();
+    return () => {
+      active = false;
+      // Sem isto o blob fica retido na memória da aba a cada anexo aberto.
+      if (objectUrl) URL.revokeObjectURL(objectUrl);
+    };
+  }, [isDocx, state, url]);
 
   function renderBody() {
     if (state === 'loading') {
       return <div className="flex h-full items-center justify-center text-sm text-slate-500">Carregando anexo…</div>;
     }
-    if (state === 'ok' && previewUnavailable) {
+    if (state === 'ok' && isDocx) {
+      if (docxImage) {
+        return (
+          <div className="flex h-full items-center justify-center overflow-auto bg-slate-50 p-4">
+            {/* Conteúdo, não decoração: o alt descreve o que é, sem repetir o nome do arquivo
+                (já anunciado pelo título do modal, via aria-labelledby). */}
+            <img
+              src={docxImage}
+              alt={`Documento anexado ao Word — ${label}`}
+              className="max-h-full max-w-full object-contain"
+            />
+          </div>
+        );
+      }
+      if (!docxDone) {
+        return (
+          <div className="flex h-full items-center justify-center text-sm text-slate-500">
+            Abrindo documento do Word…
+          </div>
+        );
+      }
+      // As duas mensagens abaixo dizem coisas DIFERENTES de propósito. A de cima é um fato
+      // sobre o ARQUIVO e só pode ser exibida quando a leitura terminou sem anomalia; a de
+      // baixo é um fato sobre a LEITURA. Trocar uma pela outra manda o usuário (e o suporte)
+      // investigar o lado errado — o documento fica sob suspeita quando o problema era nosso.
+      if (docxFalhou) {
+        return (
+          <div className="flex h-full flex-col items-center justify-center gap-3 text-center">
+            <div className="flex h-14 w-14 items-center justify-center rounded-full bg-status-warning-bg text-status-warning-fg">
+              <FileWarning size={26} />
+            </div>
+            <p className="max-w-xs text-sm text-slate-600">
+              Não foi possível ler este documento do Word (.docx) para pré-visualizar.
+              Use <span className="font-medium">Baixar</span> ou <span className="font-medium">Nova aba</span> para abrir o arquivo.
+            </p>
+          </div>
+        );
+      }
       return (
         <div className="flex h-full flex-col items-center justify-center gap-3 text-center">
           <div className="flex h-14 w-14 items-center justify-center rounded-full bg-status-info-bg text-status-info-fg">
             <FileWarning size={26} />
           </div>
           <p className="max-w-xs text-sm text-slate-600">
-            Documento do Word (.docx) — pré-visualização não disponível no navegador.
+            Documento do Word (.docx) sem imagem para pré-visualizar.
             Use <span className="font-medium">Baixar</span> ou <span className="font-medium">Nova aba</span> para abrir o arquivo.
           </p>
         </div>
