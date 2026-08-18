@@ -50,10 +50,50 @@ export default function AttachmentList({
             key={item.id}
             className="flex items-center gap-2 rounded-lg border border-slate-200 bg-white px-3 py-2"
           >
-            <Icon size={16} aria-hidden="true" className="shrink-0 text-slate-500" />
-            <span className="min-w-0 flex-1 truncate text-sm text-slate-700" title={item.name}>
-              {item.name}
-            </span>
+            {/* 🔴 O NOME É O ALVO DE CLIQUE, e isso não é preferência de estilo.
+                No painel de detalhe de /consulta esta lista vive num `<td colSpan>`, que tem a
+                largura TOTAL da tabela — maior que a área visível sempre que o grid rola na
+                horizontal. Um botão no FIM da linha flex cai fora da tela: ele existe, responde
+                e é inalcançável sem rolar, que foi exatamente o relato ("mostra o anexo, mas não
+                está clicável"). O nome fica na BORDA ESQUERDA, onde nenhuma largura de tabela o
+                empurra, e ainda dá um alvo grande em vez de um ícone de 14px.
+                O ícone de olho continua à direita para quem já o conhece — os dois disparam a
+                mesma ação, e só um deles carrega o nome acessível (o outro é `aria-hidden`),
+                senão o leitor de tela anunciaria "Ver X" duas vezes na mesma linha. */}
+            {onView ? (
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onView(item);
+                }}
+                // `cursor-pointer` é EXPLÍCITO: o padrão do navegador para <button> é
+                // `cursor: default`, então sem esta classe o nome vira um alvo de clique que
+                // não se anuncia como tal — quem já tem a `.btn` (o ícone de olho ao lado)
+                // ganha a mãozinha de graça, e a diferença entre os dois confundiria.
+                className="flex min-w-0 flex-1 cursor-pointer items-center gap-2 text-left"
+                aria-label={`Ver ${item.name}`}
+                title="Ver o anexo"
+              >
+                <Icon size={16} aria-hidden="true" className="shrink-0 text-slate-500" />
+                {/* `title` com o NOME (não com a ação): o texto trunca nesta lista estreita, e o
+                    hover era a única forma de ler o nome inteiro. O `title` do botão vale sobre o
+                    ícone; sobre o texto vence este, que é o interno. */}
+                <span
+                  className="min-w-0 flex-1 truncate text-sm text-slate-700 hover:underline"
+                  title={item.name}
+                >
+                  {item.name}
+                </span>
+              </button>
+            ) : (
+              <>
+                <Icon size={16} aria-hidden="true" className="shrink-0 text-slate-500" />
+                <span className="min-w-0 flex-1 truncate text-sm text-slate-700" title={item.name}>
+                  {item.name}
+                </span>
+              </>
+            )}
             {item.fromEmail && (
               <span
                 className="inline-flex shrink-0 items-center gap-1 rounded-full bg-status-info-bg px-2 py-0.5 text-xs text-status-info-fg"
@@ -69,14 +109,19 @@ export default function AttachmentList({
                 botões do detalhe (Consulta.tsx). Funciona também no teclado: Enter/Espaço num
                 <button> gera um `click`, que é contido aqui. */}
             {onView && (
+              // `aria-hidden` + `tabIndex={-1}`: é o MESMO comando do nome, ali ao lado. Sem
+              // isso o leitor de tela anunciaria dois botões "Ver <nome>" na mesma linha e o
+              // Tab pararia duas vezes no mesmo destino. Fica como atalho visual para quem já
+              // usa o ícone — e o mouse continua alcançando os dois.
               <button
                 type="button"
+                aria-hidden="true"
+                tabIndex={-1}
                 onClick={(e) => {
                   e.stopPropagation();
                   onView(item);
                 }}
                 className="btn shrink-0"
-                aria-label={`Ver ${item.name}`}
                 title="Ver o anexo"
               >
                 <Eye size={14} aria-hidden="true" />
