@@ -1080,10 +1080,11 @@ estão **fechadas** (pago/cancelado) e **não** foram reescritas — só a 693 f
 Testes: `tests/test_body_invoice_table.py`.
 
 > **Boletos protegidos por senha + carnê (OBER `info.ober.com.br`) — RESOLVIDO no PDF:** o boleto
-> é um PDF **criptografado** (senha = N primeiros dígitos do CNPJ do pagador) e um **carnê de N
+> é um PDF **criptografado** (senha derivada do CNPJ do pagador) e um **carnê de N
 > boletos** (N páginas). `extract_pdf.process_pdf` (orquestrador) trata os dois: (1) PDF cifrado
-> (`_pdf_is_encrypted`) → tenta senhas `company.cnpj[:4]→[:5]→[:6]` (`_decrypt_pdf`; candidatos
-> gerados por `read_emails.pdf_password_candidates(ctrl.company_cnpj())` e threaded por
+> (`_pdf_is_encrypted`) → tenta as senhas candidatas `[:3]→[:4]→[:5]→[:6]→**CNPJ completo**
+> (`_decrypt_pdf`; candidatos gerados por
+> `read_emails.pdf_password_candidates(_payer_cnpjs(ctrl))` e threaded por
 > `run_extraction`→`extract_to_csv(pdf_passwords=...)`), gravando uma cópia descriptografada
 > temporária; (2) **multi-pagável** (`_payable_pages` acha ≥2 páginas com instrumento de pagamento
 > — ver "Split multi-pagável por INSTRUMENTO DE PAGAMENTO") → divide em
@@ -1097,6 +1098,25 @@ Testes: `tests/test_body_invoice_table.py`.
 > `tests/test_pdf_decrypt.py` (decrypt + candidatos) e a validação dos helpers contra o PDF real
 > (`_payable_pages`/`_write_single_page`). **Importante (produção):** copiar `extract_pdf.py` **e**
 > `read_emails.py` juntos e instalar `pypdf` na máquina do scheduler — ver "Deploy manual".
+
+> **Senha = CNPJ COMPLETO e prefixo de 3 (2026-08-18):** o e-mail "PAGAMENTO BOLETO CABERNET
+> 0108-1408" (`email_control` 1563, erro 314) caiu em `extracao_falhou` porque a senha do anexo é o
+> **CNPJ inteiro, sem pontuação** — fora dos prefixos 4/5/6 então cobertos. O mesmo remetente já
+> tinha perdido o e-mail "0107-1507" (erro 257) pelo mesmo motivo. A regra virou
+> `PDF_PASSWORD_CNPJ_LENGTHS = (3, 4, 5, 6, None)` (`None` = número completo), constante nomeada
+> porque é regra de **negócio**, e o mínimo de dígitos exigido da fonte é **derivado** dela
+> (`PDF_PASSWORD_MIN_DIGITS`) — prefixo novo maior sem ajuste do mínimo geraria senha truncada em
+> silêncio.
+>
+> 🔴 **As candidatas saem do CNPJ de TODAS as empresas pagadoras** (`ctrl.company_cnpjs()`), não só
+> da `sk_company=1`: as três filiais compartilham a raiz `47273917` — logo os **prefixos coincidem**
+> —, mas o **CNPJ completo difere** (`...0001-23`/`...0002-23`/`...0003-23`), e a empresa pagadora
+> do e-mail só é resolvida no **Passo 2**, depois da extração. Tentar uma senha errada custa uma
+> chamada local ao `pypdf`; omitir a filial certa perde o boleto **em silêncio**. A ordem das
+> candidatas só afeta o número de tentativas: a comparação do `pypdf` é exata, então um prefixo
+> curto nunca abre um PDF cifrado com senha mais longa. Duplicatas são removidas preservando a
+> ordem. `_payer_cnpjs(ctrl)` degrada para `company_cnpj()` e para lista vazia — controle sem CNPJ
+> não vira erro, só não tenta descriptografar.
 
 > **Boleto cifrado só com senha de DONO (usuário vazia) — RESOLVIDO via pdfplumber (não regredir):**
 > caso distinto do OBER (SB Crédito / HYOSUNG via "SB CREDITO SECURITIZADORA"): o PDF é cifrado

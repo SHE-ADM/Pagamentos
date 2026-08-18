@@ -609,13 +609,18 @@ def _texto_apos_decrypt(caminho: Path) -> str:
 _CNPJ_CACHE = {}
 
 
-def _company_cnpj() -> str:
+def _company_cnpj() -> list[str]:
+    """CNPJ (so digitos) de TODAS as empresas pagadoras — base das senhas candidatas de
+    boleto protegido. Sao varias porque a senha pode ser o CNPJ COMPLETO, que difere por
+    filial; os prefixos coincidem, e a deduplicacao fica em pdf_password_candidates."""
     if "valor" not in _CNPJ_CACHE:
         try:
-            linhas = _rest("company?select=cnpj&sk_company=eq.1", order="sk_company")
-            _CNPJ_CACHE["valor"] = re.sub(r"\D", "", (linhas[0].get("cnpj") or "")) if linhas else ""
+            linhas = _rest("company?select=sk_company,cnpj", order="sk_company")
+            _CNPJ_CACHE["valor"] = [
+                d for d in (re.sub(r"\D", "", (linha.get("cnpj") or "")) for linha in linhas) if d
+            ]
         except RestError:
-            _CNPJ_CACHE["valor"] = ""
+            _CNPJ_CACHE["valor"] = []
     return _CNPJ_CACHE["valor"]
 
 

@@ -1414,7 +1414,8 @@ def _pdf_text_readable(pdf_path) -> bool:
 
 def _decrypt_pdf(pdf_path, passwords) -> "Path | None":
     """Tenta abrir o PDF cifrado com cada senha candidata (senha vazia primeiro, depois
-    as fornecidas — ex.: CNPJ[:4]/[:5]/[:6] do pagador). Em sucesso, grava uma cópia
+    as fornecidas — prefixos e CNPJ completo do pagador; ver read_emails.
+    pdf_password_candidates). Em sucesso, grava uma cópia
     DESCRIPTOGRAFADA num arquivo temporário e devolve seu Path. Sem senha que abra →
     None (o PDF segue ilegível e o caller cai no fallback do corpo). Um PdfReader novo
     por tentativa evita estado residual de uma senha incorreta anterior."""
@@ -1519,8 +1520,8 @@ def _write_single_page(pdf_path, index) -> Path:
 def process_pdf(pdf_path, force_vision=False, pdf_passwords=None):
     """Processa um PDF → LISTA de registros (1+).
 
-    - PDF protegido por senha: tenta as senhas candidatas (CNPJ[:4]/[:5]/[:6] do pagador,
-      threaded pelo read_emails) e descriptografa; esgotadas as tentativas, devolve um
+    - PDF protegido por senha: tenta as senhas candidatas (prefixos e CNPJ completo do
+      pagador, threaded pelo read_emails) e descriptografa; esgotadas as tentativas, devolve um
       registro de falha (o read_emails cai no fallback do corpo).
     - Carnê (vários boletos, N páginas com linha digitável): emite UM registro por
       boleto (o downstream já cria uma conta por linha do CSV).

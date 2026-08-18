@@ -52,6 +52,7 @@ Procedimento completo na skill **`deploy-producao`**. Histórico de cada deploy:
 | Item | Estado |
 |---|---|
 | Último deploy | **2026-08-17** — anexos `.docx` (`docx_content.py` novo, `extract_pdf.py`, `read_emails.py`) |
+| ⚠️ Divergência pendente | **2026-08-18** — senha de boleto por CNPJ completo: `read_emails.py`, `extract_pdf.py` e `deploy-manifest.json` alterados no repo, **ainda não copiados** |
 | Paridade verificada | ✅ na aplicação do deploy, com smoke de import na própria máquina |
 | Tarefas agendadas | 5 ativas — Email Reader (5 min) · Cobrança (08:00) · Backup (02:00) · Baixa (08:00) · Gatilhos Roadmap (dia 1, 07:00) |
 
@@ -83,6 +84,7 @@ próxima fatura agregada (são semanais). Conferir com
 | RBAC completo (`permission`/`group_*`) | **desenhado, não implementado** | [docs/design/permissoes-por-grupo.md](docs/design/permissoes-por-grupo.md) |
 | Upload no `/contas` pré-preencher campos | **ideia, não implementar ainda** | decisão registrada na memória |
 | TanStack Query em `Consulta`/`Emails` | **rollout pendente** | padrão já aplicado em `SuppliersPage` |
+| Reprocessar os 2 e-mails CABERNET | **aguarda o deploy** | `email_control` 1563 e 888 (erros 314 e 257) falharam por senha; a regra nova só vale para leituras novas — reprocessar com `scripts/reprocess_message.py` **depois** de copiar o pipeline para produção |
 
 ---
 
