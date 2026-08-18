@@ -1,5 +1,42 @@
 # Histórico de deploys
 
+## 2026-08-18 — Senha de boleto: o CNPJ completo (e a filial que não estava na conta)
+
+**Sintoma.** O e-mail "PAGAMENTO BOLETO CABERNET 0108-1408" (`email_control` 1563, erro **314**)
+em `extracao_falhou`: o anexo é um PDF cifrado e nenhuma senha candidata abria. A senha era o
+**CNPJ inteiro do pagador**, e a regra só cobria os prefixos `[:4]`, `[:5]` e `[:6]`.
+
+**O que o sintoma escondia.** O mesmo remetente já havia perdido o "0107-1507" em julho
+(`email_control` 888, erro **257**) exatamente assim. Um e-mail em `falha` não chama atenção
+sozinho — quem procurou foi o usuário, um mês depois, por outro e-mail do mesmo fornecedor.
+
+**Causa:** a regra de senha era uma lista literal de prefixos, e a fonte era o CNPJ de **uma**
+empresa (`sk_company=1`).
+
+**A descoberta que ampliou o escopo.** As três pagadoras compartilham a raiz `47273917` — logo os
+**prefixos coincidem** e a origem única nunca havia incomodado. Mas o **CNPJ completo difere por
+filial** (`...0001-23` / `...0002-23` / `...0003-23`), e a empresa pagadora do e-mail só é
+resolvida no **Passo 2**, depois da extração: no momento de abrir o PDF não se sabe de quem ele é.
+Corrigir só o comprimento teria deixado LEBIANCO e FARDOS falhando pelo mesmo motivo, com o mesmo
+sintoma mudo. Tentar uma senha errada custa uma chamada local ao `pypdf`; faltar a certa perde o
+boleto em silêncio — daí tentar as de todas.
+
+**Lição de teste.** Dos quatro mutantes instalados, o que restringia a query de volta a
+`sk_company=eq.1` **passou**: o teste devolvia o mesmo payload mockado qualquer que fosse a URL, e
+por isso não travava a garantia que o nome prometia. Foi corrigido para asserir a própria consulta.
+
+**Arquivos:** `skills/email-reader/scripts/read_emails.py` (`PDF_PASSWORD_CNPJ_LENGTHS`,
+`PDF_PASSWORD_MIN_DIGITS` derivado, `company_cnpjs`, `_payer_cnpjs`) ·
+`skills/pdf-contas-pagar/scripts/extract_pdf.py` (só comentários da regra) · `deploy-manifest.json`
+(hashes; segue em **32** arquivos). **Sem** migration, **sem** `.env` novo, **sem** dependência
+nova (`pypdf` já era pré-requisito).
+
+**Resultado do reprocessamento.** O 1563 abriu com **senha de 14 dígitos** e caiu em
+`duplicidade` — correto: a conta **1094** (CABERNET, R$ 6.922,78, venc. 24/08) já havia sido
+lançada à mão e foi **enriquecida com o código de barras** em vez de duplicada. O 888 não está
+mais na INBOX nem no Storage: irrecuperável, mas sem perda — a quinzena está na conta **574**
+(venc. 22/07, paga), que veio de um segundo e-mail com o mesmo boleto.
+
 ## 2026-08-17 — Anexo .docx com boleto (o descarte silencioso)
 
 **Sintoma enganoso.** O e-mail `email_control` 1516 ("BOLETO: 0003150-04.2023.8.26.0577") estava em
