@@ -35,6 +35,34 @@ function cellText(tokens: InlineToken[]): string {
   return tokens.map((t) => t.text).join('');
 }
 
+/**
+ * Ausência de dado — vazio ou traço. `—`/`-` é a grafia usual de "sem valor" numa tabela (as
+ * funções de `analytics` devolvem NULL de propósito), e isso NÃO é texto: se votasse, uma única
+ * linha sem dado jogaria a coluna inteira de volta para a esquerda — exatamente o defeito que o
+ * alinhamento por coluna existe para corrigir.
+ */
+const BLANK_CELL_RE = /^[-–—]*$/;
+
+// Alinhamento é decisão de COLUNA, não de célula: alinhar só a célula deixa o rótulo do cabeçalho
+// (`text-left` herdado de `table-header`) do lado oposto do número que ele nomeia — foi o defeito
+// visível na tabela do chat. Célula sem dado não desqualifica a coluna; ela só não vota.
+function numericColumns(header: InlineToken[][], rows: InlineToken[][][]): boolean[] {
+  const width = Math.max(header.length, ...rows.map((r) => r.length), 0);
+
+  return Array.from({ length: width }, (_, col) => {
+    let hasValue = false;
+
+    for (const row of rows) {
+      const text = row[col] ? cellText(row[col]).trim() : '';
+      if (BLANK_CELL_RE.test(text)) continue;
+      if (!NUMERIC_CELL_RE.test(text)) return false;
+      hasValue = true;
+    }
+
+    return hasValue;
+  });
+}
+
 function Block({ block }: Readonly<{ block: MarkdownBlock }>) {
   if (block.type === 'heading') {
     return (
@@ -63,6 +91,8 @@ function Block({ block }: Readonly<{ block: MarkdownBlock }>) {
   }
 
   if (block.type === 'table') {
+    const alignRight = numericColumns(block.header, block.rows);
+
     return (
       // Tabela larga rola DENTRO do próprio contêiner — o corpo do chat nunca rola na horizontal.
       <div className="overflow-x-auto rounded-lg border border-slate-200 bg-white">
@@ -70,7 +100,11 @@ function Block({ block }: Readonly<{ block: MarkdownBlock }>) {
           <thead>
             <tr>
               {block.header.map((cell, i) => (
-                <th key={`h-${i}`} scope="col" className="table-header whitespace-nowrap">
+                <th
+                  key={`h-${i}`}
+                  scope="col"
+                  className={cn('table-header whitespace-nowrap', alignRight[i] && 'text-right')}
+                >
                   <Inline tokens={cell} />
                 </th>
               ))}
@@ -79,15 +113,14 @@ function Block({ block }: Readonly<{ block: MarkdownBlock }>) {
           <tbody>
             {block.rows.map((row, r) => (
               <tr key={`r-${r}`}>
-                {row.map((cell, c) => (
+                {/* Linha mais curta que o cabeçalho é preenchida à direita: sem isso a última
+                    célula sobe para a coluna errada e a tabela inteira parece desalinhada. */}
+                {Array.from({ length: alignRight.length }, (_, c) => (
                   <td
                     key={`c-${r}-${c}`}
-                    className={cn(
-                      'table-cell',
-                      NUMERIC_CELL_RE.test(cellText(cell).trim()) && 'text-right tabular-nums',
-                    )}
+                    className={cn('table-cell', alignRight[c] && 'text-right tabular-nums')}
                   >
-                    <Inline tokens={cell} />
+                    {row[c] ? <Inline tokens={row[c]} /> : null}
                   </td>
                 ))}
               </tr>
