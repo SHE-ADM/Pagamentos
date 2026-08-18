@@ -485,7 +485,7 @@ class DecryptTemporarioTest(unittest.TestCase):
             fake._decrypt_pdf = lambda caminho, senhas: aberto
             with mock.patch.dict(sys.modules, {"extract_pdf": fake}), \
                  mock.patch.object(V.R, "pdf_password_candidates", return_value=[]), \
-                 mock.patch.object(V, "_company_cnpj", return_value=""), \
+                 mock.patch.object(V, "_company_cnpj", return_value=[]), \
                  mock.patch.object(V.R, "_pdf_text", return_value="texto"):
                 self.assertEqual(V._texto_apos_decrypt(Path(td) / "orig.pdf"), "texto")
             self.assertFalse(aberto.exists(), "o PDF descriptografado ficou no disco")
@@ -498,7 +498,7 @@ class DecryptTemporarioTest(unittest.TestCase):
             fake._decrypt_pdf = lambda caminho, senhas: aberto
             with mock.patch.dict(sys.modules, {"extract_pdf": fake}), \
                  mock.patch.object(V.R, "pdf_password_candidates", return_value=[]), \
-                 mock.patch.object(V, "_company_cnpj", return_value=""), \
+                 mock.patch.object(V, "_company_cnpj", return_value=[]), \
                  mock.patch.object(V.R, "_pdf_text", side_effect=ValueError("pdf quebrado")):
                 self.assertEqual(V._texto_apos_decrypt(Path(td) / "orig.pdf"), "")
             self.assertFalse(aberto.exists())

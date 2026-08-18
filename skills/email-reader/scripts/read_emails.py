@@ -435,26 +435,53 @@ class SupabaseControl:
             log.warning(f"Supabase indisponível — usando deduplicação local: {e}")
             return False
 
-    def company_cnpj(self) -> "str | None":
-        """CNPJ (só dígitos) da empresa pagadora (sk_company=1) — base das senhas
-        candidatas de boletos protegidos (CNPJ[:4]/[:5]/[:6]). Cacheado por instância;
-        None quando indisponível (o caller simplesmente não tenta descriptografar)."""
-        if getattr(self, "_company_cnpj_cache", "__unset__") != "__unset__":
-            return self._company_cnpj_cache
-        self._company_cnpj_cache = None
+    def _company_cnpj_map(self) -> "dict[int, str]":
+        """{sk_company: CNPJ só dígitos} de TODAS as empresas pagadoras, cacheado por
+        instância. Dicionário vazio quando indisponível — nunca levanta, porque nenhum
+        dos consumidores (exclusão de fornecedor, senha de boleto) é essencial ao fluxo."""
+        cached = getattr(self, "_company_cnpj_cache", None)
+        if cached is not None:
+            return cached
+        self._company_cnpj_cache = {}
         if self._available:
             try:
                 req = urllib.request.Request(
-                    f"{self.base}/rest/v1/company?sk_company=eq.1&select=cnpj&limit=1",
+                    f"{self.base}/rest/v1/company?select=sk_company,cnpj&order=sk_company.asc",
                     headers=self.headers,
                 )
                 with urllib.request.urlopen(req, timeout=5) as r:
                     rows = json.loads(r.read())
-                if rows and rows[0].get("cnpj"):
-                    self._company_cnpj_cache = re.sub(r"\D", "", str(rows[0]["cnpj"])) or None
+                for row in rows or []:
+                    digits = re.sub(r"\D", "", str(row.get("cnpj") or ""))
+                    if not digits:
+                        continue
+                    # `sk_company` é coagido (e não checado por isinstance): se o PostgREST
+                    # devolvesse "1" em vez de 1, descartar a linha faria `company_cnpj()`
+                    # virar None e a exclusão "a pagadora nunca é fornecedor" cair calada.
+                    try:
+                        sk = int(row["sk_company"])
+                    except (KeyError, TypeError, ValueError):
+                        continue
+                    self._company_cnpj_cache[sk] = digits
             except Exception as e:
-                log.warning(f"Falha ao ler CNPJ da empresa (sk_company=1): {e}")
+                log.warning(f"Falha ao ler CNPJ das empresas pagadoras: {e}")
         return self._company_cnpj_cache
+
+    def company_cnpj(self) -> "str | None":
+        """CNPJ (só dígitos) da empresa pagadora PRINCIPAL (sk_company=1) — base da
+        exclusão "a própria pagadora nunca é fornecedor" (raiz de 8 dígitos, comum às
+        filiais). None quando indisponível."""
+        return self._company_cnpj_map().get(SK_COMPANY_DEFAULT)
+
+    def company_cnpjs(self) -> list[str]:
+        """CNPJ (só dígitos) de TODAS as empresas pagadoras, ordenado por sk_company —
+        base das senhas candidatas de boletos protegidos.
+
+        REGRA: a senha do boleto é derivada do CNPJ do PAGADOR, e o pagador do e-mail só
+        é resolvido DEPOIS da extração (Passo 2). Como as filiais compartilham a raiz mas
+        têm CNPJ COMPLETO distinto, a lista traz todas — tentar uma senha errada custa uma
+        chamada local ao pypdf, enquanto omitir a filial certa perde o boleto em silêncio."""
+        return list(self._company_cnpj_map().values())
 
     def is_processed(self, message_id: str) -> bool:
         """True se o message_id já existe na tabela."""
@@ -4695,16 +4722,58 @@ EXTRACTION_MAX_ATTEMPTS = 3
 EXTRACTION_RETRY_BACKOFF = (2, 5)  # segundos de espera entre tentativas
 
 
-def pdf_password_candidates(cnpj: "str | None") -> list[str]:
-    """Senhas candidatas para boletos protegidos, na ordem pedida: CNPJ[:4], [:5], [:6].
-    Regra de negócio (boletos de cobrança costumam pedir os N primeiros dígitos do CNPJ
-    do pagador). Sem CNPJ com ao menos 6 dígitos → lista vazia (não tenta abrir cifrado)."""
-    if not isinstance(cnpj, str):
+# Comprimentos de prefixo do CNPJ do pagador aceitos como senha de boleto, do mais curto
+# para o mais longo. `None` = o CNPJ COMPLETO (14 dígitos) — usado por emissores que pedem
+# "o CNPJ sem pontuação". Constante nomeada: a regra é de NEGÓCIO e muda por emissor novo,
+# não por refactor. Prefixo curto NUNCA abre um PDF cifrado com senha mais longa (a
+# comparação do pypdf é exata), então a ordem só afeta o número de tentativas.
+PDF_PASSWORD_CNPJ_LENGTHS: "tuple[int | None, ...]" = (3, 4, 5, 6, None)
+# Mínimo de dígitos para a fonte valer como CNPJ — DERIVADO dos prefixos acima, nunca
+# escrito à mão: prefixo novo maior sem ajustar o mínimo geraria senha truncada em silêncio.
+PDF_PASSWORD_MIN_DIGITS = max(t for t in PDF_PASSWORD_CNPJ_LENGTHS if t is not None)
+
+
+def _payer_cnpjs(ctrl) -> list[str]:
+    """CNPJ de todas as empresas pagadoras a partir do controle Supabase, degradando para
+    a pagadora principal quando o objeto não expõe a lista (controles falsos de teste e
+    scripts antigos) e para vazio quando não expõe nenhuma das duas."""
+    if hasattr(ctrl, "company_cnpjs"):
+        return ctrl.company_cnpjs() or []
+    if hasattr(ctrl, "company_cnpj"):
+        um = ctrl.company_cnpj()
+        return [um] if isinstance(um, str) else []
+    return []
+
+
+def pdf_password_candidates(cnpj: "str | list[str] | tuple[str, ...] | None") -> list[str]:
+    """Senhas candidatas para boletos protegidos, derivadas do CNPJ do pagador.
+
+    Aceita um CNPJ ou uma lista deles (as filiais pagadoras compartilham a raiz, mas o CNPJ
+    COMPLETO de cada uma é distinto — e o pagador do e-mail só é resolvido depois da
+    extração). Gera, por CNPJ e nesta ordem, os prefixos de `PDF_PASSWORD_CNPJ_LENGTHS` e o
+    número completo; duplicatas são removidas PRESERVANDO a ordem, para não repetir a mesma
+    tentativa de decrypt. Entrada inválida, vazia ou curta demais → lista vazia (o caller
+    simplesmente não tenta abrir o cifrado)."""
+    if isinstance(cnpj, str):
+        fontes = [cnpj]
+    elif isinstance(cnpj, (list, tuple)):
+        fontes = [c for c in cnpj if isinstance(c, str)]
+    else:
         return []
-    digits = re.sub(r"\D", "", cnpj)
-    if len(digits) < 6:
-        return []
-    return [digits[:4], digits[:5], digits[:6]]
+
+    candidatas: list[str] = []
+    for fonte in fontes:
+        digits = re.sub(r"\D", "", fonte)
+        # Menos dígitos que o maior prefixo pedido = dado inutilizável como senha (um
+        # "CNPJ" de 3 dígitos não produz "os 6 primeiros"). Fonte inteira descartada,
+        # em vez de gerar senha curta que não corresponde a regra nenhuma.
+        if len(digits) < PDF_PASSWORD_MIN_DIGITS:
+            continue
+        for tamanho in PDF_PASSWORD_CNPJ_LENGTHS:
+            senha = digits if tamanho is None else digits[:tamanho]
+            if senha not in candidatas:
+                candidatas.append(senha)
+    return candidatas
 
 
 def _run_extraction_once(pdf_path: Path, pdf_passwords: list[str] | None = None) -> tuple[str | None, str | None, bool]:
@@ -4960,9 +5029,9 @@ def extract_and_store_accounts(saved_pdfs: list, message_id: str,
     # e-mail; aplicado por linha abaixo, so nas que nao trazem CNPJ/CPF proprios.
     body_sup_name, body_sup_cnpj, body_sup_cpf = _body_supplier_identity(body_text, _own_cnpj)
 
-    # Senhas candidatas (CNPJ[:4]/[:5]/[:6] do pagador) para boletos protegidos —
+    # Senhas candidatas (prefixos e CNPJ completo das pagadoras) para boletos protegidos —
     # computadas uma vez por e-mail; vazias quando o CNPJ não está disponível.
-    pdf_passwords = pdf_password_candidates(ctrl.company_cnpj())
+    pdf_passwords = pdf_password_candidates(_payer_cnpjs(ctrl))
 
     # ------------------------------------------------------------------
     # Passo 1 — extrai TODOS os anexos e coleta as linhas. Upload no Storage
