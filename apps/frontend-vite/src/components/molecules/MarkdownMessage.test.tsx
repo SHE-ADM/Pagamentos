@@ -33,6 +33,49 @@ describe('MarkdownMessage', () => {
     expect(screen.getByRole('cell', { name: 'OBER' }).className).not.toContain('text-right');
   });
 
+  // O defeito real: a célula ia para a direita e o cabeçalho ficava à esquerda (`table-header`
+  // traz `text-left`), então o rótulo não ficava sobre a coluna que ele nomeia.
+  it('alinha o CABEÇALHO junto com a coluna numérica', () => {
+    const md = '| Situação | Contas | Valor |\n| --- | --- | --- |\n| Vencido | 22 | R$ 218.489,83 |';
+    render(<MarkdownMessage text={md} />);
+    expect(screen.getByRole('columnheader', { name: 'Contas' }).className).toContain('text-right');
+    expect(screen.getByRole('columnheader', { name: 'Valor' }).className).toContain('text-right');
+    expect(screen.getByRole('columnheader', { name: 'Situação' }).className).not.toContain('text-right');
+  });
+
+  // Coluna mista (número numa linha, texto noutra) fica inteira à esquerda — meia coluna
+  // alinhada à direita é pior que nenhuma.
+  it('coluna com célula não-numérica NÃO vira coluna numérica', () => {
+    const md = '| Item | Valor |\n| --- | --- |\n| a | 10,00 |\n| b | não informado |';
+    render(<MarkdownMessage text={md} />);
+    expect(screen.getByRole('columnheader', { name: 'Valor' }).className).not.toContain('text-right');
+    expect(screen.getByRole('cell', { name: '10,00' }).className).not.toContain('text-right');
+  });
+
+  // Vazio e traço são a MESMA coisa — ausência de dado. O chat escreve `—` onde a função de
+  // analytics devolve NULL, e uma linha dessas não pode derrubar o alinhamento da coluna.
+  it('célula vazia não desalinha a coluna numérica', () => {
+    const md = '| Item | Valor |\n| --- | --- |\n| a | 10,00 |\n| b |  |';
+    render(<MarkdownMessage text={md} />);
+    expect(screen.getByRole('columnheader', { name: 'Valor' }).className).toContain('text-right');
+  });
+
+  it('traço de "sem dado" não desalinha a coluna numérica', () => {
+    const md = '| Fornecedor | Atraso médio |\n| --- | --- |\n| OBER | 12 |\n| LMED | — |';
+    render(<MarkdownMessage text={md} />);
+    expect(screen.getByRole('columnheader', { name: 'Atraso médio' }).className).toContain('text-right');
+    expect(screen.getByRole('cell', { name: '12' }).className).toContain('text-right');
+  });
+
+  // Linha curta: sem completar as colunas, a última célula sobe para a coluna errada.
+  it('linha com menos células que o cabeçalho é completada à direita', () => {
+    const md = '| A | B | C |\n| --- | --- | --- |\n| x | y |';
+    const { container } = render(<MarkdownMessage text={md} />);
+    const cells = [...container.querySelectorAll('tbody tr td')];
+    expect(cells).toHaveLength(3);
+    expect(cells.map((c) => c.textContent)).toEqual(['x', 'y', '']);
+  });
+
   // O parser reconhece `##`, mas quem decide COMO o título aparece é este componente — e um
   // subtítulo que renderizasse igual a um parágrafo passaria despercebido no teste do parser.
   it('renderiza título com destaque visual distinto do parágrafo', () => {
