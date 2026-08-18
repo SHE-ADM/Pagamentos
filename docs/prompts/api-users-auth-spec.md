@@ -17,7 +17,7 @@
                   com a chave anon) + middleware.ts (protege /api/* exceto /api/health)
   Schemas Zod 4: packages/shared/src/schemas/** (já existe loginSchema em auth.schema.ts)
   Testes: Vitest (environment node, mock de @supabase/supabase-js — ver lib/auth.test.ts)
-  REGRAS MANDATÓRIAS (.claude/rules/auth-specs.md + CLAUDE.md):
+  REGRAS MANDATÓRIAS (CLAUDE.md do projeto):
     - Auth SEMPRE via Supabase Auth — NUNCA JWT customizado, bcrypt ou hashing próprio
     - SEM AUTO-REGISTRO — usuários criados só por admin; supabase.auth.signUp nunca é chamado
     - REST: substantivo plural, status codes, Bearer token stateless, envelope ok/fail
