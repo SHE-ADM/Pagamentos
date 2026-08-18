@@ -503,6 +503,35 @@ describe('Consulta', () => {
     );
   });
 
+  // 🔴 SUSPENSO ≠ DESABILITADO. Com intervalo preenchido o período não está em vigor (o
+  // serviço dá precedência ao intervalo), e a tentação óbvia é desabilitar o seletor de coluna.
+  // Seria um defeito de usabilidade e não geraria erro nenhum: clicar num mês LIMPA o intervalo,
+  // e é ESTA coluna que passa a valer no mesmo clique — desabilitada, o usuário teria de apagar
+  // as duas datas antes de poder escolhê-la, ou seja, o controle ficaria inerte exatamente no
+  // instante em que vai ser usado. A decisão de não desabilitar vivia só em comentário e no
+  // texto da ressalva; este caso é o que a torna executável.
+  //
+  // Mutante: acrescentar `disabled={!!f.dateFrom || !!f.dateTo}` ao <select> deixa VERMELHO.
+  it('o seletor do período NÃO é desabilitado pelo intervalo — e a ressalva explica por quê', async () => {
+    render(<Consulta />);
+    await waitFor(() => expect(getFinancialAccountControl).toHaveBeenCalled());
+    const seletor = screen.getByLabelText(/tipo de data do período/i);
+    expect(seletor).toBeEnabled(); // sanidade: o estado de partida não é desabilitado
+
+    fireEvent.change(screen.getByLabelText(/data inicial/i), { target: { value: '2026-03-01' } });
+    await waitFor(() =>
+      expect(getFinancialAccountControl).toHaveBeenLastCalledWith(
+        expect.objectContaining({ dateFrom: '2026-03-01', month: null, year: null }),
+      ),
+    );
+
+    // Suspenso, mas operável — e a coluna escolhida agora é a que vale no clique seguinte.
+    expect(seletor).toBeEnabled();
+    // A ressalva é texto de VERDADE na árvore acessível (aria-describedby + sr-only), não só
+    // `title`: sem ela o usuário não tem como saber por que trocar a coluna não mudou nada.
+    expect(seletor).toHaveAccessibleDescription(/fica suspenso/i);
+  });
+
   // Caminho de VOLTA. Sem ele, apagar as datas deixaria o usuário preso em escopo global
   // (toda a base, nenhum mês em destaque) sem nenhuma ação que explicasse o que houve.
   it('apagar as duas datas devolve o período ao mês/ano corrente', async () => {

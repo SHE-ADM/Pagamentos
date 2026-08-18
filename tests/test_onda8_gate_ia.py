@@ -369,11 +369,33 @@ class G9ContratoDoErroTest(unittest.TestCase):
     # Documentos vivos. `docs/review/**` fica FORA de proposito: sao relatorios DATADOS, retratos
     # de um momento — reescrever um relatorio de 2026-08-10 para refletir uma mudanca de 08-12
     # falsificaria o registro. O mesmo vale para o plano de um review ja executado.
+    #
+    # `.claude/skills/**` ENTRA desde 2026-08-18: o enxugamento do CLAUDE.md moveu 149 regras 🔴
+    # para as skills, e `chat-ia-gateway/SKILL.md` e o destino NATURAL do contrato de erro do chat.
+    # Sem elas no conjunto, a regra "quem enuncia o corte tem de enunciar a excecao" pararia de
+    # valer exatamente no arquivo para onde o texto tende a migrar — medido: a mesma frase omissa
+    # passa VERDE numa skill e VERMELHA em `docs/`.
     def _docs_vivos(self) -> list[Path]:
-        return [
-            p for p in [RAIZ / "CLAUDE.md", *sorted((RAIZ / "docs").rglob("*.md"))]
-            if "review" not in p.relative_to(RAIZ).parts
+        candidatos = [
+            RAIZ / "CLAUDE.md",
+            *sorted((RAIZ / "docs").rglob("*.md")),
+            *sorted((RAIZ / ".claude" / "skills").glob("*/*.md")),
         ]
+        return [p for p in candidatos if "review" not in p.relative_to(RAIZ).parts]
+
+    def test_sanidade_o_conjunto_cobre_docs_E_skills(self):
+        """Sem isto, um glob que para de casar encolhe o conjunto em SILENCIO.
+
+        Os dois testes abaixo continuariam verdes varrendo menos arquivos — a cobertura sumiria
+        sem nenhum vermelho, que e a forma mais cara de perder uma guarda. Por isso a assercao e
+        por FAMILIA de caminho, nao por contagem total (que mudaria a cada doc novo).
+        """
+        familias = {p.relative_to(RAIZ).parts[0] for p in self._docs_vivos()}
+        for esperada in ("CLAUDE.md", "docs", ".claude"):
+            self.assertIn(
+                esperada, familias,
+                f"'{esperada}' saiu do conjunto varrido por _docs_vivos (glob quebrado?): {familias}",
+            )
 
     def test_sanidade_o_corte_e_a_excecao_existem_no_codigo(self):
         codigo = _codigo_ts(RAIZ / "apps" / "api-backend" / "lib" / "response.ts")
