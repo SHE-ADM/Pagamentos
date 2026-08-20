@@ -1,5 +1,25 @@
 # Histórico de deploys
 
+## 2026-08-20 — Tipo `dar / dare`, fallback de fornecedor por e-mail encaminhado e contraprova da guia de arrecadação no Vision
+
+**O que foi ao ar.** Três frentes do mesmo caso de origem (conta 1101), mescladas em
+[PR #249](https://github.com/SHE-ADM/Pagamentos/pull/249): tipo `dar / dare` consolidado
+(migrations 132/133), fallback 1b de fornecedor pelo e-mail do remetente original encaminhado
+(migration 134, com supressão de write-back sobre curadoria já existente) e as duas regras da
+guia de arrecadação (valor = total a recolher, vencimento = data-limite) estendidas às 3 fontes
+visuais (`pdf_vision`/`image_vision`/`docx_vision`) — a data-limite transcrita pelo modelo ganhou
+contraprova de coerência contra o vencimento lido do mesmo documento (teto de 180 dias).
+
+**Arquivos:** `febraban.py`, `extract_pdf.py`, `read_emails.py`, `deploy-manifest.json` — nessa
+ordem (`extract_pdf.py` importa `febraban.py` no topo; módulo ausente estoura e nenhum PDF é
+extraído). **Migrations 132/133/134** já aplicadas (base compartilhada dev+prod).
+
+**Verificação em produção:** `check_deploy_parity.py` → **32/32 conferem, 0 faltando, 0
+divergentes, 0 extras**. Hash do `scheduler\deploy-manifest.json`
+(`A1228BEB...A40678`) bateu byte a byte com o do repositório antes mesmo do verificador rodar —
+o SHA-256 por arquivo do manifesto garante que o código publicado é idêntico ao do commit
+`6b355a8` (merge do PR #249 em `main`).
+
 ## 2026-08-18 — Senha de boleto: o CNPJ completo (e a filial que não estava na conta)
 
 **Sintoma.** O e-mail "PAGAMENTO BOLETO CABERNET 0108-1408" (`email_control` 1563, erro **314**)
