@@ -26,11 +26,11 @@
     "skills/cobranca-vencidos/scripts/send_core.py": "ca12c207d77622677c2648ee5b5068fdf5c09ebc39ff22af29ef2189e0f553ef",
     "skills/cobranca-vencidos/scripts/supabase_log.py": "19622099b704f88d139f493c6a6a2f7a2de285fcb9477acbed9d26d8284d6374",
     "skills/cobranca-vencidos/scripts/template.py": "ed0a2b31faf914fa3bfd855d958452efb3d4cfee64445afef196e1d4d8dbce38",
-    "skills/email-reader/scripts/read_emails.py": "8fc3e233abd82533599b3f4f7e5dff2437a67d9af5dc4ca57a97378facb27e4e",
+    "skills/email-reader/scripts/read_emails.py": "6d3f27efa2caa0c2634b1b2b586c8441d94c1a686e191a9090bbf92590bc2064",
     "skills/pdf-contas-pagar/scripts/cte_content.py": "1877e67b3009552785430b4230cc799ce2632f78764d1c24adacde97377aec29",
     "skills/pdf-contas-pagar/scripts/docx_content.py": "21fc2a5dd2d787788bd0c6a56c71e6506aaa5ddb93110eeb96d2c7b456ef0cb4",
-    "skills/pdf-contas-pagar/scripts/extract_pdf.py": "6464dd2ee9cb4c82f0a10b6d1784089967c692f05baf394f8e0bbf156e836764",
-    "skills/pdf-contas-pagar/scripts/febraban.py": "1ccb90f8c2fb4f7f56ac3a6058e1dab8670cb71b092deb1b1054a48666bcb1ce",
+    "skills/pdf-contas-pagar/scripts/extract_pdf.py": "b73263d7739814b2405371313634f039784d31c6eedc5c5bfcae7efe8264c621",
+    "skills/pdf-contas-pagar/scripts/febraban.py": "57eba5264c6e6b8a858bd9b8a7b034f7fefe2b174b09dafdebaa0ae66c06b57c",
     "skills/pdf-contas-pagar/scripts/fiscal_key.py": "2a6e34f3e849960d26725f7b2aedd9c1d7d23f2e1af6d067a71ebf3fd90b9994",
     "skills/roadmap-gatilhos/scripts/run.py": "17219c1f5a87c066499328c1cff94b70647c14716ac8c55b9e173155e63b5966"
   }

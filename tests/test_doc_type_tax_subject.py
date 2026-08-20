@@ -5,6 +5,9 @@ Testes do override de GUIA TRIBUTÁRIA pelo acrônimo no ASSUNTO
 Origem (regressão): financial_account_control id 326, assunto "PAGAMENTO DARE - REF.
 T05S1", extraído do PDF como 'gare' (o Claude confunde guias estaduais quase idênticas).
 O assunto declara "DARE" — deve prevalecer sobre a classificação do PDF.
+
+Desde a migration 133 o valor canônico é 'dar / dare': DAR e DARE nomeiam a MESMA
+guia estadual e o acrônimo impresso varia por estado.
 """
 
 import sys
@@ -20,7 +23,7 @@ import read_emails  # noqa: E402
 class ClassifyTaxDocTypeFromSubjectTest(unittest.TestCase):
     def test_dare_no_assunto(self):
         for txt in ("PAGAMENTO DARE - REF. T05S1", "Enc: dare estadual", "DARE SP"):
-            self.assertEqual(read_emails._classify_tax_doc_type_from_subject(txt), "dare", txt)
+            self.assertEqual(read_emails._classify_tax_doc_type_from_subject(txt), "dar / dare", txt)
 
     def test_guias_estaduais_nao_se_confundem(self):
         self.assertEqual(read_emails._classify_tax_doc_type_from_subject("PAGAMENTO GARE"), "gare")
@@ -61,14 +64,14 @@ class ClassifyTaxDocTypeFromSubjectTest(unittest.TestCase):
 
 class PdfPayloadTaxSubjectTest(unittest.TestCase):
     def test_caso_326_dare_sobrepoe_gare_do_pdf(self):
-        # O PDF classificou 'gare', mas o assunto "PAGAMENTO DARE" define 'dare'.
+        # O PDF classificou 'gare', mas o assunto "PAGAMENTO DARE" define 'dar / dare'.
         row = {"document_type": "gare", "amount": "105686.76", "due_date": "2026-07-01",
                "invoice_number": "260590141158705"}
         payload = read_emails.build_financial_payload(
             row, "<msg-326>", received_at="2026-07-01T10:00:00+00:00",
             subject="PAGAMENTO DARE - REF. T05S1",
         )
-        self.assertEqual(payload["document_type"], "dare")
+        self.assertEqual(payload["document_type"], "dar / dare")
         # Não deve mexer no número já extraído.
         self.assertEqual(payload["invoice_number"], "260590141158705")
 
@@ -91,14 +94,14 @@ class PdfPayloadTaxSubjectTest(unittest.TestCase):
 
 class BodyTaxSubjectTest(unittest.TestCase):
     def test_corpo_com_assunto_dare(self):
-        # Corpo genérico, assunto declara DARE → document_type 'dare'.
+        # Corpo genérico, assunto declara DARE → document_type 'dar / dare'.
         body = "Segue guia para pagamento.\nValor R$ 1.234,56\nVencimento: 10/07/2026"
         payload = read_emails.extract_from_email_body(
             body, "2026-07-01T10:00:00+00:00", "<msg-body-dare>",
             "financeiro@otimotex.com.br", subject="PAGAMENTO DARE - REF. T05S1",
         )
         self.assertIsNotNone(payload)
-        self.assertEqual(payload["document_type"], "dare")
+        self.assertEqual(payload["document_type"], "dar / dare")
 
 
 if __name__ == "__main__":

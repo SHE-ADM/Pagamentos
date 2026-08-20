@@ -7,7 +7,7 @@
 > 🔴 **Contador que o comando responde melhor NÃO se escreve aqui.** Antes de anotar um número,
 > pergunte se existe comando que o produz — se existir, anote o comando, não o número.
 >
-> **Atualizado em:** 2026-08-18
+> **Atualizado em:** 2026-08-20
 
 ---
 
@@ -52,6 +52,7 @@ Procedimento completo na skill **`deploy-producao`**. Histórico de cada deploy:
 | Item | Estado |
 |---|---|
 | Último deploy | **2026-08-18** — senha de boleto por CNPJ completo e prefixo de 3 (`read_emails.py`, `extract_pdf.py`, `deploy-manifest.json`) |
+| ⏳ **Deploy PENDENTE** | **2026-08-19/20** — tipo `dar / dare` + roteamento de fornecedor pelo e-mail do encaminhador + **regra da guia de arrecadação no caminho Vision** (+ contraprova da data-limite, 2ª rodada de 20/08). Copiar `read_emails.py`, `extract_pdf.py`, **`febraban.py`** e `deploy-manifest.json` (manifesto regravado no repo em 20/08 após a 2ª rodada, 32/32). Migrations 132/133/134 **já aplicadas** (base compartilhada). ⚠️ `febraban.py` entrou na lista em 2026-08-20 — ele ganhou `arrecadacao_value_refuted`, e copiar só o `extract_pdf.py` faria o import falhar |
 | Paridade verificada | ✅ na aplicação do deploy, com smoke de import na própria máquina |
 | Tarefas agendadas | 5 ativas — Email Reader (5 min) · Cobrança (08:00) · Backup (02:00) · Baixa (08:00) · Gatilhos Roadmap (dia 1, 07:00) |
 
@@ -82,6 +83,10 @@ próxima fatura agregada (são semanais). Conferir com
 | DKIM no DNS (cobrança) | **a configurar** | melhora entregabilidade; SPF já autentica, não é pré-requisito |
 | RBAC completo (`permission`/`group_*`) | **desenhado, não implementado** | [docs/design/permissoes-por-grupo.md](docs/design/permissoes-por-grupo.md) |
 | Upload no `/contas` pré-preencher campos | **ideia, não implementar ainda** | decisão registrada na memória |
+| Guia de arrecadação lida por **Vision** não recebe as duas correções de guia | ✅ **RESOLVIDO em 2026-08-20** | As duas regras passaram a valer nas **3** fontes visuais. O ramo Vision virou `_build_records_vision` (a assimetria com `_build_records_text` era o defeito); a data-limite chega pelo campo novo **`payment_deadline`** do prompt e quem decide adotá-la é `apply_arrecadacao_deadline`, gated pelo barcode e **compartilhada com o caminho de texto**; texto disponível (tier 2, página espelhada) vence o campo do modelo. O valor ganhou 2ª barreira contra OCR (`arrecadacao_value_refuted`, ≥10× ⇒ não sobrescreve e anota). Fechada de carona a lacuna do `docx_vision` no gate `barcode_self_refuted` (era tupla literal). Suíte **1593** (+26), **7 mutantes** vermelhos. **Nenhum dado histórico precisou de correção** — a medição de 2026-08-19 achou 0 divergências nas 9 guias auditáveis. Detalhe em [docs/knowledge/pipeline-extracao.md](docs/knowledge/pipeline-extracao.md) |
+| Risco residual do Vision: a data-limite **transcrita pelo modelo** entrava sem contraprova | ✅ **RESOLVIDO em 2026-08-20** (2ª rodada) | Sobrava a assimetria: o **valor** cruzava com o documento e a **data** era validada só na FORMA. Reproduzido antes de corrigir — `payment_deadline` de **2126** gravava conta que **nunca vence** (invisível em KPI, aging e cobrança); **2016**, nascida vencida há dez anos. Agora `arrecadacao_deadline_refuted` cruza com o vencimento que o modelo leu do **mesmo documento** (teto **180 dias** × folga real medida de **0–3**), em **duas direções**, **opt-in pela procedência** (a data do TEXTO é determinística e entra sem cruzamento) e com referência **por item** (carnê). `_iso_date` deixou de aceitar dígito a mais depois da data. **Medição do acervo:** 988 contas, **0** com `due_date` a mais de 180 dias da extração; guias por Vision entre **−11 e +16 dias** — classe nunca ocorrida, guarda preventiva. Suíte **1608** (+14), **8 mutantes** vermelhos |
+| Fallback 3 de fornecedor (por NOME do bloco encaminhado) morto no caminho de PDF | **achado, não corrigido** | lê `payload['email_body_excerpt']`, que o caminho de anexo nunca povoa. Não revivido de propósito: desemboca em `resolve_supplier`, que **cria** fornecedor |
+| 8 guias JUCE antigas sem texto extraível | **não reclassificadas** | são escaneadas/`.docx` e já estão pagas; provar o acrônimo exigiria leitura por Vision (custo de API). As legíveis foram conferidas e **nenhuma era DAR/DARE** |
 | TanStack Query em `Consulta`/`Emails` | **rollout pendente** | padrão já aplicado em `SuppliersPage` |
 | CABERNET 0107-1507 (`email_control` 888) | **irrecuperável, sem perda** | fora da INBOX e sem anexo no Storage — não há o que reprocessar. A quinzena está coberta pela conta **574** (venc. 22/07, paga), do e-mail 893 que trouxe o mesmo boleto 1h23 depois. O erro 257 fica como histórico |
 

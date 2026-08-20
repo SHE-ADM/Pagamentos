@@ -246,5 +246,56 @@ class ExcludedSupplierTest(unittest.TestCase):
             (R.CC_LOGISTICA, R.CA_TRANSPORTADORAS, True))
 
 
+class WeakSupplierSignalTest(unittest.TestCase):
+    """🔴 Fornecedor vindo de SINAL FRACO nao pode reescrever o CADASTRO.
+
+    O fallback 1b resolve o fornecedor pelo e-mail de quem ENCAMINHOU a guia. Antes dele,
+    guia de tributo sem favorecido caia na OTIMOTEX (sk=1), que `apply_forced_classification`
+    ja isentava do write-back — a protecao existia por ACIDENTE do destino. Com o 1b o
+    destino passou a ser um fornecedor real, e o write-back gravaria a classificacao
+    TRIBUTARIA no cadastro de um despachante, valendo para TODAS as contas futuras dele.
+
+    A allowlist `TAX_CLASSIFICATION_EXCLUDED_SK_SUPPLIERS` nao resolve: ela e REATIVA, so
+    protege quem alguem ja descobriu. Estes testes travam a protecao ESTRUTURAL."""
+
+    def test_sinal_fraco_classifica_a_conta_mas_nao_grava_no_cadastro(self):
+        """🔴 Mutante: remover o early-return de `_is_weak_supplier_signal` em
+        apply_forced_classification — o write-back volta e o cadastro e' reescrito."""
+        ctrl = _FakeCtrl()
+        payload = {"document_type": "gnre", "subject": "GUIA GNRE", "sk_supplier": 999,
+                   R.SUPPLIER_SIGNAL_KEY: R.SUPPLIER_SIGNAL_FORWARDED_EMAIL}
+        R.apply_forced_classification(ctrl, payload)
+        # a CONTA recebe a classificacao normalmente...
+        self.assertEqual(payload["cost_center_id"], 3)
+        self.assertEqual(payload["chart_account_id"], 48)
+        # ...e o CADASTRO nao e' tocado.
+        self.assertEqual(ctrl.writeback_calls, [])
+
+    def test_sem_a_marca_o_writeback_continua_valendo(self):
+        """ANTI-VACUIDADE: sem esta contraprova, o teste acima passaria com o write-back
+        desligado para TODO mundo — que seria uma regressao muito maior."""
+        ctrl = _FakeCtrl()
+        payload = {"document_type": "gnre", "subject": "GUIA GNRE", "sk_supplier": 999}
+        R.apply_forced_classification(ctrl, payload)
+        self.assertEqual(ctrl.writeback_calls, [(999, 3, 48)])
+
+    def test_marca_desconhecida_nao_e_tratada_como_fraca(self):
+        """So os sinais de SUPPLIER_SIGNAL_WEAK suprimem. Um valor fora do conjunto nao
+        pode desligar o write-back por acidente — falha ABERTA e deliberada: a marca e'
+        interna, e suprimir por engano esconderia a classificacao de um fornecedor real."""
+        ctrl = _FakeCtrl()
+        payload = {"document_type": "gnre", "subject": "GUIA GNRE", "sk_supplier": 999,
+                   R.SUPPLIER_SIGNAL_KEY: "procedencia_que_nao_existe"}
+        R.apply_forced_classification(ctrl, payload)
+        self.assertEqual(ctrl.writeback_calls, [(999, 3, 48)])
+
+    def test_o_conjunto_fraco_nao_esta_vazio(self):
+        """Sanidade: se SUPPLIER_SIGNAL_WEAK ficasse vazio, todos os casos acima
+        continuariam verdes e a protecao seria inerte."""
+        self.assertIn(R.SUPPLIER_SIGNAL_FORWARDED_EMAIL, R.SUPPLIER_SIGNAL_WEAK)
+        self.assertTrue(R.SUPPLIER_SIGNAL_KEY.startswith("_"),
+                        "a chave precisa do prefixo efemero para ser removida na gravacao")
+
+
 if __name__ == "__main__":
     unittest.main()

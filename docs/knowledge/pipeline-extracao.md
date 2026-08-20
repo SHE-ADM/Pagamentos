@@ -165,11 +165,30 @@ por nome (RPC `financial_dup_by_name` / `_dup_by_name`) foi **removida** — "EF
 
 `extract_pdf.py` usa `_ns()` (strip de acentos + lowercase) para lookup em `_DOC_TYPE_NORM`.
 CHECK constraint em `financial_account_control.document_type` usa `lower()` (migrations 014,
-017, **024**, **026**, **043**, **062**, **066**, **075**, **086** e **087**). Tipos aceitos incluem: `boleto`, `cte`, `nfe`, `nfse`, `tributo`,
-`das`, `seguro`, `fatura`, `recibo`, `contrato`, `honorários`, `container`, `multa`, `dare`, `cartório`, `cheque`, `comprovante`, `outro`
+017, **024**, **026**, **043**, **062**, **066**, **075**, **086**, **087**, **132** e **133**). Tipos aceitos incluem: `boleto`, `cte`, `nfe`, `nfse`, `tributo`,
+`das`, `seguro`, `fatura`, `recibo`, `contrato`, `honorários`, `container`, `multa`, `dar / dare`, `cartório`, `cheque`, `comprovante`, `outro`
 (DAS de Simples Nacional → `das`; **`multa`** = multa/penalidade/juros avulsos, auto de
-infração; **`dare`** = Documento de Arrecadação de Receitas Estaduais, antes dobrado em `dae` — a
-migration 062 separou DAE=eSocial de DARE=estadual em `_DOC_TYPE_NORM`/`_BODY_DOC_KEYWORDS`).
+infração).
+
+**`dar / dare`** = Documento de Arrecadação ESTADUAL, **entrada ÚNICA para os dois acrônimos**
+(migration **133**, com backfill das 26 contas que diziam `dare`). Histórico: a 062 separou
+DAE=eSocial de DARE=estadual; a **132** criou `dar` sozinho (caso da conta 1101, guia da JUCEMAT
+cujo cabeçalho imprime `DOCUMENTO DE ARRECADAÇÃO - DAR MODELO 1 - AUT`); a **133** consolidou os
+dois, porque nomeiam o MESMO instrumento e o que varia é o estado que o imprime — mesmo padrão
+de `dam / duam`.
+
+🔴 **`dar` é auto-classificado APENAS por rótulo explícito ou FRASE.** Ele é prefixo de `darf`
+**e** verbo comum do português ("dar baixa", "padaria", "guardar"): a forma pura nunca entra nos
+classificadores difusos — `KEYWORDS` casa por SUBSTRING e `_SUBJECT_TAX_DOC_KEYWORDS`/
+`_BODY_DOC_KEYWORDS` casam por palavra inteira, o que **não basta** para um verbo. As frases
+aceitas são `dar modelo 1`, `dar-1`, `dar/aut`, `dar avulso` e o próprio `dare` (inequívoco).
+
+🔴 **`documento de arrecadacao estadual` NÃO é gatilho de `dar / dare`** — e isso tem prova no
+acervo: essa frase é o nome por EXTENSO do **DAE** em Pernambuco (conta 1103, `DAE JUCEPE /
+Documento de Arrecadação Estadual`) e no Ceará (conta 821, `DAE - Documento de Arrecadação
+Estadual`). Como o bucket `DAR / DARE` vem ANTES do `DAE` em `KEYWORDS`, incluí-la faria **todo
+DAE** ser gravado como DAR, sem erro nenhum. O nome oficial do DARE ("de **RECEITAS** estaduais")
+é uma string disjunta e pode ficar. Travado por teste em `tests/test_doc_type_dar.py`.
 **`cheque`** (migration 086) = o cheque como DOCUMENTO da conta, distinto do `payment_method`
 `cheque` (forma de pagamento). Tipo **SELECIONÁVEL** no cadastro manual (`ContaForm`) e no filtro
 de `/consulta` (ambos derivam do enum `DOCUMENT_TYPES`); a extração só o emite pelo rótulo
@@ -247,8 +266,8 @@ origem: id 400 ("PAGAMENTO CARTORIO ...", boleto real → re-rotulado `cartório
 `tests/test_doc_type_cartorio.py`.
 
 **Classificação contábil AUTOMÁTICA de GUIAS TRIBUTÁRIAS (extração — não regredir):** para
-**e‑mails tributários** (`_is_tax_document`, `document_type` ∈ `darf, das, gru, dae, dare, gnre,
-ipva, iptu, dam, duam, dam / duam, iss, itbi, gare, tributo`), a guia é **relacionada
+**e‑mails tributários** (`_is_tax_document`, `document_type` ∈ `darf, das, gru, dae, dar / dare,
+gnre, ipva, iptu, dam, duam, dam / duam, iss, itbi, gare, tributo`), a guia é **relacionada
 automaticamente ao plano de contas** (`financial_chart_of_account`) pelo TIPO/CONTEXTO do imposto,
 determinando `cost_center_id`/`chart_account_id` — **NÃO** a partir do `supplier`. **Precedência
 MÁXIMA:** essa regra determinística **VENCE** o default do fornecedor e as demais regras; e **grava
@@ -273,7 +292,7 @@ blob, sender_email)` em **3 níveis** (blob = assunto+descrição+corpo, sem ace
    `csll`→`4.2.02`, `inss`→`4.2.04`, `iss`→`4.1.06`, `ipi`→`4.1.03`, `cofins`→`4.1.05`, `pis`→`4.1.04`,
    `icms`→`4.1.01`, `ipva`→`6.4.02`, `iptu`→`6.4.01`.
 4. **Fallback por ESFERA** do `document_type`: federal (`darf`/`gru`/`dae`)→`4.4.04`; estadual
-   (`dare`)→`4.4.02`; municipal (`dam`/`duam`/`dam / duam`/`itbi`)→`4.4.03`. `tributo` (sem esfera)
+   (`dar / dare`)→`4.4.02`; municipal (`dam`/`duam`/`dam / duam`/`itbi`)→`4.4.03`. `tributo` (sem esfera)
    **não força** (evita mis‑forçar boleto de fornecedor mal‑rotulado).
 
 `resolve_forced_classification(ctrl, document_type, subject, *extra_texts, sender_email, sk_supplier)`
@@ -495,7 +514,8 @@ emissão**, isto é, nascendo `vencido` (a tela mostrava um bloco inteiro de gui
   toda a base:** entre os **33** documentos de arrecadação NÃO-GNRE (dare, darf, iptu, conta
   de telefone, dae, iss, dam/duam), **0** teriam o valor alterado e **0** o vencimento — 30
   não têm o rótulo e 3 têm data-limite idêntica ao vencimento. As duas regras são cirúrgicas.
-  Testes: `tests/test_arrecadacao_gnre.py` (33 casos, **6 mutantes**).
+  Testes: `tests/test_arrecadacao_gnre.py` (**+33 casos** e **6 mutantes** nesta correção; o
+  arquivo cresceu depois — ver a seção do caminho visual, abaixo).
 - ⚠️ **Um mutante revelou teste que passava PELO MOTIVO ERRADO** *(lição a repetir)*: o caso
   da guarda de "valor de referência" trocava o `id_valor` para 9 — o que **também** quebra o
   DV —, então o `None` vinha do gate de DV, não da guarda testada, e o mutante que removia a
@@ -506,6 +526,113 @@ emissão**, isto é, nascendo `vencido` (a tela mostrava um bloco inteiro de gui
   DV conferido + texto do PDF). Resultado: vencimento anterior à emissão **31 → 0**; 4 guias
   saíram de `vencido` para `a vencer`. A **32ª (id 266)** não foi tocada — é lançamento
   manual, sem barcode e sem PDF, logo sem fonte para verificar.
+
+### A regra chega ao caminho VISUAL (2026-08-20)
+
+Por 16 dias as duas correções acima valeram **só no `pdf_text`**: elas eram chamadas em
+`_build_records_text`, e o ramo Vision era **código inline** dentro do dispatcher
+`build_records`. Guia **escaneada** dependia inteiramente do que o modelo leu.
+
+**Exposição medida antes de corrigir** (2026-08-19): **38 guias tributárias** vieram por
+Vision (35 `pdf_vision` + 3 `docx_vision`), R$ 912.285,26. Das **9 auditáveis** — as que têm
+linha de arrecadação de 48 dígitos —, o valor gravado conferia com o barcode em **100%**
+(0 divergências). O risco era estrutural e real, mas **não se materializou**: as correções
+existem porque o parser de TEXTO errava, e o Vision, lendo a página renderizada, vinha
+copiando o "Total a Recolher" certo.
+
+⚠️ **A metade "vencimento" NÃO tem oráculo independente** — o código de arrecadação não
+carrega fator de vencimento, ao contrário do boleto. É justamente por isso que ela precisa
+de contraprova no CÓDIGO: onde nada de fora confere o número, o único julgamento possível é
+o de coerência interna (ver `arrecadacao_deadline_refuted`, abaixo). **Medição de apoio**
+(2026-08-20, acervo inteiro): em **988 contas** de todas as fontes, **ZERO** tem `due_date` a
+mais de 180 dias da própria extração; nas 38 guias por Vision o intervalo real é de **−11 a
++16 dias**. A classe nunca ocorreu — a guarda é preventiva e sua fronteira é ~11× o extremo
+já observado.
+
+- 🔴 **`_build_records_vision` existe para tornar a assimetria VISÍVEL.** Enquanto um lado
+  tinha função nomeada e o outro era inline, "o que o texto faz e o visual não" não aparecia
+  em lugar nenhum. Trava de teste: um laço sobre **`VISION_SOURCES`** exige as duas correções
+  nas **3** fontes, com sanidade da constante (laço vazio passaria calado).
+- 🔴 **A DECISÃO do vencimento é `apply_arrecadacao_deadline`, para os dois caminhos.** O que
+  muda é só a **procedência** da data: no texto, o regex determinístico
+  (`extract_payment_deadline_from_text`); no visual, o campo **`payment_deadline`**, novo no
+  `EXTRACTION_PROMPT`. O modelo **transcreve o rótulo**; quem decide adotá-lo é o código, com
+  gate pelo **barcode**. Uma 2ª cópia da regra divergiria no primeiro ajuste e o sintoma seria
+  a guia de um dos caminhos voltar a nascer `vencido`, sem erro nenhum.
+- 🔴 **Texto disponível VENCE o campo do modelo.** Há dois casos em que o texto foi extraído e
+  ainda assim se recorre ao Vision — o **tier 2** (texto sem valor) e a **página espelhada** —,
+  e ali o resultado visual substituía a extração de texto inteira, levando a data-limite
+  determinística junto. `build_records` passou a receber `doc_text`.
+- 🔴 **A instrução do `due_date` no prompt PERMANECE**, e não é redundância: sem barcode não há
+  gate, e é ela que ainda põe a data-limite na guia cujo código não foi lido.
+- 🔴 **`payment_deadline` NÃO é coluna** — é insumo da decisão, consumido em
+  `_build_records_vision` a partir do item JSON. Chave que não é coluna faz o PostgREST recusar
+  o INSERT (**PGRST204**) e a conta deixa de ser gravada; teste trava `set(rec) ⊆ CSV_COLUMNS`.
+- 🔴 **Data vinda do modelo é VALIDADA antes de virar `due_date`** (`_iso_date`): aceita ISO e
+  formato BR, rejeita data impossível e prosa. Sem isso a falha migraria para o INSERT, longe
+  da causa. 🔴 **O que vem DEPOIS dos 10 primeiros chars precisa ser separador de hora** — o
+  parse era por PREFIXO, então `31/07/20260` e `2026-07-3199` (um dígito a mais, que é a
+  assinatura de um deslocamento na transcrição) passavam como `2026-07-31` com o excedente
+  descartado em silêncio: o valor **malformado** virava data plausível em vez de virar `None`.
+  Sufixo de hora (`T00:00:00`, ` 12:00`) continua valendo.
+- 🔴 **Sobrescrever valor no visual tem uma 2ª barreira** (`arrecadacao_value_refuted`, ligada
+  por `ocr_barcode=True`). Ali o **próprio código é OCR**: o DV geral pega ~87% das corrupções
+  de um dígito, e as ~13% que passam gravariam **10× a dívida**. Total ≥ **10×** o valor lido
+  ⇒ **não sobrescreve**, preserva o número do documento e **anota** a divergência.
+  🔴 **A guarda é de UMA direção só.** Refutar o lado oposto (barcode 10× *menor*) faria a
+  guarda preservar o número do LLM e gravar **a menor** — exatamente o estrago que a regra da
+  guia existe para matar. Casos reais ficam em **1,01×** (id 773) e **1,19×** (id 817); atingir
+  10× por juros exigiria 900% sobre o principal.
+- 🔴 **A DATA ganhou a contraprova que só o VALOR tinha** (`arrecadacao_deadline_refuted`).
+  Era a assimetria que sobrou do conserto acima: o valor passou a cruzar com o documento e a
+  data seguia entrando com validação de **forma** apenas. Um dígito de **ano** trocado
+  atravessa o `_iso_date` inteiro, e o estrago **não é simétrico** ao do valor — um
+  `payment_deadline` de **2126** grava uma conta que **nunca vence**, invisível em todo KPI,
+  no aging e na cobrança, sem levantar erro; **2016** a faz nascer vencida há dez anos.
+  Reproduzido antes de corrigir: os três valores entravam crus.
+  - **A referência é a data que o MODELO leu do MESMO documento** (o vencimento do tributo).
+    As duas convivem na guia e estão a **dias** uma da outra — folga medida de **0 a 3 dias**
+    nas 31 guias. Teto de **180 dias**: ~60× a folga medida, ~11× o extremo do acervo.
+  - **DUAS direções**, ao contrário da guarda de valor. Lá refutar o lado oposto preservaria o
+    número errado do LLM (o estrago original); aqui a recusa preserva a data do **documento**
+    nos dois sentidos, então nenhuma direção é perigosa.
+  - **Opt-in pela PROCEDÊNCIA, não pelo call site.** No builder visual a data-limite tem duas
+    origens: a do TEXTO é determinística e entra **sem** cruzamento; a do MODELO cruza. Um
+    `text_deadline or item[...]` com contraprova fixa submeteria a data determinística a uma
+    guarda que ela não precisa — travado por teste.
+  - **A referência é do ITEM, nunca do documento.** Num carnê, parcelas a meses de distância
+    julgadas contra a data da primeira seriam refutadas **em bloco**, e as legítimas nasceriam
+    com o vencimento do tributo — o defeito que a regra existe para matar.
+  - ⚠️ **O que ela NÃO cobre é parte do contrato:** erro de **mês ou dia** (até ~31 dias) não
+    é separável de uma validade longa legítima. A guarda não tenta pegá-lo, e há teste
+    travando isso para que ninguém aperte o teto acreditando o contrário.
+  - ⚠️ **Ela prova COERÊNCIA ENTRE DUAS LEITURAS, não correção de nenhuma.** As duas datas
+    vêm do mesmo modelo; se o que ele errou foi a **referência**, a recusa cai sobre a
+    data-limite **boa** e o registro fica com o vencimento do tributo — o estado anterior à
+    correção, visível e anotado. É a direção conservadora: incoerência não diz qual das duas
+    leituras errou, e preservar o que já estava gravado é a única escolha que não inventa
+    informação.
+  - 🔴 **Sem `due_date` lido, não há referência a INVENTAR.** O `ensure_due_date` põe *hoje* no
+    registro, e usar esse valor refutaria a data certa num **reprocessamento histórico** — a
+    mesma armadilha já documentada em `apply_text_due_date`. Sem referência, a data-limite
+    entra: é o "não há o que refutar" da família `*_refuted`.
+- **Lacuna adjacente fechada na mesma passagem:** o descarte de barcode auto-refutado em
+  `build_record_from_json` era regido por **tupla literal** `("pdf_vision","image_vision")` e
+  deixava `docx_vision` de fora — Vision sobre a imagem embutida no Word é o mesmo OCR, e o
+  print de boleto colado no Word corrompe dígito igual. Passou a usar `VISION_SOURCES`, que é
+  a constante criada justamente para impedir essa classe de esquecimento.
+- **Verificação — 1ª rodada** (simetria das regras): suíte Python **1593** (+26); **7
+  mutantes**, todos vermelhos e revertidos com `diff -q` limpo. Um deles revelou um teste
+  verde pelo motivo errado — o fator do `BOLETO_BANCARIO` da fixture decodifica em
+  **2026-07-31**, a mesma data-limite da guia, e a anti-vacuidade do caso "boleto ignora a
+  data-limite" seria verde por coincidência.
+- **Verificação — 2ª rodada** (contraprova da data): suíte Python **1608** (+14); **8
+  mutantes**, todos vermelhos, reversão confirmada byte a byte. Dois casos meus passaram
+  verdes com o defeito instalado e foram **reescritos**: o de "sem vencimento lido" usava uma
+  guia recente, que cabe no teto mesmo com a referência caindo para *hoje* — passou a usar uma
+  guia de **300 dias** atrás, derivada de `today()` para não envelhecer; e o de N pagáveis
+  usava parcelas a dias de distância, em que a referência compartilhada dá o **mesmo**
+  veredito — passou a usar parcelas a **352 dias**.
 
 **Override de GUIA TRIBUTÁRIA pelo ACRÔNIMO no ASSUNTO (não regredir):** guias estaduais
 são visualmente quase idênticas (DARE × GARE × GNRE) e o Claude do `extract_pdf.py` troca
@@ -821,6 +948,79 @@ fix). Correção pontual da conta 669 aplicada em 2026-07-23 (fornecedor → sk_
 "CONTABIL ESQUEMA", mesmo da
 conta 668; nº documento → "20880"; classificação contábil → 9/61, herdada do fornecedor).
 
+**E-MAIL do remetente ORIGINAL encaminhado — fallback 1b (migration 134, 2026-08-19):** o
+fallback 3 acima extrai o **NOME** e exige âncora de SIGLA de razão social, âncora que uma
+**pessoa física nunca satisfaz**. Caso real: a conta **1101** — um DAR da Junta Comercial de Mato
+Grosso que o despachante (`JOSE RICARDO PRUDENTE <ricardo.advogado@yahoo.com.br>`) mandou para a
+funcionária, que o encaminhou. O PDF de guia não traz favorecido, o remetente imediato é interno
+(bloqueado desde a 046) e o único sinal do credor é o `De:` da cadeia. A conta foi gravada sob a
+própria **OTIMOTEX**, herdando a classificação default dela — *Recursos Humanos / Festas e
+Confraternizações* numa guia da Junta Comercial.
+
+`_forwarded_sender_email(body_text)` extrai o **ENDEREÇO** (não o nome) da linha `De:` mais
+profunda que não cite domínio interno, e `SupabaseControl.find_supplier_by_email` o consulta pela
+RPC `find_supplier_by_email` (migration 134).
+
+🔴 **SÓ IDENTIFICA, NUNCA CRIA.** O endereço diz quem **MANDOU** o documento, não quem
+**RECEBE** o pagamento — e qualquer pessoa pode encaminhar uma guia. A RPC é consulta pura; usar
+`resolve_supplier` no lugar dela **compila e passa no caminho feliz**, mas faria cada encaminhador
+virar fornecedor no primeiro e-mail, pelo auto-insert de `resolve_supplier_id`.
+
+🔴 **RODA ANTES DA REGRA DE IMPOSTO**, e é esse o ponto: a regra de imposto faz `return True`
+**incondicional**, então tudo depois dela é inalcançável para guia de tributo sem favorecido —
+exatamente o caso a resolver. Não regride a família do id 374 porque exige, CUMULATIVAMENTE:
+(a) nenhum favorecido extraído, (b) linha `De:` de domínio NÃO interno, (c) um endereço nessa linha
+e (d) esse endereço **já cadastrado e ativo** em `supplier`.
+
+🔴 **A GUARDA DE PRECEDÊNCIA (achada em autorrevisão, antes do merge):** rodar antes da regra de
+imposto é também rodar **antes do fallback 2** (assunto ancorado em sigla). Sem guarda, um
+INTERMEDIÁRIO cadastrado venceria um assunto já correto — exatamente a regressão da **conta 401**
+descrita acima, só que por e-mail em vez de nome, e **em silêncio**. A guarda separa os dois mundos:
+
+| Documento | O 1b… | Porquê |
+|---|---|---|
+| **guia de tributo** (`_is_tax_document`) | **vence o assunto** | ali o assunto NUNCA foi fonte — a regra de imposto o curto-circuita de propósito, porque assunto de guia produz fornecedor-lixo ("IMPOSTOS"). O 1b só concorre com "OTIMOTEX". É o caso 1101, cujo assunto **tem** sigla ("R. A UTILIDADES E ACESSORIOS LTDA") — mas essa é a empresa do processo, não o credor |
+| **qualquer outro** | só entra **se o assunto não tiver âncora** | preserva a ordem documentada: assunto ancorado > linha `De:` da cadeia |
+
+Os dois lados têm teste próprio e foram validados por mutante nas duas direções (afrouxar a guarda
+quebra a 401; apertá-la devolve a 1101 para a OTIMOTEX).
+
+🔴 **O corpo chega por PARÂMETRO (`body_text`), não por `payload['email_body_excerpt']`** — essa
+coluna **nunca é povoada no caminho de ANEXO** (`FINANCIAL_FIELDS` só tem as colunas do CSV do
+`extract_pdf`). Consequência colateral descoberta aqui: o **fallback 3 (por NOME) está MORTO no
+caminho de PDF** desde que foi escrito — só funciona para conta vinda do corpo. Não foi
+"revivido" de propósito: ele desemboca em `resolve_supplier`, que **cria** fornecedor, e mudar
+isso alteraria o comportamento de todo e-mail com anexo cujo corpo tenha um `De:` externo.
+Povoar `email_body_excerpt` no caminho de anexo também está **descartado**: faria
+`apply_contact_writeback` varrer o corpo inteiro e **escrever contato no cadastro** do fornecedor.
+
+🔴 **O SINAL É MARCADO COMO FRACO, e isso governa o WRITE-BACK** (achado do review light de
+2026-08-19, corrigido no mesmo dia): o bloco grava `payload['_supplier_signal'] =
+'forwarded_email'`, e `apply_forced_classification` **suprime o write-back** quando o sinal está em
+`SUPPLIER_SIGNAL_WEAK`. Sem isso, um despachante/contador **cadastrado** que encaminhasse uma
+GNRE/DARE teria a classificação **tributária** gravada no seu cadastro — reescrevendo a curadoria
+manual e valendo para **todas as contas futuras** dele. Antes do 1b esse caso caía na OTIMOTEX, que
+`apply_forced_classification` já isentava: a proteção existia **por acidente do destino**, e o 1b a
+removeria em silêncio. `TAX_CLASSIFICATION_EXCLUDED_SK_SUPPLIERS` (que salva o sk 1262) **não
+resolve a classe** — é allowlist reativa, só protege quem alguém já descobriu.
+**A conta continua recebendo a classificação forçada; só o cadastro não é tocado.**
+
+🔴 **Chave efêmera do payload nasce com `_` e morre na FRONTEIRA de gravação.**
+`register_financial` serializa o payload **inteiro** (`json.dumps`) para o PostgREST, então
+qualquer chave que não seja coluna faz o INSERT ser recusado com **PGRST204** — e o efeito não é
+uma linha errada, é a **conta deixar de ser gravada**. `strip_transient_fields(payload)` é chamada
+lá, em **ponto único**, e é genérica **por prefixo** e não por lista de nomes: a próxima chave
+efêmera é limpa sem ninguém precisar lembrar. Travado por
+`tests/test_transient_payload_fields.py`, que inspeciona o **corpo realmente enviado** na
+requisição — testar só a função pura não cobriria o call site, que é onde o defeito mora.
+
+O dado que faz a regra funcionar é curadoria: `supplier.email` do sk **1262** recebeu
+`ricardo.advogado@yahoo.com.br`. Testes: `tests/test_supplier_forwarded_email.py` (inclui o caso
+que **executa `extract_and_store_accounts`** para provar que o call site do PDF repassa
+`body_text` — guarda por texto não cobriria isso), `tests/test_transient_payload_fields.py`
+(cadeia inteira: marca → supressão → limpeza), `tests/test_classification_overrides.py`
+(`WeakSupplierSignalTest`) e o caso de anti-regressão em `tests/test_supplier_imposto.py`.
+
 **E-mail de PLATAFORMA não identifica fornecedor — e IDENTIFICADOR FORTE vence e-mail
 (migration 109, 2026-08-03 — não regredir):** o Passo 4 (e-mail) resolvia o fornecedor mesmo
 quando a extração trouxera um **CNPJ** que simplesmente ainda não estava cadastrado. Como
@@ -907,7 +1107,7 @@ credor de uma guia de tributo é o **Fisco** (SEFAZ/RFB/prefeitura), que a extra
 "favorecido" derivado do assunto vira lixo (ex.: id 374 — `document_type='darf'`, assunto
 "PAGAMENTO IMPOSTOS" → criava o fornecedor fictício **"IMPOSTOS"**; idem "GNRE -PAGAMENTO",
 "DARE - REF"). Regra (`_finalize_supplier`): quando `document_type` é imposto
-(`_is_tax_document` → `_TAX_DOCUMENT_TYPES` = `darf, das, gru, dae, dare, gnre, ipva, iptu, dam,
+(`_is_tax_document` → `_TAX_DOCUMENT_TYPES` = `darf, das, gru, dae, dar / dare, gnre, ipva, iptu, dam,
 duam, dam / duam, iss, itbi, gare, tributo` — `dam`/`duam` avulsos são redundância defensiva, pois
 `_normalize_doc_type` sempre produz o canônico `dam / duam`, que também está no set;
 **`gps`/INSS e `multa` ficam de fora**, por decisão do usuário) **E**
@@ -1233,7 +1433,7 @@ espelha o webmail inteiro (o app substitui abrir a caixa). O filtro de keyword d
 
 **Matching de keyword (`match_keyword`, `tests/test_match_keyword.py`)** — comparação
 **sem acento** (NFD + lowercase). Dois modos:
-- **Acrônimos de tributo/câmbio** (`WORD_KEYWORDS`: `darf, das, dae, dare, dam, duam, gps,
+- **Acrônimos de tributo/câmbio** (`WORD_KEYWORDS`: `dar, darf, das, dae, dare, dam, duam, gps,
   gru, gnre, gare, ipva, iptu, iss, itbi, cambio`) casam por **palavra inteira** (`\b…\b`) —
   evita falso positivo de substring (`das` em "ca**das**tro"/"executa**das**", `iss` em
   "em**iss**ão", `gru` em "**gru**po", `cambio` em "inter**câmbio**").

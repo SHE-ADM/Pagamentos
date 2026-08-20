@@ -29,7 +29,14 @@ export const DOCUMENT_TYPES = [
   'das',
   'gru',
   'dae',
-  'dare',
+  // DAR / DARE — Documento de Arrecadação estadual. Entrada ÚNICA para os dois acrônimos
+  // (mesmo instrumento, nomes diferentes por estado), no mesmo padrão de 'dam / duam'.
+  // Substituiu o antigo 'dare' na migration 133, com backfill das 26 contas existentes.
+  // 🔴 `dar` é PREFIXO de `darf` E verbo comum do português ("dar baixa", "padaria"), então
+  // é auto-classificado APENAS por RÓTULO EXPLÍCITO — `_DOC_TYPE_NORM` em extract_pdf.py,
+  // que é lookup EXATO. Nos classificadores por substring/palavra-inteira só entram FRASES
+  // ("dar modelo 1", "dar-1"…) e a forma inequívoca "dare".
+  'dar / dare',
   'gnre',
   'ipva',
   'iptu',

@@ -176,7 +176,9 @@ describe('applyFinancialFilters — busca inclui classificação contábil', () 
 
 describe('groupDocumentTypeLabel — guias tributárias colapsam em "Tributos"', () => {
   it('agrupa todos os tipos tributários num único rótulo', () => {
-    for (const t of ['darf', 'gps', 'das', 'gru', 'dae', 'dare', 'gnre', 'ipva', 'iptu', 'dam / duam', 'iss', 'itbi', 'gare', 'tributo']) {
+    // 'dar / dare' é uma entrada ÚNICA desde a migration 133 — DAR e DARE nomeiam a
+    // mesma guia estadual e o acrônimo impresso varia por estado.
+    for (const t of ['darf', 'gps', 'das', 'gru', 'dae', 'dar / dare', 'gnre', 'ipva', 'iptu', 'dam / duam', 'iss', 'itbi', 'gare', 'tributo']) {
       expect(groupDocumentTypeLabel(t)).toBe('Tributos');
     }
   });
@@ -184,6 +186,7 @@ describe('groupDocumentTypeLabel — guias tributárias colapsam em "Tributos"',
   it('é robusto a variação de caixa', () => {
     expect(groupDocumentTypeLabel('DARF')).toBe('Tributos');
     expect(groupDocumentTypeLabel('GNRE')).toBe('Tributos');
+    expect(groupDocumentTypeLabel('DAR / DARE')).toBe('Tributos');
   });
 
   it('preserva tipos não-tributários e null', () => {

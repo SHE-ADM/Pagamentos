@@ -117,8 +117,13 @@ def inspect_one(ctrl, ec: dict, body_text: str) -> str:
     # A dedup casa por sk_supplier, entao resolve o fornecedor antes (mesmo no
     # dry-run). resolve_supplier_id e idempotente — so cria cadastro novo se o
     # fornecedor ainda nao existir (o mesmo que o run real faria).
+    # 🔴 `body_text` E' OBRIGATORIO: e' o que habilita o fallback 1b (fornecedor pelo
+    # e-mail do remetente ORIGINAL encaminhado). O modo real o passa via
+    # try_extract_from_body; omiti-lo aqui faria o dry-run resolver OUTRO sk_supplier —
+    # e como find_financial_duplicate casa POR sk_supplier, a previsao divergiria do que
+    # o run real grava, que e' exatamente o que um dry-run existe para impedir.
     payload["sender_email"] = ec.get("sender_email")
-    R._finalize_supplier(ctrl, payload)
+    R._finalize_supplier(ctrl, payload, body_text or "")
     dup = ctrl.find_financial_duplicate(payload)
     if dup:
         log.info(f"[{ec['id']}] {ec['subject'][:55]} — DUPLICIDADE (conta id {dup.get('id')} já existe)")

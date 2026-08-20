@@ -12,12 +12,16 @@ Fontes cruzadas aqui:
   4. _BODY_DOC_KEYWORDS         — read_emails.py (classificador do corpo)
   5. _UTILITY_DOC_KEYWORDS      — read_emails.py (concessionária)
   6. _SUBJECT_TAX_DOC_KEYWORDS  — read_emails.py (tributo por assunto)
+  7. TAX_DOCUMENT_TYPES         — apps/frontend-vite/src/services/supabase.ts (donut "Tributos")
 
 Invariantes (NÃO regredir):
   A. Enum ≡ CHECK da migration mais recente (1:1).
   B. Todo valor EMITIDO por qualquer classificador ∈ enum (senão INSERT quebra).
   C. _is_tax_document reconhece TODO tributo canônico (inclui 'dam / duam') e
      exclui deliberadamente 'gps'/'multa'.
+  D. A lista de tributos do FRONT acompanha a do pipeline (+ 'gps'). Era a única das
+     quatro cópias sem guarda: um tipo tributário novo entrava no enum, no CHECK e no
+     pipeline e continuava caindo no balde "outros" do donut, sem erro nenhum.
 """
 
 import re
@@ -35,6 +39,7 @@ import read_emails as R  # noqa: E402
 _SCHEMA = _ROOT / "packages" / "shared" / "src" / "schemas" / "financial-account-control.schema.ts"
 _MIGRATIONS = _ROOT / "supabase" / "migrations"
 _CONSTRAINT = "financial_account_control_document_type_check"
+_FRONT_SUPABASE = _ROOT / "apps" / "frontend-vite" / "src" / "services" / "supabase.ts"
 
 
 def _parse_enum() -> set[str]:
@@ -61,6 +66,16 @@ def _parse_check(path: Path) -> set[str]:
     m = re.search(r"ARRAY\[(.*?)\]::text\[\]", txt, re.DOTALL)
     assert m, f"ARRAY do CHECK não encontrado em {path.name}"
     body = re.sub(r"--[^\n]*", "", m.group(1))  # remove comentários SQL
+    return set(re.findall(r"'([^']+)'", body))
+
+
+def _parse_front_tax_set() -> set[str]:
+    """A lista de tributos do FRONT (donut 'Tributos'), lida do .ts como texto — não há
+    como importá-la aqui, e é justamente por isso que ela ficou anos sem guarda."""
+    txt = _FRONT_SUPABASE.read_text(encoding="utf-8")
+    m = re.search(r"const TAX_DOCUMENT_TYPES = new Set<string>\(\[(.*?)\]\)", txt, re.DOTALL)
+    assert m, "TAX_DOCUMENT_TYPES não encontrado em apps/frontend-vite/src/services/supabase.ts"
+    body = re.sub(r"//[^\n]*", "", m.group(1))
     return set(re.findall(r"'([^']+)'", body))
 
 
@@ -111,7 +126,7 @@ class EmittedValuesAreValidTest(unittest.TestCase):
 class TaxRecognitionTest(unittest.TestCase):
     """Invariante C — _is_tax_document reconhece todo tributo canônico."""
 
-    TAX = ("darf", "das", "gru", "dae", "dare", "gnre", "ipva", "iptu",
+    TAX = ("dar / dare", "darf", "das", "gru", "dae", "gnre", "ipva", "iptu",
            "dam / duam", "iss", "itbi", "gare", "tributo")
     NON_TAX = ("gps", "multa", "cartório", "cheque", "comprovante",
                "boleto", "fatura", "recibo", "outro")
@@ -125,6 +140,36 @@ class TaxRecognitionTest(unittest.TestCase):
         # 'gps'/'multa' ficam DELIBERADAMENTE fora (decisão de negócio documentada).
         for dt in self.NON_TAX:
             self.assertFalse(R._is_tax_document(dt), dt)
+
+
+class FrontendTaxSetTest(unittest.TestCase):
+    """Invariante D — a 4ª lista de tributos (donut 'Tributos' do dashboard) acompanha
+    o pipeline. Era a ÚNICA das quatro sem guarda: um tipo tributário novo entrava no
+    enum, no CHECK e no pipeline e continuava caindo no balde 'outros' do donut — erro
+    PARA MENOS, que não gera exceção, não gera linha em /erros e não quebra teste."""
+
+    def test_parser_sanity(self):
+        # Sem esta sonda, uma renomeação do arquivo ou do const faria os testes abaixo
+        # compararem dois conjuntos vazios e passarem para sempre (0 == 0).
+        front = _parse_front_tax_set()
+        self.assertGreater(len(front), 5, "parser quebrou — nada casou no supabase.ts")
+        self.assertIn("darf", front, "parser casou algo, mas não a lista certa")
+
+    def test_front_espelha_o_pipeline_mais_gps(self):
+        front = _parse_front_tax_set()
+        # 'gps' entra SÓ no front (é guia de arrecadação para o donut, mas fica fora de
+        # _TAX_DOCUMENT_TYPES por decisão de negócio: o INSS pode ter credor próprio).
+        # A interseção com ENUM descarta 'dam'/'duam', que são chaves de normalização
+        # do matching, não valores do domínio.
+        esperado = ({R._norm_term(t) for t in R._TAX_DOCUMENT_TYPES} & ENUM) | {"gps"}
+        self.assertEqual(
+            front, esperado,
+            f"\n  no front, fora do esperado: {sorted(front - esperado)}"
+            f"\n  esperado, fora do front:    {sorted(esperado - front)}",
+        )
+
+    def test_front_dentro_do_dominio(self):
+        self.assertLessEqual(_parse_front_tax_set(), ENUM)
 
 
 if __name__ == "__main__":

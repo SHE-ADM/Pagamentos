@@ -739,14 +739,42 @@ Catálogo dos tipos e os casos que originaram cada regra:
 - 🔴 **Guia de ARRECADAÇÃO: valor = total a recolher (do BARCODE) e vencimento = data-limite**,
   não o valor principal nem o vencimento do tributo. `amount_charged` recebe o total **direto** —
   aplicar a aritmética de boleto somaria os juros duas vezes.
+  🔴 **A regra vale em TODA fonte** — os dois builders (`_build_records_text` e
+  `_build_records_vision`) a aplicam. A simetria é o invariante: enquanto o ramo visual era
+  código inline no dispatcher, guia **escaneada** dependia só do que o modelo leu.
+  🔴 **`apply_arrecadacao_deadline` é a FONTE ÚNICA da decisão do vencimento**, e o gate é o
+  **barcode** (`arrecadacao_44`), nunca o `document_type` do LLM. Muda só a *procedência* da
+  data: no texto sai por regex; no visual vem do campo **`payment_deadline`** do prompt — o
+  modelo **transcreve**, o código decide. Texto disponível **vence** o campo do modelo.
+  🔴 **A data transcrita pelo modelo CRUZA com o vencimento que ele leu do MESMO documento**
+  (`arrecadacao_deadline_refuted`; teto de **180 dias**, contra folga real medida de **0–3**).
+  O `_iso_date` valida só a FORMA: um dígito de ANO trocado atravessa a validação inteira, e
+  `payment_deadline` de **2126** grava conta que **NUNCA vence** — invisível em KPI, aging e
+  cobrança, sem erro nenhum. **Duas direções** (ao contrário da guarda de valor: aqui a recusa
+  preserva a data do DOCUMENTO nos dois sentidos) e **opt-in pela PROCEDÊNCIA** — a data vinda
+  do TEXTO é determinística e entra sem cruzamento. ⚠️ Erro de **mês/dia** (≤31 dias) NÃO é
+  separável de uma validade longa legítima: a guarda não o cobre, de propósito. Sem `due_date`
+  lido, **não há referência a inventar** — usar "hoje" refutaria a data certa num
+  reprocessamento histórico.
+  🔴 **No visual o valor passa por uma 2ª barreira** (`arrecadacao_value_refuted`,
+  `ocr_barcode=True`): ali o próprio código é OCR, e o DV geral deixa passar ~13% das
+  corrupções de um dígito. Total ≥ **10×** o valor lido = deslocamento de dígito ⇒ **não
+  sobrescreve** e anota. É de **uma direção só** — refutar o lado oposto gravaria a menor,
+  que é o estrago original. Detalhe em [docs/knowledge/pipeline-extracao.md](docs/knowledge/pipeline-extracao.md).
 - 🔴 **Beneficiário Final vence Beneficiário/Cedente** (boleto securitizado) — **só quando há
   CNPJ** ao lado do rótulo; "Beneficiário Final" também é rótulo de COLUNA em dezenas de boletos.
   E o **CEDENTE do boleto vence o EMITENTE do CT-e** em fatura de transporte agregada.
 - **Classificação contábil FORÇADA para guias tributárias** (por tipo/contexto do imposto, não pelo
   fornecedor) tem precedência máxima e faz write-back no `supplier` — exceto OTIMOTEX, funcionário
   e os `sk_supplier` excluídos.
-- **Acrônimo de tributo no ASSUNTO sobrepõe a classificação do PDF/corpo** (DARE × GARE × GNRE são
-  visualmente quase idênticas).
+- **Acrônimo de tributo no ASSUNTO sobrepõe a classificação do PDF/corpo** (DAR/DARE × GARE × GNRE
+  são visualmente quase idênticas).
+- 🔴 **`dar / dare` é UMA entrada, não duas** (133) — DAR e DARE nomeiam a mesma guia estadual e o
+  acrônimo varia por estado. **`dar` é o acrônimo mais perigoso do domínio:** prefixo de `darf` **e**
+  verbo comum ("dar baixa", "padaria"), então só é classificado por **rótulo explícito**
+  (`_DOC_TYPE_NORM`, lookup EXATO) ou **frase** — nunca pela forma pura. Precedente: `das` e
+  `dam / duam`. ⚠️ **`documento de arrecadacao estadual` NÃO é gatilho dele** — é o nome por extenso
+  do **DAE** em PE e no CE, e incluí-la faria todo DAE virar DAR, sem erro.
 
 ### Caminho `email_body`
 
@@ -788,6 +816,29 @@ cobrança.
 não casou ⇒ fornecedor NOVO** (o e-mail de uma **plataforma** atribuía a conta ao primeiro que
 casasse). O CNPJ da própria pagadora nunca é fornecedor (raiz de 8 dígitos). Tipo de documento
 nunca vira fornecedor.
+
+🔴 **O E-MAIL do remetente ORIGINAL encaminhado SÓ IDENTIFICA, NUNCA CRIA** (fallback 1b,
+migration 134). Ele diz quem **MANDOU** o documento, não quem **RECEBE** o pagamento — trocar
+`find_supplier_by_email` (consulta pura) por `resolve_supplier` **compila** e faria cada
+encaminhador virar fornecedor no 1º e-mail, pelo auto-insert. **Roda ANTES da regra de imposto**,
+que faz `return True` incondicional e tornaria o bloco inalcançável para guia sem favorecido.
+🔴 **Mas rodar antes dela é rodar antes do ASSUNTO** — daí a guarda de duas condições: em **guia
+de tributo** o 1b vence (o assunto nunca foi fonte ali, a regra de imposto o curto-circuita); em
+**qualquer outro** documento ele só entra se o assunto **não tiver âncora de sigla**, preservando a
+lição da conta 401 (um intermediário cadastrado venceria "FATURAMENTO -- MOVVI LOGISTICA LTDA").
+⚠️ O corpo chega por **parâmetro `body_text`** — `email_body_excerpt` NUNCA é povoado no caminho de
+anexo, e é por isso que o **fallback 3 (por NOME) está morto ali** (não revivido de propósito: ele
+desemboca no auto-insert).
+
+🔴 **Fornecedor vindo de SINAL FRACO não faz WRITE-BACK no cadastro** (`_supplier_signal` +
+`SUPPLIER_SIGNAL_WEAK`). A guia é do **Fisco**, não de quem a encaminhou: gravar a classificação
+tributária no cadastro do encaminhador reescreveria a curadoria manual e valeria para **todas as
+contas futuras** dele. A conta recebe a classificação; o cadastro, não. Antes do 1b o caso caía na
+OTIMOTEX e a isenção existia **por acidente do destino** —
+`TAX_CLASSIFICATION_EXCLUDED_SK_SUPPLIERS` é allowlist **reativa** e só protege quem já foi
+descoberto. 🔴 **Chave efêmera nasce com `_` e é removida em `strip_transient_fields`, na FRONTEIRA
+de gravação** (`register_financial` serializa o payload inteiro; chave que não é coluna faz o
+PostgREST recusar o INSERT com **PGRST204** e a conta deixa de ser gravada).
 
 🔴 **Empresa pagadora (`sk_company`) — a ORDEM é a regra:** remetente exato da FARDOS → menção a
 "lebianco" (**vence o CNPJ**) → TECIDOS (default). ⚠️ `OTIMOTEX_SK_SUPPLIER` (=1) ≠
