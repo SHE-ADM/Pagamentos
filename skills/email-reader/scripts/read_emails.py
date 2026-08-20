@@ -598,7 +598,12 @@ class SupabaseControl:
         if not self._available:
             return None
         try:
-            payload = dict(payload)   # copia — nao muta o dict do chamador ao traduzir status
+            # Copia — nao muta o dict do chamador ao traduzir status. 🔴 O
+            # strip_transient_fields e' a FRONTEIRA: o payload e' serializado INTEIRO logo
+            # abaixo, entao qualquer chave efemera ('_'-prefixada) que sobrasse viraria
+            # coluna inexistente e o PostgREST recusaria o INSERT com PGRST204 — a conta
+            # deixaria de ser gravada. Aqui, em ponto unico, e nao em cada call site.
+            payload = strip_transient_fields(payload)
             _apply_barcode_due_date(payload)  # rede de seguranca: vencimento pelo fator do barcode
             _apply_status_id(payload)
             # Empresa pagadora (regra LEBIANCO) — rede de seguranca UNIVERSAL: os caminhos que
@@ -1040,6 +1045,37 @@ class SupabaseControl:
                 return json.loads(r.read())  # RPC escalar → o proprio bigint
         except Exception as e:
             log.warning(f"Falha ao resolver fornecedor (RPC): {e}")
+            return None
+
+    def find_supplier_by_email(self, email: str | None) -> int | None:
+        """Fornecedor JA CADASTRADO e ATIVO cujo email/email2/email3/email4 casa `email`
+        (RPC find_supplier_by_email, migration 134).
+
+        🔴 CONSULTA PURA — NUNCA cria fornecedor. E' exatamente isto que a separa de
+        `resolve_supplier`, cuja RPC termina em auto-insert. Usada para o remetente
+        ORIGINAL de um bloco encaminhado no corpo, um sinal FRACO (diz quem MANDOU o
+        documento, nao quem RECEBE o pagamento): ele pode identificar um cadastro
+        curado, jamais criar um.
+
+        A comparacao (lower/trim, e-mail interno e de plataforma barrados) vive na RPC,
+        nao aqui — uma 2a copia da regra em Python divergiria da do banco no primeiro
+        ajuste, sem erro nenhum.
+
+        Devolve sk_supplier ou None (nao cadastrado, e-mail interno/plataforma, RPC
+        ausente ou falha de rede). Em duvida NAO atribui: o chamador segue para os
+        fallbacks que ja existiam."""
+        if not self._available or not email:
+            return None
+        body = json.dumps({"p_email": email}).encode()
+        try:
+            req = urllib.request.Request(
+                f"{self.base}/rest/v1/rpc/find_supplier_by_email",
+                data=body, headers=self.headers, method="POST",
+            )
+            with urllib.request.urlopen(req, timeout=10) as r:
+                return json.loads(r.read()) or None  # RPC escalar → o proprio bigint
+        except Exception as e:
+            log.warning(f"Falha ao consultar fornecedor por e-mail encaminhado (RPC): {e}")
             return None
 
     def resolve_user(self, sender_email: str | None) -> str | None:
@@ -1486,7 +1522,7 @@ _NON_SUPPLIER_TERMS = frozenset(_norm_term(t) for t in {
     "conta de agua", "conta de água", "conta de luz",
     "conta de telefone", "internet", "conta de telefone / internet",
     # acronimos de tributo / guias
-    "darf", "gps", "das", "simples nacional", "simei", "gru", "dae", "dare",
+    "dar", "darf", "gps", "das", "simples nacional", "simei", "gru", "dae", "dare",
     "gnre", "ipva", "iptu", "dam", "duam", "dam / duam", "iss", "itbi", "gare",
     "multa", "penalidade",
     # tipos de pagamento (PAYMENT_METHODS)
@@ -1517,8 +1553,12 @@ def _is_non_supplier_term(name: str | None) -> bool:
 # orgao arrecadador (Fisco), que a extracao nao captura — a conta e lancada sob a
 # OTIMOTEX (a empresa pagadora). Ver _finalize_supplier. NAO inclui 'gps' (INSS) por
 # decisao do usuario; 'multa' tambem fica de fora (pode ter fornecedor proprio).
+# SUPERSET proposital: alem dos valores do dominio, guarda as formas isoladas dos tipos
+# COMPOSTOS ('dam'/'duam' e 'dar'/'dare'), que aparecem como rotulo cru antes da
+# normalizacao. O teste de paridade valida a direcao dominio -> emitido, nao o inverso.
 _TAX_DOCUMENT_TYPES = frozenset({
-    "darf", "das", "gru", "dae", "dare", "gnre", "ipva", "iptu",
+    "darf", "das", "gru", "dae", "gnre", "ipva", "iptu",
+    "dar", "dare", "dar / dare",
     "dam", "duam", "dam / duam", "iss", "itbi", "gare", "tributo",
 })
 
@@ -1532,6 +1572,50 @@ OTIMOTEX_SK_SUPPLIER = 1
 # uma guia de arrecadacao (Junta Comercial etc.). Para esses, a regra tributaria NAO forca —
 # preserva o default do fornecedor / o valor da extracao. Ver memoria dr-ricardo-reembolso.
 TAX_CLASSIFICATION_EXCLUDED_SK_SUPPLIERS = frozenset({1262})
+
+# ── Sinal de PROCEDENCIA do fornecedor (chave EFEMERA do payload) ───────────────────
+# Registra COMO o sk_supplier foi resolvido, para que a classificacao forcada saiba se
+# pode fazer WRITE-BACK no cadastro. A lista acima e' uma allowlist REATIVA — so protege
+# quem alguem ja descobriu e cadastrou a mao; esta marca fecha a CLASSE inteira.
+#
+# 🔴 POR QUE ELA EXISTE: write-back grava no CADASTRO do fornecedor a classificacao
+# derivada do TIPO do documento, e isso vale para TODAS as contas futuras dele. A premissa
+# e' "este documento e' deste fornecedor" — verdadeira quando o favorecido foi extraido do
+# DOCUMENTO, falsa quando o fornecedor veio de um sinal CIRCUNSTANCIAL do e-mail. Uma guia
+# de tributo encaminhada por um despachante e' do FISCO, nao do despachante: gravar
+# "tributario" no cadastro dele reescreveria a curadoria manual, em silencio, e propagaria.
+#
+# 🔴 O PREFIXO "_" E' CONTRATO, NAO ESTILO: `register_financial` serializa o payload
+# INTEIRO para o PostgREST, entao qualquer chave que nao seja coluna derrubaria a gravacao
+# (PGRST204). Toda chave efemera nasce com "_" e e' removida NA FRONTEIRA de gravacao, em
+# ponto unico — nunca espalhada pelos call sites, que era o modo de falha a evitar.
+SUPPLIER_SIGNAL_KEY = "_supplier_signal"
+SUPPLIER_SIGNAL_FORWARDED_EMAIL = "forwarded_email"   # 1b: e-mail do remetente encaminhado
+# Sinais considerados FRACOS para efeito de write-back. Conjunto (e nao um booleano) porque
+# a proxima procedencia fraca entra aqui, e nao num `if` novo em apply_forced_classification.
+SUPPLIER_SIGNAL_WEAK = frozenset({SUPPLIER_SIGNAL_FORWARDED_EMAIL})
+
+
+def strip_transient_fields(payload: dict) -> dict:
+    """Remove as chaves EFEMERAS (prefixo '_') de uma COPIA do payload.
+
+    Elas carregam metadados de decisao entre etapas do pipeline (ex.:
+    SUPPLIER_SIGNAL_KEY) e NAO sao colunas de financial_account_control. Chamada na
+    fronteira de gravacao — ver register_financial.
+
+    🔴 Generica por PREFIXO, nao por lista de nomes: uma chave efemera nova passa a ser
+    limpa sem que ninguem precise lembrar de atualizar esta funcao. O oposto (allowlist de
+    nomes) falharia justamente no caso novo, e o sintoma seria a conta PARAR de gravar.
+
+    Nao muta o dict recebido — devolve outro."""
+    return {k: v for k, v in payload.items() if not k.startswith("_")}
+
+
+def _is_weak_supplier_signal(payload: dict) -> bool:
+    """True quando o sk_supplier do payload veio de um sinal CIRCUNSTANCIAL do e-mail, e
+    nao do documento. Nesse caso a classificacao forcada ainda vale para a CONTA, mas nao
+    pode ser gravada no CADASTRO do fornecedor."""
+    return payload.get(SUPPLIER_SIGNAL_KEY) in SUPPLIER_SIGNAL_WEAK
 
 
 def _is_tax_document(document_type: str | None) -> bool:
@@ -1630,8 +1714,13 @@ def safe_filename(text: str, max_len: int = 40) -> str:
 # 'iss' em 'emissao', 'gru' em 'grupo', 'cambio' em 'intercambio'). A comparacao
 # remove acentos e baixa a caixa, entao a chave 'cambio' casa 'cambio'/'câmbio'/
 # 'CÂMBIO' e a forma gramatical correta 'câmbio' fica gravada como keyword.
+# 'dar' entra aqui como DEFESA EM PROFUNDIDADE, nao porque seja keyword: o
+# EMAIL_KEYWORDS de producao vem do .env (editado a mao, nao versionado). Se alguem
+# um dia acrescentar 'dar' la, o casamento sera por PALAVRA inteira em vez de
+# substring — sem isto, 'dar' casaria 'pa-dar-ia'/'aguar-dar'/'man-dar' e o pipeline
+# passaria a extrair e-mails aleatorios. Custo zero, e travado por teste.
 WORD_KEYWORDS = frozenset({
-    "darf", "das", "dae", "dare", "dam", "duam", "gps", "gru", "gnre", "gare",
+    "dar", "darf", "das", "dae", "dare", "dam", "duam", "gps", "gru", "gnre", "gare",
     "ipva", "iptu", "iss", "itbi", "cambio",
 })
 
@@ -1876,6 +1965,41 @@ def _supplier_from_forwarded_sender(body_text: str | None) -> "str | None":
     return None
 
 
+# Endereco de e-mail dentro de uma linha "De:" — o ENDERECO, nao o nome de exibicao.
+_EMAIL_IN_LINE_RE = re.compile(r"[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}")
+
+
+def _forwarded_sender_email(body_text: "str | None") -> "str | None":
+    """E-MAIL do remetente ORIGINAL de um bloco ENCAMINHADO no corpo ('De:'/'From:').
+
+    COMPLEMENTA _supplier_from_forwarded_sender, que extrai o NOME e exige ancora de
+    SIGLA DE RAZAO SOCIAL (LTDA/EIRELI/S.A.) — ancora que uma PESSOA FISICA nunca
+    satisfaz. O caso real e' um despachante ("De: JOSE RICARDO PRUDENTE <...>") que
+    encaminha guias de Junta Comercial: o nome nunca casaria; o ENDERECO, sim.
+
+    Mesma semantica de percurso: da linha "De:" MAIS PROFUNDA para a mais rasa (a mais
+    profunda == a mais proxima do originador da cadeia), DESCARTANDO a que citar dominio
+    interno (o funcionario que encaminhou, nao quem originou a cobranca). Devolve o
+    endereco em minusculas, ou None.
+
+    🔴 O RETORNO DESTA FUNCAO NUNCA PODE ALIMENTAR AUTO-INSERT DE FORNECEDOR. Ele
+    identifica quem MANDOU o documento, nao quem RECEBE o pagamento — e qualquer pessoa
+    pode encaminhar uma guia. O unico consumidor legitimo e' um lookup que so CONSULTA
+    (SupabaseControl.find_supplier_by_email -> RPC find_supplier_by_email, migration
+    134). Passar isto a resolve_supplier faria cada encaminhador virar fornecedor no
+    primeiro e-mail. Ver o chamador em _finalize_supplier.
+    """
+    if not body_text:
+        return None
+    for line in reversed(_FORWARDED_FROM_LINE_RE.findall(body_text)):
+        if any(dom in line.lower() for dom in _INTERNAL_EMAIL_DOMAINS):
+            continue
+        m = _EMAIL_IN_LINE_RE.search(line)
+        if m:
+            return m.group(0).lower()
+    return None
+
+
 def body_forwards_payment_confirmation(body_text: str | None) -> str | None:
     """Se o corpo ENCAMINHA um e-mail cujo assunto ORIGINAL e uma CONFIRMACAO/
     COMPROVANTE de pagamento, devolve o MOTIVO (str) para ignorar; senao None.
@@ -2099,7 +2223,7 @@ def _resolve_supplier_by_payer(ctrl: "SupabaseControl", payload: dict) -> int | 
     return sk
 
 
-def _finalize_supplier(ctrl: "SupabaseControl", payload: dict) -> bool:
+def _finalize_supplier(ctrl: "SupabaseControl", payload: dict, body_text: str = "") -> bool:
     """Resolve o fornecedor (RPC), grava payload['sk_supplier'] e REMOVE as colunas
     denormalizadas supplier_name/supplier_cnpj/supplier_cpf — o fornecedor passa a
     ser referenciado APENAS pela FK sk_supplier (fonte de verdade: tabela supplier).
@@ -2108,9 +2232,18 @@ def _finalize_supplier(ctrl: "SupabaseControl", payload: dict) -> bool:
     extraidos) e ANTES de find_financial_duplicate (a dedup casa por sk_supplier).
     Retorna False quando a resolucao falha (chamador trata como erro de gravacao).
 
+    `body_text` e' o corpo do e-mail, usado pelo fallback 1b. Vem por PARAMETRO, e nao
+    por payload['email_body_excerpt']: no caminho de ANEXO essa coluna nunca e' povoada
+    (FINANCIAL_FIELDS so tem as colunas do CSV do extract_pdf), e povoa-la ali teria
+    efeito colateral em apply_contact_writeback, que passaria a varrer o corpo inteiro
+    e a ESCREVER contato no cadastro do fornecedor.
+
     Ordem de fallback (cada um so quando o anterior esgota):
       1. nome/CNPJ/CPF EXTRAIDOS (descartando o nome que for um TIPO de
          documento/pagamento — robustez: 'GNRE'/'BOLETO' nao e fornecedor);
+     1b. E-MAIL do remetente ORIGINAL de um bloco ENCAMINHADO no corpo, quando esse
+         endereco JA ESTA CADASTRADO num fornecedor ativo — ver o bloco proprio abaixo,
+         que explica por que ele roda ANTES da regra de imposto;
       2. nome do ASSUNTO ancorado numa SIGLA de razao social (LTDA/EIRELI/S.A./…)
          — sinal do PROPRIO e-mail (quem o classificou/encaminhou o rotulou), mais
          confiavel que uma linha "De:" solta no corpo, que pode pertencer a um
@@ -2156,6 +2289,65 @@ def _finalize_supplier(ctrl: "SupabaseControl", payload: dict) -> bool:
                      "ignorado como fornecedor — segue pelo nome/assunto")
     has_real_supplier = any(str(payload.get(k) or "").strip()
                             for k in ("supplier_name", "supplier_cnpj", "supplier_cpf"))
+    # ── fallback 1b: E-MAIL do remetente ORIGINAL do bloco ENCAMINHADO ──────────────
+    # Caso real (conta 1101): o despachante manda a guia da Junta Comercial para a
+    # funcionaria, que a encaminha. O PDF de guia NAO traz favorecido e o remetente
+    # imediato e' interno, entao o "De:" da cadeia e' o unico sinal do credor.
+    #
+    # 🔴 RODA ANTES DA REGRA DE IMPOSTO, e esse e' o ponto todo: a regra abaixo faz
+    # `return True` INCONDICIONAL, de modo que tudo depois dela e' inalcancavel para
+    # guia de tributo sem favorecido — exatamente o caso que este bloco resolve. A 1101
+    # foi gravada sob a OTIMOTEX com a classificacao default dela (Recursos Humanos /
+    # Festas e Confraternizacoes) numa guia da Junta Comercial.
+    #
+    # 🔴 SO IDENTIFICA, NUNCA CRIA. `find_supplier_by_email` e' consulta pura (RPC da
+    # migration 134). Trocar por `resolve_supplier` COMPILA e passa nos testes de
+    # caminho feliz, mas faria QUALQUER pessoa que encaminhasse uma guia virar
+    # fornecedor no primeiro e-mail, pelo auto-insert.
+    #
+    # 🔴 POR QUE NAO REGRIDE OS CASOS QUE A REGRA DE IMPOSTO PROTEGE (id 374 e familia,
+    # em tests/test_supplier_imposto.py): este bloco exige, CUMULATIVAMENTE, (a) nenhum
+    # favorecido extraido, (b) uma linha "De:" cujo dominio NAO seja interno, (c) um
+    # endereco de e-mail nessa linha e (d) esse endereco JA CADASTRADO e ATIVO em
+    # `supplier`. "PAGAMENTO IMPOSTOS" com pagador OTIMOTEX falha em (b)/(c)/(d) e cai
+    # na regra de imposto como antes; encaminhador nao cadastrado, idem.
+    #
+    # 🔴 E POR QUE NAO REGRIDE A LICAO DA CONTA 401 (assunto vence "De:" de TERCEIRO):
+    # rodar antes da regra de imposto significa rodar antes do fallback 2, e sem a guarda
+    # abaixo um intermediario CADASTRADO venceria um assunto ja correto ("FATURAMENTO --
+    # MOVVI LOGISTICA LTDA"), atribuindo a conta ao fornecedor errado EM SILENCIO — pior
+    # que o bug original. A guarda separa os dois mundos:
+    #   * GUIA DE TRIBUTO: o assunto NUNCA foi fonte aqui (a regra de imposto o
+    #     curto-circuita de proposito, porque assunto de guia produz fornecedor-lixo tipo
+    #     "IMPOSTOS"), entao nao ha precedencia a regredir — o 1b so concorre com OTIMOTEX;
+    #   * QUALQUER OUTRO documento: o 1b so entra quando o ASSUNTO NAO TEM ancora propria
+    #     de sigla de razao social, preservando exatamente a ordem documentada
+    #     (assunto ancorado > linha "De:" da cadeia).
+    _subject_anchor = _supplier_name_by_legal_suffix(payload.get("subject"))
+    _subject_has_anchor = bool(_subject_anchor) and not _is_non_supplier_term(_subject_anchor)
+    if not has_real_supplier and (_is_tax_document(payload.get("document_type"))
+                                  or not _subject_has_anchor):
+        fwd_email = _forwarded_sender_email(body_text or payload.get("email_body_excerpt"))
+        # getattr: ctrl de teste/legado pode nao ter o metodo — degrada para o
+        # comportamento anterior em vez de estourar AttributeError no meio da gravacao.
+        lookup = getattr(ctrl, "find_supplier_by_email", None)
+        sk_fwd = lookup(fwd_email) if (fwd_email and lookup) else None
+        if sk_fwd:
+            for col in ("supplier_name", "supplier_cnpj", "supplier_cpf"):
+                payload.pop(col, None)
+            payload["sk_supplier"] = sk_fwd
+            # 🔴 MARCA O SINAL COMO FRACO — e nao e' cosmetico: e' o que impede
+            # apply_forced_classification de fazer WRITE-BACK no cadastro deste
+            # fornecedor. Ver SUPPLIER_SIGNAL_WEAK e o bloco em apply_forced_classification.
+            payload[SUPPLIER_SIGNAL_KEY] = SUPPLIER_SIGNAL_FORWARDED_EMAIL
+            log.info(f"    [FORNECEDOR-ENCAMINHADO-EMAIL] remetente original {fwd_email!r} "
+                     f"casa o fornecedor cadastrado sk={sk_fwd}")
+            cost_center_id, chart_account_id = ctrl.supplier_defaults(sk_fwd)
+            if cost_center_id:
+                payload["cost_center_id"] = cost_center_id
+            if chart_account_id:
+                payload["chart_account_id"] = chart_account_id
+            return True
     # Regra de IMPOSTO: guia de tributo (darf/das/gnre/gare/dare/iss/...) SEM favorecido
     # real extraido do documento — o credor e o orgao arrecadador (Fisco), que a
     # extracao nao captura. Lanca sob a OTIMOTEX (a empresa pagadora) em vez de derivar
@@ -2178,13 +2370,15 @@ def _finalize_supplier(ctrl: "SupabaseControl", payload: dict) -> bool:
     # e-mail, mais confiavel que uma linha "De:" solta no corpo (que pode ser de um
     # TERCEIRO da cadeia). Roda ANTES do fallback pelo corpo para nao regredir casos
     # ja corretos (ex.: id 401, "MOVVI LOGISTICA LTDA" no assunto).
+    # `_subject_anchor`/`_subject_has_anchor` ja foram calculados acima, para a guarda do
+    # fallback 1b — reusados aqui em vez de recomputados. Sao seguros: derivam so de
+    # payload["subject"], que nenhum bloco entre os dois pontos altera.
     if not has_real_supplier:
-        guessed = _supplier_name_by_legal_suffix(payload.get("subject"))
-        if guessed and not _is_non_supplier_term(guessed):
-            payload["supplier_name"] = guessed
+        if _subject_has_anchor:
+            payload["supplier_name"] = _subject_anchor
             has_real_supplier = True
             log.info(f"    [FORNECEDOR-ASSUNTO-SIGLA] nome ancorado em sigla no "
-                     f"assunto: {guessed!r}")
+                     f"assunto: {_subject_anchor!r}")
     # fallback 3: remetente ORIGINAL de um bloco ENCAMINHADO no corpo ('De:'/'From:'
     # ancorado em sigla de razao social) — so quando o assunto NAO tem ancora propria
     # (fallback 2 esgotou). So dispara quando o e-mail tem corpo (email_body_excerpt,
@@ -2462,7 +2656,18 @@ _BODY_DOC_KEYWORDS: list[tuple[str, list[str]]] = [
                     "documento de arrecadacao do simples", "simei"]),
     ("GRU",        ["guia de recolhimento da uniao", "gru"]),
     ("DAE",        ["documento de arrecadacao do esocial", "dae"]),
-    ("DARE",       ["documento de arrecadacao de receitas estaduais", "dare"]),
+    # DAR / DARE — os dois acronimos do Documento de Arrecadacao ESTADUAL, num tipo so
+    # (migration 133).
+    # 🔴 SO FRASES para "dar", NUNCA a forma pura: o casamento aqui e' por PALAVRA
+    # INTEIRA (_has_word), o que NAO basta — "dar" e' verbo comum e casaria "por
+    # gentileza dar baixa neste titulo". Mesmo tratamento de 'das' (so "simples
+    # nacional"/"simei") e de 'dam / duam' (so "duam"). "dare" e' inequivoco e entra puro.
+    # 🔴 "documento de arrecadacao estadual" FICOU DE FORA: e' o nome por EXTENSO do DAE
+    # em PE e no CE ("DAE JUCEPE — Documento de Arrecadacao Estadual"), entao a frase
+    # rotularia DAE como DAR / DARE. O nome oficial do DARE ("de RECEITAS estaduais") e'
+    # string disjunta e pode ficar.
+    ("DAR / DARE", ["documento de arrecadacao de receitas estaduais", "dare",
+                    "dar modelo 1", "dar-1", "dar/aut", "dar avulso"]),
     ("GNRE",       ["guia nacional de recolhimento", "gnre"]),
     ("IPVA",       ["guia de ipva", "ipva"]),
     ("IPTU",       ["guia de iptu", "iptu"]),
@@ -3215,7 +3420,10 @@ _TAX_DOCTYPE_CHART_CODES = {
 # NAO entra -> nao forca (evita mis-forcar boleto de fornecedor mal-rotulado).
 _TAX_SPHERE_CHART_CODES = {
     "darf": "4.4.04", "gru": "4.4.04", "dae": "4.4.04",           # federal
-    "dare": "4.4.02",                                             # estadual
+    # estadual — DAR e DARE nomeiam o mesmo instrumento (migration 133). As formas
+    # isoladas ficam junto do valor canonico porque este mapa e' consultado com o rotulo
+    # normalizado (_norm_term), mas tambem com o rotulo cru em reprocessadores.
+    "dar / dare": "4.4.02", "dare": "4.4.02", "dar": "4.4.02",    # estadual
     "dam": "4.4.03", "duam": "4.4.03", "dam / duam": "4.4.03", "itbi": "4.4.03",  # municipal
 }
 # Nivel 1 — palavra-chave DISTINTIVA do imposto (assunto+descricao), especifico->generico.
@@ -3323,6 +3531,18 @@ def apply_forced_classification(ctrl, payload: dict, extra_text: str | None = No
     payload["chart_account_id"] = chart_account_id
 
     sk_supplier = payload.get("sk_supplier")
+    # 🔴 SINAL FRACO NAO ESCREVE NO CADASTRO. Quando o fornecedor foi identificado por um
+    # sinal CIRCUNSTANCIAL do e-mail (fallback 1b — o e-mail de quem ENCAMINHOU), a conta
+    # ainda recebe a classificacao forcada, mas o cadastro dele NAO e' reescrito: a guia e'
+    # do FISCO, nao do encaminhador, e o write-back valeria para todas as contas futuras
+    # dele. Antes do 1b esse caso caia na OTIMOTEX, que a linha seguinte ja isentava — a
+    # protecao existia por acidente do destino, e esta marca a torna deliberada.
+    if _is_weak_supplier_signal(payload):
+        log.info(f"    [CLASSIFICACAO-FORCADA] write-back SUPRIMIDO para sk={sk_supplier}: "
+                 f"fornecedor veio de sinal fraco "
+                 f"({payload.get(SUPPLIER_SIGNAL_KEY)}) — a conta recebe a classificacao, "
+                 f"o cadastro nao")
+        return
     # Write-back so quando a regra pede E o fornecedor nao e a OTIMOTEX (sk=1). Best-effort.
     if write_back and sk_supplier and sk_supplier != OTIMOTEX_SK_SUPPLIER:
         ctrl.update_supplier_classification(sk_supplier, cost_center_id, chart_account_id)
@@ -3368,14 +3588,22 @@ def apply_contact_writeback(ctrl, payload: dict, extra_text: str | None = None) 
 # REF. T05S1"), enquanto as guias estaduais sao visualmente quase identicas (DARE x GARE
 # x GNRE) e o PDF/Claude troca uma pela outra. Casado por PALAVRA INTEIRA (_has_word),
 # sem acento. CONSERVADOR: acronimos que colidem com palavras do portugues ('das' =
-# artigo, 'dam') NAO sao casados pela forma pura — so por frase inequivoca ('simples
-# nacional'/'simei') para nao gerar falso positivo em "pagamento DAS contas".
+# artigo, 'dam', 'dar' = verbo) NAO sao casados pela forma pura — so por frase
+# inequivoca ('simples nacional'/'simei', 'dar modelo 1') para nao gerar falso positivo
+# em "pagamento DAS contas" nem em "favor dar baixa".
 _SUBJECT_TAX_DOC_KEYWORDS: list[tuple[str, list[str]]] = [
     ("darf",       ["darf"]),
     ("gps",        ["gps"]),
     ("das",        ["simples nacional", "simei"]),
     ("gru",        ["gru"]),
-    ("dare",       ["dare"]),
+    # DAR / DARE — os dois acronimos estaduais num tipo so (migration 133). "dare" e'
+    # inequivoco e entra puro; "dar" so por FRASE, com o mesmo tratamento conservador de
+    # 'das'. Aqui o risco e' o MAIOR de todas as listas, porque este mapa SOBREPOE a
+    # classificacao do PDF (ver o call site em build_financial_payload): um assunto
+    # "favor dar baixa" com "dar" solto transformaria um DARF corretamente extraido.
+    # 🔴 "documento de arrecadacao estadual" FICOU DE FORA — e' o nome por extenso do
+    # DAE em PE/CE, e este par vem ANTES do 'dae'.
+    ("dar / dare", ["dare", "dar modelo 1", "dar-1", "dar/aut", "dar avulso"]),
     ("dae",        ["dae"]),
     ("gnre",       ["gnre"]),
     ("gare",       ["gare"]),
@@ -5314,7 +5542,10 @@ def extract_and_store_accounts(saved_pdfs: list, message_id: str,
         # Resolve o fornecedor (RPC) → grava sk_supplier e remove as colunas
         # denormalizadas do payload. Roda APOS a validacao sem_fornecedor (que
         # usa os campos brutos) e ANTES da dedup (que casa por sk_supplier).
-        if not _finalize_supplier(ctrl, payload):
+        # 🔴 `body_text` E' OBRIGATORIO AQUI — e' o que habilita o fallback 1b
+        # (e-mail do remetente original encaminhado) no caminho de ANEXO. Sem ele a
+        # chamada COMPILA e o fallback fica MORTO em producao, sem sintoma nenhum.
+        if not _finalize_supplier(ctrl, payload, body_text):
             ctrl.register_error(
                 ctx, "db_erro",
                 f"Falha ao resolver fornecedor — {row.get('source_file')}",
@@ -5528,7 +5759,7 @@ def try_extract_from_body(email_rec: dict, body_text: str, received_at: str,
     # Resolve o fornecedor (RPC) → grava sk_supplier e remove as colunas
     # denormalizadas. ANTES da dedup (que casa por sk_supplier). Falha de
     # resolucao → trata como sem pagavel utilizavel (chamador segue p/ falha).
-    if not _finalize_supplier(ctrl, payload):
+    if not _finalize_supplier(ctrl, payload, body_text):
         email_rec["notes"] = "Falha ao resolver fornecedor do corpo do e-mail"
         return BODY_NONE
 

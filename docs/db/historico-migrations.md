@@ -16,6 +16,58 @@
 
 ## Changelog (mais recente primeiro)
 
+**A `134` cria a RPC `find_supplier_by_email(text)` — lookup de fornecedor por e-mail que NUNCA
+cria** (aplicada via Supabase MCP em 2026-08-19). Nasceu para o pipeline poder identificar o
+fornecedor pelo remetente ORIGINAL de um bloco ENCAMINHADO no corpo (caso da conta 1101, guia da
+Junta Comercial mandada por um despachante). 🔴 **A separação CONSULTA × CRIAÇÃO é a razão de
+ela existir:** o endereço de quem encaminha diz quem **MANDOU** o documento, não quem **RECEBE** o
+pagamento, e reusar `resolve_supplier_for_account` faria qualquer pessoa que encaminhasse uma guia
+virar fornecedor no primeiro e-mail, pelo auto-insert. 🔴 **REUSA `_is_internal_email` (046) e
+`_is_platform_email` (109)** em vez de reescrever as regras em Python — uma 2ª cópia divergiria da
+do banco no primeiro ajuste, sem erro. Duas diferenças deliberadas em relação ao Passo 4 de
+`resolve_supplier_id`: filtra `deleted_at IS NULL` (soft delete passa a ter efeito no roteamento) e
+usa `ORDER BY sk_supplier` antes do `LIMIT` — o Passo 4 tem `LIMIT` sem `ORDER BY`, e o vencedor de
+um empate varia com o plano de execução, o que aqui decidiria sob qual fornecedor o dinheiro é
+lançado. `SECURITY DEFINER` + `REVOKE` de `PUBLIC/anon/authenticated` + `GRANT` só a `service_role`.
+Sonda de 6 passos, incluindo a prova de que a contagem de `supplier` **não muda** ao consultar um
+e-mail desconhecido. **Motivo de a consulta REST direta ter sido recusada:** o `eq` do PostgREST é
+case- e whitespace-sensitive, enquanto o Passo 4 compara `lower(trim(...))` — um cadastro com
+`"Ricardo.Advogado@Yahoo.com.br "` responderia "não encontrei", indistinguível de "não está
+cadastrado" (e `ilike` não resolve: em LIKE o `_` continua curinga).
+
+**A `133` consolida `dar` e `dare` no ÚNICO tipo `dar / dare`, com backfill** (aplicada via
+Supabase MCP em 2026-08-19). DAR e DARE nomeiam o **mesmo instrumento** — a guia de arrecadação
+estadual — e o acrônimo impresso varia por estado (MT imprime `DOCUMENTO DE ARRECADAÇÃO - DAR
+MODELO 1 - AUT`; SP imprime `DARE`). Mantê-los separados criava dois rótulos para a mesma coisa no
+filtro de `/consulta`, no `ContaForm` e nos dashboards. Mesmo padrão de `dam / duam`. **26 contas**
+migradas de `dare`. 🔴 **ORDEM OBRIGATÓRIA: DROP do CHECK → UPDATE → ADD do CHECK** — invertendo,
+o `ADD CONSTRAINT` falharia com 23514 nas 26 linhas que ainda diziam `dare`. ⚠️ **O UPDATE dispara as
+triggers BEFORE**: medido antes de aplicar, 24 das 26 contas estavam em `pago` (8), que
+`fn_set_status_from_due_date` não toca, e as 2 em `a vencer` (3) ainda não tinham vencido — nenhuma
+situação mudou. ⚠️ **A trilha registra o backfill como `ator_via = 'servico'`, e isso é correto:**
+backfill de migration **é** automação; o GUC `app.audit_actor` é para edição humana atribuível, e
+usá-lo aqui atribuiria a uma pessoa uma mudança que ela não fez. **A `132` não foi editada** —
+migration aplicada é IMUTÁVEL, e o registro honesto é que `dar` existiu como valor próprio entre a
+132 e a 133.
+
+**A `132` acrescenta `dar` ao CHECK de `document_type`** (aplicada via Supabase MCP em 2026-08-19;
+**consolidada pela 133 poucas horas depois** — ver acima). Origem: a conta **1101**, guia da Junta
+Comercial de Mato Grosso, que o extrator gravou no fallback genérico `tributo` por não ter o tipo.
+A lição que ela deixa é sobre o **acrônimo mais perigoso do domínio**: `dar` é prefixo de `darf`
+**e** verbo comum do português. 🔴 Por isso o tipo é auto-classificado **apenas por rótulo
+explícito** (`_DOC_TYPE_NORM`, lookup EXATO) ou por **frase inequívoca** — nunca pela forma pura,
+que `KEYWORDS` (substring) casaria em "padaria" e `_SUBJECT_TAX_DOC_KEYWORDS`/`_BODY_DOC_KEYWORDS`
+(palavra inteira) casariam em "favor **dar** baixa". Mesmo precedente de `das` (só por "simples
+nacional"/"simei") e `dam / duam` (só por "duam"). 🔴 **`documento de arrecadacao estadual` ficou
+FORA das frases-gatilho, e isso tem prova no acervo:** é o nome por extenso do **DAE** em Pernambuco
+(conta 1103) e no Ceará (conta 821) — incluí-la faria todo DAE ser gravado como DAR, sem erro nenhum.
+
+> ⚠️ **O comentário DENTRO de `132_doc_type_dar.sql` está DESATUALIZADO neste ponto** e não pode ser
+> corrigido — migration aplicada é imutável. Ele lista `documento de arrecadacao estadual` **entre**
+> as frases inequívocas, porque foi escrito antes de a prova do acervo (contas 1103/821) aparecer.
+> A decisão final é a deste parágrafo, e é ela que o código e `tests/test_doc_type_dar.py`
+> implementam. Quem ler só o arquivo da 132 conclui o oposto — daí este aviso.
+
 **A `131` acrescenta `docx_text`/`docx_vision` ao domínio de `extraction_source`** (aplicada via
 psql em 2026-08-17; idempotente, reexecução verificada como no-op). Regra e invariantes do .docx em
 "`extraction_source` — origem dos dados". Três lições que a aplicação cobrou:

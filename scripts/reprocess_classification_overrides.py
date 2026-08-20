@@ -119,13 +119,33 @@ def reclassify_accounts(ctrl, dry_run: bool) -> "tuple[int, dict]":
 
 def apply_supplier_writebacks(ctrl, writebacks: dict, dry_run: bool) -> int:
     """Grava a classificacao nos fornecedores (dedupe por sk). Reusa o metodo de
-    producao update_supplier_classification (best-effort)."""
+    producao update_supplier_classification (best-effort).
+
+    🔴 ESTE SCRIPT NAO ENXERGA A PROCEDENCIA DO FORNECEDOR. No pipeline,
+    `apply_forced_classification` SUPRIME o write-back quando o sk_supplier veio de um
+    sinal FRACO (fallback 1b — o e-mail de quem ENCAMINHOU a guia): a guia e' do FISCO,
+    nao do despachante. Aqui a marca `_supplier_signal` nao existe — ela e' efemera e nao
+    e' persistida —, entao uma conta gravada por aquele caminho volta a ser candidata a
+    write-back, e a exclusao `TAX_CLASSIFICATION_EXCLUDED_SK_SUPPLIERS` so protege quem ja
+    foi descoberto e cadastrado a mao.
+
+    A protecao aqui e' de VISIBILIDADE, nao automatica: todo write-back que SOBRESCREVE
+    uma classificacao ja cadastrada e' marcado com [SOBRESCREVE], com o valor antigo e o
+    novo, e aparece no --dry-run. Curadoria destruida em silencio era o risco; uma linha
+    de log que o operador le antes de confirmar e' o que o torna uma decisao."""
     for sk, (cc, ca) in sorted(writebacks.items()):
+        # Classificacao ATUAL do cadastro — (0, 0) quando nao ha nenhuma ou a leitura
+        # falha (supplier_defaults e best-effort e nao levanta).
+        atual_cc, atual_ca = ctrl.supplier_defaults(sk)
+        sobrescreve = (atual_cc or atual_ca) and (atual_cc, atual_ca) != (cc, ca)
+        aviso = (f"  [SOBRESCREVE] curadoria atual {atual_cc}/{atual_ca} -> {cc}/{ca} "
+                 f"— confira se o sk {sk} e' o CREDOR e nao um intermediario/despachante"
+                 if sobrescreve else "")
         if dry_run:
-            log.info(f"(dry-run) supplier sk={sk} -> cc={cc} ca={ca}")
+            log.info(f"(dry-run) supplier sk={sk} -> cc={cc} ca={ca}{aviso}")
         else:
             ctrl.update_supplier_classification(sk, cc, ca)
-            log.info(f"supplier sk={sk} -> cc={cc} ca={ca}")
+            log.info(f"supplier sk={sk} -> cc={cc} ca={ca}{aviso}")
     return len(writebacks)
 
 

@@ -180,14 +180,19 @@ EXTRACTION_PROMPT = (
     "container (frete/demurrage/movimentacao de conteineres) | "
     "multa (multa/penalidade/juros avulsos, auto de infracao) | outro\n"
     "  Tributos — use o subtipo especifico quando identificado. IMPORTANTE: para guias "
-    "estaduais quase identicas (DARE, GARE, GNRE), copie EXATAMENTE o acronimo IMPRESSO "
-    "no cabecalho/titulo do documento — NUNCA infira pelo estado nem troque um pelo outro:\n"
+    "estaduais quase identicas (DAR / DARE, GARE, GNRE), copie EXATAMENTE o acronimo IMPRESSO "
+    "no cabecalho/titulo do documento — NUNCA infira pelo estado nem troque um pelo outro. "
+    "ATENCAO ao PREFIXO: 'DAR' e 'DARF' sao tipos DIFERENTES — se o cabecalho diz apenas "
+    "'DAR' (ex.: 'DOCUMENTO DE ARRECADACAO - DAR MODELO 1 - AUT'), responda 'DAR', NUNCA "
+    "'DARF':\n"
     "  DARF (Documento de Arrecadacao de Receitas Federais) | "
     "GPS (Guia da Previdencia Social) | "
     "DAS (Simples Nacional, SIMEI, Documento de Arrecadacao do Simples) | "
     "GRU (Guia de Recolhimento da Uniao) | "
     "DAE (Documento de Arrecadacao do eSocial) | "
-    "DARE (Documento de Arrecadacao de Receitas Estaduais) | "
+    "DAR / DARE (Documento de Arrecadacao estadual — vale para as DUAS formas impressas: "
+    "'DARE'/'Documento de Arrecadacao de Receitas Estaduais' e 'DAR'/'DAR MODELO 1'/"
+    "'DAR-1/AUT'/'DAR avulso', comum em guias de Junta Comercial e SEFAZ estadual) | "
     "GNRE (Guia Nacional de Recolhimento de Tributos Estaduais) | "
     "IPVA (Guia de IPVA) | IPTU (Guia de IPTU) | "
     "DAM / DUAM (Documento de Arrecadacao Municipal) | "
@@ -225,6 +230,13 @@ EXTRACTION_PROMPT = (
     "data-limite de pagamento, rotulada 'Documento Valido para pagamento' / 'Valido para "
     "pagamento ate' / 'Pagar ate'. Nessas guias 'Data de Vencimento' e o vencimento do "
     "TRIBUTO (ja passou, e o que gera os juros) e NAO deve ser usado.\n"
+    "- payment_deadline: TRANSCREVA a data que aparece sob o rotulo 'Documento Valido para "
+    "pagamento' / 'Valido para pagamento ate' / 'Pagar ate' / 'Pague ate' / 'Data limite "
+    "para pagamento'. Formato YYYY-MM-DD. null quando o documento NAO tiver esse rotulo. "
+    "Nao escolha nem interprete: copie o que esta impresso ali. Numa guia de arrecadacao "
+    "essa data e a MESMA que voce ja pos em due_date pela excecao acima — devolva as duas, "
+    "e nao mude o due_date por causa deste campo. Se o rotulo nao existir, este campo e "
+    "null e o due_date segue a regra normal.\n"
     "- amount: Valor do Documento (numero decimal com ponto). Em recibo/comprovante "
     "de postagem (Correios), use o 'Valor do porte' / 'Valor total' do recibo. "
     "EXCECAO — GUIA DE ARRECADACAO (GNRE, DARE, GARE, DARF, DAM/DUAM e afins): use o "
@@ -276,6 +288,10 @@ EXTRACTION_PROMPT = (
 )
 
 _DAM_DUAM = "DAM / DUAM"
+# DAR / DARE — entrada UNICA do Documento de Arrecadacao estadual: os dois acronimos
+# nomeiam o mesmo instrumento e variam por estado (migration 133, que consolidou o antigo
+# 'dare'). Mesmo padrao de _DAM_DUAM.
+_DAR_DARE = "DAR / DARE"
 _HONORARIOS = "honorários"
 _CONTAINER = "container"
 
@@ -291,8 +307,25 @@ KEYWORDS = {
     "DAS":        ["das simples","das-simples","documento de arrecadacao do simples",
                    "simples nacional","simei"],
     "GRU":        ["gru","guia de recolhimento da uniao"],
-    "DAE":        ["dae","documento de arrecadacao do esocial",
-                   "dare","documento de arrecadacao de receitas estaduais"],
+    # DAR / DARE — Documento de Arrecadacao ESTADUAL, os dois acronimos no mesmo tipo.
+    # 🔴 Vem ANTES de "DAE": ate a consolidacao (migration 133) os termos "dare" e
+    # "documento de arrecadacao de receitas estaduais" moravam no bucket DAE (eSocial,
+    # que e' FEDERAL) e toda DARE lida por este caminho saia rotulada como DAE.
+    # 🔴 SO FRASES para o acronimo "dar", NUNCA a forma pura: classify_document casa por
+    # SUBSTRING (`any(k in t for k in keys)`), entao "dar" pegaria "pa-dar-ia",
+    # "guar-dar", "dar-a". "dare" e' inequivoco e pode entrar puro.
+    # As frases nao levam acento porque classify_document faz apenas .lower(), sem
+    # remover acento — a frase tem de casar o texto COMO IMPRESSO. "dar modelo 1" e' a
+    # forma do caso real (SEFAZ-MT/JUCEMAT) e nao tem acento nenhum.
+    # 🔴 "documento de arrecadacao estadual" FICOU DE FORA, e nao por precaucao: e' o
+    # nome por EXTENSO do DAE em Pernambuco ("DAE JUCEPE — Documento de Arrecadacao
+    # Estadual", conta 1103) e no Ceara ("DAE - Documento de Arrecadacao Estadual",
+    # conta 821). Como este bucket vem ANTES do DAE, a frase faria TODO DAE ser gravado
+    # como DAR / DARE. O nome oficial do DARE — "de RECEITAS estaduais" — e' uma string
+    # disjunta dessa e pode ficar.
+    _DAR_DARE:    ["dare","documento de arrecadacao de receitas estaduais",
+                   "dar modelo 1","dar-1","dar/aut","dar avulso"],
+    "DAE":        ["dae","documento de arrecadacao do esocial"],
     "GNRE":       ["gnre","guia nacional de recolhimento"],
     "IPVA":       ["ipva","guia de ipva"],
     "IPTU":       ["iptu","guia de iptu"],
@@ -349,7 +382,7 @@ _DOC_TYPE_NORM = {
     _ns("simei"):           "DAS",
     _ns("gru"):             "GRU",
     _ns("dae"):             "DAE",
-    _ns("dare"):            "DARE",
+    _ns("dare"):            _DAR_DARE,
     _ns("gnre"):            "GNRE",
     _ns("ipva"):            "IPVA",
     _ns("iptu"):            "IPTU",
@@ -359,6 +392,20 @@ _DOC_TYPE_NORM = {
     _ns("iss"):             "ISS",
     _ns("itbi"):            "ITBI",
     _ns("gare"):            "GARE",
+    # DAR — variantes do mesmo tipo estadual de _ns("dare") acima (migration 133).
+    # 🔴 ESTE E' O VETOR PRIMARIO do tipo, e e' seguro porque _DOC_TYPE_NORM e' lookup
+    # EXATO por dict: "darf" e' CHAVE DISTINTA e continua ganhando. Trocar este dict por
+    # prefixo/startswith faria todo DARF virar DAR / DARE.
+    # As variantes cobrem o que o modelo pode devolver copiando o cabecalho impresso.
+    _ns("dar"):                 _DAR_DARE,
+    _ns("dar-1"):               _DAR_DARE,
+    _ns("dar 1"):               _DAR_DARE,
+    _ns("dar modelo 1"):        _DAR_DARE,
+    _ns("dar modelo 1 - aut"):  _DAR_DARE,
+    _ns("dar/aut"):             _DAR_DARE,
+    _ns("dar-1/aut"):           _DAR_DARE,
+    _ns("dar avulso"):          _DAR_DARE,
+    _ns("dar / dare"):          _DAR_DARE,
     # Multa / penalidade avulsa (auto de infracao, juros/multa isolados).
     _ns("multa"):           "multa",
     _ns("penalidade"):      "multa",
@@ -393,7 +440,7 @@ def _normalize_doc_type(raw: str) -> str:
 # correto do que uma data incorreta, e ordena de forma previsivel em /consulta.
 TAX_DOC_TYPES = {
     _normalize_doc_type(t) for t in (
-        "tributo", "darf", "gps", "das", "gru", "dae", "dare", "gnre",
+        "tributo", "dar", "darf", "gps", "das", "gru", "dae", "dare", "gnre",
         "ipva", "iptu", "dam", "duam", "iss", "itbi", "gare", "simples nacional",
     )
 }
@@ -433,7 +480,8 @@ def extract_date(text):
 from febraban import (  # noqa: F401 — reexport intencional
     _coerce_date, _due_date_plausible, _normalize_barcode_format,
     amount_from_arrecadacao, amount_from_barcode, arrecadacao_44,
-    arrecadacao_dv_refuted, authoritative_barcode_due_date, barcode_dv_refuted,
+    arrecadacao_dv_refuted, arrecadacao_value_refuted,
+    authoritative_barcode_due_date, barcode_dv_refuted,
     barcode_self_refuted, due_date_from_barcode, extract_barcode,
     extract_linha_digitavel, is_boleto_barcode, normalize_barcode,
     normalize_barcode_allow_misread,
@@ -547,7 +595,9 @@ def extract_payment_deadline_from_text(text) -> "str | None":
     """Data-limite de pagamento IMPRESSA no texto ('Documento Válido para pagamento').
 
     Determinística, como `extract_due_date_from_text` — só muda o rótulo. Retorna
-    'YYYY-MM-DD' ou None. Só faz sentido em PDF de TEXTO (no Vision o `raw` é o JSON)."""
+    'YYYY-MM-DD' ou None. Só faz sentido sobre TEXTO do documento: no caminho visual o
+    `raw` é o JSON do modelo, e a data-limite chega pelo campo `payment_deadline`
+    (ver `apply_arrecadacao_deadline`)."""
     if not text:
         return None
     m = _TEXT_PAYMENT_DEADLINE_RE.search(text)
@@ -557,6 +607,143 @@ def extract_payment_deadline_from_text(text) -> "str | None":
         return datetime.strptime(m.group(1), "%d/%m/%Y").date().isoformat()
     except ValueError:
         return None
+
+
+def _append_note(rec: dict, note: str) -> None:
+    """Acrescenta uma nota de auditoria a `processing_notes`, preservando as anteriores.
+
+    Idioma que estava duplicado em cada `apply_*`; num lugar so para que nenhuma correcao
+    nova sobrescreva a nota da anterior por descuido."""
+    rec["processing_notes"] = (
+        f'{rec["processing_notes"]} | {note}' if rec.get("processing_notes") else note
+    )
+
+
+def _iso_date(value) -> "str | None":
+    """Data 'YYYY-MM-DD' a partir de um valor de PROCEDENCIA NAO CONFIAVEL, ou None.
+
+    Aceita ISO ('2026-07-31', com ou sem sufixo de hora) e o formato brasileiro
+    ('31/07/2026'); qualquer outra coisa — prosa, data impossivel ('32/13/2026'), vazio —
+    devolve None. Existe porque a data-limite do caminho VISUAL vem do MODELO, e dado que
+    entra de fora e validado ANTES de ser usado: gravar texto arbitrario em `due_date`
+    empurraria a falha para o INSERT no PostgREST, longe da causa.
+
+    🔴 O QUE VEM DEPOIS DOS 10 PRIMEIROS CHARS PRECISA SER SEPARADOR DE HORA. O parse
+    era por PREFIXO, entao '31/07/20260' e '2026-07-3199' — um digito a mais, que e a
+    assinatura de um deslocamento na transcricao — passavam como 2026-07-31, com o
+    excedente descartado em silencio: o valor MALFORMADO virava uma data plausivel em vez
+    de virar None. Sufixo de hora ('T00:00:00', ' 12:00') continua valendo, que e a forma
+    como um timestamp ISO chega."""
+    if value in (None, ""):
+        return None
+    s = str(value).strip()
+    if not s:
+        return None
+    for fmt, corte in (("%Y-%m-%d", 10), ("%d/%m/%Y", 10)):
+        resto = s[corte:]
+        if resto and resto[0] not in ("T", "t", " "):
+            continue
+        try:
+            return datetime.strptime(s[:corte], fmt).date().isoformat()
+        except ValueError:
+            continue
+    return None
+
+
+# Folga MEDIDA entre a data-limite de pagamento e o vencimento do tributo na MESMA guia:
+# 0 a 3 dias nas 31 guias do acervo. E |due_date - data de extracao| nas 38 guias lidas por
+# Vision: -11 a +16 dias (988 contas do acervo inteiro, ZERO acima de 180). O teto abaixo e
+# ~60x a folga medida e ~11x o extremo observado.
+_ARRECADACAO_DEADLINE_MAX_GAP_DAYS = 180
+
+
+def arrecadacao_deadline_refuted(deadline, doc_due_date) -> bool:
+    """A data-limite TRANSCRITA pelo modelo se refuta contra a data do documento?
+    (True = implausivel.)
+
+    Contraparte de `arrecadacao_value_refuted` para a OUTRA METADE da regra da guia, e com
+    a MESMA semantica de nome: False significa NAO REFUTADA (confere OU nao ha o que
+    refutar), nunca "correta".
+
+    Por que so o caminho VISUAL precisa dela: no TEXTO a data-limite sai de um regex sobre
+    o proprio documento (`extract_payment_deadline_from_text`, deterministico); no VISUAL
+    ela e TRANSCRITA pelo modelo e o `_iso_date` valida so a FORMA. Um digito de ANO
+    trocado atravessa a validacao inteira — e o estrago nao e simetrico ao do valor:
+    'payment_deadline' de 2126 grava um vencimento que NUNCA chega, e a conta desaparece
+    de todo KPI, do aging e da cobranca sem levantar erro nenhum; 2016 a faz nascer
+    vencida ha dez anos. Era a assimetria que sobrou do conserto do Vision — o VALOR ganhou
+    segunda barreira, a DATA nao tinha nenhuma.
+
+    O cruzamento e com a data que o MODELO leu do MESMO documento (o vencimento do
+    tributo): as duas convivem na mesma guia e estao a DIAS uma da outra. Erro de ANO
+    desloca por 365 dias ou mais e nao sobrevive ao teto. Erro de MES ou DIA (ate ~31 dias)
+    NAO e separavel de uma validade longa legitima, e esta guarda deliberadamente nao
+    tenta pega-lo — declarar o que ela nao cobre e parte do contrato.
+
+    DUAS direcoes, ao contrario da guarda de VALOR: la refutar o lado oposto preservaria o
+    numero errado do LLM (o estrago original); aqui a recusa preserva a data do DOCUMENTO
+    nos dois sentidos, entao nenhuma direcao e perigosa.
+
+    O QUE ELA PROVA e COERENCIA ENTRE DUAS LEITURAS, nao correcao de nenhuma delas: as
+    duas datas vem do MESMO modelo. Se quem ele errou foi a REFERENCIA, a recusa cai sobre a
+    data-limite BOA — e o registro fica com o vencimento do tributo, que e o estado anterior
+    a esta correcao, visivel e anotado. E a direcao conservadora do erro: incoerencia entre
+    duas leituras nao diz QUAL delas errou, e preservar o que ja estava gravado e a unica
+    escolha que nao inventa informacao.
+
+    Retorna False quando nao ha o que refutar: sem data-limite legivel, ou sem data do
+    documento com que cruzar (o modelo nao leu o vencimento do tributo)."""
+    d = _iso_date(deadline)
+    r = _iso_date(doc_due_date)
+    if d is None or r is None:
+        return False                    # nada com que cruzar
+    gap = abs((date.fromisoformat(d) - date.fromisoformat(r)).days)
+    return gap > _ARRECADACAO_DEADLINE_MAX_GAP_DAYS
+
+
+def apply_arrecadacao_deadline(rec: dict, deadline, *, doc_due_date=None) -> bool:
+    """Data-LIMITE de pagamento da GUIA DE ARRECADACAO — a regra canonica, num lugar so.
+
+    Numa guia convivem DUAS datas: "Data de Vencimento" e o vencimento do TRIBUTO (ja
+    passou; e o que gera os juros) e "Documento Valido para pagamento" e ate quando ESTA
+    guia pode ser paga. Adotar a primeira fazia a conta NASCER vencida — 31 das 32 GNRE.
+
+    🔴 O GATE E O BARCODE, nunca o `document_type` do LLM: so age quando `arrecadacao_44`
+    reconhece um codigo de arrecadacao. Num boleto comum um "valido para pagamento ate"
+    significa outra coisa, e sobrepor o vencimento seria regressao.
+
+    🔴 FONTE UNICA das DUAS procedencias da data. O caminho de TEXTO a extrai por regex
+    (`extract_payment_deadline_from_text`, deterministico) e o VISUAL a recebe do campo
+    `payment_deadline` do modelo — mas a DECISAO de adota-la e sempre desta funcao. Uma
+    segunda copia da regra divergiria no primeiro ajuste, e o sintoma seria a guia de um
+    dos caminhos voltar a nascer vencida, sem erro nenhum.
+
+    🔴 `doc_due_date` e a CONTRAPROVA, e SO o caminho VISUAL a passa: la a data vem
+    TRANSCRITA pelo modelo e cruza com o vencimento que ele leu do MESMO documento (ver
+    `arrecadacao_deadline_refuted`). O caminho de TEXTO nao passa nada — a data de la e
+    deterministica, e uma guarda ali custaria correcoes boas, exatamente pelo mesmo motivo
+    que o `ocr_barcode` da guarda de VALOR e opt-in. Recusada a data, o vencimento ja
+    gravado e PRESERVADO e a divergencia vai para `processing_notes`: nunca silenciosa.
+
+    NAO passa por `_due_date_plausible` de proposito — ver `apply_text_due_date`.
+    Idempotente: devolve True somente quando a data MUDOU."""
+    if arrecadacao_44(rec.get("barcode")) is None:
+        return False
+    iso = _iso_date(deadline)
+    if iso is None:
+        return False
+    if doc_due_date is not None and arrecadacao_deadline_refuted(iso, doc_due_date):
+        _append_note(rec, f"Data-limite da guia DESCARTADA — {iso} é implausível ante o "
+                          f"vencimento lido do documento ({doc_due_date}); "
+                          f"transcrição visual da data refutada")
+        return False
+    anterior = rec.get("due_date")
+    if iso == anterior:
+        return False
+    rec["due_date"] = iso
+    _append_note(rec, f"Vencimento corrigido para a data-limite da guia de arrecadação: "
+                      f"{anterior or '—'} → {iso}")
+    return True
 
 
 def apply_text_due_date(rec: dict, raw) -> bool:
@@ -580,21 +767,21 @@ def apply_text_due_date(rec: dict, raw) -> bool:
     E-MAIL. Um reenvio/reprocessamento dias depois poe essa data DEPOIS do dia-limite, e a
     guarda `>= emissao` descartaria justamente a data correta. Medido nas 31 guias atuais:
     a data-limite nunca e anterior, mas a folga e de 0 a 3 dias — nao ha margem para
-    depender disso. Retorna True se alterou. Funcao pura sobre (rec, raw)."""
+    depender disso. Retorna True se alterou. Funcao pura sobre (rec, raw).
+
+    O item 2 e DELEGADO a `apply_arrecadacao_deadline`, que e a mesma funcao usada pelo
+    caminho visual: o gate por barcode e a adocao da data existem uma vez so."""
     alterou = False
     text_due = extract_due_date_from_text(raw)
     if text_due and _due_date_plausible(text_due, rec.get("issue_date")):
         rec["due_date"] = text_due
         alterou = True
-    if arrecadacao_44(rec.get("barcode")) is not None:
-        deadline = extract_payment_deadline_from_text(raw)
-        if deadline:
-            rec["due_date"] = deadline
-            alterou = True
+    if apply_arrecadacao_deadline(rec, extract_payment_deadline_from_text(raw)):
+        alterou = True
     return alterou
 
 
-def apply_arrecadacao_amount(rec: dict) -> bool:
+def apply_arrecadacao_amount(rec: dict, *, ocr_barcode: bool = False) -> bool:
     """Valor AUTORITATIVO da guia de arrecadação = o embutido no código de barras.
 
     Diferente de `apply_barcode_amount` (que só PREENCHE quando o valor está ausente),
@@ -603,6 +790,14 @@ def apply_arrecadacao_amount(rec: dict) -> bool:
     emissor codifica no código de barras. Só age quando `amount_from_arrecadacao` confia
     no código (valor efetivo + DV geral não refutado), então um barcode corrompido por
     OCR não estraga um valor que o LLM leu certo. Idempotente.
+
+    🔴 `ocr_barcode=True` nos caminhos VISUAIS (`VISION_SOURCES`), em que os próprios
+    dígitos do código foram lidos por OCR. Ali o DV geral ainda pega ~87% das corrupções
+    de um dígito, mas as que passam sobrescreveriam a dívida por 10× — então entra a
+    segunda barreira, `arrecadacao_value_refuted`. Recusada a sobrescrita, o valor do
+    documento é PRESERVADO e a divergência vai para `processing_notes`: nunca silenciosa.
+    O default `False` é o caminho de TEXTO, onde os dígitos vêm do texto do PDF (228/228
+    medidos conferindo) e a guarda custaria correções boas.
 
     🔴 `amount_charged` recebe o total DIRETAMENTE — nunca via `resolve_amount_charged`.
     Aquela função aplica a aritmética de BOLETO (amount - descontos + mora/multa), e numa
@@ -622,13 +817,15 @@ def apply_arrecadacao_amount(rec: dict) -> bool:
         atual = None
     if atual is not None and abs(atual - bc_amount) < 0.005:
         return False                                  # ja e o valor correto
+    if ocr_barcode and arrecadacao_value_refuted(rec.get("barcode"), atual):
+        _append_note(rec, f"Valor do código de barras de arrecadação DESCARTADO — "
+                          f"{bc_amount} é implausível ante o valor lido ({atual}); "
+                          f"leitura visual do código refutada")
+        return False
     rec["amount"] = bc_amount
     rec["amount_charged"] = bc_amount
-    note = (f"Valor corrigido pelo código de barras de arrecadação "
-            f"(total a recolher): {atual if atual is not None else '—'} → {bc_amount}")
-    rec["processing_notes"] = (
-        f'{rec["processing_notes"]} | {note}' if rec.get("processing_notes") else note
-    )
+    _append_note(rec, f"Valor corrigido pelo código de barras de arrecadação "
+                      f"(total a recolher): {atual if atual is not None else '—'} → {bc_amount}")
     return True
 
 
@@ -1109,10 +1306,7 @@ def apply_barcode_amount(rec: dict) -> bool:
         return False
     rec["amount"] = bc_amount
     rec["amount_charged"] = resolve_amount_charged(rec)
-    note = "Valor derivado do código de barras FEBRABAN (texto sem valor)"
-    rec["processing_notes"] = (
-        f'{rec["processing_notes"]} | {note}' if rec.get("processing_notes") else note
-    )
+    _append_note(rec, "Valor derivado do código de barras FEBRABAN (texto sem valor)")
     return True
 
 
@@ -1220,7 +1414,12 @@ def build_record_from_json(pdf_path, data: dict, source: str) -> dict:
     # (varredura de meses atras) o fator legitimo ficaria a mais de 2 anos de hoje e o
     # gate apagaria codigo bom. O vencimento do documento e exatamente o que o fator
     # deveria reproduzir — e a referencia certa para julga-lo.
-    if source in ("pdf_vision", "image_vision") and barcode_self_refuted(
+    #
+    # 🔴 A CONSTANTE, nunca uma tupla literal: `docx_vision` (Vision sobre a imagem embutida
+    # no Word) ficou de fora por dois meses justamente porque a lista estava escrita a mao
+    # aqui — e' o OCR de uma imagem como os outros dois, e o print de boleto colado no Word
+    # corrompe digito igual. E' a classe de defeito que `VISION_SOURCES` existe para impedir.
+    if source in VISION_SOURCES and barcode_self_refuted(
             rec["barcode"], rec.get("amount"),
             rec.get("due_date") or rec.get("issue_date")):
         rec["barcode"] = None
@@ -1278,32 +1477,74 @@ def build_record_regex(pdf_path, raw: str, source: str) -> dict:
 
 
 # --- Montar registro (dispatcher) ---
-def build_records(pdf_path, raw, source) -> list:
+def build_records(pdf_path, raw, source, doc_text=None) -> list:
     """Registros de um arquivo — UM por pagavel (carne escaneado devolve N).
 
     `process_pdf` ja devolve lista, entao N registros aqui viram N contas sem
     nenhuma mudanca a jusante. Fonte unica: `build_record` e um wrapper desta.
+
+    `doc_text` e o TEXTO REAL do documento, quando existir, e so o caminho visual o
+    consome: ha casos em que o texto foi extraido e MESMO ASSIM se recorre ao Vision (o
+    tier 2, em que o texto nao trouxe valor, e a pagina espelhada). Sem repassa-lo, o
+    resultado do Vision substituia a extracao de texto INTEIRA e a data-limite
+    deterministica se perdia junto.
     """
     if source in VISION_SOURCES:
-        try:
-            data = _parse_json_payload(raw)
-        except json.JSONDecodeError:
-            # Falha de EXTRACAO, nao documento sem valor. Como registro de falha,
-            # nao entra no CSV: o e-mail fica 'pendente' (visivel, reprocessavel)
-            # e cai no fallback do corpo, em vez de virar 'extraído' com 0 contas
-            # e uma linha 'sem_valor' que culpa o documento pelo erro do extrator.
-            return [_failure_record(pdf_path, "Vision retornou resposta não-JSON")]
-        recs = []
-        for item in _json_records(data):
-            rec = build_record_from_json(pdf_path, item, source)
-            apply_barcode_amount(rec)  # tier 1: valor via codigo de barras
-            recs.append(rec)
-        if not recs:
-            return [_failure_record(
-                pdf_path, "Vision retornou JSON sem nenhum documento reconhecível")]
-        return recs
-
+        return _build_records_vision(pdf_path, raw, source, doc_text)
     return _build_records_text(pdf_path, raw, source)
+
+
+def _build_records_vision(pdf_path, raw, source, doc_text=None) -> list:
+    """Registros a partir da resposta JSON do modelo (fontes de `VISION_SOURCES`).
+
+    Contraparte simetrica de `_build_records_text`. A simetria e o ponto: enquanto este
+    ramo era codigo INLINE no dispatcher e o outro tinha funcao propria, as duas correcoes
+    de GUIA DE ARRECADACAO existiam so num lado — o invariante do valor "total a recolher"
+    e do vencimento "data-limite" nao valia para guia ESCANEADA.
+    """
+    try:
+        data = _parse_json_payload(raw)
+    except json.JSONDecodeError:
+        # Falha de EXTRACAO, nao documento sem valor. Como registro de falha,
+        # nao entra no CSV: o e-mail fica 'pendente' (visivel, reprocessavel)
+        # e cai no fallback do corpo, em vez de virar 'extraído' com 0 contas
+        # e uma linha 'sem_valor' que culpa o documento pelo erro do extrator.
+        return [_failure_record(pdf_path, "Vision retornou resposta não-JSON")]
+    itens = _json_records(data)
+    # Data-limite impressa: quando ha texto do documento, o regex DETERMINISTICO vence o
+    # modelo — e a mesma precedencia do caminho de texto. Num PDF escaneado (ou imagem)
+    # nao ha texto nenhum, e ai a unica fonte possivel e o campo que o prompt pede.
+    #
+    # 🔴 SO COM UM PAGAVEL. O regex e do documento INTEIRO e devolve a PRIMEIRA data-limite
+    # que encontrar; com N pagaveis ela seria carimbada em TODOS, dando a guia 2 o dia-limite
+    # da guia 1 — data errada, plausivel e silenciosa. E' a mesma armadilha que faz o caminho
+    # de TEXTO recusar N pagaveis (o barcode do primeiro indo para todos). Com N itens, cada
+    # um usa o `payment_deadline` que o modelo leu DELE.
+    text_deadline = extract_payment_deadline_from_text(doc_text) if len(itens) == 1 else None
+    recs = []
+    for item in itens:
+        rec = build_record_from_json(pdf_path, item, source)
+        apply_barcode_amount(rec)  # tier 1: valor via codigo de barras
+        # GUIA DE ARRECADACAO — as duas correcoes, agora tambem no caminho visual.
+        # `ocr_barcode=True`: aqui os digitos do codigo sao OCR, entao a sobrescrita do
+        # valor passa pela segunda barreira (ver `apply_arrecadacao_amount`).
+        apply_arrecadacao_amount(rec, ocr_barcode=True)
+        # A data-limite tem DUAS procedencias aqui, e a contraprova segue a PROCEDENCIA,
+        # nao o call site: a do TEXTO e deterministica e entra sem cruzamento; a do MODELO
+        # cruza com o vencimento que ele leu do MESMO documento. Colapsar os dois num
+        # `text_deadline or ...` com contraprova fixa submeteria a data deterministica a
+        # uma guarda que ela nao precisa — e sem contraprova nenhuma deixaria a transcricao
+        # do modelo entrar crua, que e o buraco que isto fecha.
+        if text_deadline is not None:
+            apply_arrecadacao_deadline(rec, text_deadline)
+        else:
+            apply_arrecadacao_deadline(rec, item.get("payment_deadline"),
+                                       doc_due_date=item.get("due_date"))
+        recs.append(rec)
+    if not recs:
+        return [_failure_record(
+            pdf_path, "Vision retornou JSON sem nenhum documento reconhecível")]
+    return recs
 
 
 def _build_records_text(pdf_path, raw, source) -> list:
@@ -1596,6 +1837,10 @@ def process_pdf(pdf_path, force_vision=False, pdf_passwords=None):
 def _extract_records(pdf_path, force_vision=False) -> list:
     """Registros de um PDF — 1 por pagável. Nunca levanta: falha vira registro."""
     log.info(f"Processando: {pdf_path.name}")
+    # Texto do pdfplumber, preservado mesmo quando o caminho vira Vision: dele sai a
+    # data-limite DETERMINISTICA da guia de arrecadacao, que o resultado do modelo nao
+    # substitui. Fica None quando nunca houve texto (PDF escaneado / force_vision).
+    doc_text = None
     try:
         if force_vision or is_scanned_pdf(pdf_path):
             log.info("  → Claude Vision")
@@ -1603,6 +1848,7 @@ def _extract_records(pdf_path, force_vision=False) -> list:
         else:
             log.info("  → pdfplumber")
             raw, src = extract_with_pdfplumber(pdf_path)
+            doc_text = raw
             if len(raw) < 80:
                 log.warning(f"  → Texto curto ({len(raw)} chars) — fallback Vision")
                 # Vision envia o PDF em base64 ao Claude (sem poppler/pdftoppm).
@@ -1613,7 +1859,7 @@ def _extract_records(pdf_path, force_vision=False) -> list:
                 # regex. O Vision lê a página renderizada, que é visualmente correta.
                 log.info("  → Texto espelhado (página invertida) — fallback Vision")
                 raw, src = extract_with_vision(pdf_path)
-        recs = build_records(pdf_path, raw, src)
+        recs = build_records(pdf_path, raw, src, doc_text=doc_text)
         if len(recs) > 1:
             log.info(f"  → {len(recs)} pagáveis lidos do documento")
         # Tier 2: texto extraiu o documento mas sem valor, e o codigo de barras
@@ -1625,7 +1871,10 @@ def _extract_records(pdf_path, force_vision=False) -> list:
             log.info("  → valor ausente após texto/barcode — fallback Vision para valor")
             try:
                 vraw, vsrc = extract_with_vision(pdf_path)
-                vrecs = build_records(pdf_path, vraw, vsrc)
+                # `doc_text` aqui é o texto que JÁ foi extraído com sucesso (só não trouxe
+                # valor): a data-limite impressa continua determinística, mesmo trocando o
+                # registro inteiro pelo do Vision.
+                vrecs = build_records(pdf_path, vraw, vsrc, doc_text=doc_text)
                 if any(v.get("amount") for v in vrecs):
                     log.info(f"  → valor recuperado via Vision ({len(vrecs)} registro(s))")
                     return vrecs
@@ -1700,8 +1949,10 @@ def _extract_docx(docx_path) -> list:
             log.info("  → Claude Vision sobre a imagem embutida no .docx")
             raw, _src = extract_with_vision(imagem)
         # `build_records` recebe o DOCX (não o temporário): é o .docx que vira `source_file`,
-        # e o temporário já não existe fora do bloco acima.
-        return build_records(docx_path, raw, "docx_vision")
+        # e o temporário já não existe fora do bloco acima. `doc_text` é o texto do próprio
+        # Word — não provou pagável (por isso a camada 2), mas pode trazer a data-limite
+        # impressa da guia, que é determinística e vence o campo do modelo.
+        return build_records(docx_path, raw, "docx_vision", doc_text=texto)
     except Exception as e:
         if _is_api_unavailable(e):
             log.exception(f"  ✗ API Anthropic indisponível ({docx_path.name}): {e}")

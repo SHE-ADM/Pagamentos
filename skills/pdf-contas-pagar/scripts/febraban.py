@@ -201,6 +201,46 @@ def amount_from_arrecadacao(barcode) -> "float | None":
     return valor if 0 < valor < 5_000_000 else None
 
 
+# Razao a partir da qual o total embutido deixa de ser "juros" e passa a ser DESLOCAMENTO DE
+# DIGITO do OCR. 10 e a assinatura MEDIDA da corrupcao (ver `barcode_self_refuted`: "valor
+# exatamente 10x o do documento"), e esta muito acima de qualquer acrescimo real — atingi-la
+# por juros exigiria 900% sobre o principal.
+_ARRECADACAO_OCR_SHIFT_RATIO = 10.0
+
+
+def arrecadacao_value_refuted(barcode, amount) -> bool:
+    """O valor embutido na arrecadacao se REFUTA contra o do documento? (True = corrompido.)
+
+    Contraparte de `barcode_self_refuted` para o esquema de arrecadacao, e com a MESMA
+    semantica de nome: False significa NAO REFUTADO (confere OU a regra nao se aplica),
+    nunca "valido". Existe so para os caminhos VISUAIS, em que o proprio codigo e OCR: ali
+    `apply_arrecadacao_amount` SOBRESCREVE o valor lido do documento, e um deslocamento de
+    digito gravaria 10x a divida.
+
+    Por que so UMA direcao (barcode MAIOR que o documento):
+      - a assinatura medida do OCR e o valor 10x MAIOR (mesmo sinal do id 463);
+      - refutar o lado oposto (barcode 10x MENOR) faria a guarda BLOQUEAR a correcao e
+        manter o numero do LLM, gravando A MENOR — que e exatamente o estrago que a regra
+        da guia existe para matar (27 das 31 GNRE a menor, R$ 297,17).
+    Um total legitimo nunca chega a 10x o principal: seriam 900% de juros. Casos reais
+    ficam em 1,01x (id 773) e 1,19x (id 817).
+
+    Retorna False quando nao ha o que refutar: nao e arrecadacao, sem valor embutido
+    confiavel (o DV ja barrou), ou sem `amount` positivo do documento para comparar."""
+    bc_amount = amount_from_arrecadacao(barcode)
+    if bc_amount is None:
+        return False
+    if amount in (None, ""):
+        return False                    # nada com que cruzar
+    try:
+        doc_amount = float(amount)
+    except (TypeError, ValueError):
+        return False                    # amount ilegivel: nao e prova de erro do codigo
+    if doc_amount <= 0:
+        return False                    # documento sem valor: o barcode e a unica fonte
+    return bc_amount / doc_amount >= _ARRECADACAO_OCR_SHIFT_RATIO
+
+
 def extract_barcode(text):
     # Prefere o padrao estruturado da linha digitavel (mais preciso)
     ld = extract_linha_digitavel(text)

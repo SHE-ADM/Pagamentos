@@ -108,6 +108,28 @@ class BuildRecordDescartaBarcodeTest(unittest.TestCase):
         rec = self._rec("pdf_vision", BOM, BOM_AMOUNT)
         self.assertTrue(rec["barcode"])
 
+    def test_TODA_fonte_visual_aplica_o_gate(self):
+        """🔴 ESTRUTURAL: o gate é regido por `VISION_SOURCES`, não por tupla literal.
+
+        `docx_vision` — Vision sobre a imagem embutida no Word — ficou de fora enquanto a
+        lista estava escrita à mão no builder: um print de boleto colado no Word corrompe
+        dígito igual a um scan, e o código corrompido seguia gravado como chave de dedup.
+        O laço percorre a CONSTANTE: fonte visual nova nasce coberta ou este teste
+        vermelha.
+        """
+        self.assertIn("docx_vision", E.VISION_SOURCES)      # sanidade: o laço não é vazio
+        for source in E.VISION_SOURCES:
+            with self.subTest(source=source):
+                rec = self._rec(source, CORROMPIDOS[0][1], CORROMPIDOS[0][2])
+                self.assertIsNone(rec["barcode"], f"{source} manteve código refutado")
+                self.assertIn("descartado", rec["processing_notes"])
+
+    def test_fonte_visual_preserva_codigo_bom(self):
+        """Anti-vacuidade do laço acima: o gate DISCRIMINA, não apaga tudo."""
+        for source in E.VISION_SOURCES:
+            with self.subTest(source=source):
+                self.assertTrue(self._rec(source, BOM, BOM_AMOUNT)["barcode"])
+
     def test_pdf_text_NAO_aplica_o_gate(self):
         """No texto os dígitos vêm do PDF e conferem (228/228 medidos); aplicar o gate ali
         custaria barcodes bons sem corrigir nada."""

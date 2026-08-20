@@ -1104,8 +1104,12 @@ export function topBucketLabels<T extends { amount: number | null }>(
 // "Tributos" no donut de tipos de conta. Espelha a noção de documento fiscal do
 // pipeline (_is_tax_document); `gps` (INSS/previdência) incluído por ser guia de
 // arrecadação. Ajuste o conjunto se a operação exigir.
+// 🔴 Esta lista é a 4ª cópia da noção de "tributo" no sistema e, ao contrário das três
+// do pipeline, não pode ser derivada do enum (nem todo `document_type` é tributo). A
+// paridade é travada por `FrontendTaxSetTest` em tests/test_doc_type_domain_consistency.py:
+// tipo tributário novo aqui esquecido cai no balde "outros" do donut, sem erro nenhum.
 const TAX_DOCUMENT_TYPES = new Set<string>([
-  'darf', 'gps', 'das', 'gru', 'dae', 'dare', 'gnre',
+  'darf', 'gps', 'das', 'gru', 'dae', 'dar / dare', 'gnre',
   'ipva', 'iptu', 'dam / duam', 'iss', 'itbi', 'gare', 'tributo',
 ]);
 export function isTaxDocumentType(dt: string | null): boolean {

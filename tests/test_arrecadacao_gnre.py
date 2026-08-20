@@ -11,9 +11,13 @@ Caso de origem: 27 das 31 GNRE gravadas A MENOR (R$ 297,17 no total) e 31 das 32
 vencimento ANTERIOR a propria emissao — nascendo "vencidas".
 """
 
+import json
+import re
 import sys
 import unittest
+from datetime import date, timedelta
 from pathlib import Path
+from unittest import mock
 
 _SCRIPTS_DIR = Path(__file__).resolve().parents[1] / "skills" / "pdf-contas-pagar" / "scripts"
 sys.path.insert(0, str(_SCRIPTS_DIR))
@@ -29,6 +33,10 @@ GNRE_773_PRINCIPAL = 47.04
 
 # Boleto bancario comum (Campinense) — NAO e arrecadacao; nenhuma regra daqui se aplica.
 BOLETO_BANCARIO = "23792152400000502400289090000010602503122940"
+
+# Sentinela para OMITIR uma chave do JSON de teste — `None` nao serve: "campo ausente" e
+# "campo nulo" sao estados distintos e os dois precisam ser exercitados.
+_AUSENTE = object()
 
 
 class Arrecadacao44Test(unittest.TestCase):
@@ -262,6 +270,424 @@ class ApplyTextDueDateTest(unittest.TestCase):
         rec = {"barcode": GNRE_773, "due_date": "2026-07-28"}
         self.assertFalse(E.apply_text_due_date(rec, "documento sem datas"))
         self.assertEqual(rec["due_date"], "2026-07-28")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# CAMINHO VISUAL (2026-08-20) — as duas regras deixaram de valer só no texto.
+#
+# Até aqui `apply_arrecadacao_amount`/`apply_text_due_date` eram chamadas apenas em
+# `_build_records_text`; guia ESCANEADA dependia inteiramente do que o modelo leu. No
+# visual não existe texto do PDF, então a data-limite chega pelo campo `payment_deadline`
+# do prompt — mas quem DECIDE adotá-la é o código, com gate determinístico pelo barcode.
+# ─────────────────────────────────────────────────────────────────────────────
+
+class IsoDateTest(unittest.TestCase):
+    """Dado que entra de FORA (o modelo) é validado ANTES de virar `due_date`."""
+
+    def test_aceita_iso_e_formato_br(self):
+        self.assertEqual(E._iso_date("2026-07-31"), "2026-07-31")
+        self.assertEqual(E._iso_date("31/07/2026"), "2026-07-31")
+        self.assertEqual(E._iso_date("2026-07-31T00:00:00Z"), "2026-07-31")
+        self.assertEqual(E._iso_date("  2026-07-31  "), "2026-07-31")
+
+    def test_recusa_data_impossivel_e_prosa(self):
+        # Sem esta guarda o texto arbitrário chegaria ao INSERT do PostgREST, longe daqui.
+        for ruim in ("32/13/2026", "2026-13-01", "amanhã", "", "   ", None, 12345, "31/07"):
+            with self.subTest(valor=repr(ruim)):
+                self.assertIsNone(E._iso_date(ruim))
+
+    def test_recusa_digito_a_mais_DEPOIS_da_data(self):
+        """Mutante: parse por PREFIXO (`s[:10]` sem olhar o resto). Um dígito a mais — a
+        assinatura de um deslocamento na transcrição — virava data plausível com o
+        excedente descartado em silêncio, em vez de virar None."""
+        for ruim in ("31/07/20260", "2026-07-3199", "2026-07-31-", "31/07/2026/"):
+            with self.subTest(valor=repr(ruim)):
+                self.assertIsNone(E._iso_date(ruim))
+
+    def test_o_sufixo_de_HORA_continua_valendo(self):
+        """Anti-vacuidade da guarda acima: recusar todo resto mataria o timestamp ISO."""
+        self.assertEqual(E._iso_date("2026-07-31T00:00:00Z"), "2026-07-31")
+        self.assertEqual(E._iso_date("31/07/2026 12:00"), "2026-07-31")
+
+
+class ArrecadacaoValueRefutedTest(unittest.TestCase):
+    """A 2ª barreira do valor no caminho visual — o DV sozinho deixa passar ~13%."""
+
+    def test_deslocamento_de_digito_e_refutado(self):
+        # Assinatura medida do OCR: o código diz 10× o que o documento mostra.
+        self.assertTrue(F.arrecadacao_value_refuted(GNRE_773, GNRE_773_TOTAL / 10))
+
+    def test_juros_legitimos_NAO_sao_refutados(self):
+        # Casos reais: 1,01× (id 773) e 1,19× (id 817). A guarda tem de DISCRIMINAR —
+        # uma que refutasse sempre mataria a correção inteira e passaria no teste acima.
+        self.assertFalse(F.arrecadacao_value_refuted(GNRE_773, GNRE_773_PRINCIPAL))
+        self.assertFalse(F.arrecadacao_value_refuted(GNRE_773, GNRE_773_TOTAL / 3))
+
+    def test_a_fronteira_e_10x(self):
+        self.assertTrue(F.arrecadacao_value_refuted(GNRE_773, GNRE_773_TOTAL / 10.0))
+        self.assertFalse(F.arrecadacao_value_refuted(GNRE_773, GNRE_773_TOTAL / 9.99))
+
+    def test_direcao_UNICA_barcode_menor_nao_refuta(self):
+        """🔴 Refutar o lado oposto faria a guarda preservar o número do LLM e gravar A
+        MENOR — o estrago que a regra da guia existe para matar (R$ 297,17 em 27 GNRE)."""
+        self.assertFalse(F.arrecadacao_value_refuted(GNRE_773, GNRE_773_TOTAL * 10))
+
+    def test_nao_ha_o_que_refutar(self):
+        # Semântica do nome, igual a `barcode_self_refuted`: False ≠ "válido".
+        self.assertFalse(F.arrecadacao_value_refuted(BOLETO_BANCARIO, 1.0))
+        self.assertFalse(F.arrecadacao_value_refuted(None, 1.0))
+        for sem_valor in (None, "", 0, -5, "n/d"):
+            with self.subTest(amount=repr(sem_valor)):
+                self.assertFalse(F.arrecadacao_value_refuted(GNRE_773, sem_valor))
+
+
+class ArrecadacaoDeadlineRefutedTest(unittest.TestCase):
+    """A 2ª barreira da DATA no caminho visual — contraparte da guarda de VALOR.
+
+    O `_iso_date` valida só a FORMA: um dígito de ANO trocado atravessa a validação
+    inteira. E o estrago não é simétrico ao do valor — uma data-limite de **2126** grava um
+    vencimento que NUNCA chega, e a conta desaparece de todo KPI, do aging e da cobrança
+    sem levantar erro nenhum."""
+
+    VENC_TRIBUTO = "2026-07-28"
+
+    def test_a_folga_REAL_da_guia_nao_e_refutada(self):
+        """Medido: 0 a 3 dias entre a data-limite e o vencimento do tributo (31 guias); e
+        −11 a +16 dias entre `due_date` e a extração nas 38 guias lidas por Vision. Uma
+        guarda que refutasse isto mataria a correção inteira e ainda passaria no teste
+        seguinte — é o par que a torna discriminante."""
+        for dl in ("2026-07-28", "2026-07-31", "2026-08-27", "2026-07-01"):
+            with self.subTest(data_limite=dl):
+                self.assertFalse(E.arrecadacao_deadline_refuted(dl, self.VENC_TRIBUTO))
+
+    def test_ano_trocado_pela_transcricao_e_refutado(self):
+        for ruim in ("2016-07-31", "2126-07-31", "2027-07-31", "2025-07-31"):
+            with self.subTest(data_limite=ruim):
+                self.assertTrue(E.arrecadacao_deadline_refuted(ruim, self.VENC_TRIBUTO))
+
+    def test_a_fronteira_e_180_dias(self):
+        base = date.fromisoformat(self.VENC_TRIBUTO)
+        no_teto = (base + timedelta(days=180)).isoformat()
+        passou = (base + timedelta(days=181)).isoformat()
+        self.assertFalse(E.arrecadacao_deadline_refuted(no_teto, self.VENC_TRIBUTO))
+        self.assertTrue(E.arrecadacao_deadline_refuted(passou, self.VENC_TRIBUTO))
+
+    def test_DUAS_direcoes_ao_contrario_da_guarda_de_VALOR(self):
+        """Na de valor, refutar o lado oposto preservaria o número errado do LLM — o
+        estrago original. Aqui a recusa preserva a data do DOCUMENTO nos dois sentidos,
+        então nenhuma direção é perigosa: uma data-limite muito ANTES do vencimento do
+        tributo é tão implausível quanto uma muito depois."""
+        base = date.fromisoformat(self.VENC_TRIBUTO)
+        self.assertTrue(E.arrecadacao_deadline_refuted(
+            (base - timedelta(days=200)).isoformat(), self.VENC_TRIBUTO))
+        self.assertTrue(E.arrecadacao_deadline_refuted(
+            (base + timedelta(days=200)).isoformat(), self.VENC_TRIBUTO))
+
+    def test_o_que_ela_NAO_cobre_e_parte_do_contrato(self):
+        """Erro de MÊS ou DIA (até ~31 dias) não é separável de uma validade longa
+        legítima. A guarda deliberadamente não tenta pegá-lo — travado aqui para que
+        ninguém aperte o teto acreditando que ela cobre isso."""
+        self.assertFalse(E.arrecadacao_deadline_refuted("2026-08-28", self.VENC_TRIBUTO))
+
+    def test_o_MODO_DE_FALHA_ACEITO_esta_travado(self):
+        """⚠️ A contraprova cruza DUAS leituras do MESMO modelo. Se o que ele errou foi a
+        REFERÊNCIA — leu o vencimento do tributo com um ano a menos e a data-limite certa —,
+        a recusa cai sobre a data BOA e o registro fica com o vencimento do tributo: o estado
+        anterior à correção, visível e anotado.
+
+        Não é um defeito escondido, é a direção conservadora do erro (incoerência não diz
+        QUAL das duas leituras errou), e está travado aqui para que a documentação não
+        prometa uma garantia que o código não dá."""
+        rec = {"barcode": GNRE_773, "due_date": "2025-07-28"}     # referência errada
+        self.assertFalse(E.apply_arrecadacao_deadline(
+            rec, "2026-07-31", doc_due_date="2025-07-28"))         # data-limite CERTA
+        self.assertEqual(rec["due_date"], "2025-07-28")
+        self.assertIn("refutada", rec["processing_notes"])
+
+    def test_nao_ha_o_que_refutar(self):
+        """Semântica do nome, igual a `arrecadacao_value_refuted`: False ≠ "correta".
+
+        Sem `due_date` lido do documento não há contraprova — e a guarda NÃO inventa uma
+        referência. Usar "hoje" faria um reprocessamento histórico refutar justamente a
+        data certa, que é a armadilha já documentada em `apply_text_due_date`."""
+        self.assertFalse(E.arrecadacao_deadline_refuted(None, self.VENC_TRIBUTO))
+        self.assertFalse(E.arrecadacao_deadline_refuted("2126-07-31", None))
+        self.assertFalse(E.arrecadacao_deadline_refuted("2126-07-31", "amanhã"))
+        self.assertFalse(E.arrecadacao_deadline_refuted("prosa", self.VENC_TRIBUTO))
+
+
+class ApplyArrecadacaoDeadlineTest(unittest.TestCase):
+    """A regra canônica do vencimento — o gate é o BARCODE, nunca o `document_type`."""
+
+    def test_adota_a_data_limite_na_guia(self):
+        rec = {"barcode": GNRE_773, "due_date": "2026-07-28"}
+        self.assertTrue(E.apply_arrecadacao_deadline(rec, "2026-07-31"))
+        self.assertEqual(rec["due_date"], "2026-07-31")
+        self.assertIn("data-limite", rec["processing_notes"])
+
+    def test_boleto_comum_NAO_adota(self):
+        rec = {"barcode": BOLETO_BANCARIO, "due_date": "2026-07-28"}
+        self.assertFalse(E.apply_arrecadacao_deadline(rec, "2026-09-30"))
+        self.assertEqual(rec["due_date"], "2026-07-28")
+
+    def test_sem_barcode_NAO_adota(self):
+        rec = {"barcode": None, "due_date": "2026-07-28"}
+        self.assertFalse(E.apply_arrecadacao_deadline(rec, "2026-09-30"))
+        self.assertEqual(rec["due_date"], "2026-07-28")
+
+    def test_data_invalida_nao_altera(self):
+        rec = {"barcode": GNRE_773, "due_date": "2026-07-28"}
+        self.assertFalse(E.apply_arrecadacao_deadline(rec, "32/13/2026"))
+        self.assertEqual(rec["due_date"], "2026-07-28")
+
+    def test_idempotente(self):
+        rec = {"barcode": GNRE_773, "due_date": "2026-07-31"}
+        self.assertFalse(E.apply_arrecadacao_deadline(rec, "31/07/2026"))
+        self.assertIsNone(rec.get("processing_notes"))
+
+    def test_data_refutada_PRESERVA_o_vencimento_e_ANOTA(self):
+        rec = {"barcode": GNRE_773, "due_date": "2026-07-28"}
+        self.assertFalse(E.apply_arrecadacao_deadline(
+            rec, "2126-07-31", doc_due_date="2026-07-28"))
+        self.assertEqual(rec["due_date"], "2026-07-28")
+        self.assertIn("refutada", rec["processing_notes"])
+
+    def test_a_contraprova_e_OPT_IN_como_o_ocr_barcode(self):
+        """Contraprova do parâmetro: no caminho de TEXTO (sem `doc_due_date`) a MESMA data
+        absurda ainda é adotada. A data de lá é determinística — um regex sobre o próprio
+        documento —, e a guarda ali custaria correções boas, exatamente pelo motivo que faz
+        o `ocr_barcode` da guarda de VALOR ser opt-in."""
+        rec = {"barcode": GNRE_773, "due_date": "2026-07-28"}
+        self.assertTrue(E.apply_arrecadacao_deadline(rec, "2126-07-31"))
+        self.assertEqual(rec["due_date"], "2126-07-31")
+
+    def test_e_a_MESMA_funcao_que_o_caminho_de_texto_usa(self):
+        """🔴 FONTE ÚNICA: se `apply_text_due_date` voltar a ter cópia própria da regra,
+        desligar a canônica deixaria de afetar o texto — e as duas divergiriam no primeiro
+        ajuste, com a guia de um dos caminhos voltando a nascer vencida, sem erro."""
+        rec = {"barcode": GNRE_773, "due_date": "2026-07-28", "issue_date": None}
+        with mock.patch.object(E, "apply_arrecadacao_deadline", return_value=False) as spy:
+            E.apply_text_due_date(rec, ApplyTextDueDateTest.TEXTO_GNRE)
+        spy.assert_called_once()
+        self.assertEqual(spy.call_args.args[1], "2026-07-31")   # a data extraída do texto
+        self.assertEqual(rec["due_date"], "2026-07-28")         # e nada mudou sem ela
+
+
+class VisionAplicaAsRegrasDaGuiaTest(unittest.TestCase):
+    """🔴 ESTRUTURAL: as duas correções valem em TODA fonte de `VISION_SOURCES`."""
+
+    VENC_TRIBUTO = "2026-07-28"
+    DATA_LIMITE = "2026-07-31"
+
+    def _json(self, **over):
+        item = {"document_type": "GNRE", "supplier_name": "SEFAZ PR",
+                "amount": GNRE_773_PRINCIPAL, "due_date": self.VENC_TRIBUTO,
+                "barcode": GNRE_773, "payment_deadline": self.DATA_LIMITE}
+        item.update(over)
+        return json.dumps({k: v for k, v in item.items() if v is not _AUSENTE})
+
+    def _rec(self, source="pdf_vision", doc_text=None, **over):
+        return E.build_records(Path("guia.pdf"), self._json(**over), source,
+                               doc_text=doc_text)[0]
+
+    def test_as_TRES_fontes_visuais_corrigem_valor_e_vencimento(self):
+        # Sanidade do laço: uma constante vazia faria o teste passar sem asserir nada.
+        self.assertEqual(len(E.VISION_SOURCES), 3, E.VISION_SOURCES)
+        for source in E.VISION_SOURCES:
+            with self.subTest(source=source):
+                rec = self._rec(source)
+                self.assertAlmostEqual(rec["amount"], GNRE_773_TOTAL, places=2)
+                self.assertAlmostEqual(rec["amount_charged"], GNRE_773_TOTAL, places=2)
+                self.assertEqual(rec["due_date"], self.DATA_LIMITE)
+
+    def test_sem_as_regras_a_guia_nasceria_errada(self):
+        """Anti-vacuidade: o registro CRU do modelo traz os dois números errados — é
+        exatamente o que era gravado antes desta correção."""
+        rec = E.build_record_from_json(Path("guia.pdf"), json.loads(self._json()),
+                                       "pdf_vision")
+        self.assertAlmostEqual(rec["amount"], GNRE_773_PRINCIPAL, places=2)
+        self.assertEqual(rec["due_date"], self.VENC_TRIBUTO)
+
+    def test_payment_deadline_NAO_vaza_para_o_CSV(self):
+        """O campo é insumo da decisão, não coluna. Chave que não é coluna faz o
+        PostgREST recusar o INSERT (PGRST204) e a conta deixa de ser gravada."""
+        rec = self._rec()
+        self.assertNotIn("payment_deadline", rec)
+        self.assertEqual(set(rec) - set(E.CSV_COLUMNS), set())
+
+    def test_boleto_comum_ignora_o_payment_deadline(self):
+        """Oráculo diferencial: com e sem o campo, o boleto termina no MESMO vencimento.
+
+        ⚠️ A data-limite deste caso NÃO pode ser a `DATA_LIMITE` da guia: o fator do
+        `BOLETO_BANCARIO` decodifica justamente em 2026-07-31 (vencimento real dele), e o
+        `assertNotEqual` seria verde por coincidência — vazamento e acerto ficariam
+        indistinguíveis."""
+        alheia = "2026-09-30"
+        comum = dict(document_type="boleto", barcode=BOLETO_BANCARIO, amount=502.40,
+                     due_date="2026-03-12", payment_deadline=alheia)
+        com = self._rec(**comum)
+        sem = self._rec(**{**comum, "payment_deadline": _AUSENTE})
+        self.assertEqual(com["due_date"], sem["due_date"])
+        self.assertNotEqual(com["due_date"], alheia)
+
+    def test_payment_deadline_invalido_nao_altera_o_vencimento(self):
+        for ruim in ("32/13/2026", "amanhã", "", None):
+            with self.subTest(valor=repr(ruim)):
+                self.assertEqual(self._rec(payment_deadline=ruim)["due_date"],
+                                 self.VENC_TRIBUTO)
+
+    def test_texto_do_documento_VENCE_o_campo_do_modelo(self):
+        """Quando há texto real, a extração determinística tem precedência — mesma ordem
+        do caminho de texto. Cobre o tier 2 e a página espelhada."""
+        rec = self._rec(payment_deadline="2026-09-09",
+                        doc_text="Documento Válido para pagamento 31/07/2026")
+        self.assertEqual(rec["due_date"], self.DATA_LIMITE)
+
+    def test_com_N_pagaveis_o_texto_NAO_carimba_todos(self):
+        """🔴 O regex é do documento INTEIRO e devolve a PRIMEIRA data-limite. Aplicá-la a
+        N registros daria à guia 2 o dia-limite da guia 1 — data errada, plausível e
+        silenciosa. Com N itens cada um usa o `payment_deadline` que o modelo leu DELE.
+
+        Mesma armadilha que faz o caminho de TEXTO recusar N pagáveis (o barcode do
+        primeiro indo para todos)."""
+        duas = json.dumps([
+            {"document_type": "GNRE", "amount": GNRE_773_PRINCIPAL, "barcode": GNRE_773,
+             "due_date": "2026-07-28", "payment_deadline": "2026-07-31"},
+            {"document_type": "GNRE", "amount": GNRE_773_PRINCIPAL, "barcode": GNRE_773,
+             "due_date": "2026-08-28", "payment_deadline": "2026-08-31"},
+        ])
+        recs = E.build_records(Path("duas_guias.pdf"), duas, "pdf_vision",
+                               doc_text="Documento Válido para pagamento 31/07/2026")
+        self.assertEqual([r["due_date"] for r in recs], ["2026-07-31", "2026-08-31"])
+
+    def test_ano_corrompido_na_TRANSCRICAO_nao_vira_vencimento(self):
+        """🔴 Metade "data" da regra da guia, no caminho em que ela é TRANSCRITA por um
+        modelo. Sem a contraprova, `payment_deadline` de 2126 gravava uma conta que nunca
+        vence — invisível em todo KPI, no aging e na cobrança, sem erro nenhum."""
+        for ruim in ("31/07/2016", "2126-07-31", "2027-07-31"):
+            with self.subTest(payment_deadline=ruim):
+                rec = self._rec(payment_deadline=ruim)
+                self.assertEqual(rec["due_date"], self.VENC_TRIBUTO)
+                self.assertIn("refutada", rec["processing_notes"])
+
+    def test_a_contraprova_segue_a_PROCEDENCIA_nao_o_call_site(self):
+        """🔴 A data-limite tem DUAS procedências no builder visual. A do TEXTO é
+        determinística e entra SEM cruzamento — aqui ela está a 521 dias do vencimento que
+        o modelo leu, muito além do teto de 180, e ainda assim é adotada. Um call site que
+        colapsasse as duas numa chamada só com contraprova fixa submeteria a data
+        determinística a uma guarda que ela não precisa, e este caso ficaria vermelho."""
+        rec = self._rec(payment_deadline=_AUSENTE,
+                        doc_text="Documento Válido para pagamento 31/12/2027")
+        self.assertEqual(rec["due_date"], "2027-12-31")
+
+    def test_com_N_pagaveis_cada_item_cruza_com_o_PROPRIO_vencimento(self):
+        """🔴 A referência é do ITEM, nunca do documento. Um carnê de parcelamento traz
+        guias a MESES de distância: julgadas contra a data da primeira, as parcelas
+        distantes — legítimas — seriam refutadas em bloco e nasceriam com o vencimento do
+        tributo, exatamente o defeito que a regra existe para matar.
+
+        Mutante que este caso trava: `doc_due_date=itens[0].get("due_date")`. Ele exige
+        parcelas ESPAÇADAS — com as três a dias uma da outra o veredito seria o mesmo e o
+        caso passaria verde com o defeito instalado (foi o que aconteceu na 1ª versão).
+        A 3ª parcela tem o ano corrompido: prova que a recusa cai no item CERTO."""
+        def _parcela(venc, limite):
+            return {"document_type": "GNRE", "amount": GNRE_773_PRINCIPAL,
+                    "barcode": GNRE_773, "due_date": venc, "payment_deadline": limite}
+
+        carne = json.dumps([
+            _parcela("2026-01-05", "2026-01-08"),      # legítima
+            _parcela("2026-12-20", "2026-12-23"),      # legítima, 352 dias após a 1ª
+            _parcela("2026-06-10", "2016-06-13"),      # ano corrompido na transcrição
+        ])
+        recs = E.build_records(Path("carne.pdf"), carne, "pdf_vision")
+        self.assertEqual([r["due_date"] for r in recs],
+                         ["2026-01-08", "2026-12-23", "2026-06-10"])
+        self.assertNotIn("refutada", recs[0]["processing_notes"] or "")
+        self.assertNotIn("refutada", recs[1]["processing_notes"] or "")
+        self.assertIn("refutada", recs[2]["processing_notes"])
+
+    def test_sem_vencimento_lido_a_data_limite_ainda_entra(self):
+        """🔴 Não há contraprova a INVENTAR. Com o modelo sem `due_date`, o `ensure_due_date`
+        põe HOJE no registro — e usar esse valor como referência faria um reprocessamento
+        histórico refutar justamente a data certa, que é a armadilha já documentada em
+        `apply_text_due_date`. Sem referência do documento, a data-limite entra: é o mesmo
+        "não há o que refutar" da guarda de valor.
+
+        Mutante que este caso trava: `doc_due_date=item.get("due_date") or hoje`. A guia
+        aqui é de 300 dias atrás — de propósito, porque uma guia RECENTE caberia no teto de
+        180 e o caso ficaria verde com o defeito instalado. Data derivada de `today()`, não
+        literal: a distância precisa continuar sendo 300 dias no ano que vem."""
+        antiga = (date.today() - timedelta(days=300)).isoformat()
+        rec = self._rec(due_date=_AUSENTE, payment_deadline=antiga)
+        self.assertEqual(rec["due_date"], antiga)
+        self.assertNotIn("refutada", rec["processing_notes"] or "")
+
+    def test_barcode_10x_NAO_sobrescreve_o_valor_e_ANOTA(self):
+        """No visual o próprio código é OCR: um dígito deslocado gravaria 10× a dívida.
+        O valor do documento é preservado e a divergência fica auditável."""
+        rec = self._rec(amount=GNRE_773_TOTAL / 10)
+        self.assertAlmostEqual(rec["amount"], GNRE_773_TOTAL / 10, places=2)
+        self.assertIn("refutada", rec["processing_notes"])
+
+    def test_a_guarda_de_OCR_e_do_caminho_VISUAL_apenas(self):
+        """Contraprova do parâmetro: no TEXTO os dígitos vêm do PDF (228/228 conferindo) e
+        a mesma divergência de 10× ainda corrige — a guarda ali custaria correções boas."""
+        rec = {"barcode": GNRE_773, "amount": GNRE_773_TOTAL / 10}
+        self.assertTrue(E.apply_arrecadacao_amount(rec))
+        self.assertAlmostEqual(rec["amount"], GNRE_773_TOTAL, places=2)
+
+    def test_prompt_declara_o_campo_payment_deadline(self):
+        """Anti-drift: sem o campo no prompt o applier recebe None para sempre e a metade
+        'vencimento' vira decoração — sem erro e sem teste vermelho em lugar nenhum."""
+        campos = re.findall(r"^- (\w+):", E.EXTRACTION_PROMPT, re.M)
+        self.assertGreater(len(campos), 10, "parser do prompt parou de casar")
+        self.assertIn("due_date", campos)              # sanidade do parser
+        self.assertIn("payment_deadline", campos)
+
+
+class VisionWiringTest(unittest.TestCase):
+    """As funções puras acima não provam que o TOPO as executa."""
+
+    _JSON_GUIA = json.dumps({
+        "document_type": "GNRE", "amount": GNRE_773_PRINCIPAL, "due_date": "2026-07-28",
+        "barcode": GNRE_773, "payment_deadline": "2026-07-31"})
+
+    def test_process_pdf_de_guia_ESCANEADA_entrega_total_e_data_limite(self):
+        with mock.patch.object(E, "_is_image_file", return_value=False), \
+                mock.patch.object(E, "is_docx", return_value=False), \
+                mock.patch.object(E, "_pdf_is_encrypted", return_value=False), \
+                mock.patch.object(E, "_payable_pages", return_value=[]), \
+                mock.patch.object(E, "is_scanned_pdf", return_value=True), \
+                mock.patch.object(E, "extract_with_vision",
+                                  return_value=(self._JSON_GUIA, "pdf_vision")):
+            recs = E.process_pdf(Path("gnre_escaneada.pdf"))
+        self.assertEqual(len(recs), 1)
+        self.assertAlmostEqual(recs[0]["amount"], GNRE_773_TOTAL, places=2)
+        self.assertEqual(recs[0]["due_date"], "2026-07-31")
+
+    def test_tier2_preserva_a_data_limite_lida_do_TEXTO(self):
+        """O tier 2 (texto sem valor → Vision) trocava a lista INTEIRA pelo resultado
+        visual, e a data-limite determinística ia junto. Aqui o modelo devolve
+        `payment_deadline` nulo de propósito: quem entrega a data é o texto."""
+        texto = ("GUIA NACIONAL DE RECOLHIMENTO - GNRE\n"
+                 "Data de Vencimento 28/07/2026\n"
+                 "Documento Válido para pagamento 31/07/2026\n"
+                 "Contribuinte: OTIMOTEX TECIDOS LTDA - inscricao estadual 1234567890\n")
+        visual = json.dumps({"document_type": "GNRE", "amount": GNRE_773_PRINCIPAL,
+                             "due_date": "2026-07-28", "barcode": GNRE_773,
+                             "payment_deadline": None})
+        with mock.patch.object(E, "is_scanned_pdf", return_value=False), \
+                mock.patch.object(E, "extract_with_pdfplumber",
+                                  return_value=(texto, "pdf_text")), \
+                mock.patch.object(E, "extract_fields_with_claude",
+                                  return_value={"document_type": "GNRE", "amount": None,
+                                                "due_date": "2026-07-28"}), \
+                mock.patch.object(E, "_try_barcode_vision", return_value=None), \
+                mock.patch.object(E, "extract_with_vision",
+                                  return_value=(visual, "pdf_vision")):
+            recs = E._extract_records(Path("gnre.pdf"))
+        self.assertEqual(recs[0]["extraction_source"], "pdf_vision")
+        self.assertEqual(recs[0]["due_date"], "2026-07-31")
 
 
 if __name__ == "__main__":
