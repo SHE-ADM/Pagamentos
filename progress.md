@@ -51,9 +51,8 @@ Procedimento completo na skill **`deploy-producao`**. Histórico de cada deploy:
 
 | Item | Estado |
 |---|---|
-| Último deploy | **2026-08-18** — senha de boleto por CNPJ completo e prefixo de 3 (`read_emails.py`, `extract_pdf.py`, `deploy-manifest.json`) |
-| ⏳ **Deploy PENDENTE** | **2026-08-19/20** — tipo `dar / dare` + roteamento de fornecedor pelo e-mail do encaminhador + **regra da guia de arrecadação no caminho Vision** (+ contraprova da data-limite, 2ª rodada de 20/08). Copiar `read_emails.py`, `extract_pdf.py`, **`febraban.py`** e `deploy-manifest.json` (manifesto regravado no repo em 20/08 após a 2ª rodada, 32/32). Migrations 132/133/134 **já aplicadas** (base compartilhada). ⚠️ `febraban.py` entrou na lista em 2026-08-20 — ele ganhou `arrecadacao_value_refuted`, e copiar só o `extract_pdf.py` faria o import falhar |
-| Paridade verificada | ✅ na aplicação do deploy, com smoke de import na própria máquina |
+| Último deploy | **2026-08-20** — tipo `dar / dare` + roteamento de fornecedor pelo e-mail do encaminhador + regra da guia de arrecadação no caminho Vision + contraprova da data-limite. Arquivos copiados: `febraban.py`, `extract_pdf.py`, `read_emails.py`, `deploy-manifest.json`. Migrations 132/133/134 **já aplicadas** (base compartilhada) |
+| Paridade verificada | ✅ **em produção** (2026-08-20) — `check_deploy_parity.py`: **32/32 conferem, 0 faltando, 0 divergentes, 0 extras**. Hash do `scheduler\deploy-manifest.json` bate byte a byte com o do repo (`A1228BEB...A40678`), então o SHA-256 por arquivo garante que o código publicado é o mesmo do commit `6b355a8` |
 | Tarefas agendadas | 5 ativas — Email Reader (5 min) · Cobrança (08:00) · Backup (02:00) · Baixa (08:00) · Gatilhos Roadmap (dia 1, 07:00) |
 
 ⏳ **Não exercitado em produção ainda:** a captura **automática** de conteúdo de CT-e a partir
