@@ -286,12 +286,17 @@ def _apply_barcode_due_date(payload: dict) -> None:
         log.exception("  [BARCODE] falha ao derivar vencimento pelo fator — mantido o extraido")
         return
     cur = str(payload.get("due_date") or "")[:10]
-    if not bc_due or cur == bc_due:
+    if not bc_due:
+        return
+    # O fator e AUTORITATIVO: o vencimento deixa de ser presumido — mesmo quando coincide com
+    # o gravado. Sem isto um lembrete posterior poderia sobrescrever a data do codigo de barras.
+    notes = _without_due_date_markers(payload.get("processing_notes"))
+    payload["processing_notes"] = notes
+    if cur == bc_due:
         return
     payload["due_date"] = bc_due
     note = f"Vencimento corrigido pelo codigo de barras (fator FEBRABAN): {cur or '—'} -> {bc_due}"
-    payload["processing_notes"] = (
-        f'{payload["processing_notes"]} | {note}' if payload.get("processing_notes") else note)
+    payload["processing_notes"] = f"{notes} | {note}" if notes else note
 
 
 def _is_boleto_barcode(barcode: str | None) -> bool:
@@ -443,14 +448,19 @@ class SupabaseControl:
         if cached is not None:
             return cached
         self._company_cnpj_cache = {}
+        self._company_legal_names_cache = set()
         if self._available:
             try:
                 req = urllib.request.Request(
-                    f"{self.base}/rest/v1/company?select=sk_company,cnpj&order=sk_company.asc",
+                    f"{self.base}/rest/v1/company"
+                    "?select=sk_company,cnpj,legal_name&order=sk_company.asc",
                     headers=self.headers,
                 )
                 with urllib.request.urlopen(req, timeout=5) as r:
                     rows = json.loads(r.read())
+                # Razao social de TODAS as linhas, ANTES do filtro de CNPJ abaixo: empresa sem
+                # CNPJ cadastrado continua sendo pagadora e nunca pode virar fornecedora.
+                self._company_legal_names_cache = _company_legal_names_from_rows(rows)
                 for row in rows or []:
                     digits = re.sub(r"\D", "", str(row.get("cnpj") or ""))
                     if not digits:
@@ -472,6 +482,16 @@ class SupabaseControl:
         exclusão "a própria pagadora nunca é fornecedor" (raiz de 8 dígitos, comum às
         filiais). None quando indisponível."""
         return self._company_cnpj_map().get(SK_COMPANY_DEFAULT)
+
+    def company_legal_names(self) -> "frozenset[str]":
+        """Razoes sociais NORMALIZADAS (`_normalize_company_name`) de TODAS as empresas
+        pagadoras — base da exclusao "a pagadora nunca e fornecedora" por NOME, complemento
+        da exclusao por raiz de CNPJ. Vazio quando indisponivel.
+
+        🔴 So a RAZAO SOCIAL, nunca o nome fantasia: "LEBIANCO" e fantasia da empresa 2 e
+        tambem nome de fornecedor legitimo — exclui-lo apagaria fornecedor real."""
+        self._company_cnpj_map()  # popula os dois caches numa unica leitura
+        return frozenset(getattr(self, "_company_legal_names_cache", None) or ())
 
     def company_cnpjs(self) -> list[str]:
         """CNPJ (só dígitos) de TODAS as empresas pagadoras, ordenado por sk_company —
@@ -906,7 +926,8 @@ class SupabaseControl:
             sval = f"{float(v):.2f}" if col == "amount" else str(v)
             return f"{col}=eq.{urllib.parse.quote(sval, safe='')}"
 
-        def _find(clauses: list, select: str = "id,due_date,barcode") -> dict | None:
+        # `processing_notes` vem junto: a reemissao retira dela a marca de vencimento presumido.
+        def _find(clauses: list, select: str = "id,due_date,barcode,processing_notes") -> dict | None:
             # Re-tenta em falha TRANSITORIA (rede/timeout): uma consulta que falha
             # e retorna None seria lida como "sem duplicata" e criaria conta
             # duplicada. Um resultado vazio (rows == []) NAO e erro — retorna None
@@ -973,7 +994,7 @@ class SupabaseControl:
         if _is_real_nosso_numero(nosso):
             m = _find([supplier_clause,
                        f"nosso_numero=eq.{urllib.parse.quote(nosso, safe='')}"],
-                      select="id,due_date,barcode,invoice_number")
+                      select="id,due_date,barcode,invoice_number,processing_notes")
             if m and not _same_title(payload.get("invoice_number"), m.get("invoice_number")):
                 log.info(
                     "    [DEDUP-1b] nosso numero igual mas Nº de documento diferente "
@@ -1140,12 +1161,15 @@ class SupabaseControl:
             log.warning(f"Falha ao ler classificacao do fornecedor {sk_supplier}: {e}")
             return (0, 0)
 
-    def update_financial(self, record_id, fields: dict) -> bool:
+    def update_financial(self, record_id, fields: dict, nullable: "tuple[str, ...]" = ()) -> bool:
         """PATCH de uma conta existente — ex.: atualizar vencimento/boleto de uma
-        guia reemitida para os dados de pagamento mais recentes. Ignora campos None."""
+        guia reemitida para os dados de pagamento mais recentes. Ignora campos None.
+
+        `nullable`: campos que DEVEM ir como null. Sem isto, limpar `processing_notes` (a
+        marca de vencimento presumido era a unica nota) seria descartado em silencio."""
         if not self._available:
             return False
-        clean = {k: v for k, v in fields.items() if v not in (None, "")}
+        clean = {k: v for k, v in fields.items() if k in nullable or v not in (None, "")}
         if not clean:
             return False
         try:
@@ -1163,6 +1187,69 @@ class SupabaseControl:
             return False
         except Exception as e:
             log.exception(f"Falha ao atualizar conta {record_id}: {e}")
+            return False
+
+    def open_accounts_for_reminder(self, sk_supplier) -> "list[dict] | None":
+        """Contas EM ABERTO (status_id 1,2,3) do fornecedor, com os campos que decidem se um
+        LEMBRETE de vencimento as corrige (`select_reminder_target`).
+
+        None em falha de rede OU teto atingido — o chamador NAO atualiza em duvida. 🔴 O
+        PostgREST corta a lista com HTTP 200; decidir "candidato unico" sobre um subconjunto
+        truncado atualizaria a conta errada sem erro nenhum. Por isso pede TETO + 1 linhas e
+        recusa a resposta que o ultrapassa."""
+        if not self._available or not sk_supplier:
+            return None
+        try:
+            req = urllib.request.Request(
+                f"{self.base}/rest/v1/financial_account_control"
+                f"?sk_supplier=eq.{int(sk_supplier)}&status_id=in.(1,2,3)"
+                "&select=id,due_date,issue_date,amount,amount_charged,processing_notes"
+                f"&order=id.asc&limit={REMINDER_CANDIDATES_LIMIT + 1}",
+                headers=self.headers,
+            )
+            with urllib.request.urlopen(req, timeout=10) as r:
+                rows = json.loads(r.read())
+        except Exception as e:
+            log.warning(f"Falha ao ler contas em aberto do fornecedor {sk_supplier} "
+                        f"para lembrete de vencimento: {e}")
+            return None
+        if not isinstance(rows, list):
+            log.warning(f"Resposta inesperada ao ler contas do fornecedor {sk_supplier}: "
+                        f"{type(rows).__name__}")
+            return None
+        if len(rows) > REMINDER_CANDIDATES_LIMIT:
+            log.warning(f"Fornecedor {sk_supplier} tem mais de {REMINDER_CANDIDATES_LIMIT} "
+                        "contas em aberto — lembrete de vencimento NAO aplicado (lista truncada)")
+            return None
+        return rows
+
+    def update_due_date_from_reminder(self, account_id, expected_due, new_due, notes) -> bool:
+        """PATCH do vencimento de UMA conta, CONDICIONADO ao estado lido na selecao: mesmo
+        `due_date` e ainda em aberto. Se a conta foi editada entre a leitura e a escrita, o
+        PATCH casa 0 linhas e nada e sobrescrito.
+
+        🔴 `return=representation` e o que prova a escrita: HTTP 200 com lista VAZIA nao e
+        sucesso (o filtro nao casou). Com `return=minimal` as duas situacoes seriam iguais."""
+        if not self._available or not account_id or not expected_due or not new_due:
+            return False
+        query = (f"?id=eq.{int(account_id)}&status_id=in.(1,2,3)"
+                 f"&due_date=eq.{urllib.parse.quote(str(expected_due)[:10])}")
+        try:
+            req = urllib.request.Request(
+                f"{self.base}/rest/v1/financial_account_control{query}",
+                data=json.dumps({"due_date": new_due, "processing_notes": notes}).encode(),
+                headers={**self.headers, "Prefer": "return=representation"},
+                method="PATCH",
+            )
+            with urllib.request.urlopen(req, timeout=10) as r:
+                rows = json.loads(r.read())
+            return isinstance(rows, list) and len(rows) == 1
+        except urllib.error.HTTPError as e:
+            log.exception(f"Falha ao atualizar vencimento da conta {account_id} por lembrete: "
+                          f"{e.code} {e.read().decode(errors='replace')[:150]}")
+            return False
+        except Exception:
+            log.exception(f"Falha ao atualizar vencimento da conta {account_id} por lembrete")
             return False
 
     def update_supplier_classification(self, sk_supplier, cost_center_id, chart_account_id) -> bool:
@@ -1546,6 +1633,60 @@ def _is_non_supplier_term(name: str | None) -> bool:
     # acronimo isolado + ruido (UF de 2 letras / numero solto): "gnre mg", "darf sp".
     core = [t for t in re.split(r"[\s/]+", n) if t and not t.isdigit() and len(t) > 2]
     return len(core) == 1 and core[0] in _NON_SUPPLIER_TERMS
+
+
+# Siglas societarias removidas do FIM da razao social antes de comparar: "Textil E
+# Confeccoes Otimotex Ltda" e "TEXTIL E CONFECCOES OTIMOTEX" sao a mesma pessoa juridica.
+# "S.A."/"S/A" viram os tokens "s" + "a" e sao tratados a parte.
+_COMPANY_NAME_SUFFIX_TOKENS = frozenset({"ltda", "me", "mei", "epp", "eireli", "sa"})
+
+
+def _normalize_company_name(name: str | None) -> str:
+    """Razao social em forma COMPARAVEL: sem acento, minuscula, pontuacao vira espaco e sem
+    sigla societaria no fim. '' quando nao sobra nada (nunca casa)."""
+    tokens = re.sub(r"[^a-z0-9]+", " ", _strip_accents_lower(str(name or ""))).split()
+    while tokens:
+        if tokens[-1] in _COMPANY_NAME_SUFFIX_TOKENS:
+            tokens.pop()
+        elif tokens[-2:] == ["s", "a"]:
+            del tokens[-2:]
+        else:
+            break
+    return " ".join(tokens)
+
+
+def _company_legal_names_from_rows(rows) -> "set[str]":
+    """Razoes sociais normalizadas das linhas de `company`; linha malformada ou vazia e ignorada."""
+    names = (_normalize_company_name(row.get("legal_name"))
+             for row in (rows or []) if isinstance(row, dict))
+    return {name for name in names if name}
+
+
+def _is_own_company_name(name: str | None, own_names) -> bool:
+    """True quando `name` e a RAZAO SOCIAL de uma empresa PAGADORA.
+
+    Igualdade EXATA do nome normalizado, nunca substring: "OTIMOTEX" sozinho, ou um
+    fornecedor cujo nome apenas CONTENHA o da pagadora, continuam validos.
+
+    Caso real (contas 1020 e 1474, Leadster): o corpo traz "Empresa: Textil E Confeccoes
+    Otimotex Ltda" — o DESTINATARIO da fatura. "empresa" e rotulo de fornecedor em
+    `_BODY_NAME_RE`, e o nome da pagadora casava por razao social o cadastro sk 4, que
+    impos a conta o plano ICMS-ST dele. O mesmo ima puxou as contas 29, 497 e 978."""
+    normalized = _normalize_company_name(name)
+    return bool(normalized) and normalized in own_names
+
+
+def _own_company_names(ctrl) -> "frozenset[str]":
+    """Razoes sociais das pagadoras via `ctrl`. Vazio para ctrl de teste/legado sem o metodo:
+    degrada para o comportamento anterior em vez de estourar no meio da gravacao."""
+    getter = getattr(ctrl, "company_legal_names", None)
+    if getter is None:
+        return frozenset()
+    try:
+        return frozenset(getter())
+    except Exception:
+        log.exception("Falha ao ler as razoes sociais das empresas pagadoras")
+        return frozenset()
 
 
 # Tipos de documento que sao IMPOSTO/tributo (guia de arrecadacao). Lista definida
@@ -2265,6 +2406,17 @@ def _finalize_supplier(ctrl: "SupabaseControl", payload: dict, body_text: str = 
     # robustez: um TIPO de documento/pagamento extraido como "fornecedor" e descartado.
     if _is_non_supplier_term(payload.get("supplier_name")):
         payload.pop("supplier_name", None)
+    # 🔴 A RAZAO SOCIAL da propria pagadora NAO e o fornecedor — espelho, por NOME, da
+    # exclusao por CNPJ logo abaixo. Vale para TODA fonte de nome deste metodo (extraido,
+    # assunto ancorado, remetente encaminhado, assunto sem ancora): um assunto como
+    # "FATURAMENTO -- TEXTIL E CONFECCOES OTIMOTEX LTDA" chegaria pela ancora de sigla. Na RPC
+    # o nome casa por razao social com LIMIT sem ORDER BY, e tres cadastros (1, 4, 404) tinham
+    # essa razao social: o fornecedor gravado dependia do plano de execucao.
+    own_names = _own_company_names(ctrl)
+    if _is_own_company_name(payload.get("supplier_name"), own_names):
+        log.info(f"    [FORNECEDOR] razao social da PAGADORA ignorada como fornecedor: "
+                 f"{payload.get('supplier_name')!r} — segue pelos demais sinais")
+        payload.pop("supplier_name", None)
     # O CNPJ da PROPRIA empresa pagadora (OTIMOTEX) NAO e o fornecedor. E-mails de
     # faturamento reencaminhados trazem o bloco do destinatario ("TEXTIL E CONF.OTIMOTEX
     # / CNPJ: 47273917/0001-23") e a extracao capturava esse CNPJ como se fosse do
@@ -2324,7 +2476,9 @@ def _finalize_supplier(ctrl: "SupabaseControl", payload: dict, body_text: str = 
     #     de sigla de razao social, preservando exatamente a ordem documentada
     #     (assunto ancorado > linha "De:" da cadeia).
     _subject_anchor = _supplier_name_by_legal_suffix(payload.get("subject"))
-    _subject_has_anchor = bool(_subject_anchor) and not _is_non_supplier_term(_subject_anchor)
+    _subject_has_anchor = (bool(_subject_anchor)
+                           and not _is_non_supplier_term(_subject_anchor)
+                           and not _is_own_company_name(_subject_anchor, own_names))
     if not has_real_supplier and (_is_tax_document(payload.get("document_type"))
                                   or not _subject_has_anchor):
         fwd_email = _forwarded_sender_email(body_text or payload.get("email_body_excerpt"))
@@ -2385,7 +2539,7 @@ def _finalize_supplier(ctrl: "SupabaseControl", payload: dict, body_text: str = 
     # gravado por extract_from_email_body).
     if not has_real_supplier:
         guessed = _supplier_from_forwarded_sender(payload.get("email_body_excerpt"))
-        if guessed:
+        if guessed and not _is_own_company_name(guessed, own_names):
             payload["supplier_name"] = guessed
             has_real_supplier = True
             log.info(f"    [FORNECEDOR-ENCAMINHADO] nome do remetente original "
@@ -2394,7 +2548,7 @@ def _finalize_supplier(ctrl: "SupabaseControl", payload: dict, body_text: str = 
     # de documento/pagamento) — fallback 2 ja tentou a ancora e esgotou.
     if not has_real_supplier:
         guessed = _supplier_name_from_subject(payload.get("subject"))
-        if guessed:
+        if guessed and not _is_own_company_name(guessed, own_names):
             payload["supplier_name"] = guessed
             log.info(f"    [FORNECEDOR-ASSUNTO] nome derivado do assunto: {guessed!r}")
     sk_supplier = ctrl.resolve_supplier(payload)  # fallback 5: e-mail do remetente (na RPC)
@@ -4063,6 +4217,19 @@ def _first_body_date(regex: "re.Pattern", body_text: str) -> "str | None":
     return _br_date_to_iso(m.group(1)) if m else None
 
 
+def _explicit_body_due_date(body_text: str, table_row: "dict | None") -> "str | None":
+    """Vencimento DECLARADO no corpo: rotulo 'Vencimento' -> 'DATA PARA PAGAMENTO' -> linha
+    da tabela de faturas. None quando o corpo nao declara data nenhuma.
+
+    Fonte UNICA da lista de fontes explicitas: `_resolve_body_dates` a usa para o valor e
+    `extract_from_email_body` para saber se o vencimento gravado e PRESUMIDO (marca
+    DUE_DATE_PRESUMED_NOTE). Duas copias da lista divergiriam — e uma fonte nova entraria na
+    data sem retirar a marca, deixando um lembrete sobrescrever vencimento lido do e-mail."""
+    return (_first_body_date(_BODY_DUE_RE, body_text)
+            or _first_body_date(_BODY_PAYDATE_RE, body_text)
+            or _row_field(table_row, "due_date"))
+
+
 def _resolve_body_dates(body_text: str, table_row: "dict | None",
                         received_at: str) -> "tuple[str | None, str]":
     """(emissao, vencimento) do corpo.
@@ -4076,9 +4243,7 @@ def _resolve_body_dates(body_text: str, table_row: "dict | None",
     issue_date = (_first_body_date(_BODY_ISSUE_RE, body_text)
                   or _row_field(table_row, "issue_date")
                   or ((received_at or "")[:10] or None))
-    due_date = (_first_body_date(_BODY_DUE_RE, body_text)
-                or _first_body_date(_BODY_PAYDATE_RE, body_text)
-                or _row_field(table_row, "due_date")
+    due_date = (_explicit_body_due_date(body_text, table_row)
                 or issue_date
                 # Regra de negocio: sem nenhuma data, usa a data da extracao (hoje).
                 or datetime.now().strftime("%Y-%m-%d"))
@@ -4214,6 +4379,9 @@ def extract_from_email_body(body_text: str, received_at: str, message_id: str,
     has_pix = bool(_BODY_PIX_RE.search(body_text))
 
     issue_date, due_date = _resolve_body_dates(body_text, table_row, received_at)
+    # Sem data declarada o vencimento e o FALLBACK (emissao/hoje): a marca e o que autoriza
+    # um lembrete do fornecedor a corrigi-lo depois (apply_due_date_reminder).
+    due_date_presumed = _explicit_body_due_date(body_text, table_row) is None
     document_type, payment_method = _resolve_body_doc_and_payment(
         body_text, subject, supplier_name, barcode, has_pix)
 
@@ -4237,6 +4405,7 @@ def extract_from_email_body(body_text: str, received_at: str, message_id: str,
         "due_date":          due_date,
         "issue_date":        issue_date,
         "invoice_number":    invoice_number,
+        "processing_notes":  DUE_DATE_PRESUMED_NOTE if due_date_presumed else None,
         # Sempre 'pendente' — a baixa/atualizacao do status e feita pelo usuario.
         "status":            "pendente",
         "extracted_at":      datetime.now(timezone.utc).isoformat(),
@@ -5668,6 +5837,12 @@ def extract_and_store_accounts(saved_pdfs: list, message_id: str,
             new_due = payload.get("due_date")
             old_due = dup.get("due_date")
             new_barcode = (payload.get("barcode") or "").strip() or None
+            # 🔴 Os dois patches abaixo gravam a data/boleto do DOCUMENTO: a marca de vencimento
+            # presumido da conta do corpo sai junto, senao um lembrete posterior moveria um
+            # vencimento lido (apply_due_date_reminder). Nota sem a marca nao e tocada.
+            dup_notes = dup.get("processing_notes")
+            unpresumed = ({"processing_notes": _without_due_date_markers(dup_notes)}
+                          if _has_presumed_due_marker(dup_notes) else {})
             # ISO 'YYYY-MM-DD' compara corretamente como string.
             if new_due and (not old_due or str(new_due) > str(old_due)):
                 ctrl.update_financial(dup["id"], {
@@ -5676,7 +5851,8 @@ def extract_and_store_accounts(saved_pdfs: list, message_id: str,
                     "amount_charged": payload.get("amount_charged"),
                     "fine_interest":  payload.get("fine_interest"),
                     "other_additions": payload.get("other_additions"),
-                })
+                    **unpresumed,
+                }, nullable=tuple(unpresumed))
                 log.info(
                     f"    [REEMISSAO] mesma guia — conta atualizada p/ vencimento "
                     f"{new_due} ({row.get('source_file')})"
@@ -5691,7 +5867,8 @@ def extract_and_store_accounts(saved_pdfs: list, message_id: str,
                     "amount_charged": payload.get("amount_charged"),
                     "fine_interest":  payload.get("fine_interest"),
                     "other_additions": payload.get("other_additions"),
-                })
+                    **unpresumed,
+                }, nullable=tuple(unpresumed))
                 log.info(
                     f"    [DUP-DOC] boleto enriquece conta existente com código de "
                     f"barras ({row.get('source_file')})"
@@ -5903,6 +6080,9 @@ def try_extract_from_body(email_rec: dict, body_text: str, received_at: str,
             row["invoice_number"] = num
             row["amount"]   = inst["amount"]
             row["due_date"] = inst["due_date"] or row.get("due_date")
+            if inst["due_date"]:
+                # A linha declara o proprio vencimento: deixa de ser presumido.
+                row["processing_notes"] = _without_due_date_markers(row.get("processing_notes"))
             if inst.get("issue_date"):
                 row["issue_date"] = inst["issue_date"]
             # Barcode POR LINHA (so a tabela de faturas o traz — a chave nem existe
@@ -5945,6 +6125,247 @@ def try_extract_from_body(email_rec: dict, body_text: str, received_at: str,
 
     email_rec["notes"] = "Falha ao gravar conta extraida do corpo do e-mail"
     return BODY_NONE
+
+
+# ---------------------------------------------------------------------------
+# Lembrete de vencimento — corrige o vencimento PRESUMIDO de uma conta existente
+# ---------------------------------------------------------------------------
+# Caso real (Leadster, contas 1020 e 1474): o e-mail da fatura NAO traz a data ("Confira a
+# data do vencimento clicando no link"), o link leva a uma pagina (nao a um PDF) e a conta
+# nascia com vencimento = emissao. A data so chega nos LEMBRETES seguintes ("Sua fatura vence
+# em 10 dias na data de 27/08/2026", "Sua fatura vence hoje"), que nao geram conta. Decisao do
+# usuario (2026-09-14): o lembrete ATUALIZA o vencimento da conta ja existente do fornecedor.
+#
+# 🔴 So conta com MARCA de vencimento presumido (ou ja confirmado por lembrete) e elegivel:
+# vencimento lido do documento (rotulo, tabela, codigo de barras) nunca e sobrescrito por um
+# e-mail de aviso. A marca e texto legivel porque `processing_notes` aparece como
+# "Observacoes" em /consulta — o operador ve que a data e presumida.
+# 🔴 Os lembretes reais NAO trazem valor: o valor filtra quando o lembrete o informa; sem ele,
+# a garantia e o candidato UNICO dentro da janela da emissao. Em duvida, nada e atualizado.
+DUE_DATE_PRESUMED_NOTE = "Vencimento presumido: o e-mail não informava a data"
+DUE_DATE_REMINDER_NOTE = "Vencimento confirmado por lembrete do fornecedor"
+_DUE_DATE_MARKERS = (DUE_DATE_PRESUMED_NOTE, DUE_DATE_REMINDER_NOTE)
+_NOTES_SEPARATOR = " | "
+
+# "vence em 10 dias na data de 27/08/2026" / "vence em 27/08/2026" / "vencera no dia ...".
+# 'venceu'/'vencido' NAO casam (a fronteira apos "vence") — atraso nao anuncia vencimento.
+_REMINDER_EXPLICIT_DUE_RE = re.compile(
+    r"\bvence(?:ra)?\s+(?:em\s+\d{1,3}\s+dias?\s+)?(?:na\s+data\s+de|no\s+dia|em)\s+"
+    r"(\d{2}/\d{2}/\d{4})\b")
+# "Sua fatura vence hoje" / "vence amanha" — ancorado no DOCUMENTO para nao casar prosa solta.
+_REMINDER_RELATIVE_DUE_RE = re.compile(
+    r"\b(?:fatura|boleto|cobranca|titulo|mensalidade)\s+vence\s+(hoje|amanha)\b")
+
+# Offset fixo de Brasilia: sem horario de verao desde 2019, e zoneinfo exigiria o pacote tzdata
+# no Windows de producao — dependencia nova sem ganho.
+_BRT = timezone(timedelta(hours=-3))
+REMINDER_MAX_DAYS_AHEAD = 60        # lembrete anuncia vencimento PROXIMO; alem disso e outro assunto
+REMINDER_MAX_DAYS_AFTER_ISSUE = 62  # a conta corrigida foi emitida no ciclo do vencimento anunciado
+REMINDER_AMOUNT_TOLERANCE = 0.01
+REMINDER_CANDIDATES_LIMIT = 200
+
+REMINDER_UPDATE = "update"
+REMINDER_ALREADY = "already"
+REMINDER_NO_MATCH = "no_match"
+REMINDER_AMBIGUOUS = "ambiguous"
+
+
+def _notes_segments(notes) -> list[str]:
+    """Segmentos de `processing_notes` (o pipeline os concatena com ' | ')."""
+    return [seg.strip() for seg in str(notes or "").split(_NOTES_SEPARATOR) if seg.strip()]
+
+
+def _has_presumed_due_marker(notes) -> bool:
+    """True quando as notas marcam o vencimento como PRESUMIDO (ainda nao confirmado)."""
+    return any(seg.startswith(DUE_DATE_PRESUMED_NOTE) for seg in _notes_segments(notes))
+
+
+def _without_due_date_markers(notes) -> "str | None":
+    """Notas sem os segmentos de marca de vencimento; None quando nao sobra nada."""
+    kept = [seg for seg in _notes_segments(notes) if not seg.startswith(_DUE_DATE_MARKERS)]
+    return _NOTES_SEPARATOR.join(kept) or None
+
+
+def _notes_with_reminder_marker(notes, new_due_iso: str) -> str:
+    """Troca a marca de vencimento pela de confirmacao por lembrete, preservando as demais notas.
+    A marca de confirmacao so reconhece lembretes REPETIDOS da mesma data — nao autoriza nova
+    mudanca (ver `select_reminder_target`); data renegociada depois disso e ajuste manual."""
+    new_due_br = datetime.strptime(new_due_iso, "%Y-%m-%d").strftime("%d/%m/%Y")
+    kept = _without_due_date_markers(notes)
+    note = f"{DUE_DATE_REMINDER_NOTE}: {new_due_br}"
+    return f"{kept}{_NOTES_SEPARATOR}{note}" if kept else note
+
+
+def _iso_to_date(value):
+    """'AAAA-MM-DD[...]' -> date; None quando ausente ou invalido."""
+    try:
+        return datetime.strptime(str(value or "")[:10], "%Y-%m-%d").date()
+    except ValueError:
+        return None
+
+
+def _received_date_brt(received_at):
+    """Dia de CHEGADA do e-mail em Brasilia (received_at e ISO; sem fuso = UTC, como grava
+    `_received_at_from`). None quando invalido."""
+    try:
+        dt = datetime.fromisoformat(str(received_at or ""))
+    except ValueError:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(_BRT).date()
+
+
+def parse_due_date_reminder(subject: str | None, body_text: str | None,
+                            received_at: str | None) -> "str | None":
+    """Vencimento ANUNCIADO por um lembrete, em ISO; None quando o e-mail nao anuncia um.
+
+    Confirmacao de pagamento nunca e lembrete. Data relativa ('hoje'/'amanha') usa o dia de
+    chegada em Brasilia — um e-mail das 22h30 de 26/08 (01h30 UTC de 27/08) que diz "vence
+    hoje" fala de 26/08. Data fora de [chegada, chegada + REMINDER_MAX_DAYS_AHEAD] e recusada:
+    lembrete anuncia vencimento FUTURO; data passada ou distante e leitura errada ou outro
+    assunto, e atualizar com ela moveria o vencimento para uma data sem sentido."""
+    text = _strip_accents_lower(f"{subject or ''}\n{body_text or ''}")
+    if not text.strip():
+        return None
+    if subject_is_payment_confirmation(subject or "") or _BODY_RECEIPT_RE.search(body_text or ""):
+        return None
+    received = _received_date_brt(received_at)
+    if received is None:
+        return None
+    explicit = _REMINDER_EXPLICIT_DUE_RE.search(text)
+    if explicit:
+        due = _iso_to_date(_br_date_to_iso(explicit.group(1)))
+        if due is None:
+            return None
+    else:
+        relative = _REMINDER_RELATIVE_DUE_RE.search(text)
+        if not relative:
+            return None
+        due = received + timedelta(days=0 if relative.group(1) == "hoje" else 1)
+    if not received <= due <= received + timedelta(days=REMINDER_MAX_DAYS_AHEAD):
+        log.info(f"    [LEMBRETE] vencimento anunciado {due.isoformat()} fora da janela "
+                 f"plausivel a partir de {received.isoformat()} — ignorado")
+        return None
+    return due.isoformat()
+
+
+def _reminder_amount_matches(candidate: dict, amount) -> bool:
+    """O valor do lembrete bate o cobrado OU o valor do documento (tolerancia de 1 centavo)."""
+    for key in ("amount_charged", "amount"):
+        try:
+            if abs(float(candidate.get(key)) - float(amount)) <= REMINDER_AMOUNT_TOLERANCE:
+                return True
+        except (TypeError, ValueError):
+            continue
+    return False
+
+
+def _is_reminder_eligible(cand, new_due_d, amount) -> bool:
+    """A conta PODE ser a do lembrete: a emissao cabe na janela do vencimento anunciado e, quando o
+    lembrete traz valor, o valor bate.
+
+    🔴 NAO exige marca, de proposito: uma conta com data LIDA do documento que ja vence na data
+    anunciada e a prova de que o lembrete fala DELA (ALREADY) — e e isso que impede a data de ser
+    aplicada a OUTRA conta, presumida, do mesmo fornecedor. Quem pode ser MOVIDA e decidido depois,
+    em `select_reminder_target` (so a presumida)."""
+    if not isinstance(cand, dict):
+        return False
+    issue = _iso_to_date(cand.get("issue_date"))
+    window = timedelta(days=REMINDER_MAX_DAYS_AFTER_ISSUE)
+    if issue is None or not issue <= new_due_d <= issue + window:
+        return False
+    return amount is None or _reminder_amount_matches(cand, amount)
+
+
+def select_reminder_target(candidates, new_due: str, amount=None) -> "tuple[str, dict | None]":
+    """Decide QUAL conta um lembrete corrige. Funcao pura.
+
+    Elegivel = conta em aberto com emissao <= vencimento anunciado <= emissao +
+    REMINDER_MAX_DAYS_AFTER_ISSUE e mesmo valor, quando o lembrete o traz — com OU sem marca.
+
+      ALREADY   — alguma elegivel ja vence na data anunciada: lembrete REPETIDO da mesma fatura
+                  ("vence em 5 dias", "amanha", "hoje") ou conta de data LIDA do documento
+      UPDATE    — exatamente UMA elegivel com data PRESUMIDA (a confirmada nunca e movida)
+      NO_MATCH  — nenhuma presumida
+      AMBIGUOUS — mais de uma presumida: NAO adivinha, porque atualizar a conta errada moveria
+                  um vencimento sem erro nenhum"""
+    new_due_d = _iso_to_date(new_due)
+    if new_due_d is None:
+        return (REMINDER_NO_MATCH, None)
+    eligible = [c for c in (candidates or []) if _is_reminder_eligible(c, new_due_d, amount)]
+    already = next((c for c in eligible if _iso_to_date(c.get("due_date")) == new_due_d), None)
+    if already is not None:
+        return (REMINDER_ALREADY, already)
+    # 🔴 So a data PRESUMIDA e corrigida. A ja confirmada por lembrete serve apenas para
+    # reconhecer o lembrete REPETIDO (acima): com a fatura seguinte ainda sem conta e a anterior
+    # em aberto, o lembrete novo casaria a anterior como candidata unica e moveria um vencimento
+    # JA CONFIRMADO para a data da OUTRA fatura, sem erro nenhum.
+    presumed = [c for c in eligible if _has_presumed_due_marker(c.get("processing_notes"))]
+    if len(presumed) == 1:
+        return (REMINDER_UPDATE, presumed[0])
+    return (REMINDER_AMBIGUOUS if presumed else REMINDER_NO_MATCH, None)
+
+
+def apply_due_date_reminder(ctrl, email_rec: dict, subject: str | None, body_text: str | None,
+                            sender_email: str | None, received_at: str | None) -> "int | None":
+    """Aplica um LEMBRETE DE VENCIMENTO a conta existente do fornecedor. Retorna o id da conta
+    atualizada, ou None quando nada foi atualizado.
+
+    🔴 NUNCA cria conta e NUNCA cria fornecedor: o remetente e resolvido por
+    `find_supplier_by_email` (consulta pura, migration 134 — e-mail interno e de plataforma ja
+    barrados na RPC). Trocar por `resolve_supplier` compilaria e faria todo remetente de aviso
+    virar fornecedor pelo auto-insert.
+    🔴 Nao-fatal: e uma correcao de dado JA gravado; uma falha aqui nao pode derrubar o
+    processamento do e-mail. A falha e logada com traceback, nunca engolida."""
+    try:
+        new_due = parse_due_date_reminder(subject, body_text, received_at)
+        if not new_due:
+            return None
+        lookup = getattr(ctrl, "find_supplier_by_email", None)
+        sk_supplier = lookup(sender_email) if (lookup and sender_email) else None
+        if not sk_supplier:
+            log.info(f"    [LEMBRETE] vencimento {new_due} anunciado, mas o remetente "
+                     f"{sender_email!r} nao identifica fornecedor cadastrado — nada a atualizar")
+            return None
+        reader = getattr(ctrl, "open_accounts_for_reminder", None)
+        candidates = reader(sk_supplier) if reader else None
+        if candidates is None:
+            return None
+        amount = _extract_body_amount(body_text or "") or None
+        action, target = select_reminder_target(candidates, new_due, amount)
+        # 🔴 ALREADY sobre conta PRESUMIDA nao e "nada a fazer": a data nao muda, mas passa a
+        # CONFIRMADA (segue para a escrita abaixo). Sem isto a marca continuaria presumido e o
+        # lembrete de OUTRA fatura moveria a data ja anunciada (conta 1474, migration 136).
+        if (action == REMINDER_ALREADY
+                and not _has_presumed_due_marker(target.get("processing_notes"))):
+            log.info(f"    [LEMBRETE] conta {target.get('id')} ja vence em {new_due} — nada a fazer")
+            return None
+        if action == REMINDER_AMBIGUOUS:
+            log.warning(f"    [LEMBRETE] mais de uma conta do fornecedor sk={sk_supplier} pode "
+                        f"vencer em {new_due} — nenhuma atualizada (revisar manualmente)")
+            return None
+        if action not in (REMINDER_UPDATE, REMINDER_ALREADY):
+            log.info(f"    [LEMBRETE] nenhuma conta com vencimento presumido do fornecedor "
+                     f"sk={sk_supplier} corresponde a {new_due}")
+            return None
+        account_id, old_due = target.get("id"), target.get("due_date")
+        notes = _notes_with_reminder_marker(target.get("processing_notes"), new_due)
+        if not ctrl.update_due_date_from_reminder(account_id, old_due, new_due, notes):
+            log.warning(f"    [LEMBRETE] conta {account_id} NAO atualizada — editada entre a "
+                        "leitura e a escrita, ou falha de gravacao")
+            return None
+        verb = "confirmado" if action == REMINDER_ALREADY else "atualizado"
+        note = f"Vencimento da conta {account_id} {verb} por lembrete: {old_due} -> {new_due}"
+        log.info(f"    [LEMBRETE] {note}")
+        email_rec["notes"] = (f"{email_rec['notes']}{_NOTES_SEPARATOR}{note}"
+                              if email_rec.get("notes") else note)
+        return account_id
+    except Exception:
+        log.exception("    [LEMBRETE] falha ao aplicar lembrete de vencimento — "
+                      "o e-mail segue o fluxo normal")
+        return None
+
 
 # ---------------------------------------------------------------------------
 # Processar um e-mail
@@ -6280,6 +6701,14 @@ def process_message(mail, uid: bytes, keywords: list,
                 rec["notes"]         = "Conta extraída do corpo do e-mail"
         body_created = body_outcome == BODY_CREATED
 
+        # LEMBRETE DE VENCIMENTO: e-mail que NAO gerou conta (nem casou uma por dedup) pode
+        # anunciar a data de uma conta ja registrada com vencimento PRESUMIDO. Nao-fatal; nunca
+        # cria conta nem fornecedor. Aplicado, o e-mail cumpriu seu papel e nao vai a /erros.
+        reminder_applied = False
+        if not attachment_account and body_outcome not in (BODY_CREATED, BODY_DUPLICATE):
+            reminder_applied = apply_due_date_reminder(
+                ctrl, rec, subject, body_text, sender_email, received_at) is not None
+
         # Status (CHECK migration 022): conta do PDF > conta do corpo > duplicata >
         # anexo sem conta. A conta vinda do corpo (body_created) prevalece sobre o
         # anexo que nao gerou CSV; uma duplicata do corpo (pagavel ja registrado
@@ -6291,6 +6720,7 @@ def process_message(mail, uid: bytes, keywords: list,
             # assunto de aviso, entram aqui: remetente de subdominio descartavel
             # (phishing que IMITA cobranca) e e-mail sem nada de onde extrair.
             notification=(subject_is_ignorable_notification(subject)
+                          or reminder_applied
                           or is_disposable_sender(sender_email)
                           or email_sem_conteudo_extraivel(has_att, pdf_links, body_text)),
             duplicate=(body_outcome == BODY_DUPLICATE

@@ -287,6 +287,24 @@ class TestTryExtractFromBodyMultiFatura(unittest.TestCase):
         self.assertEqual(pagas[0]["barcode"], MOVVI_BARCODE)
         self.assertIsNone(pagas[1]["barcode"], "sem boleto próprio, o campo fica vazio")
 
+    def test_parcela_com_vencimento_proprio_perde_a_marca_de_presumido(self):
+        # O corpo OBER nao tem rotulo de vencimento que o extrator alcance: o payload BASE nasce
+        # com a marca de vencimento presumido. Cada PARCELA declara a propria data, entao o
+        # clone nao pode herdar a marca — senao um lembrete sobrescreveria um vencimento lido.
+        base = read_emails.extract_from_email_body(
+            OBER_BODY, "2026-07-25T10:00:00+00:00", "<ober-base>", "cobranca@ober.com.br",
+            subject="OBER")
+        # Anti-vacuidade: sem a marca no base, o teste abaixo passaria sem exercitar o laço.
+        self.assertEqual(base["processing_notes"], read_emails.DUE_DATE_PRESUMED_NOTE)
+
+        outcome, pagas = self._run(OBER_BODY)
+
+        self.assertEqual(outcome, read_emails.BODY_CREATED)
+        self.assertEqual(len(pagas), 3)
+        for conta in pagas:
+            self.assertFalse(read_emails._has_presumed_due_marker(conta.get("processing_notes")),
+                             f"parcela {conta['invoice_number']} herdou a marca de presumido")
+
     def test_parcelas_ober_nao_perdem_o_barcode_do_payload_base(self):
         # O layout de PARCELAS não traz a chave 'barcode' nas linhas — os clones devem
         # manter o do payload base (a guarda `in inst` existe justamente para isso).

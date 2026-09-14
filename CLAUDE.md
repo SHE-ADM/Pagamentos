@@ -809,6 +809,13 @@ mesmo que o texto diga "pagamento realizado".
 lendo o `Assunto:` original do bloco encaminhado. **`lembrete` encaminhado NÃO é barrado** — pode
 ser a única fonte de uma fatura; reenvios repetidos são suprimidos pela dedup, não por este guard.
 
+🔴 **LEMBRETE DE VENCIMENTO corrige só data PRESUMIDA** (`apply_due_date_reminder`). Fatura sem
+data nasce com a marca `DUE_DATE_PRESUMED_NOTE` ("Observações"); o lembrete que não gerou conta
+atualiza **uma única** conta marcada do fornecedor achado por `find_supplier_by_email` (nunca
+`resolve_supplier`). Vencimento lido de rótulo/tabela/barcode **nunca** é sobrescrito — parcela
+com data, o fator do barcode e a **reemissão por dedup** retiram a marca; lembrete que **repete** a
+data presumida a CONFIRMA, e confirmada nunca é movida. Dois candidatos ⇒ nada muda.
+
 🔴 **`status_for_result`: CONTA GRAVADA ⇒ STATUS QUE DECLARA CONTA.** Nenhum sinal que descreve o
 **anexo** pode ser avaliado antes dos dois sinais de conta. `body_created` estava abaixo de
 `nonpayable` e escondeu **13 e-mails / ~R$ 80 mil** atrás do card "Ignorados". A guarda é o
@@ -821,8 +828,11 @@ cobrança.
 
 🔴 **Resolução de fornecedor:** CNPJ → CPF → nome → e-mail → auto-insert. **Identificador forte que
 não casou ⇒ fornecedor NOVO** (o e-mail de uma **plataforma** atribuía a conta ao primeiro que
-casasse). O CNPJ da própria pagadora nunca é fornecedor (raiz de 8 dígitos). Tipo de documento
-nunca vira fornecedor.
+casasse). O CNPJ da própria pagadora nunca é fornecedor (raiz de 8 dígitos) — **nem a RAZÃO
+SOCIAL dela** (`_is_own_company_name`, só razão social e igualdade exata normalizada): "Empresa:
+Têxtil…Otimotex Ltda" no corpo da Leadster casava o sk 4 e impunha ICMS-ST (136). 🔴 **Só o sk 1
+pode ter a razão social de uma pagadora** (137): o fallback 6 a envia à RPC de propósito, e um 2º
+cadastro assim deixa o passo por nome não-determinístico. Tipo de documento nunca vira fornecedor.
 
 🔴 **O E-MAIL do remetente ORIGINAL encaminhado SÓ IDENTIFICA, NUNCA CRIA** (fallback 1b,
 migration 134). Ele diz quem **MANDOU** o documento, não quem **RECEBE** o pagamento — trocar

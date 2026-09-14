@@ -12,10 +12,11 @@ boleto id 159 (venc. 18/07 pelo fator do codigo de barras).
 o boleto casa por dedup; `process_message` so roda o corpo quando ele e False.
 """
 
+import json
 import sys
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 _SCRIPTS_DIR = Path(__file__).resolve().parents[1] / "skills" / "email-reader" / "scripts"
 sys.path.insert(0, str(_SCRIPTS_DIR))
@@ -40,6 +41,7 @@ class FakeControl:
         self.attachment_calls = []
         self.error_calls = []
         self.update_calls = []
+        self.update_nullable = []
         self._dup = dup
 
     def upload_attachment(self, pdf_path):
@@ -76,8 +78,9 @@ class FakeControl:
     def supplier_defaults(self, sk_supplier):
         return (0, 0)
 
-    def update_financial(self, dup_id, patch):
+    def update_financial(self, dup_id, patch, nullable=()):
         self.update_calls.append((dup_id, patch))
+        self.update_nullable.append(tuple(nullable))
         return True
 
 
@@ -156,7 +159,31 @@ class BoletoDedupSuppressesBodyTest(unittest.TestCase):
         dup_id, patch = ctrl.update_calls[0]
         self.assertEqual(dup_id, 159)
         self.assertEqual(patch.get("barcode"), BOLETO_OBER)
+        self.assertNotIn("processing_notes", patch, "nota sem marca de presumido não é tocada")
         self.assertEqual(ctrl.attachment_calls, [(159, "boleto_ober.pdf")])
+
+    def test_reemissao_em_conta_presumida_retira_a_marca(self):
+        # Conta do CORPO com vencimento PRESUMIDO: o boleto traz a data do documento. A marca tem
+        # de sair, senão um lembrete posterior moveria um vencimento lido (apply_due_date_reminder).
+        notas = f"{read_emails.DUE_DATE_PRESUMED_NOTE} | Outra nota"
+        ctrl = FakeControl(dup={"id": 159, "due_date": "2026-07-01", "processing_notes": notas})
+        _run(ctrl, _boleto_row())
+        (dup_id, campos), = ctrl.update_calls
+        self.assertEqual((dup_id, campos["due_date"]), (159, "2026-07-18"))
+        self.assertEqual(campos["processing_notes"], "Outra nota")
+        # Mesmo call site da marca que vira None: o campo vai declarado anulável.
+        self.assertEqual(ctrl.update_nullable, [("processing_notes",)])
+
+    def test_boleto_que_enriquece_conta_presumida_retira_a_marca(self):
+        ctrl = FakeControl(dup={"id": 159, "due_date": "2026-07-18", "barcode": None,
+                                "processing_notes": read_emails.DUE_DATE_PRESUMED_NOTE})
+        _run(ctrl, _boleto_row())
+        (dup_id, campos), = ctrl.update_calls
+        self.assertEqual((dup_id, campos.get("barcode")), (159, BOLETO_OBER))
+        self.assertIsNone(campos["processing_notes"])
+        # 🔴 O None só chega ao banco se declarado anulável — update_financial DESCARTA None
+        # (ver test_update_financial_envia_null_so_para_campo_anulavel, que executa o filtro real).
+        self.assertEqual(ctrl.update_nullable, [("processing_notes",)])
 
     def test_boleto_nao_reescreve_barcode_de_conta_existente(self):
         # dup já COM barcode e vencimento igual → nada a fazer (não sobrescreve
@@ -181,6 +208,39 @@ class BoletoDedupSuppressesBodyTest(unittest.TestCase):
         _csvs, accounts_saved, _nonpayable, attachment_account = _run(ctrl, _nfe_row())
         self.assertEqual(accounts_saved, 0)
         self.assertFalse(attachment_account)
+
+
+class DedupSelectTrazAsNotasTest(unittest.TestCase):
+    """🔴 Sem `processing_notes` no SELECT da dedup, a conta devolvida nunca traz a marca de
+    vencimento presumido e a retirada acima fica INERTE em produção — o FakeControl não o vê."""
+
+    def test_toda_consulta_da_dedup_seleciona_processing_notes(self):
+        ctrl = read_emails.SupabaseControl.__new__(read_emails.SupabaseControl)
+        ctrl.base, ctrl.headers, ctrl._available = "https://x", {}, True
+        resposta = MagicMock()
+        resposta.read.return_value = b"[]"
+        cm = MagicMock()
+        cm.__enter__.return_value = resposta
+        payload = {"barcode": BOLETO_OBER, "sk_supplier": 249, "nosso_numero": "25361496",
+                   "amount": "5576.66", "due_date": "2026-07-18"}
+        with patch.object(read_emails.urllib.request, "urlopen", return_value=cm) as m:
+            self.assertIsNone(read_emails.SupabaseControl.find_financial_duplicate(ctrl, payload))
+        urls = [c.args[0].full_url for c in m.call_args_list]
+        # Sanidade: barcode, nosso número e valor+vencimento — as três consultas exercitadas.
+        self.assertEqual(len(urls), 3, urls)
+        for url in urls:
+            self.assertRegex(url, r"select=[^&]*processing_notes")
+
+    def test_update_financial_envia_null_so_para_campo_anulavel(self):
+        # A marca que era a ÚNICA nota vira None; sem `nullable` o filtro real a descartaria e
+        # o PATCH sairia sem processing_notes — a marca ficaria na conta, sem erro nenhum.
+        ctrl = read_emails.SupabaseControl.__new__(read_emails.SupabaseControl)
+        ctrl.base, ctrl.headers, ctrl._available = "https://x", {}, True
+        with patch.object(read_emails.urllib.request, "urlopen") as m:
+            self.assertTrue(read_emails.SupabaseControl.update_financial(
+                ctrl, 159, {"barcode": None, "processing_notes": None},
+                nullable=("processing_notes",)))
+        self.assertEqual(json.loads(m.call_args.args[0].data), {"processing_notes": None})
 
 
 if __name__ == "__main__":

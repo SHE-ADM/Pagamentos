@@ -84,6 +84,32 @@ plausível): um `amount` mal lido ainda tem fator bom, e vice-versa. Isto é pro
 duplicata**: código corrompido não casa o boleto real na 2ª via, e nasce conta duplicada. Medido:
 18 corrompidos, **100% `pdf_vision`**. Releitura **não** recupera — não tente reconstruir dígitos.
 
+## Lembrete de vencimento — corrige a data PRESUMIDA (`apply_due_date_reminder`)
+
+Fatura cujo e-mail não traz data nasce com vencimento = emissão **e** com a marca
+`DUE_DATE_PRESUMED_NOTE` em `processing_notes` (a coluna "Observações" de `/consulta`). Um lembrete
+posterior que **não gerou conta** ("vence em N dias na data de DD/MM/AAAA", "vence hoje/amanhã")
+corrige o vencimento — decisão do usuário em 2026-09-14 (caso Leadster).
+
+- 🔴 **Só conta com a marca PRESUMIDA é movida** — vencimento lido de rótulo, tabela ou código de
+  barras nunca é sobrescrito por um aviso; e a conta de data lida que **já vence** na data anunciada
+  absorve o lembrete (a data não muda), para ela não cair numa presumida vizinha. Se a conta que já
+  vence ainda é **presumida**, o lembrete a CONFIRMA (troca a marca, mantém a data) — senão o
+  lembrete da fatura seguinte a moveria. `_explicit_body_due_date` é a fonte única das fontes
+  explícitas; parcela com data própria, `_apply_barcode_due_date` e a **dedup do anexo** (reemissão
+  ou boleto que enriquece) **retiram** a marca — nesta, via `update_financial(..., nullable=...)`,
+  porque a marca que era a única nota vira `None` e o filtro de `None` a descartaria.
+- 🔴 **Fornecedor por `find_supplier_by_email` (consulta pura)**, nunca `resolve_supplier`, que cria
+  cadastro pelo auto-insert.
+- 🔴 **Candidato ÚNICO** na janela da emissão (+62 dias). Os lembretes reais **não trazem valor**:
+  o valor só filtra quando aparece. Dois elegíveis ⇒ nada muda. 🔴 **Data já CONFIRMADA por
+  lembrete nunca é movida** — só reconhece o lembrete repetido; senão o lembrete da fatura
+  seguinte (ainda sem conta) moveria a anterior em aberto. O PATCH é condicionado ao
+  `due_date` lido, com `return=representation`; lista acima do teto ⇒ não decide.
+- ⚠️ Assunto com `lembrete` é ignorado **antes** do download (decisão anterior) e não passa aqui.
+- ⚠️ Entre a fatura e o 1º lembrete a conta tem vencimento = emissão, e o batch diário a marca
+  `vencido` nesse intervalo.
+
 ## Deduplicação — 4 impressões, nesta ordem
 
 Todas escopadas por `sk_supplier` (resolvido **antes** da dedup), nunca por texto de fornecedor.
@@ -116,6 +142,17 @@ auto-insert.
   transportadoras) atribuía a conta ao primeiro fornecedor que casasse.
 - 🔴 **O CNPJ da própria empresa pagadora nunca é o fornecedor** — comparação pela **raiz de 8
   dígitos** (filiais compartilham a raiz).
+- 🔴 **A RAZÃO SOCIAL da própria pagadora também não** (`_is_own_company_name`, em
+  `_finalize_supplier`) — vale para o nome extraído **e** para os derivados (âncora de sigla do
+  assunto, remetente encaminhado, assunto sem âncora). Caso: "Empresa: Têxtil E Confecções
+  Otimotex Ltda" no corpo da Leadster casava o sk 4 e impunha o plano ICMS-ST (contas 1020/1474,
+  migration 136). **Só razão social, nunca fantasia** ("LEBIANCO" é fantasia da empresa 2 e
+  fornecedor legítimo) e **igualdade exata normalizada** — "Confirmação de Títulos TEXTIL … LTDA"
+  não é pego, de propósito.
+- 🔴 **Só o sk 1 (OTIMOTEX) pode ter a razão social de uma pagadora** (a migration 137 limpou o
+  404). A guarda acima não cobre o fallback 6 (`_resolve_supplier_by_payer`), que manda o nome da
+  pagadora à RPC **de propósito**; com dois cadastros assim, o passo por nome (`LIMIT` sem
+  `ORDER BY`) escolhe qualquer um.
 - 🔴 **Tipo de documento ou forma de pagamento nunca vira fornecedor** — "GUIA GNRE" não pode
   criar o fornecedor "GNRE".
 - **Fallback quando nada foi extraído:** assunto ancorado em sigla societária → remetente ORIGINAL
