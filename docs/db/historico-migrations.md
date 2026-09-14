@@ -16,6 +16,38 @@
 
 ## Changelog (mais recente primeiro)
 
+**A `137` tira a RAZÃO SOCIAL da pagadora do cadastro `sk_supplier = 404` (CDI)** — sem DDL,
+aplicada via psql em 2026-09-14. O 404 é uma **filial da própria OTIMOTEX** (CNPJ
+`47273917000395`, mesma raiz) cadastrada como fornecedor, com `legal_name` = razão social da
+pagadora. 🔴 **Corrige a afirmação da entrada da 136** ("a guarda Python impede que o nome chegue à
+RPC"): a guarda cobre os fallbacks de nome de `_finalize_supplier`, mas o **fallback 6**
+(`_resolve_supplier_by_payer`) envia o nome da pagadora **de propósito**, para cair no sk 1. Com
+dois cadastros com essa razão social, o passo por nome da RPC (`LIMIT` sem `ORDER BY`) podia
+escolher o 404, que impunha a classificação 21/200 e ainda recebia CNPJ/CPF por `_enrich_supplier`.
+Efeito: só `legal_name` do 404 vira NULL. Fantasia "CDI", CNPJ, classificação e a conta dele
+continuam iguais. Trava pelo fantasia e pelo CNPJ. A sonda usa a **mesma normalização da RPC**:
+P0 exige que o sk 1 case (sanidade), P1 exige que **nenhum outro** cadastro case a razão social
+de uma pagadora (antes `{1,404}`, depois `{1}`). Ensaiada duas vezes em `ROLLBACK` (`UPDATE 1`,
+depois `UPDATE 0`); o mutante sem o UPDATE abortou em P1 com `{1,404}`. ⚠️ Um ímã novo cadastrado
+depois disto faz a **reexecução** abortar em P1, de propósito.
+
+**A `136` corrige as contas atraídas pelo cadastro `sk_supplier = 4` pela RAZÃO SOCIAL da
+pagadora** — sem DDL, aplicada via psql em 2026-09-14. O corpo da fatura Leadster traz "Empresa:
+Têxtil E Confecções Otimotex Ltda" (o **destinatário**); `empresa` é rótulo de fornecedor no
+extrator do corpo, e o nome casava por razão social o sk 4, cuja `legal_name` era a da pagadora. A
+conta herdava o plano ICMS-ST dele, e o write-back de contato gravava ali o e-mail e o WhatsApp do
+fornecedor real — que passavam a **sequestrar as faturas seguintes** pela busca por e-mail. Move
+1474 → 1369 Leadster (forma `boleto`; vencimento 27/09 **inferido** do ciclo e mantido com a marca
+de presumido, para o lembrete confirmar), 497 → 154 Cipatex, 978 → 1182 ESPRO, 29 → cadastro novo
+do 1º Tabelião, e **cancela a 337** (recebível, não conta a pagar). Desmonta o ímã: `legal_name` do
+sk 4 volta a `LEBIANCO` e saem os contatos alheios — os de dono conhecido vão para ele, só onde o
+campo de destino está vazio. 🔴 **A classificação vem do cadastro de destino, não de literal.**
+Travas `DO $$` abortam se os cadastros não forem os medidos; a sonda final usa o **oráculo do
+defeito**: `find_supplier_by_email('financeiro@leadster.com.br')` tem de devolver 1369 (antes
+devolvia 4). Ensaiada em `ROLLBACK`; reaplicada, tudo `0`. A regra que impede a reincidência vive
+no Python (`_is_own_company_name`, `apply_due_date_reminder`). ⚠️ O cadastro **404 (CDI)** também
+tem a razão social da pagadora e ficou como está — a guarda Python impede que o nome chegue à RPC.
+
 **A `135` faz o backfill da 4ª empresa pagadora, LE BLANC (`sk_company = 4`, CNPJ
 `20584679000110`)** — sem DDL (a linha em `company` foi cadastrada pelo usuário; o trigger da 084
 respeita valor explícito, então o valor gruda). Move para 4 toda conta com menção a LE BLANC em

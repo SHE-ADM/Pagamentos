@@ -88,6 +88,7 @@ próxima fatura agregada (são semanais). Conferir com
 | 8 guias JUCE antigas sem texto extraível | **não reclassificadas** | são escaneadas/`.docx` e já estão pagas; provar o acrônimo exigiria leitura por Vision (custo de API). As legíveis foram conferidas e **nenhuma era DAR/DARE** |
 | Empresa pagadora LE BLANC (`sk_company = 4`) | ✅ **pipeline em produção (2026-09-11)** · chat de IA aguardando PR | migration 135 aplicada; falta o `tools.ts`/`gateway.ts` (filtro pela empresa 4) ir ao Vercel via PR para `main`. Detalhe em [docs/knowledge/pipeline-extracao.md](docs/knowledge/pipeline-extracao.md) |
 | TanStack Query em `Consulta`/`Emails` | **rollout pendente** | padrão já aplicado em `SuppliersPage` |
+| Fornecedor = razão social da pagadora + lembrete de vencimento (Leadster, 2026-09-14) | **código pronto, deploy pendente** · dados ✅ (migrations 136 e 137 aplicadas) | copiar `read_emails.py` + `deploy-manifest.json` para produção (skill `deploy-producao`). Residuais aceitos: assunto com texto ANTES da razão social ("Confirmação de Títulos TEXTIL…", conta 160) não é pego pela guarda exata; entre a fatura sem data e o 1º lembrete a conta aparece `vencido`. Detalhe em [docs/knowledge/pipeline-extracao.md](docs/knowledge/pipeline-extracao.md) |
 | CABERNET 0107-1507 (`email_control` 888) | **irrecuperável, sem perda** | fora da INBOX e sem anexo no Storage — não há o que reprocessar. A quinzena está coberta pela conta **574** (venc. 22/07, paga), do e-mail 893 que trouxe o mesmo boleto 1h23 depois. O erro 257 fica como histórico |
 
 ---

@@ -26,7 +26,7 @@
     "skills/cobranca-vencidos/scripts/send_core.py": "ca12c207d77622677c2648ee5b5068fdf5c09ebc39ff22af29ef2189e0f553ef",
     "skills/cobranca-vencidos/scripts/supabase_log.py": "19622099b704f88d139f493c6a6a2f7a2de285fcb9477acbed9d26d8284d6374",
     "skills/cobranca-vencidos/scripts/template.py": "ed0a2b31faf914fa3bfd855d958452efb3d4cfee64445afef196e1d4d8dbce38",
-    "skills/email-reader/scripts/read_emails.py": "49ef2d29ac48ef0352ef551b12c7d1d16eb98b16a600d8a8266ef7fc6957f4f3",
+    "skills/email-reader/scripts/read_emails.py": "b1540e8a1342b8bda266fcb06a4290d68c464b2375183b768b90d423f03e1320",
     "skills/pdf-contas-pagar/scripts/cte_content.py": "1877e67b3009552785430b4230cc799ce2632f78764d1c24adacde97377aec29",
     "skills/pdf-contas-pagar/scripts/docx_content.py": "21fc2a5dd2d787788bd0c6a56c71e6506aaa5ddb93110eeb96d2c7b456ef0cb4",
     "skills/pdf-contas-pagar/scripts/extract_pdf.py": "b73263d7739814b2405371313634f039784d31c6eedc5c5bfcae7efe8264c621",

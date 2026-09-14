@@ -915,6 +915,38 @@ ou seja, a guarda só deixa de criar cadastro-lixo. Testes:
 > Vision). As três sobrepõem o fornecedor **extraído**, antes de `_finalize_supplier`; os fallbacks
 > desta seção só entram quando nada foi extraído.
 
+**A RAZÃO SOCIAL da própria pagadora nunca é o fornecedor (não regredir — contas 1020 e 1474,
+2026-09-14):** o e-mail "Leadster | Aqui está sua fatura" traz no corpo `Empresa: Têxtil E
+Confecções Otimotex Ltda` — o **destinatário**. `empresa` é um dos rótulos de fornecedor de
+`_BODY_NAME_RE`, então o extrator entregava a pagadora como fornecedor, e a RPC a casava por razão
+social. Três cadastros tinham essa razão social (1 OTIMOTEX, 4 LEBIANCO, 404 CDI) e o Passo 3 usa
+`LIMIT` sem `ORDER BY`: o fornecedor gravado dependia do plano de execução, e na prática era o sk 4,
+que impôs à conta o plano **4.1.02 ICMS-ST** (default dele, gravado por write-back das GNREs). O
+estrago se autoalimentava: o write-back de contato gravava no sk 4 o e-mail e o WhatsApp da
+Leadster, e a fatura seguinte casava o sk 4 **também pelo e-mail**. O mesmo ímã puxou as contas 29
+(protesto), 337 (resposta de cliente), 497 (Cipatex) e 978 (ESPRO).
+
+Correção em três camadas:
+
+1. **Código** — `_is_own_company_name` em `_finalize_supplier`, espelho por NOME da exclusão por
+   CNPJ. Filtra o nome extraído e os três derivados (âncora de sigla do assunto, remetente
+   encaminhado, assunto sem âncora). As razões sociais saem de `company` na **mesma** leitura do
+   CNPJ (`company_legal_names`). **Só razão social, nunca fantasia:** "LEBIANCO" é fantasia da
+   empresa 2 e nome de fornecedor legítimo. **Igualdade exata** do nome normalizado (sem acento,
+   pontuação e sigla societária final) — "Confirmação de Títulos TEXTIL … LTDA" (conta 160) não é
+   pego, porque a âncora devolve o segmento inteiro; aceitar substring apagaria fornecedor real.
+2. **Dados** — migration 136: realoca as 5 contas, devolve `legal_name = LEBIANCO` ao sk 4 e move
+   os contatos alheios para os donos.
+3. **Cadastro único** — migration 137: tira a razão social da pagadora do sk 404 (CDI, filial da
+   própria OTIMOTEX). 🔴 A guarda Python **não** cobre o fallback 6 (`_resolve_supplier_by_payer`),
+   que envia o nome da pagadora à RPC **de propósito**, para cair no sk 1: por isso **só o sk 1 pode
+   ter a razão social de uma pagadora**. Um 2º cadastro assim torna o passo por nome (`LIMIT` sem
+   `ORDER BY`) não-determinístico de novo, e ainda recebe CNPJ/CPF por `_enrich_supplier`. A sonda
+   P1 da 137 é a consulta de conferência (deve devolver `{1}`).
+
+Testes: `tests/test_supplier_payer_name_guard.py` (executa `extract_from_email_body` +
+`_finalize_supplier` com o corpo real; mutante validado).
+
 **ASSUNTO como ÚLTIMO recurso para o nome do fornecedor (não regredir):** e-mail INTERNO de
 pagamento ("PAGAMENTO BOLETO HYOSUNG 181063-3", "ENC: GUIA GNRE", "PAGAMENTO PIX FULANO")
 encaminha um boleto/imagem cujo anexo **não traz nome/CNPJ/CPF**, e o remetente interno
@@ -1263,6 +1295,56 @@ divergir (`outro`×`boleto`). Os dois lados foram resolvidos **no mesmo dia** e 
 acompanhou: a **impressão 3 deixou de exigir `document_type` igual** (ver "Impressão 3 casa por
 `sk_supplier`+valor+vencimento, INDEPENDENTE do `document_type`") e o **id 7 foi hard-deletado**
 na limpeza daquela regra. Conferido em 2026-08-04: a conta 7 **não existe**.
+
+**LEMBRETE DE VENCIMENTO corrige a data PRESUMIDA (não regredir — Leadster, 2026-09-14):** a
+fatura da Leadster diz "Confira a data do vencimento clicando no link abaixo!", o link abre uma
+página (não um PDF) e a conta nascia com vencimento = emissão (fallback de `_resolve_body_dates`).
+A data só chega nos lembretes seguintes — "Sua fatura vence em 10 dias na data de 27/08/2026",
+"vence em 5 dias", "vence amanhã", "vence hoje" —, que **não trazem valor** e baixam pelo link
+apenas a NFS-e (sem vencimento nem forma de pagamento). Decisão do usuário: o lembrete atualiza o
+vencimento da conta já existente do mesmo fornecedor.
+
+- **A marca:** sem data declarada (`_explicit_body_due_date` devolve None), o payload do corpo nasce
+  com `processing_notes = DUE_DATE_PRESUMED_NOTE`. É texto legível porque a coluna aparece como
+  "Observações" em `/consulta`. Parcela com data própria, o fator do código de barras
+  (`_apply_barcode_due_date`, **inclusive quando confirma a mesma data**) e a **dedup do anexo**
+  (reemissão com vencimento novo ou boleto que enriquece a conta do corpo) retiram a marca. 🔴 Na
+  dedup, o SELECT de `find_financial_duplicate` traz `processing_notes` e o PATCH declara o campo em
+  `update_financial(..., nullable=...)`: quando a marca era a única nota ela vira `None`, e sem o
+  `nullable` o filtro de `None` a descartaria — a marca ficaria na conta, sem erro.
+- **O hook:** `apply_due_date_reminder` roda em `process_message` só quando o e-mail **não** gerou
+  conta nem casou uma por dedup. `parse_due_date_reminder` extrai a data (explícita ou relativa ao
+  dia de chegada **em Brasília**; recusa data passada ou a mais de 60 dias; confirmação de pagamento
+  nunca é lembrete). O fornecedor sai de `find_supplier_by_email` — consulta pura, e-mail interno e
+  de plataforma barrados na RPC.
+- **A escolha:** `select_reminder_target` considera as contas em aberto com emissão ≤ vencimento
+  anunciado ≤ emissão + 62 dias e, quando o lembrete traz valor, o mesmo valor. Se qualquer uma já
+  vence na data anunciada, nenhum vencimento muda — **inclusive a de data lida do documento, sem
+  marca**: ela prova que o lembrete fala dela e impede a data de cair numa conta presumida vizinha.
+  🔴 Se essa conta ainda tem a marca de **presumido**, a marca vira a de confirmado (a data fica):
+  sem isso a 1474, com 27/09 inferido pela migration 136, seguiria presumida depois dos lembretes de
+  27/09, e o de outubro a moveria (achado R1 do review de 2026-09-14). Só então a
+  **única presumida** é movida; **duas presumidas ⇒ nada muda** (atualizar a conta errada
+  moveria um vencimento sem erro). A marca vira "Vencimento confirmado por lembrete do fornecedor:
+  DD/MM/AAAA", que só serve para reconhecer o lembrete REPETIDO: 🔴 **data confirmada nunca é
+  movida** — com a fatura seguinte ainda sem conta e a anterior em aberto, o lembrete novo casaria
+  a anterior como candidata única (achado na autorrevisão). Data renegociada depois da confirmação
+  é ajuste manual.
+- **A escrita:** PATCH condicionado a `id` + ainda em aberto + `due_date` lido, com
+  `return=representation` — HTTP 200 com lista vazia é "editada entre a leitura e a escrita", não
+  sucesso. A leitura dos candidatos pede teto + 1 e recusa a lista truncada.
+- **Status do e-mail:** lembrete aplicado (atualização **ou** confirmação) entra como
+  `notification` ⇒ `ignorado`, não `/erros`.
+
+⚠️ **Limites conhecidos:** assunto com `lembrete` continua ignorado **antes** do download e não
+passa pelo hook; entre a fatura e o 1º lembrete a conta tem vencimento = emissão e o batch diário a
+marca `vencido`; a forma de pagamento da fatura sem dado segue `outro`.
+
+Testes: `tests/test_due_date_reminder.py` (inclui a execução de `process_message`) e o caso de
+parcelas em `tests/test_body_invoice_table.py`; 12 mutantes validados (vermelho) com os dois
+arquivos de guarda de fornecedor. A confirmação e a retirada da marca na dedup (incluindo o SELECT
+real e o filtro real de `update_financial`) estão em `tests/test_due_date_reminder.py` e
+`tests/test_boleto_dedup_suppresses_body.py`; 7 mutantes validados no review de 2026-09-14.
 
 **MÚLTIPLAS PARCELAS no corpo → UMA conta por boleto (NUNCA somar — não regredir):**
 quando o corpo lista uma TABELA de boletos (documento, parcela, emissão, vencimento,
