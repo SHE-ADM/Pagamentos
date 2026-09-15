@@ -8,6 +8,7 @@ Nunca reprocessa um e-mail já registrado, independente de onde o script rodar.
 
 import os, sys, re, time, socket, imaplib, email, argparse, logging, csv, json, tempfile, faulthandler, unicodedata, ipaddress
 import urllib.request, urllib.error, urllib.parse, http.cookiejar, http.client
+from difflib import SequenceMatcher
 from html import unescape as html_unescape
 from email.header import decode_header
 from email.utils import parseaddr, parsedate_to_datetime
@@ -414,6 +415,41 @@ def _apply_status_id(payload: dict) -> None:
 DUP_QUERY_ATTEMPTS = int(os.getenv("DUP_QUERY_ATTEMPTS", "3"))
 DUP_QUERY_BACKOFF  = float(os.getenv("DUP_QUERY_BACKOFF", "1.5"))  # segundos * tentativa
 
+# Resolucao de fornecedor (RPC resolve_supplier_for_account). Re-tenta so falha TRANSITORIA
+# (rede, timeout, 5xx); erro DEFINITIVO do banco (4xx — ex.: 22001 value too long) nao repete.
+SUPPLIER_RPC_ATTEMPTS = int(os.getenv("SUPPLIER_RPC_ATTEMPTS", "3"))
+SUPPLIER_RPC_BACKOFF  = float(os.getenv("SUPPLIER_RPC_BACKOFF", "1.5"))  # segundos * tentativa
+HTTP_SERVER_ERROR_MIN = 500
+# Trecho da mensagem do RAISE de resolve_supplier_id quando NAO ha identificador nenhum — a
+# UNICA recusa da RPC que e resposta de NEGOCIO (o chamador segue para o fallback do pagador).
+# Espelho do texto da migration mais recente que define a funcao; o teste
+# tests/test_supplier_rpc_failure.py le a migration e trava a paridade.
+SUPPLIER_RPC_NO_IDENTIFIER_MARKER = "nenhum identificador valido"
+
+
+class SupplierResolutionError(RuntimeError):
+    """A RPC de fornecedor FALHOU — rede esgotada, erro do banco ou resposta ilegivel.
+
+    Distinta de "nao ha identificador" (que devolve None). 🔴 NAO pode desembocar no fallback
+    do PAGADOR: foi assim que as contas 895 e 1396 (SINDMESTRES) viraram OTIMOTEX com o plano
+    dela, sem erro — o auto-insert estourava o VARCHAR(60) com um nome de beneficiario longo e
+    a falha era lida como "fornecedor nao encontrado"."""
+
+
+def _http_error_detail(err: "urllib.error.HTTPError") -> str:
+    """Mensagem legivel de um HTTPError do PostgREST: o `message` do JSON; senao o corpo cru."""
+    try:
+        body = err.read().decode("utf-8", "replace").strip()
+    except (OSError, http.client.HTTPException):
+        return f"HTTP {err.code}"
+    try:
+        data = json.loads(body)
+    except ValueError:
+        return body[:300] or f"HTTP {err.code}"
+    if isinstance(data, dict) and data.get("message"):
+        return str(data["message"])
+    return body[:300]
+
 
 class SupabaseControl:
     """Gerencia a tabela email_control no Supabase."""
@@ -449,18 +485,20 @@ class SupabaseControl:
             return cached
         self._company_cnpj_cache = {}
         self._company_legal_names_cache = set()
+        self._company_brand_tokens_cache = set()
         if self._available:
             try:
                 req = urllib.request.Request(
                     f"{self.base}/rest/v1/company"
-                    "?select=sk_company,cnpj,legal_name&order=sk_company.asc",
+                    "?select=sk_company,cnpj,legal_name,trade_name&order=sk_company.asc",
                     headers=self.headers,
                 )
                 with urllib.request.urlopen(req, timeout=5) as r:
                     rows = json.loads(r.read())
-                # Razao social de TODAS as linhas, ANTES do filtro de CNPJ abaixo: empresa sem
-                # CNPJ cadastrado continua sendo pagadora e nunca pode virar fornecedora.
+                # Razao social e marca de TODAS as linhas, ANTES do filtro de CNPJ abaixo: empresa
+                # sem CNPJ cadastrado continua sendo pagadora e nunca pode virar fornecedora.
                 self._company_legal_names_cache = _company_legal_names_from_rows(rows)
+                self._company_brand_tokens_cache = _company_brand_tokens_from_rows(rows)
                 for row in rows or []:
                     digits = re.sub(r"\D", "", str(row.get("cnpj") or ""))
                     if not digits:
@@ -492,6 +530,13 @@ class SupabaseControl:
         tambem nome de fornecedor legitimo — exclui-lo apagaria fornecedor real."""
         self._company_cnpj_map()  # popula os dois caches numa unica leitura
         return frozenset(getattr(self, "_company_legal_names_cache", None) or ())
+
+    def company_brand_tokens(self) -> "frozenset[str]":
+        """Tokens de MARCA das pagadoras (`_company_brand_tokens_from_rows`), da MESMA leitura
+        de `company`. Base do reconhecimento do CONTRIBUINTE numa guia de tributo quando a grafia
+        impressa diverge da razao social. Vazio quando indisponivel."""
+        self._company_cnpj_map()  # popula os caches numa unica leitura
+        return frozenset(getattr(self, "_company_brand_tokens_cache", None) or ())
 
     def company_cnpjs(self) -> list[str]:
         """CNPJ (só dígitos) de TODAS as empresas pagadoras, ordenado por sk_company —
@@ -900,7 +945,8 @@ class SupabaseControl:
              2a via / aviso de vencimento mantem o mesmo nosso numero mesmo mudando
              VALOR (juros) e VENCIMENTO, combinacao que 1/2/3 deixam passar (ids 323/560);
           2. fornecedor + numero do documento + valor — pega DAS reenviado com
-             vencimento diferente (numero da guia identico);
+             vencimento diferente (numero da guia identico); nossos numeros reais e
+             diferentes vetam (parcelas de carne com o mesmo Nº do Documento);
           3. fornecedor + valor + vencimento (+ tipo) — pega o mesmo encargo
              emitido em documentos com numero proprio distinto (ex.: boleto x
              RPS da mesma fatura, ambos R$ X no mesmo vencimento). Quando o NOVO
@@ -994,8 +1040,10 @@ class SupabaseControl:
         if _is_real_nosso_numero(nosso):
             m = _find([supplier_clause,
                        f"nosso_numero=eq.{urllib.parse.quote(nosso, safe='')}"],
-                      select="id,due_date,barcode,invoice_number,processing_notes")
-            if m and not _same_title(payload.get("invoice_number"), m.get("invoice_number")):
+                      select="id,due_date,barcode,invoice_number,processing_notes,nosso_numero")
+            if m and not _same_title(
+                    _own_document_number(payload.get("invoice_number"), nosso),
+                    _own_document_number(m.get("invoice_number"), m.get("nosso_numero"))):
                 log.info(
                     "    [DEDUP-1b] nosso numero igual mas Nº de documento diferente "
                     f"({payload.get('invoice_number')!r} x {m.get('invoice_number')!r}) — "
@@ -1017,7 +1065,18 @@ class SupabaseControl:
                 supplier_clause,
                 f"invoice_number=eq.{urllib.parse.quote(invoice, safe='')}",
                 _eq_clause("amount", payload.get("amount")),
-            ])
+            ], select="id,due_date,barcode,processing_notes,nosso_numero")
+            # GUARDA (2026-09-15 — nao regredir): desde que `invoice_number` de boleto e o
+            # 'Nº do Documento' (e nao mais o nosso numero), parcelas de carne que repetem o
+            # MESMO numero e o MESMO valor casariam aqui e a 2a parcela SUMIRIA em silencio.
+            # Nossos numeros reais e DIFERENTES provam titulos distintos; sem nosso numero de
+            # um dos lados, a impressao segue valendo como antes.
+            if m and _distinct_nosso_numero(nosso, m.get("nosso_numero")):
+                log.info(
+                    "    [DEDUP-2] Nº de documento e valor iguais mas nosso numero diferente "
+                    f"({nosso!r} x {m.get('nosso_numero')!r}) — titulos distintos, nao deduplica"
+                )
+                m = None
             if m:
                 return m
 
@@ -1046,9 +1105,17 @@ class SupabaseControl:
     def resolve_supplier(self, payload: dict) -> int | None:
         """Resolve/cria o fornecedor via RPC resolve_supplier_for_account e devolve
         sk_supplier (surrogate key). Reusa a mesma logica antes embutida no trigger
-        trg_fe_resolve_supplier (resolve_supplier_id por CNPJ->CPF->e-mail->nome->auto-insert
-        + anexa o e-mail do remetente). Em erro de consulta, retorna None (o chamador trata
-        como falha)."""
+        trg_fe_resolve_supplier (resolve_supplier_id por CNPJ->CPF->nome->e-mail->auto-insert
+        + anexa o e-mail do remetente).
+
+        TRES desfechos — confundir os dois ultimos foi o defeito das contas 895/1396:
+          * int  → fornecedor resolvido ou criado;
+          * None → a RPC recusou por NAO HAVER identificador (RAISE "nenhum identificador
+                   valido") ou o Supabase esta indisponivel — resposta legitima; o chamador
+                   segue para o fallback do pagador;
+          * levanta SupplierResolutionError → a RPC FALHOU. Falha transitoria (rede, timeout,
+            5xx) re-tenta antes; erro definitivo do banco (4xx) nao. 🔴 Antes TUDO virava None,
+            e um 22001 do auto-insert gravava a conta sob o PAGADOR sem erro nenhum."""
         if not self._available:
             return None
         body = json.dumps({
@@ -1057,16 +1124,37 @@ class SupabaseControl:
             "p_name":  payload.get("supplier_name"),
             "p_email": payload.get("sender_email"),
         }).encode()
-        try:
-            req = urllib.request.Request(
-                f"{self.base}/rest/v1/rpc/resolve_supplier_for_account",
-                data=body, headers=self.headers, method="POST",
-            )
-            with urllib.request.urlopen(req, timeout=10) as r:
-                return json.loads(r.read())  # RPC escalar → o proprio bigint
-        except Exception as e:
-            log.warning(f"Falha ao resolver fornecedor (RPC): {e}")
-            return None
+        # Faixa validada no USO: ATTEMPTS <= 0 pularia a RPC inteira (toda conta iria a /erros sem
+        # chamada nenhuma) e BACKOFF negativo faria time.sleep levantar ValueError fora do contrato.
+        attempts = max(1, SUPPLIER_RPC_ATTEMPTS)
+        backoff = max(0.0, SUPPLIER_RPC_BACKOFF)
+        last_err = None
+        for attempt in range(1, attempts + 1):
+            try:
+                req = urllib.request.Request(
+                    f"{self.base}/rest/v1/rpc/resolve_supplier_for_account",
+                    data=body, headers=self.headers, method="POST",
+                )
+                with urllib.request.urlopen(req, timeout=10) as r:
+                    return json.loads(r.read())  # RPC escalar → o proprio bigint
+            except urllib.error.HTTPError as e:
+                detail = _http_error_detail(e)
+                if SUPPLIER_RPC_NO_IDENTIFIER_MARKER in detail:
+                    log.info(f"    [FORNECEDOR] RPC sem identificador valido: {detail}")
+                    return None
+                last_err = f"HTTP {e.code}: {detail}"
+                if e.code < HTTP_SERVER_ERROR_MIN:
+                    break  # erro DEFINITIVO do banco — repetir devolveria o mesmo erro
+            # http.client.HTTPException entra aqui porque IncompleteRead/BadStatusLine NAO herdam
+            # de OSError: um corpo cortado escaparia do contrato e abortaria o e-mail inteiro.
+            except (urllib.error.URLError, TimeoutError, OSError, http.client.HTTPException) as e:
+                last_err = f"rede: {e}"
+            except ValueError as e:
+                raise SupplierResolutionError(
+                    f"resposta ilegivel da RPC de fornecedor: {e}") from e
+            if attempt < attempts:
+                time.sleep(backoff * attempt)
+        raise SupplierResolutionError(f"RPC de fornecedor falhou: {last_err}")
 
     def find_supplier_by_email(self, email: str | None) -> int | None:
         """Fornecedor JA CADASTRADO e ATIVO cujo email/email2/email3/email4 casa `email`
@@ -1662,6 +1750,86 @@ def _company_legal_names_from_rows(rows) -> "set[str]":
     return {name for name in names if name}
 
 
+# Tamanho minimo de um token de MARCA: descarta "le", "de", "e" e siglas curtas, que aparecem na
+# razao social e no fantasia sem identificar a empresa.
+BRAND_TOKEN_MIN_LEN = 4
+
+# Similaridade minima (SequenceMatcher sobre o nome normalizado) com a razao social de uma
+# pagadora para tratar o nome como o CONTRIBUINTE de uma guia. Medido em 2026-09-15 sobre os
+# 1.387 fornecedores cadastrados: a razao social COMPLETA com grafia divergente fica em 0,96-1,00
+# ("TEXTIL E CONFECES OTIMOTEX LTDA" 0,963; "...OTIMOTX LTDA" 0,982), mas formas CURTAS da marca
+# ficam ABAIXO do limiar ("CONFECCOES OTIMOTEX" 0,809, "LEBIANCO" 0,615) — essas sao pegas pelo
+# sinal de MARCA, nao por este. O fornecedor SEM marca mais proximo de uma pagadora fica em 0,703
+# ("DEXINGLONG PLASTICS") e o favorecido real de guia mais proximo em 0,453 ("Governo do Estado
+# de Sao Paulo - SEFAZ"). 0,85 deixa folga dos dois lados — e so e consultada DENTRO de guia de
+# tributo que ja trouxe o CNPJ de uma pagadora.
+CONTRIBUINTE_NAME_SIMILARITY = 0.85
+
+
+def _company_brand_tokens_from_rows(rows) -> "set[str]":
+    """Tokens de MARCA das pagadoras: palavra (>= BRAND_TOKEN_MIN_LEN, nao numerica) presente
+    TANTO na razao social QUANTO no nome fantasia da MESMA empresa — sai dos dados, sem lista
+    escrita a mao (hoje: otimotex, lebianco, blanc). Palavra de uma so das colunas ('tecidos',
+    'plasticos', 'importacoes') e generica e fica de fora de proposito."""
+    tokens: set[str] = set()
+    for row in rows or []:
+        if not isinstance(row, dict):
+            continue
+        legal = set(_normalize_company_name(row.get("legal_name")).split())
+        trade = set(_normalize_company_name(row.get("trade_name")).split())
+        tokens |= {token for token in legal & trade
+                   if len(token) >= BRAND_TOKEN_MIN_LEN and not token.isdigit()}
+    return tokens
+
+
+def _is_contribuinte_name(name: str | None, payer_name: str | None,
+                          own_names, brand_tokens) -> bool:
+    """True quando o nome extraido JUNTO do CNPJ de uma pagadora, numa guia de tributo, e o
+    proprio CONTRIBUINTE (a pagadora, na grafia impressa na guia) — e nao um favorecido real.
+
+    Qualquer sinal basta:
+      1. razao social exata de uma pagadora (`own_names`, ja normalizadas);
+      2. contem um token de MARCA de pagadora ("TEXTIL E CONFECES OTIMOTEX LTDA");
+      3. repete o `payer_name` lido do MESMO documento — o modelo copiou o contribuinte nos dois;
+      4. similaridade >= CONTRIBUINTE_NAME_SIMILARITY com a razao social de uma pagadora (a
+         marca com OCR deslocado: "OTIMOTX").
+    Nenhum sinal ⇒ favorecido real ("SECRETARIA DA FAZENDA…", "PREFEITURA…"), que VENCE.
+    Os sinais 2 e 4 sao complementares — "LE BLANC ADM DE BENS" so e pego pela marca (0,678) e
+    "OTIMOTX" so pela similaridade. Nome vazio ⇒ False: nao ha favorecido a preservar."""
+    norm = _normalize_company_name(name)
+    if not norm:
+        return False
+    if norm in own_names or brand_tokens & set(norm.split()):
+        return True
+    payer = _normalize_company_name(payer_name)
+    if payer and payer == norm:
+        return True
+    return any(SequenceMatcher(None, norm, own).ratio() >= CONTRIBUINTE_NAME_SIMILARITY
+               for own in own_names)
+
+
+def _beneficiary_is_own_payer(name: str | None, cnpj_digits: str, payload: dict,
+                              own_cnpj: str | None, own_names, brand_tokens) -> bool:
+    """True quando o documento declara a PROPRIA pagadora (sk 1) como BENEFICIARIA e um TERCEIRO
+    como pagador — ver o bloco em `_finalize_supplier`. Conservadora: condicao ausente ⇒ False.
+
+      1. CNPJ extraido (14 digitos) com a raiz do sk 1 — so a da empresa principal; a LE BLANC
+         tem raiz propria e e fornecedora legitima;
+      2. nome extraido reconhecido como a pagadora (`_is_contribuinte_name`, sem o sinal do
+         pagador: aqui o pagador e justamente a OUTRA parte);
+      3. pagador identificado POR DOCUMENTO e de outra raiz (CPF conta como terceiro). Pagador
+         ausente ou da mesma raiz ⇒ a extracao pode ter copiado o bloco do DESTINATARIO."""
+    own_root = re.sub(r"\D", "", str(own_cnpj or ""))[:8]
+    if len(own_root) != 8 or len(cnpj_digits) != 14 or cnpj_digits[:8] != own_root:
+        return False
+    if not _is_contribuinte_name(name, None, own_names, brand_tokens):
+        return False
+    payer_digits = re.sub(r"\D", "", str(payload.get("payer_cnpj") or ""))
+    if len(payer_digits) == 14:
+        return payer_digits[:8] != own_root
+    return len(payer_digits) == 11
+
+
 def _is_own_company_name(name: str | None, own_names) -> bool:
     """True quando `name` e a RAZAO SOCIAL de uma empresa PAGADORA.
 
@@ -1674,6 +1842,29 @@ def _is_own_company_name(name: str | None, own_names) -> bool:
     impos a conta o plano ICMS-ST dele. O mesmo ima puxou as contas 29, 497 e 978."""
     normalized = _normalize_company_name(name)
     return bool(normalized) and normalized in own_names
+
+
+def _payer_cnpj_roots(ctrl) -> "frozenset[str]":
+    """Raizes (8 digitos) dos CNPJs de TODAS as empresas pagadoras, via `ctrl`.
+
+    Usa `company_cnpjs` (todas as empresas — inclui a LE BLANC, de raiz propria). Ctrl
+    legado/de teste sem o metodo degrada para `company_cnpj` (so a principal); sem nenhum
+    dos dois, conjunto vazio e a regra que depende dele simplesmente nao dispara."""
+    getter = getattr(ctrl, "company_cnpjs", None)
+    if getter is not None:
+        cnpjs = getter() or []
+    else:
+        single = getattr(ctrl, "company_cnpj", None)
+        cnpjs = [single()] if single is not None else []
+    roots = (re.sub(r"\D", "", str(cnpj or ""))[:8] for cnpj in cnpjs)
+    return frozenset(root for root in roots if len(root) == 8)
+
+
+def _own_brand_tokens(ctrl) -> "frozenset[str]":
+    """Tokens de marca das pagadoras via `ctrl`. Ctrl legado/de teste sem o metodo devolve vazio:
+    o reconhecimento do contribuinte segue pelos outros sinais (nome exato, pagador, similaridade)."""
+    getter = getattr(ctrl, "company_brand_tokens", None)
+    return frozenset(getter() or ()) if getter is not None else frozenset()
 
 
 def _own_company_names(ctrl) -> "frozenset[str]":
@@ -1735,6 +1926,10 @@ SUPPLIER_SIGNAL_FORWARDED_EMAIL = "forwarded_email"   # 1b: e-mail do remetente 
 # Sinais considerados FRACOS para efeito de write-back. Conjunto (e nao um booleano) porque
 # a proxima procedencia fraca entra aqui, e nao num `if` novo em apply_forced_classification.
 SUPPLIER_SIGNAL_WEAK = frozenset({SUPPLIER_SIGNAL_FORWARDED_EMAIL})
+
+# Chave EFEMERA com o motivo de uma FALHA da RPC de fornecedor (SupplierResolutionError). O
+# chamador de _finalize_supplier a copia para a mensagem de /erros; a conta nao e gravada.
+SUPPLIER_ERROR_KEY = "_supplier_resolution_error"
 
 
 def strip_transient_fields(payload: dict) -> dict:
@@ -2357,6 +2552,12 @@ def _resolve_supplier_by_payer(ctrl: "SupabaseControl", payload: dict) -> int | 
     probe["supplier_name"] = payer_name or None
     probe["supplier_cnpj"] = payer_cnpj if len(payer_cnpj) == 14 else None
     probe["supplier_cpf"]  = None
+    # 🔴 SEM o e-mail do remetente: a RPC anexa o e-mail recebido ao cadastro que resolveu
+    # (_add_supplier_email), e aqui esse cadastro e o da PAGADORA. Era assim que e-mails de
+    # terceiros (Panificadora Belga, OBER, cliente Acarolac) iam parar na OTIMOTEX e passavam a
+    # sequestrar as contas deles pelo passo de e-mail (limpeza na migration 139). A busca por
+    # e-mail ja rodou na chamada principal de _finalize_supplier.
+    probe["sender_email"]  = None
     sk = ctrl.resolve_supplier(probe)
     if sk:
         log.info(f"    [FORNECEDOR-PAGADOR] fornecedor ausente — usando o pagador: "
@@ -2413,6 +2614,9 @@ def _finalize_supplier(ctrl: "SupabaseControl", payload: dict, body_text: str = 
     # o nome casa por razao social com LIMIT sem ORDER BY, e tres cadastros (1, 4, 404) tinham
     # essa razao social: o fornecedor gravado dependia do plano de execucao.
     own_names = _own_company_names(ctrl)
+    # Capturado ANTES da exclusao por razao social logo abaixo: a regra do BENEFICIARIO-PAGADORA
+    # precisa do nome que a extracao entregou, inclusive quando ele e a razao social exata.
+    extracted_name = payload.get("supplier_name")
     if _is_own_company_name(payload.get("supplier_name"), own_names):
         log.info(f"    [FORNECEDOR] razao social da PAGADORA ignorada como fornecedor: "
                  f"{payload.get('supplier_name')!r} — segue pelos demais sinais")
@@ -2432,13 +2636,60 @@ def _finalize_supplier(ctrl: "SupabaseControl", payload: dict, body_text: str = 
     # "47273917/0003-95", nao cadastrada em nenhum sk_company) escapava do match exato
     # e era resolvido como fornecedor de verdade — caso real: conta indevida sob o
     # sk_supplier de uma filial da propria OTIMOTEX mal-cadastrada como "fornecedor".
+    # Capturado ANTES da exclusao abaixo (que tira o CNPJ do payload): a regra do CONTRIBUINTE,
+    # logo depois, precisa saber qual CNPJ a extracao entregou JUNTO do nome.
+    extracted_cnpj = re.sub(r"\D", "", str(payload.get("supplier_cnpj") or ""))
     own_cnpj = ctrl.company_cnpj() if hasattr(ctrl, "company_cnpj") else None
-    if own_cnpj and len(own_cnpj) >= 8:
-        extracted_cnpj = re.sub(r"\D", "", str(payload.get("supplier_cnpj") or ""))
-        if extracted_cnpj and extracted_cnpj[:8] == own_cnpj[:8]:
-            payload.pop("supplier_cnpj", None)
-            log.info("    [FORNECEDOR] CNPJ do pagador (OTIMOTEX, mesma raiz/filial) "
-                     "ignorado como fornecedor — segue pelo nome/assunto")
+    if (own_cnpj and len(own_cnpj) >= 8
+            and extracted_cnpj and extracted_cnpj[:8] == own_cnpj[:8]):
+        payload.pop("supplier_cnpj", None)
+        log.info("    [FORNECEDOR] CNPJ do pagador (OTIMOTEX, mesma raiz/filial) "
+                 "ignorado como fornecedor — segue pelo nome/assunto")
+    # 🔴 GUIA DE TRIBUTO com CNPJ extraido de uma PAGADORA: o CNPJ e do CONTRIBUINTE e sai
+    # SEMPRE. Mantido, ele casaria a OTIMOTEX no passo de CNPJ da RPC, que vem ANTES do nome — um
+    # favorecido real lido junto nunca seria consultado.
+    # O NOME decide entre os dois casos que a extracao produz com esse CNPJ:
+    #   * nome do CONTRIBUINTE (a pagadora na grafia da guia — `_is_contribuinte_name`) → sai
+    #     tambem, e a regra de imposto abaixo grava a OTIMOTEX. Sem isto, o nome ia a RPC e casava
+    #     por TEXTO um cadastro-apelido: "TEXTIL E CONFECES OTIMOTEX LTDA" criou o sk 1400 e 13
+    #     guias cairam fora do sk 1 (sk 4, 1400, 1415 — dados na migration 140);
+    #   * nome de um FAVORECIDO REAL ("SECRETARIA DA FAZENDA…", "PREFEITURA…") → o FAVORECIDO
+    #     VENCE: fica no payload e resolve o fornecedor pela RPC, como toda guia com favorecido.
+    # So em guia de tributo: nela o contribuinte e SEMPRE a pagadora. Num boleto, o CNPJ da
+    # LE BLANC (raiz propria) e de FORNECEDOR legitimo (aluguel) e continua valendo.
+    if (_is_tax_document(payload.get("document_type"))
+            and len(extracted_cnpj) == 14
+            and extracted_cnpj[:8] in _payer_cnpj_roots(ctrl)):
+        payload.pop("supplier_cnpj", None)
+        payload.pop("supplier_cpf", None)
+        nome = payload.get("supplier_name")
+        if _is_contribuinte_name(nome, payload.get("payer_name"), own_names,
+                                 _own_brand_tokens(ctrl)):
+            payload.pop("supplier_name", None)
+            log.info(f"    [FORNECEDOR-CONTRIBUINTE] guia de tributo com o CNPJ de uma pagadora "
+                     f"({extracted_cnpj[:8]}…) — contribuinte {nome!r} nao e fornecedor")
+        elif str(nome or "").strip():
+            log.info(f"    [FORNECEDOR-FAVORECIDO] guia de tributo com o CNPJ do contribuinte "
+                     f"({extracted_cnpj[:8]}…) e o favorecido real {nome!r} — o favorecido vence")
+    # 🔴 BENEFICIARIO = a PROPRIA PAGADORA, fora de guia de tributo → OTIMOTEX (sk 1). Decisao do
+    # usuario (2026-09-15, conta 933): o boleto "BOLETOS SAMUEL - SHADOW 3" imprime como
+    # beneficiario "CONFECCOES OTIMOTEX - CNPJ 47.273.917/0001-23" e como pagador um TERCEIRO. O
+    # CNPJ saia pela raiz, o nome curto ia a RPC e criava o cadastro-apelido 1227 (migration 141) —
+    # e, removido, o apelido continuaria casando: a RPC ignora deleted_at no passo por nome.
+    # As tres condicoes de `_beneficiary_is_own_payer` sao CUMULATIVAS. A do PAGADOR DE OUTRA RAIZ
+    # e a que separa "a OTIMOTEX e a credora" de "a extracao copiou o bloco do DESTINATARIO"
+    # (fatura reencaminhada com o favorecido no assunto — MOVVI), onde o pagador e a OTIMOTEX.
+    # 🔴 NAO herda o default de classificacao do sk 1 (RH / Vale Alimentacao): foi o plano errado
+    # imposto nas contas 895/1396. Sem ele a conta nasce com o sentinela 0, para curadoria.
+    if (not _is_tax_document(payload.get("document_type"))
+            and _beneficiary_is_own_payer(extracted_name, extracted_cnpj, payload, own_cnpj,
+                                          own_names, _own_brand_tokens(ctrl))):
+        for col in ("supplier_name", "supplier_cnpj", "supplier_cpf"):
+            payload.pop(col, None)
+        payload["sk_supplier"] = OTIMOTEX_SK_SUPPLIER
+        log.info(f"    [FORNECEDOR-BENEFICIARIO-PAGADORA] beneficiario {extracted_name!r} com o CNPJ "
+                 f"da pagadora e pagador terceiro — gravando OTIMOTEX (sk={OTIMOTEX_SK_SUPPLIER})")
+        return True
     has_real_supplier = any(str(payload.get(k) or "").strip()
                             for k in ("supplier_name", "supplier_cnpj", "supplier_cpf"))
     # ── fallback 1b: E-MAIL do remetente ORIGINAL do bloco ENCAMINHADO ──────────────
@@ -2551,10 +2802,20 @@ def _finalize_supplier(ctrl: "SupabaseControl", payload: dict, body_text: str = 
         if guessed and not _is_own_company_name(guessed, own_names):
             payload["supplier_name"] = guessed
             log.info(f"    [FORNECEDOR-ASSUNTO] nome derivado do assunto: {guessed!r}")
-    sk_supplier = ctrl.resolve_supplier(payload)  # fallback 5: e-mail do remetente (na RPC)
-    # fallback 6: PAGADOR (ultimo recurso) — esgotaram nome/CNPJ/CPF/e-mail/assunto/corpo.
-    if not sk_supplier:
-        sk_supplier = _resolve_supplier_by_payer(ctrl, payload)
+    # 🔴 FALHA da RPC NAO e "fornecedor nao encontrado". So o None (recusa por falta de
+    # identificador) segue para o pagador; SupplierResolutionError devolve False e a conta vai a
+    # /erros com o motivo. Contas 895/1396: o auto-insert estourava o VARCHAR(60) com o nome do
+    # beneficiario, a falha virava None e o boleto do sindicato era lancado sob a OTIMOTEX, com
+    # o plano dela, sem erro. Uma linha a revisar em /erros e melhor que a conta no credor errado.
+    try:
+        sk_supplier = ctrl.resolve_supplier(payload)  # fallback 5: e-mail do remetente (na RPC)
+        # fallback 6: PAGADOR (ultimo recurso) — esgotaram nome/CNPJ/CPF/e-mail/assunto/corpo.
+        if not sk_supplier:
+            sk_supplier = _resolve_supplier_by_payer(ctrl, payload)
+    except SupplierResolutionError as e:
+        payload[SUPPLIER_ERROR_KEY] = str(e)
+        log.exception("    [FORNECEDOR] resolucao FALHOU — a conta NAO cai no pagador")
+        sk_supplier = None
     for col in ("supplier_name", "supplier_cnpj", "supplier_cpf"):
         payload.pop(col, None)
     if not sk_supplier:
@@ -4123,6 +4384,29 @@ def _same_title(novo_invoice, cand_invoice) -> bool:
     if len(menor) < 6:
         return a == b
     return menor in maior
+
+
+def _own_document_number(invoice, nosso):
+    """Nº de documento PRÓPRIO do título, ou None quando `invoice` é só a CÓPIA do nosso número.
+
+    Até 2026-09-15 o prompt gravava o NOSSO NÚMERO em `invoice_number` nos boletos (432 contas).
+    Comparada a um boleto novo, que traz o 'Nº do Documento' de verdade, uma conta desse período
+    pareceria OUTRO título em `_same_title` — e a 2ª via de um título antigo deixaria de
+    deduplicar pela 1b, criando conta duplicada. Cópia do nosso número não é número de documento:
+    sai da comparação, e a guarda cai no ramo conservador ("não contradiz")."""
+    a = re.sub(r"\D", "", str(invoice or ""))
+    b = re.sub(r"\D", "", str(nosso or ""))
+    if a and a == b:
+        return None
+    return invoice
+
+
+def _distinct_nosso_numero(a, b) -> bool:
+    """True só quando os DOIS nossos números são reais e DIFEREM (comparados por dígitos:
+    '009/06001098465-9' e '009 / 06001098465 - 9' são o mesmo) — prova de títulos distintos."""
+    if not (_is_real_nosso_numero(str(a or "")) and _is_real_nosso_numero(str(b or ""))):
+        return False
+    return re.sub(r"\D", "", str(a)) != re.sub(r"\D", "", str(b))
 
 
 def _is_real_nosso_numero(nn: str | None) -> bool:
@@ -5800,9 +6084,11 @@ def extract_and_store_accounts(saved_pdfs: list, message_id: str,
         # supplier_name/supplier_cnpj) e depois dos overrides SSW/corpo acima.
         row_le_blanc = le_blanc_ref or _le_blanc_supplier_signal(payload)
         if not _finalize_supplier(ctrl, payload, body_text):
+            motivo = payload.get(SUPPLIER_ERROR_KEY)
             ctrl.register_error(
                 ctx, "db_erro",
-                f"Falha ao resolver fornecedor — {row.get('source_file')}",
+                f"Falha ao resolver fornecedor — {row.get('source_file')}"
+                + (f" — {motivo}" if motivo else ""),
                 raw_payload=row
             )
             acc_index += 1
@@ -6042,7 +6328,9 @@ def try_extract_from_body(email_rec: dict, body_text: str, received_at: str,
     # 🔴 Fornecedor LE BLANC capturado ANTES do finalize, que remove supplier_name/cnpj.
     body_le_blanc = _le_blanc_supplier_signal(payload)
     if not _finalize_supplier(ctrl, payload, body_text):
-        email_rec["notes"] = "Falha ao resolver fornecedor do corpo do e-mail"
+        motivo = payload.get(SUPPLIER_ERROR_KEY)
+        email_rec["notes"] = ("Falha ao resolver fornecedor do corpo do e-mail"
+                              + (f" — {motivo}" if motivo else ""))
         return BODY_NONE
 
     # Classificacao contabil FORCADA por tipo de documento (IRRF/DUIMP/ICMS Importacao/

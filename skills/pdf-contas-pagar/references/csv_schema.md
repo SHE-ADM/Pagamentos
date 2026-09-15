@@ -37,7 +37,8 @@
 | `due_date` | Vencimento |
 | `amount` | Valor do Documento |
 | `barcode` | Linha digitável (47-48 dígitos) |
-| `invoice_number` | Nosso Número |
+| `invoice_number` | Nº do Documento (fallback: Nosso Número, só sem o campo) |
+| `nosso_numero` | Nosso Número |
 
 ### NF-e (Produto)
 | Campo CSV | Campo no Documento |

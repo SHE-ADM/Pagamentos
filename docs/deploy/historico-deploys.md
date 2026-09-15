@@ -1,5 +1,71 @@
 # Histórico de deploys
 
+## 2026-09-15 — Fornecedor (falha da RPC, contribuinte, beneficiário = pagadora) + Nº do Documento
+
+**O que foi ao ar.** O pacote saiu do **working tree** da `Features`, ainda **sem commit nem PR**. O
+merge em `main` precisa carregar exatamente estes arquivos, ou a paridade volta a divergir.
+- **Falha da RPC de fornecedor ≠ "não encontrado".** `resolve_supplier` tem três desfechos
+  (`SupplierResolutionError`), e a conta vai a `/erros` com o motivo em vez de cair no pagador
+  (SINDMESTRES, contas 895/1396). A sondagem do pagador vai sem `sender_email`.
+- **Contribuinte de guia não vira fornecedor** (`_is_contribuinte_name`), e o favorecido real
+  vence o CNPJ do contribuinte.
+- **Boleto com beneficiário = a própria pagadora ⇒ sk 1** (`_beneficiary_is_own_payer`, conta
+  933), sem herdar o default de classificação.
+- **`invoice_number` de boleto = Nº do Documento.** Mudaram o prompt e a leitura determinística
+  (`apply_boleto_document_number`), já com a correção da cauda Espécie/Aceite. Na dedup, parcelas
+  com o mesmo Nº e valor não se fundem (`_distinct_nosso_numero`) e o legado com cópia do nosso
+  número segue deduplicando (`_own_document_number`).
+
+**Arquivos:** `extract_pdf.py`, `read_emails.py`, `deploy-manifest.json`. Sem módulo novo nem
+dependência nova: `difflib` e `itertools.pairwise` são da biblioteca padrão. Nada muda no `.env`
+(`SUPPLIER_RPC_ATTEMPTS`/`SUPPLIER_RPC_BACKOFF` têm default) e não há re-registro de tarefa.
+**Migrations 138–142** já estavam aplicadas (base compartilhada dev+prod).
+
+**Verificação em produção:** o hash do manifesto confere com o DEV (`85A92EB9…FFDFB`, 32
+arquivos). `check_deploy_parity.py` → **32/32 conferem, 0 faltando, 0 divergentes, 0 extras**.
+A validação funcional (`hasattr` + `inspect.getsource`) deu **7/7 `True`**: `rpc_falha`,
+`contribuinte`, `beneficiario_pagadora`, `dedup_parcela`, `sondagem_sem_email`, `docnum` e
+`cauda_corrigida`.
+
+⏳ **Sinal no dado ainda não observado.** Na conferência (18:15 UTC), o último e-mail registrado
+era das 17:30 e o último erro, de 11/09 (id 321). O primeiro e-mail depois do deploy e o Last Run
+Result da tarefa ficam por confirmar.
+
+**Lição não-óbvia:** o deploy **não** é a barreira do código novo contra o banco. Os scripts de
+`scripts/` rodam **no DEV** e importam o `extract_pdf.py` do repositório. O
+`reprocess_document_number.py` gravou em 338 contas, com um parser ainda defeituoso, horas antes
+de este deploy existir, e 5 contas precisaram da migration 142. Código de manutenção vale como
+produção a partir do primeiro modo real: a medição sobre o acervo real vem **antes** dele, não do
+deploy.
+
+## 2026-09-14 — Razão social da pagadora não vira fornecedor + lembrete de vencimento presumido
+
+**O que foi ao ar** (PR #252, merge `d0d73a1`):
+- **Fornecedor pela razão social.** `_finalize_supplier` deixa de aceitar a razão social de uma
+  pagadora como fornecedor (`_is_own_company_name`). É o caso Leadster: "Empresa: Têxtil E
+  Confecções Otimotex Ltda" no corpo casava o sk 4 e impunha ICMS-ST.
+- **Lembrete de vencimento.** Fatura sem data nasce com a marca de vencimento presumido, e o
+  lembrete do fornecedor corrige ou confirma essa data (`apply_due_date_reminder`).
+- **Retirada da marca.** Parcela com data, fator do barcode e dedup do anexo retiram a marca.
+
+**Arquivos:** `read_emails.py`, `deploy-manifest.json`. Sem módulo novo, sem dependência nova,
+sem variável de `.env`, sem re-registro de tarefa. **Migrations 136 e 137** já estavam aplicadas
+antes do deploy (base compartilhada dev+prod).
+
+**Verificação em produção:** `check_deploy_parity.py` → **32/32 conferem, 0 faltando, 0
+divergentes, 0 extras**. A validação funcional (`inspect.getsource`) confirmou que as três
+alterações chegaram, não só o arquivo: `pagadora: True` (`_is_own_company_name`), `confirma: True`
+(confirmação da conta presumida em `apply_due_date_reminder`) e `nullable: True`
+(`update_financial`). Primeiro sinal no dado: o lembrete da Leadster de ~17/09 ("vence em 10 dias na data de
+27/09/2026") tem de trocar a marca da conta 1474 para "Vencimento confirmado por lembrete do
+fornecedor: 27/09/2026", sem mudar a data
+(`SELECT id, due_date, processing_notes FROM financial_account_control WHERE id = 1474`).
+
+**Lição não-óbvia:** `update_financial` descarta campos `None`. Limpar `processing_notes`
+quando a marca era a única nota não chegava ao banco, e o teste com FakeControl passava verde. Só o
+re-review do diff da correção pegou o problema, e a solução foi o `nullable`. Teste de escrita que usa
+dublê precisa de um caso que execute o filtro real.
+
 ## 2026-09-11 — Empresa pagadora LE BLANC (`sk_company = 4`)
 
 **O que foi ao ar.** A 4ª empresa pagadora entrou na regra de precedência de `resolve_sk_company`:

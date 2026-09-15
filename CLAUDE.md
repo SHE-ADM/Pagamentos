@@ -716,9 +716,16 @@ dedup, nunca por texto de fornecedor):
 2. **nosso número** — 🔴 **com GUARDA DE TÍTULO (`_same_title`)**: o campo que o LLM extrai às
    vezes é o **código agência/conta do cedente**, igual em todos os boletos do fornecedor; sem a
    guarda, mensalidades de meses distintos se fundiam e o pagável sumia em silêncio. Ela é
-   **conservadora**: devolve "pode deduplicar" quando um dos lados não tem nº próprio.
+   **conservadora**: devolve "pode deduplicar" quando um dos lados não tem nº próprio — e
+   `invoice_number` que é **cópia do nosso número** (`_own_document_number`, legado) não conta.
 3. nº do documento (≥6) + valor — 🔴 **ignora número SINTÉTICO** (`_is_synthetic_invoice_number`),
-   senão dois boletos distintos de mesmo valor colidiam e um era perdido.
+   senão dois boletos distintos de mesmo valor colidiam e um era perdido. 🔴 **Nossos números
+   reais e DIFERENTES vetam** (`_distinct_nosso_numero`): parcelas repetem Nº e valor.
+
+🔴 **`invoice_number` de boleto = "Nº do Documento" da ficha, NUNCA o Nosso Número** (só na
+falta do campo). Até 2026-09-15 o prompt pedia o nosso número e o modelo alternava os dois no
+mesmo carnê (RAINHA MARIA). O número **impresso** vence o modelo
+(`apply_boleto_document_number`, texto e visual com 1 pagável); leituras divergentes ⇒ mantém.
 4. **valor + vencimento** — 🔴 **NÃO exige `document_type` igual**: o tipo varia entre os
    documentos que descrevem a mesma dívida (`boleto` no PDF, `fatura` no corpo). Distinção que
    permanece: doc **com** barcode só casa candidato **sem** barcode.
@@ -833,6 +840,16 @@ SOCIAL dela** (`_is_own_company_name`, só razão social e igualdade exata norma
 Têxtil…Otimotex Ltda" no corpo da Leadster casava o sk 4 e impunha ICMS-ST (136). 🔴 **Só o sk 1
 pode ter a razão social de uma pagadora** (137): o fallback 6 a envia à RPC de propósito, e um 2º
 cadastro assim deixa o passo por nome não-determinístico. Tipo de documento nunca vira fornecedor.
+🔴 **FALHA da RPC NÃO cai no pagador** (`SupplierResolutionError`): `None` só vem da recusa "nenhum
+identificador valido" ou do Supabase indisponível. Tudo virar `None` lançou o boleto do SINDMESTRES
+(nome > 60 caracteres, 22001 no auto-insert — 138) sob a OTIMOTEX. E a sondagem do pagador vai
+**sem** `sender_email`, senão a RPC anexa e-mail de terceiro ao cadastro da pagadora (139).
+🔴 **Em GUIA DE TRIBUTO, CNPJ de uma pagadora sai SEMPRE; o nome sai só se for o CONTRIBUINTE**
+(`_is_contribuinte_name` — a guia imprime grafia que a guarda exata não pega, 140). Nome de
+**favorecido real** lido junto do CNPJ do contribuinte **VENCE**.
+🔴 **Fora de guia, BENEFICIÁRIO = a própria pagadora ⇒ sk 1** (141, conta 933): CNPJ da raiz do sk 1
++ nome da pagadora + **pagador TERCEIRO por documento** — é o pagador que separa do bloco do
+DESTINATÁRIO copiado (MOVVI). **Não herda** o default do sk 1 (Vale Alimentação).
 
 🔴 **O E-MAIL do remetente ORIGINAL encaminhado SÓ IDENTIFICA, NUNCA CRIA** (fallback 1b,
 migration 134). Ele diz quem **MANDOU** o documento, não quem **RECEBE** o pagamento — trocar

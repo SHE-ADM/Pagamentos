@@ -116,10 +116,19 @@ Todas escopadas por `sk_supplier` (resolvido **antes** da dedup), nunca por text
 
 1. **barcode**
 2. **nosso número** — 🔴 com guarda de título (`_same_title`): o campo que o LLM extrai às vezes é
-   o código agência/conta do cedente, igual em todos os boletos do fornecedor
-3. nº do documento (≥6) + valor — 🔴 ignora número **sintético**
+   o código agência/conta do cedente, igual em todos os boletos do fornecedor; `invoice_number`
+   que é cópia do nosso número (contas anteriores a 2026-09-15) sai da comparação
+   (`_own_document_number`)
+3. nº do documento (≥6) + valor — 🔴 ignora número **sintético**; 🔴 nossos números reais e
+   **diferentes** vetam (`_distinct_nosso_numero`) — parcelas de carnê repetem Nº e valor
 4. **valor + vencimento** — 🔴 **não** exige `document_type` igual (o tipo varia entre os
    documentos que descrevem a mesma dívida)
+
+🔴 **`invoice_number` de boleto é o "Nº do Documento" da ficha — nunca o Nosso Número** (este só
+na falta do campo; tem coluna própria). O número impresso vence o modelo
+(`apply_boleto_document_number`): lido da linha "Data do Documento | Nº do Documento | Espécie",
+só quando todas as leituras concordam; no visual, só com 1 pagável. Contas antigas:
+`scripts/reprocess_document_number.py`.
 
 🔴 **A consulta de dedup RE-TENTA em falha de rede.** Um hiccup faria `find_financial_duplicate`
 devolver "sem duplicata" e o pipeline **gravaria conta duplicada**. Resultado vazio não é erro.
@@ -140,6 +149,27 @@ auto-insert.
 - 🔴 **Identificador forte que não casou ⇒ fornecedor NOVO** (migration 109). Sem isso, o endereço
   de uma **plataforma** (`no-reply@sswsistemas.com.br`, compartilhado por dezenas de
   transportadoras) atribuía a conta ao primeiro fornecedor que casasse.
+- 🔴 **FALHA da RPC NÃO cai no pagador** (`SupplierResolutionError`). `resolve_supplier` tem três
+  desfechos: id · `None` **só** para a recusa "nenhum identificador valido" ou o Supabase
+  indisponível · exceção para qualquer
+  falha (4xx definitivo não re-tenta; rede/5xx re-tentam). Antes tudo virava `None`: o 22001 do
+  auto-insert (nome > 60 caracteres — a migration 138 corta) lançava o boleto do sindicato sob a
+  OTIMOTEX com o plano dela (contas 895/1396). Agora a conta vai a `/erros` com o motivo.
+- 🔴 **A sondagem do pagador NÃO leva o `sender_email`** — a RPC anexa o e-mail recebido ao
+  cadastro que resolveu, e o de terceiro passava a sequestrar contas pelo passo de e-mail (139).
+- 🔴 **Guia de tributo com CNPJ de uma PAGADORA:** o CNPJ (do CONTRIBUINTE) sai **sempre** —
+  mantido, casaria a OTIMOTEX no passo de CNPJ da RPC, antes do nome. O **nome** sai só se for o
+  contribuinte (`_is_contribuinte_name`: razão social exata · token de MARCA · repete o
+  `payer_name` · similaridade ≥ `CONTRIBUINTE_NAME_SIMILARITY`); senão é **favorecido real e
+  VENCE**. A GNRE imprime grafia própria ("CONFEC**ES**") que a guarda exata não pega (13 guias
+  em apelidos, migration 140). Marca e similaridade são complementares; marca sai da `company`
+  (palavra na razão social E no fantasia). **Só em guia:** num boleto o CNPJ da LE BLANC vale.
+- 🔴 **Fora de guia, BENEFICIÁRIO = a própria pagadora ⇒ sk 1** (`_beneficiary_is_own_payer`,
+  conta 933 / migration 141). Três condições cumulativas: CNPJ com a raiz do **sk 1** (não a da
+  LE BLANC), nome reconhecido como a pagadora e **pagador TERCEIRO identificado por documento**. O
+  pagador é o que separa do bloco do DESTINATÁRIO copiado no fornecedor (MOVVI, onde o pagador é a
+  OTIMOTEX). Pagador ausente ⇒ a regra não dispara. **Não herda** o default do sk 1 (RH / Vale
+  Alimentação, o plano errado de 895/1396): a conta nasce com o sentinela 0.
 - 🔴 **O CNPJ da própria empresa pagadora nunca é o fornecedor** — comparação pela **raiz de 8
   dígitos** (filiais compartilham a raiz).
 - 🔴 **A RAZÃO SOCIAL da própria pagadora também não** (`_is_own_company_name`, em

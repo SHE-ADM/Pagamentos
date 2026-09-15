@@ -123,7 +123,12 @@ def main() -> int:
         if args.dry_run:
             log.info(f"(dry-run) id={c['id']}: {cur_name} ({cur_cnpj or '—'}) → {bname} ({bcnpj})")
         else:
-            new_sk = ctrl.resolve_supplier({"supplier_cnpj": bcnpj, "supplier_name": bname})
+            try:
+                new_sk = ctrl.resolve_supplier({"supplier_cnpj": bcnpj, "supplier_name": bname})
+            except R.SupplierResolutionError:
+                log.exception(f"id={c['id']}: falha ao resolver {bname!r} ({bcnpj}) — pulado")
+                changed -= 1
+                continue
             if new_sk and new_sk != c["sk_supplier"]:
                 _patch_sk(ctrl, c["id"], new_sk)
                 log.info(f"id={c['id']}: sk {c['sk_supplier']} ({cur_name}) → {new_sk} ({bname} / {bcnpj})")

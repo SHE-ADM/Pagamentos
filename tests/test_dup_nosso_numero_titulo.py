@@ -15,9 +15,12 @@ boletos DISTINTOS tem numeros distintos. Medido nos dados reais:
     (00561066674 x 00569007593).
 """
 
+import io
+import json
 import sys
 import unittest
 from pathlib import Path
+from unittest import mock
 
 _SCRIPTS_DIR = Path(__file__).resolve().parents[1] / "skills" / "email-reader" / "scripts"
 sys.path.insert(0, str(_SCRIPTS_DIR))
@@ -102,7 +105,9 @@ class FindDuplicate1bTest(unittest.TestCase):
             url = req.full_url
             chamadas.append(url)
             import io, json as _json
-            corpo = _json.dumps([candidato] if ("nosso_numero" in url and candidato) else [])
+            # `nosso_numero=eq.` e o FILTRO da 1b; "nosso_numero" sozinho tambem aparece no
+            # `select` da impressao 2 e faria o mock responder a consulta errada.
+            corpo = _json.dumps([candidato] if ("nosso_numero=eq." in url and candidato) else [])
             r = io.BytesIO(corpo.encode())
             r.__enter__ = lambda s=r: s
             r.__exit__ = lambda s, *a: None
@@ -138,6 +143,82 @@ class FindDuplicate1bTest(unittest.TestCase):
             {"id": 1, "due_date": "2026-08-10", "barcode": None, "invoice_number": None},
         )
         self.assertIsNotNone(dup)
+
+    def test_conta_LEGADA_com_nosso_numero_no_invoice_ainda_deduplica(self):
+        # 🔴 Transicao de 2026-09-15: a conta antiga guardava o NOSSO NUMERO em
+        # invoice_number; a 2a via chega com o 'Nº do Documento' real. Sem
+        # `_own_document_number`, os numeros "diferem" e a 1b deixa de deduplicar.
+        nn = "00035803290000004142-1"
+        dup = self._dedup(
+            {"sk_supplier": 936, "amount": 28809.42, "due_date": "2026-09-30",
+             "invoice_number": "NF16797-7", "nosso_numero": nn},
+            {"id": 1525, "due_date": "2026-09-23", "barcode": None,
+             "invoice_number": nn, "nosso_numero": nn},
+        )
+        self.assertIsNotNone(dup)
+        self.assertEqual(dup["id"], 1525)
+
+
+class OwnDocumentNumberTest(unittest.TestCase):
+    def test_copia_do_nosso_numero_nao_e_numero_proprio(self):
+        nn = "00035803290000004142-1"
+        self.assertIsNone(R._own_document_number(nn, nn))
+        self.assertIsNone(R._own_document_number("35803290000004142", "358032900000041421"[:-1]))
+
+    def test_numero_proprio_e_preservado(self):
+        self.assertEqual(R._own_document_number("NF16797-7", "00035803290000004142-1"), "NF16797-7")
+        self.assertEqual(R._own_document_number(TRT_AGOSTO, "0001/0000515-6"), TRT_AGOSTO)
+        self.assertIsNone(R._own_document_number(None, "123"))
+
+
+# Parcela 2 de um carnê cujas parcelas repetem o Nº do Documento e o valor.
+PARCELA_2 = {"sk_supplier": 756, "amount": 3835.00, "due_date": "2026-10-20",
+             "invoice_number": "122876", "nosso_numero": "109/00165371-6",
+             "barcode": "34191" + "2" * 39}
+
+
+class FindDuplicate2ParcelaTest(unittest.TestCase):
+    """Impressao 2 (fornecedor + Nº do Documento + valor) com a guarda de nosso numero."""
+
+    def _dedup(self, payload, candidato):
+        ctrl = R.SupabaseControl.__new__(R.SupabaseControl)
+        ctrl._available = True
+        ctrl.base = "https://x"
+        ctrl.headers = {}
+        self.urls = []
+
+        def fake_urlopen(req, timeout=None):
+            self.urls.append(req.full_url)
+            corpo = json.dumps([candidato] if "invoice_number=eq." in req.full_url else [])
+            r = io.BytesIO(corpo.encode())
+            r.__enter__ = lambda s=r: s
+            r.__exit__ = lambda s, *a: None
+            return r
+
+        with mock.patch.object(R.urllib.request, "urlopen", fake_urlopen):
+            return R.SupabaseControl.find_financial_duplicate(ctrl, dict(payload))
+
+    def test_parcelas_com_nosso_numero_DIFERENTE_nao_se_fundem(self):
+        # 🔴 Sem a guarda, a parcela 2 casava a parcela 1 e SUMIA.
+        dup = self._dedup(PARCELA_2,
+                          {"id": 1179, "due_date": "2026-09-20", "barcode": "34191" + "1" * 39,
+                           "processing_notes": None, "nosso_numero": "109/00165370-8"})
+        self.assertIsNone(dup)
+        # anti-vacuidade: a impressao 2 foi de fato consultada
+        self.assertTrue(any("invoice_number=eq." in u for u in self.urls))
+
+    def test_mesmo_nosso_numero_ainda_deduplica(self):
+        dup = self._dedup(PARCELA_2,
+                          {"id": 1179, "due_date": "2026-09-20", "barcode": None,
+                           "processing_notes": None, "nosso_numero": "109 / 00165371 - 6"})
+        self.assertEqual(dup["id"], 1179)
+
+    def test_candidato_sem_nosso_numero_ainda_deduplica(self):
+        # Conservador: sem prova de titulo distinto, a impressao segue valendo.
+        dup = self._dedup(PARCELA_2,
+                          {"id": 1179, "due_date": "2026-09-20", "barcode": None,
+                           "processing_notes": None, "nosso_numero": None})
+        self.assertEqual(dup["id"], 1179)
 
 
 if __name__ == "__main__":

@@ -123,7 +123,13 @@ def inspect_one(ctrl, ec: dict, body_text: str) -> str:
     # e como find_financial_duplicate casa POR sk_supplier, a previsao divergiria do que
     # o run real grava, que e' exatamente o que um dry-run existe para impedir.
     payload["sender_email"] = ec.get("sender_email")
-    R._finalize_supplier(ctrl, payload, body_text or "")
+    # 🔴 O retorno NAO pode ser ignorado: no modo real, `try_extract_from_body` devolve BODY_NONE
+    # quando o fornecedor nao resolve (inclusive por FALHA da RPC) e nada e gravado. Ignorando-o,
+    # a dedup rodava sem sk_supplier e o dry-run previa "gravaria" — o oposto do run real.
+    if not R._finalize_supplier(ctrl, payload, body_text or ""):
+        motivo = payload.get(R.SUPPLIER_ERROR_KEY) or "fornecedor nao resolvido"
+        log.info(f"[{ec['id']}] {ec['subject'][:55]} — não gravaria (fornecedor: {motivo})")
+        return "sem_conta"
     dup = ctrl.find_financial_duplicate(payload)
     if dup:
         log.info(f"[{ec['id']}] {ec['subject'][:55]} — DUPLICIDADE (conta id {dup.get('id')} já existe)")
