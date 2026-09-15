@@ -2,8 +2,9 @@
 
 ## 2026-09-15 — Fornecedor (falha da RPC, contribuinte, beneficiário = pagadora) + Nº do Documento
 
-**O que foi ao ar.** O pacote saiu do **working tree** da `Features`, ainda **sem commit nem PR**. O
-merge em `main` precisa carregar exatamente estes arquivos, ou a paridade volta a divergir.
+**O que foi ao ar** (PR #253, merge `3b66e47`). A cópia para produção foi feita do working tree,
+antes do commit. O merge levou exatamente os mesmos arquivos: o manifesto da `main` tem o hash
+conferido em produção (`85A92EB9…FFDFB`), e `read_emails.py`/`extract_pdf.py` batem com ele.
 - **Falha da RPC de fornecedor ≠ "não encontrado".** `resolve_supplier` tem três desfechos
   (`SupplierResolutionError`), e a conta vai a `/erros` com o motivo em vez de cair no pagador
   (SINDMESTRES, contas 895/1396). A sondagem do pagador vai sem `sender_email`.
