@@ -5,6 +5,7 @@ Projeto: pagamentos | Skill: pdf-contas-pagar | v1.0.0
 
 import os, re, sys, json, argparse, logging, unicodedata, tempfile
 from datetime import datetime, timezone, date, timedelta
+from itertools import pairwise
 from pathlib import Path
 
 import pdfplumber
@@ -213,8 +214,11 @@ EXTRACTION_PROMPT = (
     "Prefira o formato mascarado com 14 caracteres (XXX.XXX.XXX-XX). "
     "Somente quando beneficiario for pessoa fisica sem CNPJ. NUNCA o do pagador.\n"
     "- invoice_number: identificador principal do documento. "
-    "Para boletos bancarios (boleto, seguro, fatura): use o 'Nosso Numero' — "
-    "formato tipico: XXX/XXXXXXXX-D, ex: '109/26505819-5'. "
+    "Para boletos bancarios (boleto, seguro, fatura): use o 'Nr. do Documento' / "
+    "'N do Documento' / 'Numero do Documento' da ficha de compensacao — o numero que o "
+    "beneficiario deu ao titulo, ex: 'NF16751-7', '96325/1', '6173-01'. "
+    "NUNCA use o 'Nosso Numero' aqui (ele vai no campo nosso_numero), EXCETO quando o "
+    "boleto nao tiver campo de numero do documento. "
     "Para NF-e/NFS-e: numero da nota fiscal. "
     "Para outros: qualquer campo rotulado 'n documento', 'numero documento', "
     "'documento', 'fatura', 'numero da fatura', 'n fatura' ou 'n do documento'. "
@@ -936,6 +940,93 @@ def extract_supplier_name(text, doc_type):
                     return c[:120]
     return None
 
+# --- Nº do Documento do boleto (linha "Data do Documento | Nº do Documento | Espécie") ---
+# O "Nº do Documento" é o número que o BENEFICIÁRIO deu ao título (NF, duplicata, parcela) — é
+# o que o usuário confere no papel e o que a coluna "Nº Documento" de /consulta mostra. O
+# "Nosso Número" é o controle do BANCO e tem coluna própria (`nosso_numero`). Até 2026-09-15 o
+# prompt pedia o Nosso Número em `invoice_number`, e o modelo ALTERNAVA entre os dois dentro do
+# MESMO carnê (RAINHA MARIA, contas 1499-1525: 'NF16513-7' numa parcela, '35803290000004158' na
+# seguinte). Leitura DETERMINÍSTICA pelo texto — mesma precedência da data impressa: a linha de
+# rótulos da ficha de compensação é padrão FEBRABAN (medida em 25 fornecedores).
+_DOCNUM_DATE = r"\d{2}[/.\-]\d{2}[/.\-]\d{2,4}"
+# Linha de VALORES sob o cabeçalho: começa na Data do Documento, depois o Nº do Documento (pode
+# ter espaço: '504811 01'), até 2 tokens SEM dígito (Espécie 'DM', Aceite 'N'/'NÃO') e a Data de
+# Processamento. Âncora no início da linha: o layout "Carteira | Data do Documento | Nº" começa
+# por '109' e ali o regex não casa (a ordem das colunas é outra — não adivinhar).
+_DOCNUM_ROW_RE = re.compile(
+    rf"^\s*{_DOCNUM_DATE}\s+(?P<doc>.+?)\s+(?:[^\s\d]{{1,5}}\s+){{0,2}}{_DOCNUM_DATE}(?!\d)")
+_DOCNUM_MONEY_RE = re.compile(r"^\d{1,3}(?:\.\d{3})*,\d{2}$")
+# Mesmo teto da coluna `invoice_number` no schema do CSV.
+_DOCNUM_MAX_LEN = 30
+
+
+def _is_docnum_header(line: str) -> bool:
+    """Cabeçalho da ficha: 'Data do Documento' → 'Nº do Documento' → 'Espécie', NESTA ordem.
+
+    Sobre o texto normalizado (`_ns`): o pdfplumber entrega 'Nº'/'Número' como 'N\\ufffd'/
+    'N\\ufffdmero', e o `_ns` descarta o caractere — daí 'n documento' e 'nmero documento'."""
+    n = _ns(line)
+    data = re.search(r"\bdata\s+(?:do\s+|de\s+)?doc", n)
+    num = re.search(r"\b(?:n|nr|no|num|numero|nmero)\.?\s*(?:do\s+|de\s+)?documento", n)
+    esp = re.search(r"\besp", n)
+    return bool(data and num and esp and data.start() < num.start() < esp.start())
+
+
+def _is_valid_docnum(doc: str) -> bool:
+    return (any(c.isdigit() for c in doc)
+            and len(doc) <= _DOCNUM_MAX_LEN
+            and "$" not in doc
+            and not _DOCNUM_MONEY_RE.match(doc)
+            and not re.fullmatch(_DOCNUM_DATE, doc))
+
+
+def extract_boleto_document_number(text):
+    """'Nº do Documento' da ficha de compensação, ou None.
+
+    Conservador: a ficha repete a linha (recibo do pagador + ficha), e só devolve quando TODAS
+    as leituras concordam. Valores divergentes (PDF com vários boletos) ⇒ None, e o que o modelo
+    leu é mantido — escolher um carimbaria o número do primeiro boleto nos demais."""
+    if not text:
+        return None
+    lines = text.splitlines()
+    values = []
+    for header, row in pairwise(lines):
+        if not _is_docnum_header(header):
+            continue
+        m = _DOCNUM_ROW_RE.match(row)
+        if not m:
+            continue
+        tokens = m.group("doc").split()
+        # Cauda SEM dígito é Espécie/Aceite que o grupo preguiçoso absorveu quando o token passa
+        # do teto {1,5} do regex: 'NAO ACEITO' e 'RECIBO' gravaram '1606 DS NAO ACEITO' e
+        # '0008901683 RECIBO' (contas 123/147/558/1043/1051, 2026-09-15).
+        while tokens and not any(c.isdigit() for c in tokens[-1]):
+            tokens.pop()
+        doc = " ".join(tokens)
+        if _is_valid_docnum(doc):
+            values.append(doc)
+    if len(set(values)) != 1:
+        return None
+    return values[0]
+
+
+def apply_boleto_document_number(rec: dict, text) -> dict:
+    """O 'Nº do Documento' IMPRESSO vence o `invoice_number` do modelo. Idempotente.
+
+    Quando substitui um número SINTÉTICO, retira a nota que o anunciava — senão "Observações"
+    diria "N documento ausente" numa conta que tem o número."""
+    doc = extract_boleto_document_number(text)
+    if not doc or doc == rec.get("invoice_number"):
+        return rec
+    log.info(f"  → Nº do Documento lido do texto: {doc!r} (modelo: {rec.get('invoice_number')!r})")
+    rec["invoice_number"] = doc
+    notes = rec.get("processing_notes")
+    if notes:
+        kept = [p for p in notes.split(" | ") if p != SYNTHETIC_INVOICE_NOTE]
+        rec["processing_notes"] = " | ".join(kept) or None
+    return rec
+
+
 # --- Beneficiário Final vence Beneficiário/Cedente (boleto securitizado) ---
 # Em boleto securitizado/factoring, o "Beneficiário"/"Cedente" é a securitizadora/empresa
 # de cobrança e o "Beneficiário Final" é o credor REAL (o fornecedor que vendeu). O
@@ -1330,6 +1421,9 @@ def _format_brl(value) -> str:
     return f"R$ {s}"
 
 
+SYNTHETIC_INVOICE_NOTE = "N documento ausente — gerado de tipo+vencimento"
+
+
 def fallback_invoice_number(doc_type: str, due_date, amount=None, payment_method="") -> str:
     """invoice_number sintetico quando o documento nao traz N do Documento.
 
@@ -1434,7 +1528,7 @@ def build_record_from_json(pdf_path, data: dict, source: str) -> dict:
     if not has_document_number(rec["invoice_number"]):
         rec["invoice_number"] = fallback_invoice_number(
             rec["document_type"], rec["due_date"], rec.get("amount"), rec.get("payment_method"))
-        notes.append("N documento ausente — gerado de tipo+vencimento")
+        notes.append(SYNTHETIC_INVOICE_NOTE)
     rec["processing_notes"] = " | ".join(notes) if notes else None
     return rec
 
@@ -1471,7 +1565,7 @@ def build_record_regex(pdf_path, raw: str, source: str) -> dict:
     if not has_document_number(rec["invoice_number"]):
         rec["invoice_number"] = fallback_invoice_number(
             rec["document_type"], rec["due_date"], rec.get("amount"), rec.get("payment_method"))
-        notes.append("N documento ausente — gerado de tipo+vencimento")
+        notes.append(SYNTHETIC_INVOICE_NOTE)
     rec["processing_notes"] = " | ".join(notes)
     return rec
 
@@ -1540,6 +1634,10 @@ def _build_records_vision(pdf_path, raw, source, doc_text=None) -> list:
         else:
             apply_arrecadacao_deadline(rec, item.get("payment_deadline"),
                                        doc_due_date=item.get("due_date"))
+        # Nº do Documento pelo texto: mesma precedência e mesmo corte de UM pagável da
+        # data-limite acima (o regex é do documento inteiro).
+        if len(itens) == 1:
+            apply_boleto_document_number(rec, doc_text)
         recs.append(rec)
     if not recs:
         return [_failure_record(
@@ -1619,6 +1717,8 @@ def _build_records_text(pdf_path, raw, source) -> list:
     # Beneficiário Final vence Beneficiário/Cedente (boleto securitizado): override
     # determinístico do fornecedor a partir do TEXTO do PDF (imune à escolha do LLM).
     apply_beneficiario_final(rec, raw)
+    # Nº do Documento IMPRESSO vence o do modelo (que alternava com o Nosso Número no carnê).
+    apply_boleto_document_number(rec, raw)
     return [rec]
 
 # --- Falha genérica (registro de erro) ---

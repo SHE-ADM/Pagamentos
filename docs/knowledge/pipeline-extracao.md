@@ -43,6 +43,27 @@ pagável**, enquanto deduplicar a menos só cria uma conta a revisar. Testes:
 `tests/test_dup_nosso_numero_titulo.py` (9 casos, validado por mutante). Correção de dados:
 conta **316** teve o barcode e o `nosso_numero` restaurados (estavam com os do boleto de
 agosto) e o e-mail 1250 foi reprocessado → conta **847** (R$ 450,00, venc. 15/08, "a vencer").
+🔴 **`invoice_number` de boleto passou a ser o "Nº do Documento" (2026-09-15).** O prompt pedia o
+**Nosso Número** e o modelo alternava os dois dentro do mesmo carnê — na RAINHA MARIA (contas
+1499-1525) uma parcela saía `NF16513-7` e a seguinte `35803290000004158`, e o usuário via na coluna
+"Nº Documento" um número que o papel não mostra como tal. Medido: **432 de 510** boletos com
+`invoice_number == nosso_numero`. Correção em três partes:
+1. **Prompt** — Nº do Documento; o nosso número só na falta do campo.
+2. **Leitura determinística** (`extract_boleto_document_number`) da linha de valores sob o
+   cabeçalho "Data do Documento | Nº do Documento | Espécie" (pdfplumber entrega `N�`, que o
+   `_ns` descarta). Validada em PDFs reais de **25 fornecedores**; carnê com N boletos no mesmo PDF
+   devolve `None` no documento e o número certo por página — e o pipeline divide por página.
+3. **Dedup** — a mudança de semântica abria dois buracos, ambos travados por mutante em
+   `tests/test_dup_nosso_numero_titulo.py`:
+   - **Impressão 2:** parcelas que repetem Nº e valor **se fundiriam** (perda silenciosa). Vetada
+     quando os dois nossos números são reais e diferentes (`_distinct_nosso_numero`).
+   - **Impressão 1b:** uma conta legada (nosso número no `invoice_number`) pareceria "outro título"
+     para a 2ª via nova, e a 1b deixaria de deduplicar. `_own_document_number` tira a cópia da
+     comparação.
+
+Contas antigas: `scripts/reprocess_document_number.py` (lê a **página** do título pelo nosso
+número; PDF escaneado fica para revisão, sem gastar API).
+
 ✅ **RESOLVIDO — `status='extraído'` voltou a significar "gerou conta"** (2026-08-04). Antes,
 ele era emitido também quando o CSV foi gerado e a dedup descartou TUDO, e foi essa ambiguidade
 que deixou a perda do T.R.T invisível: e-mail verde, sem conta, sem erro em `/erros`. Agora
@@ -1155,6 +1176,115 @@ que as 5 guias GNRE internas usam (favorecido real = a SEFAZ da UF, que a extra�
 no pagador OTIMOTEX). A guarda `sem_fornecedor` (PDF) também aceita assunto/pagador como chave, para
 não barrar a conta antes do fallback rodar. Ordem completa: **extraído → assunto → e-mail (RPC) →
 PAGADOR**.
+
+**FALHA da RPC ≠ "fornecedor não encontrado" (não regredir, 2026-09-15):** o fallback do pagador
+só pode receber a recusa **legítima** da RPC. Caso: boletos do SINDMESTRES (contas **895**, 08/2026,
+e **1396**, 09/2026) gravados sob a OTIMOTEX com o plano default dela (RH / Vale Alimentação). A
+extração estava **correta** — nome do beneficiário (~140 caracteres) + CNPJ, reproduzido 5/5. O CNPJ
+não estava cadastrado, a RPC tentava o auto-insert e estourava o `VARCHAR(60)` de
+`supplier.legal_name` (**22001**); `SupabaseControl.resolve_supplier` engolia qualquer erro e
+devolvia `None`, o **mesmo valor** de "não há identificador", e `_finalize_supplier` seguia para o
+pagador. Sem erro, sem linha em `/erros`; o mês anterior foi corrigido à mão sem que a causa
+aparecesse. Correção em três partes:
+
+1. **Migration 138:** `resolve_supplier_id` corta o nome na largura da coluna e o passo por nome
+   compara **também a forma cortada** — sem isso, o 2º e-mail do mesmo fornecedor sem CNPJ não
+   casaria o cadastro criado pelo 1º e duplicaria. `_enrich_supplier_name` recebe o mesmo corte.
+   Mutante sem o corte: a sonda P1 aborta com 22001.
+2. **`resolve_supplier` tem TRÊS desfechos:** id · `None` só para o RAISE "nenhum identificador
+   valido" (marcador `SUPPLIER_RPC_NO_IDENTIFIER_MARKER`, espelho travado por teste) e Supabase
+   indisponível · `SupplierResolutionError` para qualquer falha. 4xx é definitivo (não re-tenta);
+   rede, timeout e 5xx re-tentam (`SUPPLIER_RPC_ATTEMPTS`). `_finalize_supplier` devolve `False`
+   com o motivo na chave efêmera `SUPPLIER_ERROR_KEY`, que o chamador copia para `/erros`.
+3. **A sondagem do pagador não leva o `sender_email`.** A RPC anexa o e-mail recebido ao cadastro
+   que resolveu (`_add_supplier_email`); na sondagem esse cadastro é o da **pagadora**. Foi assim
+   que 4 e-mails de terceiros chegaram ao sk 1 — dois deles duplicados em cadastros reais
+   (Panificadora Belga 1254, OBER 249), disputando contas pelo passo de e-mail (`LIMIT` sem
+   `ORDER BY`). Limpos na migration 139.
+
+⚠️ **Residual aceito:** dois nomes longos com os mesmos 60 primeiros caracteres casam o mesmo
+cadastro quando nenhum dos dois traz CNPJ/CPF. ⚠️ **Não há como medir casos antigos** dessa
+falha: o log de produção não está no ambiente de desenvolvimento, e guia tributária sob a
+OTIMOTEX é o destino esperado. As 3 contas não-tributárias do sk 1 (33, 160, 194) têm outras
+causas — "Fornecedor: OTIMOTEX" literal no corpo, razão social da pagadora no assunto e
+comprovante de cliente.
+
+**GUIA DE TRIBUTO: o CONTRIBUINTE nunca vira fornecedor — pelo CNPJ, não pela grafia (não
+regredir, 2026-09-15):** a GNRE/DARF só imprime uma razão social além do Fisco, a do contribuinte
+— a própria pagadora. A extração a devolve como fornecedor (nome + CNPJ 47.273.917/0001-23;
+reproduzido nas guias 1389, 1429 e 1480). O pipeline descartava o **CNPJ** pela raiz, mas o
+**nome** seguia para a RPC e casava por texto um cadastro-apelido. **13 guias** ficaram fora do
+sk 1, e o mesmo e-mail dividiu guias idênticas entre dois fornecedores conforme a leitura do
+modelo:
+
+| Cadastro | Guias | Por que casava |
+|---|---|---|
+| sk 4 LEBIANCO | 782, 785, 786, 1388 (DARF), 1429, 1432, 1438 | `legal_name` era a razão social da pagadora até a 136 |
+| sk 1400 | 1389, 1390, 1393, 1394, 1395 | criado pelo auto-insert com a **grafia da guia**: "TEXTIL E CONFEC**ES** OTIMOTEX LTDA" |
+| sk 1415 | 1480 | "TEXTIL E CONFECCOES OTIMOTEX" (sem LTDA), horas antes do deploy da guarda de 14/09 |
+
+A guarda de razão social de 14/09 **não** fecha o caso: é igualdade exata, de propósito, e a
+grafia da guia a contorna. A regra (`_finalize_supplier`) parte do sinal forte: em **guia de
+tributo**, CNPJ extraído de 14 dígitos com a raiz de **qualquer** pagadora (`_payer_cnpj_roots` ←
+`company_cnpjs`, que inclui a LE BLANC, de raiz própria) é o do contribuinte e sai **sempre** —
+mantido, casaria a OTIMOTEX no passo de CNPJ da RPC, que vem antes do nome. **Só em guia:** num
+boleto o CNPJ da LE BLANC é de fornecedor legítimo (aluguel). Efeito colateral que também some: o
+write-back da classificação forçada gravava o plano tributário nesses apelidos (o sk 4 teve o
+default reescrito 33→28→33 por guias). Dados: migration 140.
+
+**Favorecido real + CNPJ do contribuinte ⇒ o FAVORECIDO VENCE (decisão do usuário, 2026-09-15).**
+A 1ª versão da regra descartava o nome junto com o CNPJ sempre, e uma leitura que juntasse "SEFAZ
+MG" ao CNPJ do contribuinte perdia o favorecido. Agora o nome só sai se for o **contribuinte**
+(`_is_contribuinte_name`); qualquer sinal basta:
+
+| Sinal | Pega | Exemplo |
+|---|---|---|
+| razão social exata de uma pagadora | o nome limpo | "TEXTIL E CONFECCOES OTIMOTEX" |
+| token de **marca** (palavra na razão social **e** no fantasia da mesma empresa — `company_brand_tokens`, sai dos dados: `otimotex`, `lebianco`, `blanc`) | grafia divergente com a marca | "TEXTIL E CONFEC**ES** OTIMOTEX LTDA", "LE BLANC ADM DE BENS" |
+| repete o `payer_name` do mesmo documento | contribuinte copiado nos dois campos | — |
+| similaridade ≥ `CONTRIBUINTE_NAME_SIMILARITY` (0,85) | a marca com OCR deslocado | "…OTIMOT**X** LTDA" (0,982) |
+
+Sem sinal nenhum, o nome é favorecido real, fica no payload e resolve pela RPC. **O limiar foi
+medido**, não escolhido: sobre os 1.387 fornecedores, o nome sem marca mais próximo de uma
+pagadora fica em 0,703 ("DEXINGLONG PLASTICS") e o favorecido real de guia mais próximo em 0,453
+("Governo do Estado de São Paulo - SEFAZ"). A razão social **completa** com grafia divergente fica em
+0,96–1,00 ("CONFEC**ES**" 0,963; "OTIMOT**X**" 0,982), mas as formas **curtas** da marca ficam
+**abaixo** do limiar ("CONFECCOES OTIMOTEX" 0,809, "LEBIANCO" 0,615) e são pegas pela marca, não
+pela similaridade (medição reproduzida em 2026-09-15). Marca e
+similaridade são **complementares** — "LE BLANC ADM DE BENS" (0,678) só pela marca, "OTIMOTX" só
+pela similaridade — e a guarda de teste trava isso com os números. Ctrl sem marca degrada para os
+demais sinais. ⚠️ **Residual aceito:** favorecido cujo nome contenha uma marca de pagadora seria
+lido como contribuinte — nenhum dos favorecidos cadastrados tem.
+
+🔴 **LE BLANC continua VENCENDO como empresa pagadora (`sk_company` 4).** A regra acima tira o
+nome/CNPJ da LE BLANC do **fornecedor**, mas o sinal de **empresa** é capturado **antes** de
+`_finalize_supplier` (`row_le_blanc` no anexo, `body_le_blanc` no corpo) e chega a
+`apply_sk_company` pela flag. Guia com a LE BLANC como contribuinte ⇒ fornecedor OTIMOTEX, empresa
+LE BLANC; favorecido real + CNPJ da LE BLANC ⇒ fornecedor favorecido, empresa LE BLANC — inclusive
+com remetente `@lebianco`. Travado por teste executado (`LeBlancVenceComoEmpresaTest`).
+
+**Fora de guia: BOLETO cujo BENEFICIÁRIO é a própria pagadora ⇒ OTIMOTEX (sk 1) (decisão do
+usuário, 2026-09-15):** o e-mail "BOLETOS SAMUEL - SHADOW 3" trouxe 7 boletos com pagadora
+CONFECCOES SHADOW LTDA. Em um deles (conta **933**), o beneficiário impresso é "CONFECCOES OTIMOTEX -
+CNPJ 047.273.917/0001-23". O pipeline descartava o CNPJ pela raiz, e o nome curto (0,809, abaixo do
+limiar e fora da guarda exata) ia à RPC e criava o cadastro-apelido **1227**. Dados corrigidos na
+migration 141. Como a RPC ignora `deleted_at` no passo por nome, só a correção de dados não bastava:
+o próximo boleto igual cairia no 1227 removido.
+
+A regra (`_beneficiary_is_own_payer`, em `_finalize_supplier`, logo após a do contribuinte) tem
+três condições **cumulativas**, todas do mesmo documento:
+
+| Condição | Por quê |
+|---|---|
+| CNPJ extraído com a raiz do **sk 1** | a LE BLANC tem raiz própria e é fornecedora legítima (aluguel) |
+| nome reconhecido como a pagadora (`_is_contribuinte_name`, sem o sinal do pagador) | nome de terceiro com o CNPJ da OTIMOTEX é o caso MOVVI, que segue pelo nome/assunto |
+| **pagador identificado por documento e de outra raiz** (CPF conta como terceiro) | separa "a OTIMOTEX é a credora" de "a extração copiou o bloco do DESTINATÁRIO no fornecedor" — na fatura reencaminhada o pagador **também** é a OTIMOTEX |
+
+O nome é capturado **antes** da exclusão por razão social exata, que o removeria. **Não herda** o
+default de classificação do sk 1 (RH / Vale Alimentação — o plano errado das contas 895/1396): a
+conta nasce com o sentinela 0 para curadoria. A guia de tributo mantém a regra própria, que herda.
+⚠️ **Conservadora de propósito:** pagador ausente ⇒ não dispara, e o fluxo segue como antes.
+Travado por `tests/test_supplier_beneficiario_pagadora.py` (call site executado, 4 mutantes).
 
 **GUIA DE IMPOSTO sem favorecido real → OTIMOTEX (sk=1) — precede o assunto (não regredir):** o
 credor de uma guia de tributo é o **Fisco** (SEFAZ/RFB/prefeitura), que a extração não captura; o

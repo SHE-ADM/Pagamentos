@@ -33,6 +33,7 @@ mesma coisa que a execução, está avisado abaixo.
 | Um e-mail específico, inclusive **imagem inline** (recibo colado) | `reprocess_message.py --message-id "<…>"` |
 | Ampliou keyword/regra e há `ignorado` que agora casa | `reprocess_ignored_emails.py` |
 | Boleto securitizado com fornecedor errado (cedente em vez do beneficiário final) | `reprocess_beneficiario_final.py` |
+| "Nº Documento" do boleto mostra o **nosso número** (contas anteriores a 2026-09-15) | `reprocess_document_number.py` |
 | Corpo gravado é só o aviso "conteúdo em HTML" | `backfill_placeholder_bodies.py` |
 | Contato do fornecedor (telefone/WhatsApp/PIX) vazio | `backfill_supplier_contacts.py` |
 | Chave fiscal dos PDFs que já estão no bucket | `backfill_fiscal_documents.py` |

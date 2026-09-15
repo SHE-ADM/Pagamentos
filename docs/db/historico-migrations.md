@@ -16,6 +16,92 @@
 
 ## Changelog (mais recente primeiro)
 
+**A `142` corrige o `invoice_number` de 5 contas em que a Espécie/Aceite foi gravada junto do "Nº do
+Documento"** — sem DDL, aplicada via psql em 2026-09-15 (17:56 UTC). A origem é a execução real de
+`scripts/reprocess_document_number.py` no mesmo dia (14:44–14:50 UTC, 338 contas), feita com o
+parser `extract_boleto_document_number` ainda defeituoso. O regex admitia até 2 tokens de 1 a 5
+letras antes da Data de Processamento. Com Aceite "NAO ACEITO" ou Espécie "RECIBO" (6 letras), a
+cauda entrou no número:
+
+| Conta | Tipo / fornecedor | Gravado pelo script | Corrigido |
+|---|---|---|---|
+| 123 | boleto · Editora Globo (1191) | `0008901683 RECIBO` | `0008901683` |
+| 147 | cte · SEVEN EXPRESS (1180) | `2306 DM NAO ACEITO` | `2306` |
+| 558 | boleto · Editora Globo (1191) | `0008951990 RECIBO` | `0008951990` |
+| 1043 | cte · TORRE S (1337) | `1808 DM NAO ACEITO` | `1808` |
+| 1051 | boleto · Editora Globo (1191) | `0009004814 RECIBO` | `0009004814` |
+
+Os valores foram conferidos no PDF de cada conta, pela linha crua da ficha e pelo extrator
+corrigido, e nenhum colide com outra conta. Efeito: só `invoice_number`, com as 5 contas pagas.
+
+Sonda: P0 anti-vacuidade (5 no baseline); P1 os 5 valores do PDF; **P2 compara a linha inteira contra
+o baseline capturado antes do UPDATE**, fora `invoice_number`/`updated_at`/`updated_by`; **P3 refaz a
+varredura que achou o defeito, restrita ao lote do script pelo `audit_log`, e exige zero**. Ensaiada em
+`ROLLBACK` (`UPDATE 5`). O **mutante que deixa a 147 errada abortou em P1** (`4 de 5`).
+Reexecução: `UPDATE 0`, sonda verde. Depois da aplicação, nenhuma conta da base tem cauda sem dígito.
+
+**Lição não-óbvia — a correção retroativa tira as vítimas da própria seleção.** O script escolhe
+contas com `invoice_number` = cópia do nosso número. Depois de gravar o valor errado, a conta deixa
+de casar esse critério, e reexecutar com o parser corrigido não a encontra mais. Todo script que
+reescreve a coluna usada na própria seleção precisa de correção **dirigida** para os erros. E o
+extrator precisa ser medido sobre o **acervo real** antes do modo real: a varredura dos 221 PDFs
+locais mostrava as 3 caudas antes de qualquer PATCH.
+
+**A `141` devolve à OTIMOTEX a conta 933, gravada sob o cadastro-APELIDO 1227 "CONFECCOES
+OTIMOTEX"** — sem DDL, aplicada via psql em 2026-09-15. O boleto (e-mail "BOLETOS SAMUEL - SHADOW
+3", 7 boletos com pagadora CONFECCOES SHADOW LTDA) imprime como beneficiário "CONFECCOES OTIMOTEX -
+CNPJ 047.273.917/0001-23", o CNPJ do sk 1 (conferido na página 6 do PDF). Em 2026-08-07 o pipeline
+descartou o CNPJ pela raiz, e o nome curto, que não é a razão social exata, criou o 1227 pelo
+auto-insert. É a família da 140, só que **fora de guia de tributo**, onde a regra do contribuinte não
+vale. Efeito: `sk_supplier` 1227 → 1, com classificação (12 Comercial / 631 Acordos de Terceiros),
+situação (pago) e `payment_date` intactas, pois foram curadas por usuário em 25/08. O 1227 recebeu
+soft delete. Sonda: P0 anti-vacuidade do baseline; P1 compara contra o **baseline capturado antes do
+UPDATE** que só o fornecedor mudou; P2 apelido removido e sem conta; **P3 refaz a varredura (qualquer
+tipo de documento, cadastro sem CNPJ com a marca OTIMOTEX fora do sk 1) e exige zero**. Ensaiada em
+`ROLLBACK` (`UPDATE 1`, `UPDATE 1`), e o **mutante que deixa a conta no 1227 abortou em P1**.
+Reexecução: `UPDATE 0`, sonda verde. ⚠️ A RPC não filtra `deleted_at` no passo por nome. Quem
+impede um boleto igual de voltar ao 1227 é a regra **BENEFICIÁRIO = pagadora ⇒ sk 1**
+(`_beneficiary_is_own_payer`, decisão do usuário no mesmo dia), que só vale em produção depois do
+deploy de `read_emails.py`.
+
+**A `140` devolve à OTIMOTEX 13 guias de tributo gravadas sob cadastros-APELIDO da pagadora** —
+sem DDL, aplicada via psql em 2026-09-15. A extração lia o **contribuinte** da guia como
+fornecedor; o pipeline descartava o CNPJ pela raiz, mas o nome casava por texto o sk 4 (legal_name
+igual à da pagadora até a 136: 782/785/786/1388/1429/1432/1438), o sk 1400 (criado com a grafia
+impressa na guia, "TEXTIL E CONFECES OTIMOTEX LTDA": 1389/1390/1393/1394/1395) e o sk 1415 (1480).
+O texto dos 13 PDFs foi conferido: contribuinte = OTIMOTEX, sem favorecido. Efeito: `sk_supplier`
+→ 1 (classificação intocada — é forçada pelo tipo do tributo); soft delete de 1400 e 1415, sem
+conta restante. O sk 4 fica ativo (fantasia de fornecedor legítimo, decisão da 136); o default
+3/33 dele veio de write-back dessas guias e não é recuperável pela trilha. Sonda: P1 as 13 no sk 1,
+**P2 refaz a varredura que achou o defeito (oráculo) e exige zero**, P3 apelidos removidos e sem
+conta, P4 sk 4 ativo. Ensaiada em `ROLLBACK` (`UPDATE 13`, `UPDATE 2`). ⚠️ A RPC não filtra
+`deleted_at` no passo por nome: quem impede o nome de voltar é a regra do contribuinte no pipeline.
+
+**A `139` é curadoria de dados do caso SINDMESTRES e do cadastro da OTIMOTEX** — sem DDL, aplicada
+via psql em 2026-09-15. Parte A (já aplicada antes, pelo mesmo conteúdo, e registrada aqui para
+rastreio — `UPDATE 0` na aplicação): cadastro 1264 ganha o CNPJ `60938487000180`, o nome corrigido
+("MES**T**ES" → "MESTRES") e o plano **8/519** (Contribuições Sindicais, escolha do usuário); as
+contas 420/895/1396 ficam em 1264 / 8-519 (a 1396 estava na OTIMOTEX com Vale Alimentação; 420 e
+895, em ICMS Importação). Parte B: tira do sk 1 os 4 e-mails de terceiros
+(`financeiro@acarolacbrand.com.br`, `controladoria@ophir.com.br`, `dalvana@ophir.com.br`,
+`padariabelga@gmail.com`), que chegavam pela sondagem do pagador e disputavam contas com os
+cadastros reais (OBER 249, Panificadora Belga 1254) pelo passo de e-mail da RPC. Sonda do estado
+final (A1–A3, B1–B2), com B2 garantindo que os donos reais mantêm os seus. Ensaiada em `ROLLBACK`.
+⚠️ Edição manual posterior nesses registros faz a **reexecução** abortar, de propósito.
+
+**A `138` impede que o auto-insert de fornecedor quebre com nome acima de 60 caracteres** —
+`CREATE OR REPLACE` de `resolve_supplier_id` e `_enrich_supplier_name`, aplicada via psql em
+2026-09-15. `legal_name`/`trade_name` são `VARCHAR(60)`; um beneficiário de ~140 caracteres fazia o
+INSERT levantar **22001**, o pipeline lia a falha como "não encontrado" e lançava a conta sob o
+pagador (contas 895/1396 — ver "FALHA da RPC" em `docs/knowledge/pipeline-extracao.md`). O nome
+do auto-insert é cortado em `c_name_max`, e o passo por nome compara a forma completa **e** a
+cortada (superconjunto do anterior; sem isso o 2º e-mail duplicaria o fornecedor). A mensagem
+"nenhum identificador valido" **não pode mudar** — o pipeline a usa para separar recusa de falha.
+Sonda dentro da transação: P0 larguras do catálogo, P1 corte na largura **do catálogo**, P2 sem
+duplicar, P3 CNPJ vence nome longo (oráculo diferencial), P4 nome curto único segue resolvendo,
+P5 subtransação de ensaio desfeita, P6 grants só `service_role`. **Mutante sem o corte abortou em
+P1 com 22001.** ⚠️ Cada execução consome um valor da sequência de `sk_supplier` (lacuna inofensiva).
+
 **A `137` tira a RAZÃO SOCIAL da pagadora do cadastro `sk_supplier = 404` (CDI)** — sem DDL,
 aplicada via psql em 2026-09-14. O 404 é uma **filial da própria OTIMOTEX** (CNPJ
 `47273917000395`, mesma raiz) cadastrada como fornecedor, com `legal_name` = razão social da
