@@ -51,7 +51,7 @@ Procedimento completo na skill **`deploy-producao`**. Histórico de cada deploy:
 
 | Item | Estado |
 |---|---|
-| Último deploy | **2026-09-15** — falha da RPC de fornecedor vai a `/erros` · contribuinte de guia e beneficiário = pagadora ⇒ sk 1 · `invoice_number` = Nº do Documento (com a correção da cauda Espécie/Aceite) · dedup de parcelas. Arquivos copiados: `extract_pdf.py`, `read_emails.py`, `deploy-manifest.json`. Migrations 138–142 **já aplicadas** (base compartilhada). ⚠️ Copiado do **working tree** da `Features`, ainda **sem commit/PR** |
+| Último deploy | **2026-09-15** — falha da RPC de fornecedor vai a `/erros` · contribuinte de guia e beneficiário = pagadora ⇒ sk 1 · `invoice_number` = Nº do Documento (com a correção da cauda Espécie/Aceite) · dedup de parcelas. Arquivos copiados: `extract_pdf.py`, `read_emails.py`, `deploy-manifest.json`. Migrations 138–142 **já aplicadas** (base compartilhada). PR #253, merge `3b66e47` — o manifesto da `main` tem o mesmo hash conferido em produção |
 | Paridade verificada | ✅ **em produção** (2026-09-15) — `check_deploy_parity.py`: **32/32 conferem, 0 faltando, 0 divergentes, 0 extras**; hash do manifesto confere com o DEV. Validação funcional: **7/7 `True`** (`rpc_falha`, `contribuinte`, `beneficiario_pagadora`, `dedup_parcela`, `sondagem_sem_email`, `docnum`, `cauda_corrigida`). ⏳ Last Run Result do Email Reader e 1º e-mail processado depois do deploy: a confirmar |
 | Tarefas agendadas | 5 ativas — Email Reader (5 min) · Cobrança (10:00) · Backup (02:00) · Baixa (08:00) · Gatilhos Roadmap (dia 1, 07:00) |
 
