@@ -39,7 +39,7 @@ anexo PDF  →  anexo imagem  →  anexo .docx  →  PDF por link  →  imagem i
 | Regra | Decisão | Sinal |
 |---|---|---|
 | **Fatura + boleto no mesmo e-mail** | só o **boleto** vira conta | **barcode + VALOR**, nunca `document_type` |
-| **Extrato/demonstrativo/relatório** junto de boleto | descartado mesmo com valor distinto | nome/descrição (`_is_statement_document`) |
+| **Extrato/demonstrativo/relatório** junto de boleto | descartado mesmo com valor distinto — **exceto com título próprio** | nome/descrição (`_is_statement_document`) + isenção de `_has_own_bank_title` |
 | **Seguradora** | só gera conta com linha digitável válida | contexto detectado **só pelo ASSUNTO** |
 | **CT-e / transporte** | só o **boleto** gera conta; CT-e sem boleto ⇒ `ignorado` | `_is_boleto_barcode`, não `document_type` |
 | **NF-e / NFS-e pura** | não gera conta (`SKIP_ACCOUNT_TYPES`) | exceto **combinada com boleto** no mesmo PDF ⇒ re-rotulada `boleto` |
@@ -51,6 +51,30 @@ outra dívida e é mantido mesmo sem barcode — é o que salva o boleto cujo Vi
 digitável (caso LMED). Bias intencional: **preservar a conta**; perda silenciosa é pior que uma
 linha a revisar.
 
+🔴 **CARNÊ: valor idêntico em todas as parcelas — a guarda de valor sozinha as APAGA.** A isenção
+(`_has_own_bank_title`) tem DOIS sinais, cada um suficiente: **NOSSO NÚMERO próprio e distinto** dos
+boletos reais do e-mail (título registrado no banco) **ou CÓDIGO DE BARRAS DESCARTADO** (a linha
+TINHA instrumento de pagamento e o extrator o recusou por não confiar nele). Fatura, extrato e
+relatório não têm nenhum dos dois. O segundo sinal cobre a parcela escaneada cujo Vision corrompeu
+o código **e** cujo nosso número o modelo não leu — era metade da perda da NF 1724. Caso de origem: RAINHA
+MARIA, NF 1724 (22/09/2026) — 10 parcelas de R$ 25.092,00 em anexos separados; o Vision leu as
+nove imagens corretamente, seis tiveram o código descartado por corrupção e viraram "fatura".
+**R$ 150.552,00 perdidos**, e-mail `extraído`, nada em `/erros`. A isenção é ESTREITA: fatura sem
+nosso número, ou que repita o do boleto, segue descartada.
+
+🔴 **A isenção vale nas DUAS regras que julgam por sinal fraco: VALOR e EXTRATO.** A de extrato
+decide pelo NOME DO ARQUIVO/descrição e só se protegia sozinha enquanto a linha tinha barcode
+(`if _is_boleto_barcode(...): return False`) — desde que o visual passou a DESCARTAR o código
+refutado, um boleto escaneado chamado "relatorio_cobranca.pdf" perderia o código e seria apagado
+pelo nome. O extrato de verdade (caso Correios id 605) não tem nosso número nem código: segue fora.
+
+🔴 **DEAD-MAN SWITCH só na regra da SEGURADORA** (`_warn_discarded_payable`), a única que NÃO
+isenta — ela exige linha digitável válida por decisão de negócio (kit digital = fatura + boleto com
+valores diferentes). Ali o descarte permanece, então vira linha em `/erros` com o payload cru.
+⚠️ **Nas regras de valor e de extrato não há switch, e a ausência é deliberada:** a condição de
+entrada já é a NEGAÇÃO EXATA da isenção, então ele seria **inalcançável** — código que nunca roda
+parece proteção sem ser. Ali o pagável é PRESERVADO, que é melhor do que reportado.
+
 🔴 **`extract_and_store_accounts` roda em DOIS PASSOS** — não regredir para o loop anexo-a-anexo,
 que era cego ao resto do e-mail. Passo 1 extrai todos os anexos e coleta as linhas; Passo 2 grava,
 já sabendo se existe boleto real e quais valores ele tem. Isso torna a regra **independente da
@@ -60,7 +84,7 @@ ordem** dos anexos.
 **destruiria contas que existem hoje** — "Porto Seguro" é fornecedor legítimo de vários ramos
 (contas 348, 58 e 617 sobrevivem exatamente por isso).
 
-## Vencimento — o código de barras é autoritativo, com dois gates
+## Vencimento — o código de barras é autoritativo, menos contra uma PRORROGAÇÃO
 
 O fator de vencimento (posições 6–9) é escrito pelo emissor e é imune à inversão dia/mês que o
 Vision comete ao ler a data impressa. Mas ele só manda quando o barcode é **confiável**:
@@ -70,8 +94,30 @@ Vision comete ao ler a data impressa. Mas ele só manda quando o barcode é **co
 | 1 | o **valor embutido** no barcode bate com o `amount` (tol. 1 centavo) | id 463: barcode embaralhado por OCR ditou uma data impossível |
 | 2 | `vencimento >= emissão` | id 473/474: boleto securitizado com fator **stale** |
 
-🔴 **No caminho `pdf_text`, a data IMPRESSA no texto vence o LLM e o fator.** O fator só volta a
-mandar em PDF **escaneado** (sem texto), onde corrige a inversão do Vision.
+🔴 **Passados os gates, quem arbitra fator × data lida é `febraban.barcode_due_date_supersedes` —
+FONTE ÚNICA, consultada pelos DOIS call sites.** O fator vence quando a data lida: **falta**; é
+**anterior à emissão**; é a **inversão dia/mês** do fator (id 435); é **anterior** a ele (leitura
+de campo vizinho — "Data do Documento", "Data Processamento"); ou está a **mais de 60 dias** depois
+(4× a folga medida — acima disso, um dígito de MÊS trocado seria acolhido como prorrogação). 🔴 **E
+vence SEMPRE quando o vencimento é PRESUMIDO** (marca do caminho do corpo): presumido é palpite, não
+papel — submetê-lo à política devolvia "prorrogação" para a data do e-mail e apagava a marca que
+permitiria a um lembrete corrigir depois. Fora disso vence a data **IMPRESSA**, e a divergência vai para
+`processing_notes` (`due_date_extension_note`) — nunca silenciosa.
+
+🔴 **PRORROGAÇÃO é a razão da regra.** O beneficiário reimprime a ficha com a data nova e os
+juros "A PARTIR DE" dela, mas a linha digitável mantém o fator ORIGINAL. Medido na RAINHA MARIA:
+6 boletos num único lote (impresso 05/10 × fator 21/09 na conta 1613), mais a conta 1029, que o
+usuário corrigiu **à mão** em 14/08/2026 — a mesma falha, um mês antes.
+
+🔴 **A "rede de segurança" do `register_financial` (`_apply_barcode_due_date`) NÃO decide
+sozinha.** Ela existe para os caminhos que não passam pelo extrator (corpo, reprocessos), mas
+era a **ÚLTIMA a falar** e revertia a precedência da data impressa que o `apply_text_due_date`
+tinha acabado de aplicar. A assinatura era a **nota DUPLICADA** (uma acentuada, outra não) na
+conta 1613 — hoje as duas camadas usam a mesma política e a mesma redação de nota.
+🔴 **A nota de vencimento é ESTADO** (`strip_due_date_notes`), mas quando a gravação encontra a
+data JÁ igual ao fator ela **preserva** a nota "corrigido … → <essa data>"
+(`keep_corrected_to`): o gravador não tem mais a data lida original para reescrevê-la, e
+apagá-la levava a troca ao banco sem rastro (review max de 2026-09-23).
 
 🔴 **`ref_date` é a data LIDA DO DOCUMENTO, nunca "hoje"** — num reprocessamento histórico o fator
 legítimo fica a mais de 2 anos de hoje e o código bom seria descartado. **Fator 0 = boleto à
@@ -83,6 +129,27 @@ impossível. O gate exige que **os DOIS** testes falhem (valor × `amount`, e fa
 plausível): um `amount` mal lido ainda tem fator bom, e vice-versa. Isto é proteção **contra
 duplicata**: código corrompido não casa o boleto real na 2ª via, e nasce conta duplicada. Medido:
 18 corrompidos, **100% `pdf_vision`**. Releitura **não** recupera — não tente reconstruir dígitos.
+
+🔴 **2ª barreira do VISUAL: o DV geral** (`_discard_dv_refuted_barcode`, no FIM de
+`_build_records_vision`). 🔴 **Roda no fim da cadeia, nunca no builder:** valor e fator continuam
+CERTOS nesse defeito, então anular o código antes da derivação jogava fora a única fonte
+determinística do vencimento — desligando no Vision a rede que existe desde o id 435. 🔴 **E o
+descarte é MARCADO** (`barcode_discarded_note`): `find_financial_duplicate` lê a marca e aplica
+`barcode=is.null` à 3ª impressão. Sem isso o boleto REAL virava "documento sem linha digitável" e
+era fundido com a parcela irmã de mesmo valor e vencimento — perda silenciosa pela outra porta
+(grupo real: sk 1262, R$ 227,85, 3 de 4 contas). 🔴 **E `barcode=is.null` sozinho NÃO basta:** o
+irmão TAMBÉM descartado tem barcode nulo. Com o candidato marcado, o casamento é **vetado** se os
+títulos forem provadamente distintos (`_distinct_nosso_numero` ou Nº próprio diferente — as provas
+da 1b e da 2); a 2ª via do mesmo título segue casando. Sem o veto, o lote 1582/1583/1584 (mesmo
+e-mail, R$ 29.949,43 cada) perdia boletos, e um irmão de código íntegro gravava o SEU código na
+conta do descartado. Teste com tabela simulada de verdade: `IrmaosDescartadosNaImpressao3Test`. O
+`self_refuted` acima só pega o código cujo VALOR e FATOR saem deslocados; o modo de falha mais
+comum é outro — o modelo **converte** por conta própria a linha digitável de 47 para 44 e erra o
+campo livre, deixando valor e fator intactos (conta 1614: campo livre com os DVs de bloco no
+meio). Medido: **20 códigos** na base, **100% `pdf_vision`** — zero em `pdf_text`/`email_body`,
+onde os dígitos vêm do texto. Por isso a guarda é **só do visual**, e o `EXTRACTION_PROMPT` passou
+a exigir a linha digitável **como impressa**, proibindo a conversão. Perder a chave de dedup só
+é aceitável porque a linha sem barcode deixou de ser confundida com fatura (isenção de carnê).
 
 ## Lembrete de vencimento — corrige a data PRESUMIDA (`apply_due_date_reminder`)
 

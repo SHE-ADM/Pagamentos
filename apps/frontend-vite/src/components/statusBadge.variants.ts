@@ -58,6 +58,11 @@ const STATUS_VARIANT: Record<string, BadgeVariant> = {
   // erro_api: falha de API (crédito/auth/limite) — vermelho sólido para
   // destacar de uma falha de extração comum (vermelho suave).
   erro_api: 'redSolid',
+  // pagavel_descartado: uma regra de descarte (extrato/seguradora) recusou um documento que
+  // ainda tinha título próprio no banco. Âmbar porque exige CONFERÊNCIA humana, não conserto
+  // de código — e porque o fallback 'neutral' o pintaria de cinza, indistinguível de um
+  // estado benigno, que é o oposto do propósito do alerta.
+  pagavel_descartado: 'amber',
 };
 
 // Tipos de documento — derivados do schema @sheild/shared (fonte única de verdade).

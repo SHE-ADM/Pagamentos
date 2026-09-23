@@ -475,6 +475,163 @@ def authoritative_barcode_due_date(barcode, amount, ref_date=None,
     return bc_due
 
 
+# Teto de PRORROGACAO plausivel: o quanto o vencimento LIDO pode estar depois do fator do
+# codigo de barras e ainda vencer a fonte deterministica. Casos medidos na RAINHA MARIA (6
+# boletos prorrogados num unico lote): 1 a 14 dias. O teto e 4x o extremo observado — e nao
+# 180 como na primeira versao: ali QUALQUER erro de leitura "para frente" (um digito de MES
+# trocado desloca ate ~90 dias) era acolhido como prorrogacao, e o codigo de barras, que e a
+# fonte deterministica, perdia para um palpite. Acima do teto o fator volta a mandar: numa
+# prorrogacao real de mais de 60 dias o custo e uma data antiga e VISIVEL (a conta aparece
+# vencida); no erro de leitura, o custo seria um vencimento que nunca chega — invisivel em
+# KPI, aging e cobranca. A assimetria escolhe o erro que alguem enxerga.
+_DUE_DATE_EXTENSION_MAX_DAYS = 60
+
+
+def _day_month_swapped(a: "date", b: "date") -> bool:
+    """As duas datas sao a MESMA com DIA e MES trocados? (08/07 x 07/08.)
+
+    E a assinatura da falha do Vision/OCR ao ler a data IMPRESSA — id 435, que gravou
+    07/08 no lugar de 08/07 e deu origem a autoridade do fator. Dia > 12 nao e trocavel
+    (nao existe mes 13), entao o teste so casa o par realmente ambiguo."""
+    return (a.year == b.year and a.day == b.month and a.month == b.day
+            and a.month != a.day)
+
+
+def barcode_due_date_supersedes(read_due, bc_due, issue_date=None) -> bool:
+    """O fator do codigo de barras deve SOBREPOR a data lida do documento? (True = sim.)
+
+    FONTE UNICA da precedencia entre as duas datas de vencimento de um boleto. Existe porque
+    a regra morava em DOIS lugares que decidiam sozinhos — `extract_pdf.apply_barcode_due_date`
+    e `read_emails._apply_barcode_due_date`, este ultimo no choke point de gravacao. O de
+    baixo REVERTIA o de cima: a precedencia da data impressa (`apply_text_due_date`) era
+    desfeita na gravacao, e a assinatura disso e a nota DUPLICADA na conta 1613.
+
+    O fator vence, como antes, quando a data lida nao se sustenta:
+      - AUSENTE ou ilegivel — o fator e a unica fonte;
+      - ANTERIOR a emissao — boleto nao vence antes de emitido;
+      - INVERSAO dia/mes do fator — a falha classica do Vision (id 435);
+      - ANTERIOR ao fator — prorrogacao anda para FRENTE; data lida mais cedo e leitura de
+        campo vizinho ('Data do Documento', 'Data Processamento'), nao vencimento;
+      - mais de `_DUE_DATE_EXTENSION_MAX_DAYS` DEPOIS do fator — prorrogacao implausivel
+        (assinatura de digito de ano trocado).
+
+    Fora disso vence a data LIDA: uma data POSTERIOR e plausivel e uma PRORROGACAO, e o fator
+    do codigo nao acompanha a prorrogacao — o emissor reimprime a data nova (e os juros "a
+    partir de" dela) mantendo o fator ORIGINAL na linha digitavel. Tratar o fator como
+    autoritativo ali fazia a conta nascer com a data VELHA e aparecer vencida; medido: 6
+    boletos da RAINHA MARIA num lote, mais a conta 1029, corrigida A MAO em 14/08/2026.
+
+    `bc_due` invalida/ausente => False: nao ha o que sobrepor. Funcao pura."""
+    bc = _coerce_date(bc_due)
+    if bc is None:
+        return False
+    read = _coerce_date(read_due)
+    if read is None:
+        return True                       # sem data lida, o fator e a unica fonte
+    iss = _coerce_date(issue_date)
+    if iss is not None and read < iss:
+        return True                       # data lida impossivel (antes da emissao)
+    if _day_month_swapped(read, bc):
+        return True                       # inversao dia/mes (id 435)
+    if read < bc:
+        return True                       # prorrogacao nao anda para tras
+    return (read - bc).days > _DUE_DATE_EXTENSION_MAX_DAYS
+
+
+# Prefixos CANONICOS das notas de decisao de vencimento. A nota descreve um ESTADO ("a data
+# gravada e esta, e diverge do fator"), nao um evento — entao ela e SUBSTITUIDA, nunca
+# acumulada: a data pode mudar de novo depois (o regex do texto vence o LLM, e a gravacao
+# reavalia tudo), e a nota antiga passaria a citar uma data que nao e a do registro. Era o que
+# acontecia: sobravam duas notas com datas diferentes, e a coluna "Observações" — a unica
+# instrucao que o operador tem para ir conferir o papel — contradizia o proprio vencimento.
+DUE_DATE_NOTE_PREFIXES = (
+    "Vencimento gravado",
+    "Vencimento IMPRESSO mantido",                            # redacao anterior, ainda no acervo
+    "Vencimento corrigido pelo código de barras",
+    "Vencimento corrigido pelo codigo de barras",             # grafia sem acento, ainda no acervo
+)
+
+
+# Subconjunto do desfecho "o fator SOBREPOS a data lida" (as duas grafias do acervo).
+_DUE_DATE_CORRECTED_PREFIXES = tuple(
+    p for p in DUE_DATE_NOTE_PREFIXES if p.startswith("Vencimento corrigido"))
+
+
+def strip_due_date_notes(processing_notes, keep_corrected_to=None) -> "str | None":
+    """Remove os segmentos de nota de DECISAO de vencimento, preservando todos os outros.
+
+    `keep_corrected_to` (data ISO): preserva a nota "corrigido pelo codigo de barras" cujo
+    DESTINO e essa data. 🔴 E o caso da gravacao que encontra a data JA corrigida pelo
+    extrator: a nota ainda descreve o registro, e quem grava nao tem mais a data lida original
+    para reescreve-la — apaga-la levava a troca ao banco sem rastro nenhum.
+
+    Segmentos sao separados por ' | ' (idioma do pipeline). Devolve None quando nao sobra
+    nada — a coluna aceita NULL e uma string vazia apareceria como observacao em branco."""
+    if not processing_notes:
+        return None
+
+    def _mantem(seg: str) -> bool:
+        s = seg.strip()
+        if not s.startswith(DUE_DATE_NOTE_PREFIXES):
+            return True
+        return bool(keep_corrected_to) and s.startswith(_DUE_DATE_CORRECTED_PREFIXES) and (
+            s.endswith(f"→ {keep_corrected_to}") or s.endswith(f"-> {keep_corrected_to}"))
+
+    mantidos = [p for p in str(processing_notes).split(" | ") if _mantem(p)]
+    return " | ".join(mantidos) or None
+
+
+def due_date_extension_note(read_due, bc_due) -> str:
+    """Nota de auditoria da divergencia PRESERVADA (data lida mantida sobre o fator).
+
+    Vive aqui, junto da politica, porque os dois call sites (extrator e gravacao) a escrevem:
+    duas redacoes divergiriam no primeiro ajuste e a ressalva viraria duas notas diferentes
+    para o mesmo fato. A divergencia NUNCA e silenciosa — e o que permite conferir no papel.
+
+    🔴 A redacao declara o que foi OBSERVADO, nao a causa. A versao anterior afirmava "boleto
+    prorrogado/reemitido pelo beneficiario" — uma explicacao plausivel que o codigo nao tem
+    como provar: a mesma divergencia sai de uma leitura errada da data. Nota que afirma causa
+    dirige a conferencia para o lugar errado."""
+    return (f"Vencimento gravado {read_due} conforme lido no documento — diverge do fator do "
+            f"código de barras ({bc_due}); confira o papel")
+
+
+# Prefixo CANONICO da nota de codigo de barras descartado — e a marca que sobrevive ao CSV e
+# chega ao gravador. 🔴 Ela nao e cosmetica: `read_emails.find_financial_duplicate` a LE para
+# saber que o documento TINHA um codigo (so nao confiavel) e nao deixar a 3a impressao digital
+# (fornecedor+valor+vencimento, sem veto por nosso numero) fundi-lo com um boleto IRMAO de
+# mesmo valor e vencimento. Sem isso, descartar o codigo de um boleto REAL o transformava em
+# "documento sem linha digitavel", que a impressao 3 trata como nunca sendo um 2o pagavel —
+# e a conta sumia em silencio. Medido: 40 grupos (fornecedor, valor, vencimento) com mais de
+# um boleto na base; o grupo 648/649/650/652 (sk 1262, R$ 227,85) perderia 3 contas.
+BARCODE_DISCARDED_NOTE_PREFIX = "Código de barras descartado"
+
+
+def barcode_discarded_note(motivo: str) -> str:
+    """Nota de descarte do codigo de barras, com o prefixo canonico acima."""
+    return f"{BARCODE_DISCARDED_NOTE_PREFIX} — {motivo}"
+
+
+def barcode_was_discarded(processing_notes) -> bool:
+    """O registro TINHA codigo de barras e ele foi descartado? (Le a marca canonica.)
+
+    Contrato de tres camadas — extrator escreve, CSV transporta, gravador le. Comparacao por
+    prefixo, nao por igualdade: o motivo varia (auto-refutacao x DV), e a mesma consequencia
+    vale para os dois."""
+    return BARCODE_DISCARDED_NOTE_PREFIX in (processing_notes or "")
+
+
+def due_date_corrected_note(read_due, bc_due) -> str:
+    """Nota do desfecho oposto: o fator SOBREPOS a data lida.
+
+    Mesma razao de estar aqui — a frase era escrita em DUAS grafias (uma acentuada no
+    extrator, outra sem acento no gravador), e a comparacao por texto nao as reconhecia como
+    a mesma nota: a conta 1613 gravou as duas, lado a lado. Uma redacao so torna a checagem
+    de duplicidade possivel."""
+    return (f"Vencimento corrigido pelo código de barras (fator FEBRABAN): "
+            f"{read_due or '—'} → {bc_due}")
+
+
 def _due_date_plausible(due, issue) -> bool:
     """True se o vencimento nao e ANTERIOR a emissao (boleto nunca vence antes de emitido).
     Sem emissao -> True (nao ha como validar)."""

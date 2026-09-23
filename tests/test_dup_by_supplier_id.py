@@ -91,6 +91,124 @@ class FindDuplicateBySkSupplierTest(unittest.TestCase):
         self.assertIn("barcode=eq.", urls[0])
 
 
+class BarcodeDescartadoNaImpressao3Test(unittest.TestCase):
+    """🔴 Boleto cujo código foi DESCARTADO não pode ser fundido com o irmão pela impressão 3.
+
+    A 3ª impressão (fornecedor + valor + vencimento) não tem veto por nosso número e, para o
+    documento SEM barcode, casa qualquer conta da mesma dívida — premissa escrita no próprio
+    código: "o documento sem linha digitável nunca é um 2º pagável legítimo". Descartar o
+    código de um boleto REAL (OCR corrompeu a conversão da linha digitável) quebrava essa
+    premissa: o boleto virava "documento sem linha digitável" e sumia contra a parcela irmã de
+    mesmo valor e vencimento — sem erro e sem `/erros`. Grupo real: sk 1262, R$ 227,85,
+    contas 648/649/650/652, 3 delas com DV refutado (R$ 683,55).
+    """
+
+    def _urls_da_impressao3(self, payload):
+        ctrl = _ctrl()
+        urls = []
+
+        def fake_urlopen(req, timeout=None):
+            urls.append(req.full_url)
+            return _Resp([])
+
+        with mock.patch.object(R.urllib.request, "urlopen", fake_urlopen):
+            ctrl.find_financial_duplicate(payload)
+        return [u for u in urls if "due_date=eq." in u]
+
+    def test_codigo_descartado_so_casa_candidato_SEM_barcode(self):
+        urls = self._urls_da_impressao3({
+            "sk_supplier": 1262, "amount": 227.85, "due_date": "2026-07-20",
+            "processing_notes": "Código de barras descartado — DV não confere na leitura visual",
+        })
+        self.assertTrue(urls, "a impressão 3 não chegou a ser consultada")
+        self.assertIn("barcode=is.null", urls[-1])
+
+    def test_sem_marca_a_impressao_3_segue_ampla(self):
+        # Anti-regressão: conta do CORPO/notificação (nunca teve código) continua casando
+        # qualquer conta da mesma dívida — é o que fecha o gap cross-e-mail (ids 7/176).
+        urls = self._urls_da_impressao3({
+            "sk_supplier": 1262, "amount": 227.85, "due_date": "2026-07-20",
+            "processing_notes": "Vencimento presumido",
+        })
+        self.assertTrue(urls)
+        self.assertNotIn("barcode=is.null", urls[-1])
+
+
+_DESCARTE = "Código de barras descartado — DV não confere na leitura visual"
+
+
+def _tabela(rows):
+    """PostgREST simulado: aplica `eq.`/`is.null` sobre as linhas e devolve a 1ª que casa.
+
+    🔴 Uma fake que devolve `[]` sempre só prova qual URL foi montada — nunca que o irmão
+    GRAVADO deixa de ser casado. Era o que o teste acima fazia sozinho, e o furo dos irmãos
+    ambos descartados passou por ele."""
+    def _casa(row, clausula):
+        col, op = clausula.split("=", 1)
+        if op == "is.null":
+            return row.get(col) in (None, "")
+        valor = R.urllib.parse.unquote(op[3:])
+        if col == "amount":
+            return row.get(col) is not None and f"{float(row[col]):.2f}" == valor
+        return str(row.get(col)) == valor
+
+    def fake_urlopen(req, timeout=None):
+        query = R.urllib.parse.urlsplit(req.full_url).query
+        clausulas = [c for c in query.split("&") if not c.startswith(("select=", "limit="))]
+        return _Resp([r for r in rows if all(_casa(r, c) for c in clausulas)][:1])
+
+    return mock.patch.object(R.urllib.request, "urlopen", fake_urlopen)
+
+
+class IrmaosDescartadosNaImpressao3Test(unittest.TestCase):
+    """🔴 Irmão JÁ GRAVADO com código descartado não absorve o boleto seguinte do lote.
+
+    Caso real: contas 1582/1583/1584 (RAINHA MARIA, R$ 29.949,43, venc. 2026-09-25) vieram do
+    MESMO e-mail, 100% `pdf_vision`, com nossos números distintos. Barcode nulo não separa um
+    irmão descartado de outro: o 2º não era gravado, e um 2º de código ÍNTEGRO gravava o
+    próprio código na conta do 1º."""
+
+    GRAVADA = {"id": 1582, "sk_supplier": 936, "amount": 29949.43, "due_date": "2026-09-25",
+               "barcode": None, "nosso_numero": "00035803290000004201",
+               "invoice_number": "NF16713-7", "processing_notes": _DESCARTE}
+
+    def _novo(self, **over):
+        base = {"sk_supplier": 936, "amount": 29949.43, "due_date": "2026-09-25",
+                "barcode": None, "nosso_numero": "00035803290000004202",
+                "invoice_number": "NF16942-7", "processing_notes": _DESCARTE}
+        base.update(over)
+        return base
+
+    def test_irmao_descartado_com_titulo_distinto_nao_e_duplicata(self):
+        with _tabela([self.GRAVADA]):
+            self.assertIsNone(_ctrl().find_financial_duplicate(self._novo()))
+
+    def test_irmao_com_codigo_INTEGRO_nao_e_duplicata(self):
+        with _tabela([self.GRAVADA]):
+            self.assertIsNone(_ctrl().find_financial_duplicate(self._novo(
+                barcode="00198157200029949430000003580329000000420217",
+                processing_notes=None)))
+
+    def test_mesmo_titulo_descartado_de_novo_ainda_deduplica(self):
+        # Anti-regressão do lado oposto: a 2ª via do MESMO título (mesmo nosso número e Nº),
+        # lida por Vision com o código descartado outra vez, não vira conta duplicada.
+        with _tabela([self.GRAVADA]):
+            m = _ctrl().find_financial_duplicate(self._novo(
+                nosso_numero=self.GRAVADA["nosso_numero"],
+                invoice_number=self.GRAVADA["invoice_number"]))
+        self.assertEqual(m["id"], 1582)
+
+    def test_conta_do_corpo_sem_marca_ainda_e_casada_pelo_boleto(self):
+        # Premissa original da impressão 3 intacta: o candidato sem barcode e SEM a marca é a
+        # conta do corpo/notificação da mesma dívida (ids 7/176).
+        corpo = dict(self.GRAVADA, processing_notes="Vencimento presumido", nosso_numero=None,
+                     invoice_number=None)
+        with _tabela([corpo]):
+            m = _ctrl().find_financial_duplicate(self._novo(processing_notes=None,
+                                                            barcode="0019" + "1" * 40))
+        self.assertEqual(m["id"], 1582)
+
+
 class FinalizeSupplierTest(unittest.TestCase):
     def test_resolve_seta_sk_supplier_e_remove_colunas(self):
         ctrl = _ctrl()

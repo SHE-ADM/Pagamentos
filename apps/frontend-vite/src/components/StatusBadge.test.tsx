@@ -88,4 +88,13 @@ describe('StatusBadge', () => {
     expect(badge.className).toContain('text-status-error-fg');
     expect(badge.className).not.toContain('bg-status-error-solid');
   });
+
+  it('"pagavel_descartado" usa âmbar — nunca o cinza neutro de estado benigno', () => {
+    // Alerta de pagável possivelmente perdido (dead-man switch): exige conferência humana.
+    // Sem a entrada no mapa ele cairia no fallback neutral, indistinguível de um estado ok.
+    render(<StatusBadge value="pagavel_descartado" />);
+    const badge = screen.getByText('pagavel_descartado');
+    expect(badge.className).toContain('text-status-warning-fg');
+    expect(badge.className).not.toContain('text-status-neutral-fg');
+  });
 });

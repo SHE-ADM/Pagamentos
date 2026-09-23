@@ -258,20 +258,54 @@ def _extract_body_linha_digitavel(text: str | None) -> str | None:
     return fn(text) if fn else None
 
 
+def _strip_due_date_notes(processing_notes: str | None,
+                          keep_corrected_to: str | None = None) -> str | None:
+    """Remove as notas de DECISAO de vencimento (canonica do febraban), preservando as demais.
+
+    Sem a canonica, devolve o texto INTACTO: apagar nota por uma copia local do prefixo — que
+    divergiria no primeiro ajuste de redacao — e pior que deixar uma nota a mais. A duplicidade
+    e visivel; um apagamento errado, nao."""
+    fn = _febraban_fn("strip_due_date_notes")
+    return fn(processing_notes, keep_corrected_to=keep_corrected_to) if fn else processing_notes
+
+
+def _barcode_was_discarded(processing_notes: str | None) -> bool:
+    """O extrator descartou o codigo de barras deste registro? (Marca canonica do febraban.)
+
+    Import lazy com fallback DEFENSIVO, como as demais pontes para a canonica: sem o modulo,
+    espelha o prefixo — aqui a copia e aceitavel porque o custo de errar e assimetrico, e
+    responder "nao descartou" quando descartou reabre a fusao de boletos irmaos na dedup."""
+    fn = _febraban_fn("barcode_was_discarded")
+    if fn:
+        return fn(processing_notes)
+    return "Código de barras descartado" in (processing_notes or "")
+
+
 def _apply_barcode_due_date(payload: dict) -> None:
-    """Rede de seguranca UNIVERSAL contra inversao dia/mes do vencimento: a data de vencimento
-    de um boleto e o FATOR DE VENCIMENTO do codigo de barras (deterministico), NAO a data lida —
-    que o Vision/OCR pode inverter (falha grave: id 435 gravou 07/08 no lugar de 08/07). Antes de
-    gravar QUALQUER conta com boleto FEBRABAN, sobrescreve o due_date pelo derivado do barcode se
-    divergir. Aplicado em register_financial (choke point unico de toda gravacao do pipeline
-    Python — PDF, corpo e reprocessos), alem da correcao em extract_pdf.build_record. So confia no
-    fator quando o barcode e CONSISTENTE (valor embutido == amount — `authoritative_barcode_due_date`):
-    um barcode mal lido pelo OCR (boleto escaneado) tem valor divergente e NAO dita a data (id 463).
-    Best-effort: import lazy do extract_pdf; qualquer falha e ignorada (nao derruba a gravacao)."""
+    """Rede de seguranca UNIVERSAL do vencimento pelo FATOR do codigo de barras, no choke point
+    de gravacao (register_financial): cobre os caminhos que NAO passam pelo extract_pdf — o
+    CORPO do e-mail e os scripts de reprocessamento.
+
+    🔴 A DECISAO NAO E DAQUI. Quem arbitra fator x data lida e `barcode_due_date_supersedes`,
+    a MESMA funcao que o extrator consulta. Enquanto esta "rede" decidia sozinha, ela era a
+    ULTIMA a falar e REVERTIA a precedencia da data IMPRESSA que o `apply_text_due_date` tinha
+    acabado de aplicar: o boleto PRORROGADO era gravado com a data velha e nascia vencido. A
+    assinatura era a nota DUPLICADA, uma de cada camada (conta 1613, impresso 05/10 x fator
+    21/09). Corrigir so o extrator nao mudaria nada — a ultima palavra e aqui.
+
+    So confia no fator quando o barcode e CONSISTENTE (valor embutido == amount —
+    `authoritative_barcode_due_date`): barcode mal lido pelo OCR tem valor divergente e NAO
+    dita a data (id 463). Best-effort: import lazy; qualquer falha e ignorada (nao derruba a
+    gravacao), mas LOGA com traceback."""
     if not payload.get("barcode"):
         return
     fn = _febraban_fn("authoritative_barcode_due_date")
-    if fn is None:
+    supersedes = _febraban_fn("barcode_due_date_supersedes")
+    note_fn = _febraban_fn("due_date_extension_note")
+    corrected_fn = _febraban_fn("due_date_corrected_note")
+    if fn is None or supersedes is None or note_fn is None or corrected_fn is None:
+        # Sem a politica canonica, NAO se decide por conta propria: aplicar o fator as cegas
+        # aqui e exatamente o defeito que esta funcao deixou de ter. Preserva o que veio.
         return
     try:
         # GATES: so sobrescreve pelo fator quando o barcode e CONSISTENTE com o valor E o
@@ -289,14 +323,38 @@ def _apply_barcode_due_date(payload: dict) -> None:
     cur = str(payload.get("due_date") or "")[:10]
     if not bc_due:
         return
-    # O fator e AUTORITATIVO: o vencimento deixa de ser presumido — mesmo quando coincide com
-    # o gravado. Sem isto um lembrete posterior poderia sobrescrever a data do codigo de barras.
-    notes = _without_due_date_markers(payload.get("processing_notes"))
+    # O boleto e AUTORITATIVO: o vencimento deixa de ser presumido — mesmo quando a data lida
+    # PREVALECE sobre o fator (prorrogacao) ou coincide com ele. Sem isto um lembrete posterior
+    # poderia sobrescrever a data do documento. A marca sai nos DOIS desfechos: quem a grava e o
+    # caminho do CORPO, que nao viu boleto nenhum; havendo linha digitavel, a data e do papel.
+    # 🔴 VENCIMENTO PRESUMIDO NAO E DATA IMPRESSA. A conta do CORPO nasce com `due_date` = data
+    # do e-mail e a marca `DUE_DATE_PRESUMED_NOTE`; submete-la a politica faria o codigo ler um
+    # PALPITE como "o papel diz" e, sendo a data do e-mail quase sempre posterior ao fator,
+    # devolver "prorrogacao": a conta ficaria com vencimento FUTURO, fora do aging e da
+    # cobranca, e — pior — sem a marca, que o `_without_due_date_markers` remove logo abaixo,
+    # de modo que `apply_due_date_reminder` nunca mais poderia corrigi-la. Aqui o fator vence
+    # SEMPRE: e a unica data que alguem realmente leu de um documento.
+    presumido = _has_presumed_due_marker(payload.get("processing_notes"))
+    # Marca de presumido/lembrete sai sempre (o boleto e autoritativo); a nota de DECISAO de
+    # vencimento tambem, porque ela e ESTADO: esta camada e a ULTIMA a falar e reescreve o
+    # veredito contra a data FINAL. Sem o strip, a nota decidida no extrator (contra a data do
+    # MODELO, antes de o regex do texto trocá-la) sobrevivia ao lado da nova, citando uma data
+    # que o registro nao tem.
+    # 🔴 Com a data JA igual ao fator, a nota "corrigido ... -> <esta data>" do extrator ainda
+    # descreve o registro e FICA: esta camada nao tem mais a data lida original para
+    # reescreve-la, e apaga-la levava a troca de vencimento ao banco sem rastro.
+    notes = _strip_due_date_notes(_without_due_date_markers(payload.get("processing_notes")),
+                                  keep_corrected_to=bc_due if cur == bc_due else None)
     payload["processing_notes"] = notes
     if cur == bc_due:
         return
+    if not presumido and not supersedes(cur, bc_due, payload.get("issue_date")):
+        # Data lida POSTERIOR e plausivel: o documento vence o fator, com ressalva.
+        note = note_fn(cur, bc_due)
+        payload["processing_notes"] = f"{notes} | {note}" if notes else note
+        return
     payload["due_date"] = bc_due
-    note = f"Vencimento corrigido pelo codigo de barras (fator FEBRABAN): {cur or '—'} -> {bc_due}"
+    note = corrected_fn(cur, bc_due)
     payload["processing_notes"] = f"{notes} | {note}" if notes else note
 
 
@@ -1089,14 +1147,41 @@ class SupabaseControl:
         base3 = [supplier_clause,
                  _eq_clause("amount", payload.get("amount")),
                  _eq_clause("due_date", payload.get("due_date"))]
-        if barcode:
+        # 🔴 O documento TINHA codigo de barras e ele foi DESCARTADO por não ser confiável
+        # (auto-refutação ou DV no caminho visual) — vale a MESMA regra do barcode presente.
+        # Sem isto, descartar o código de um boleto REAL o transformava, para a impressão 3,
+        # em "documento sem linha digitável", que ela trata como nunca sendo um 2º pagável: o
+        # boleto era fundido com o IRMÃO de mesmo valor e vencimento (parcela, guia) e a conta
+        # sumia em silêncio — a mesma classe de perda que a isenção de carnê acabou de fechar.
+        # A marca viaja em `processing_notes`, que atravessa o CSV (ver `barcode_was_discarded`).
+        descartado = _barcode_was_discarded(payload.get("processing_notes"))
+        if barcode or descartado:
             # NOVO doc tem codigo de barras: so casa candidatos SEM barcode. Barcode
             # presente e DIFERENTE = documento distinto (a impressao 1 ja teria casado
             # se fossem o mesmo) — assim boletos distintos de mesmo valor/vencimento
             # (parcelas, guias GNRE de R$ 399,03) NAO se fundem, cada um com sua linha
             # digitavel. O candidato sem barcode e a conta do corpo/notificacao da
             # mesma divida.
-            return _find(base3 + ["barcode=is.null"])
+            m = _find(base3 + ["barcode=is.null"],
+                      select="id,due_date,barcode,processing_notes,nosso_numero,invoice_number")
+            # 🔴 ...a menos que o candidato TAMBEM tenha tido o codigo descartado: ai ele nao e
+            # conta do corpo, e um BOLETO real — e barcode nulo deixa de separar os irmaos. Sem
+            # este veto, dois boletos do mesmo lote (mesmo fornecedor, valor e vencimento, lidos
+            # por Vision) se fundiam: o 2o nao era gravado e, se tinha codigo integro, o gravava
+            # na conta do 1o (contas 1582/1583/1584, RAINHA MARIA, mesmo e-mail). O veto usa as
+            # MESMAS provas de titulo distinto das impressoes 1b e 2; sem prova, a 2a via do
+            # mesmo titulo continua casando, e nao nasce conta duplicada.
+            if m and _barcode_was_discarded(m.get("processing_notes")) and (
+                    _distinct_nosso_numero(nosso, m.get("nosso_numero"))
+                    or not _same_title(
+                        _own_document_number(payload.get("invoice_number"), nosso),
+                        _own_document_number(m.get("invoice_number"), m.get("nosso_numero")))):
+                log.info(
+                    "    [DEDUP-3] candidato com codigo descartado e titulo distinto "
+                    f"(conta {m.get('id')}) — boletos irmaos, nao deduplica"
+                )
+                return None
+            return m
         # NOVO sem barcode (corpo / notificacao / reemissao): casa qualquer conta da
         # mesma divida (fornecedor+valor+vencimento), inclusive um boleto ja gravado
         # com barcode — o documento sem linha digitavel nunca e um 2o pagavel legitimo.
@@ -5620,6 +5705,79 @@ def _real_boleto_amounts(rows: list) -> set:
     } - {None}
 
 
+def _real_boleto_nosso_numeros(rows: list) -> set:
+    """Nossos numeros (so digitos) dos boletos REAIS do e-mail — contraparte de
+    `_real_boleto_amounts` para a guarda de IDENTIDADE."""
+    return {
+        re.sub(r"\D", "", str(r.get("nosso_numero") or ""))
+        for r in rows
+        if _is_boleto_barcode(r.get("barcode")) and _is_real_nosso_numero(r.get("nosso_numero"))
+    } - {""}
+
+
+def _has_own_bank_title(row: dict, boleto_nossos: set) -> bool:
+    """A linha e um TITULO PROPRIO no banco, distinto dos boletos reais do e-mail?
+
+    🔴 E o que separa uma PARCELA DE CARNE de uma FATURA do mesmo debito — distincao que a
+    guarda de VALOR nao consegue fazer, porque num carne TODAS as parcelas tem o mesmo valor.
+    O discriminador e o NOSSO NUMERO: ele identifica um titulo registrado no banco, e
+    fatura/extrato/relatorio nao tem um (e um campo da ficha de compensacao). Parcela cuja
+    linha digitavel o Vision nao entregou integra continua sendo um pagavel — com numero
+    proprio, valor proprio e vencimento proprio.
+
+    Custou 6 boletos da NF 1724 (R$ 150.552,00, RAINHA MARIA, 22/09/2026): o Vision leu os
+    nove corretamente, o codigo de barras de seis deles saiu corrompido e foi descartado, e
+    ai cada um casou o valor do boleto real do mesmo e-mail e virou "fatura". Sem erro, sem
+    status distinto, sem linha em /erros — o e-mail ficou 'extraído' com 9 dos 15 anexos.
+
+    Conservador nos dois sentidos: exige nosso numero REAL (>= 8 digitos, nao-zero) e
+    DIFERENTE de todos os boletos reais. Uma fatura que repita o nosso numero do boleto que a
+    acompanha NAO e isentada — continua descartada, como antes.
+
+    🔴 SEGUNDO SINAL, igualmente forte: o codigo de barras foi DESCARTADO. A linha TINHA um
+    instrumento de pagamento e o extrator o recusou por nao ser confiavel — fatura, extrato e
+    relatorio nunca tem um para descartar. Sem este sinal a parcela de carne escaneada cujo
+    Vision corrompeu o codigo E cujo nosso numero o modelo nao leu continuava caindo na regra
+    de valor: era metade da perda da NF 1724 (6 boletos, R$ 150.552,00). PREVENIR e melhor do
+    que reportar — uma linha a mais para conferir custa menos que um boleto que ninguem paga."""
+    if _barcode_was_discarded(row.get("processing_notes")):
+        return True
+    if not _is_real_nosso_numero(row.get("nosso_numero")):
+        return False
+    return re.sub(r"\D", "", str(row.get("nosso_numero"))) not in boleto_nossos
+
+
+def _warn_discarded_payable(ctrl, ctx: dict, row: dict, boleto_nossos: set,
+                            regra: str) -> None:
+    """DEAD-MAN SWITCH da unica regra de descarte que NAO isenta pagavel: a de SEGURADORA.
+
+    🔴 Um descarte e uma decisao de NAO gravar dinheiro, e as regras eram TOTALMENTE mudas: so
+    um log.info local, e-mail 'extraído', nenhuma linha em /erros. Foi assim que 6 boletos
+    sumiram por dias sem que nada acusasse — e a unica forma de descobrir foi comparar o PDF
+    com o banco, a mao.
+
+    🔴 NAO e chamado nas regras de VALOR nem de EXTRATO, e a ausencia e deliberada: nas duas a
+    condicao de entrada no descarte ja e a NEGACAO EXATA de `_has_own_bank_title`, entao o
+    switch seria inalcancavel — codigo que nunca roda passa a parecer protecao sem ser. La o
+    pagavel e PRESERVADO, que e melhor que reportado.
+
+    Aqui, nao: a regra da seguradora exige LINHA DIGITAVEL VALIDA por decisao de negocio (o kit
+    digital traz fatura e boleto com valores diferentes, e so o boleto e pagavel), e isentar por
+    titulo proprio reabriria a conta duplicada que ela existe para impedir. Como o descarte se
+    mantem, o que resta e torna-lo VISIVEL: carne ESCANEADO de seguradora, cujo codigo o Vision
+    corrompeu, vira linha em /erros em vez de sumir.
+
+    Best-effort por construcao: o `register_error` do ctrl ja trata a propria falha."""
+    if not _has_own_bank_title(row, boleto_nossos):
+        return
+    ctrl.register_error(
+        ctx, "pagavel_descartado",
+        f"Documento com sinal de pagável (nosso número {row.get('nosso_numero')!r}, "
+        f"R$ {row.get('amount')}) descartado pela regra '{regra}' — {row.get('source_file')}",
+        raw_payload=row,
+    )
+
+
 # EXTRATO/DEMONSTRATIVO/RELATORIO que acompanha um BOLETO no mesmo e-mail: descreve
 # o MESMO debito de forma agregada (nao e um instrumento de pagamento), mas seu valor
 # pode DIFERIR do boleto (bruto x liquido), escapando da guarda de valor
@@ -5884,6 +6042,8 @@ def extract_and_store_accounts(saved_pdfs: list, message_id: str,
     # linha sem barcode, perdendo o 2o boleto silenciosamente.
     has_real_boleto = _email_has_real_boleto(pending)
     real_boleto_amounts = _real_boleto_amounts(pending) if has_real_boleto else set()
+    # Identidade bancaria dos boletos reais — base da isencao de CARNE (ver _has_own_bank_title).
+    real_boleto_nossos = _real_boleto_nosso_numeros(pending) if has_real_boleto else set()
 
     # Seguradora (assunto com seguro/seguradora/apolice): so o boleto com linha digitavel
     # valida vira conta. Calculado uma vez — o assunto e o mesmo para todas as linhas.
@@ -5979,12 +6139,19 @@ def extract_and_store_accounts(saved_pdfs: list, message_id: str,
         # fatura+boleto). So descarta a linha SEM boleto proprio cujo VALOR coincide
         # com um boleto real do e-mail (mesmo debito). Linha de valor DISTINTO e outra
         # divida → mantida mesmo sem barcode (2o boleto escaneado sem linha digitavel).
+        # 🔴 ISENCAO DE CARNE: linha com NOSSO NUMERO proprio e distinto e um TITULO, nao a
+        # fatura do mesmo debito (ver _has_own_bank_title). Num carne as parcelas tem valor
+        # IDENTICO, entao a guarda de valor sozinha as apagava — 6 boletos, R$ 150.552,00.
         if (not _is_boleto_barcode(payload.get("barcode"))
-                and _amount_key(payload.get("amount")) in real_boleto_amounts):
+                and _amount_key(payload.get("amount")) in real_boleto_amounts
+                and not _has_own_bank_title(row, real_boleto_nossos)):
             log.info(
                 f"    Fatura/relatorio ignorado — mesmo valor de um boleto no e-mail "
                 f"({row.get('source_file')})"
             )
+            # Sem dead-man switch AQUI, de propósito: o que chega a este ponto já foi filtrado
+            # por `_has_own_bank_title`, então o switch seria inalcançável — ver a docstring de
+            # `_warn_discarded_payable`. Nesta regra o pagável é PRESERVADO, não reportado.
             skipped_nonpayable += 1
             continue
 
@@ -5995,7 +6162,18 @@ def extract_and_store_accounts(saved_pdfs: list, message_id: str,
         # linha SEM barcode reconhecida como extrato/relatorio; um 2o boleto ESCANEADO
         # (caso LMED) nao casa esses termos e e mantido. Origem: Correios id 605
         # (Extrato_sintetico) x boleto id 606, valores 5295,58 x 5158,34.
-        if has_real_boleto and _is_statement_document(row):
+        # 🔴 MESMA ISENCAO DA REGRA DE VALOR, e aqui ela e ainda mais necessaria:
+        # `_is_statement_document` so olha NOME DE ARQUIVO e DESCRICAO, e se protege sozinha
+        # apenas enquanto a linha tem barcode (`if _is_boleto_barcode(...): return False`).
+        # Desde que o caminho visual passou a DESCARTAR o codigo refutado pelo DV, essa
+        # protecao caiu justamente para o boleto escaneado: um PDF chamado
+        # "relatorio_cobranca.pdf" ou descrito como "demonstrativo" perderia o codigo e, sem a
+        # isencao, seria tratado como extrato — pagavel real apagado por causa do NOME do
+        # arquivo. Titulo proprio (nosso numero distinto ou codigo descartado) prova que a
+        # linha e um pagavel; extrato de verdade nao tem nenhum dos dois (caso Correios id
+        # 605: sem nosso numero, sem codigo — segue descartado).
+        if (has_real_boleto and _is_statement_document(row)
+                and not _has_own_bank_title(row, real_boleto_nossos)):
             log.info(
                 f"    Extrato/relatorio ignorado — acompanha um boleto no e-mail "
                 f"({row.get('source_file')})"
@@ -6018,6 +6196,8 @@ def extract_and_store_accounts(saved_pdfs: list, message_id: str,
                 f"    Documento de seguradora sem boleto valido ignorado "
                 f"({row.get('source_file')})"
             )
+            _warn_discarded_payable(ctrl, ctx, row, real_boleto_nossos,
+                                    "seguradora sem linha digitavel valida")
             skipped_nonpayable += 1
             continue
 
