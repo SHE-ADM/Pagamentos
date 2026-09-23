@@ -172,5 +172,137 @@ class ApplyBarcodeDueDateTest(unittest.TestCase):
         self.assertEqual(rec["due_date"], "2026-08-07")
 
 
+# ── Boleto PRORROGADO: o fator NÃO acompanha a data reimpressa ────────────────────────────
+# Conta 1613 (RAINHA MARIA, NF17241-10, 22/09/2026). O PDF imprime "Data de Vencimento
+# 05/10/2026" nas DUAS vias e "JRS ... A PARTIR DE 06/10/26" — o beneficiário PRORROGOU o
+# título —, mas a linha digitável manteve o fator ORIGINAL 1576 (21/09/2026). Tratar o fator
+# como autoritativo gravava a data velha e a conta nascia VENCIDA. Mesmo caso da conta 1029,
+# que o usuário corrigiu à mão em 14/08/2026.
+BC_1613 = "00198157600025092000000003580329000000432917"
+AMT_1613 = 25092.00
+ISS_1613 = "2026-09-17"      # Data do Documento
+IMPRESSO_1613 = "2026-10-05"  # o que está no papel
+FATOR_1613 = "2026-09-21"     # o que o código de barras codifica
+
+
+class BarcodeDueDateSupersedesTest(unittest.TestCase):
+    """A política pura: QUANDO o fator vence a data lida do documento."""
+
+    def test_data_ausente_o_fator_e_a_unica_fonte(self):
+        self.assertTrue(e.barcode_due_date_supersedes(None, FATOR_1613))
+        self.assertTrue(e.barcode_due_date_supersedes("", FATOR_1613))
+        self.assertTrue(e.barcode_due_date_supersedes("prosa", FATOR_1613))
+
+    def test_inversao_dia_mes_ainda_e_corrigida_pelo_fator(self):
+        # id 435: lido 07/08, fator 08/07 — a falha que deu ao fator a autoridade.
+        self.assertTrue(e.barcode_due_date_supersedes("2026-08-07", "2026-07-08"))
+
+    def test_data_anterior_a_emissao_perde(self):
+        self.assertTrue(e.barcode_due_date_supersedes(
+            "2026-09-10", FATOR_1613, issue_date=ISS_1613))
+
+    def test_data_anterior_ao_fator_perde(self):
+        # Leitura de campo VIZINHO ('Data do Documento'/'Data Processamento'): prorrogação
+        # nunca anda para trás.
+        self.assertTrue(e.barcode_due_date_supersedes("2026-09-18", FATOR_1613,
+                                                      issue_date=ISS_1613))
+
+    def test_prorrogacao_plausivel_vence_o_fator(self):
+        self.assertFalse(e.barcode_due_date_supersedes(
+            IMPRESSO_1613, FATOR_1613, issue_date=ISS_1613))
+
+    def test_prorrogacao_alem_do_teto_perde(self):
+        # Dígito de ANO trocado ('2126') — a conta nasceria com vencimento que nunca chega.
+        self.assertTrue(e.barcode_due_date_supersedes("2027-09-21", FATOR_1613,
+                                                      issue_date=ISS_1613))
+        # Limite exato: 60 dias ainda passa; 61 não. O teto é 4x o extremo medido (14 dias) —
+        # acima dele, um dígito de MÊS trocado seria acolhido como "prorrogação".
+        self.assertFalse(e.barcode_due_date_supersedes("2026-11-20", FATOR_1613))
+        self.assertTrue(e.barcode_due_date_supersedes("2026-11-21", FATOR_1613))
+
+    def test_erro_de_mes_na_leitura_nao_vira_prorrogacao(self):
+        # 21/09 lido como 21/12 (dígito de mês): 91 dias à frente ⇒ o fator determinístico
+        # volta a mandar. Era o buraco do teto de 180 dias.
+        self.assertTrue(e.barcode_due_date_supersedes("2026-12-21", FATOR_1613,
+                                                      issue_date=ISS_1613))
+
+    def test_sem_fator_nao_ha_o_que_sobrepor(self):
+        self.assertFalse(e.barcode_due_date_supersedes(IMPRESSO_1613, None))
+        self.assertFalse(e.barcode_due_date_supersedes(None, None))
+
+    def test_dia_igual_ao_mes_nao_e_inversao(self):
+        # 07/07 x 07/07 não pode ser lido como "invertido" (anti-vacuidade do _day_month_swapped).
+        self.assertFalse(e.barcode_due_date_supersedes("2026-07-07", "2026-07-07"))
+
+
+class BoletoProrrogadoTest(unittest.TestCase):
+    """O caso 1613 ponta a ponta no extrator, e a nota que o torna auditável."""
+
+    def _rec(self, due):
+        return {"barcode": BC_1613, "amount": AMT_1613, "issue_date": ISS_1613,
+                "due_date": due, "processing_notes": None}
+
+    def test_data_impressa_posterior_e_preservada_com_ressalva(self):
+        rec = self._rec(IMPRESSO_1613)
+        self.assertFalse(e.apply_barcode_due_date(rec))
+        self.assertEqual(rec["due_date"], IMPRESSO_1613)       # o papel vence
+        self.assertIn("Vencimento gravado", rec["processing_notes"])
+        self.assertIn(FATOR_1613, rec["processing_notes"])     # a divergência fica registrada
+
+    def test_nota_nao_duplica_em_duas_passagens(self):
+        # O caminho de TEXTO chama apply_barcode_due_date DUAS vezes sobre o mesmo registro
+        # (builder + pós-processamento) — a conta 1613 gravou a mesma frase duas vezes.
+        rec = self._rec(IMPRESSO_1613)
+        e.apply_barcode_due_date(rec)
+        e.apply_barcode_due_date(rec)
+        self.assertEqual(rec["processing_notes"].count("Vencimento gravado"), 1)
+
+    def test_data_lida_mais_antiga_ainda_cede_ao_fator(self):
+        rec = self._rec("2026-09-18")
+        self.assertTrue(e.apply_barcode_due_date(rec))
+        self.assertEqual(rec["due_date"], FATOR_1613)
+        self.assertEqual(rec["processing_notes"].count("Vencimento corrigido"), 1)
+
+
+class RegisterFinancialCallSiteTest(unittest.TestCase):
+    """🔴 O CALL SITE EXECUTADO — `read_emails._apply_barcode_due_date`, no choke point de
+    gravação. Testar só o extrator NÃO cobre este caminho: era ele que, sendo o ÚLTIMO a
+    falar, revertia a data impressa que o extrator havia decidido (a nota duplicada da conta
+    1613 é a prova de que as duas camadas escreviam)."""
+
+    def setUp(self):
+        sys.path.insert(
+            0, str(Path(__file__).resolve().parents[1] / "skills" / "email-reader" / "scripts"))
+        import read_emails
+        self.R = read_emails
+
+    def _payload(self, due):
+        return {"barcode": BC_1613, "amount": AMT_1613, "issue_date": ISS_1613,
+                "due_date": due, "processing_notes": None}
+
+    def test_gravacao_nao_reverte_a_data_impressa(self):
+        payload = self._payload(IMPRESSO_1613)
+        self.R._apply_barcode_due_date(payload)
+        self.assertEqual(payload["due_date"], IMPRESSO_1613)
+        self.assertIn("Vencimento gravado", payload["processing_notes"])
+
+    def test_gravacao_ainda_corrige_a_inversao_dia_mes(self):
+        # Não regredir a rede de segurança: o caminho do CORPO não tem data impressa, e a
+        # inversão do Vision (id 435) continua sendo corrigida aqui.
+        payload = self._payload("2026-09-18")
+        self.R._apply_barcode_due_date(payload)
+        self.assertEqual(payload["due_date"], FATOR_1613)
+        self.assertIn("Vencimento corrigido", payload["processing_notes"])
+
+    def test_as_duas_camadas_escrevem_a_MESMA_nota_uma_unica_vez(self):
+        # Extrator e gravação em sequência, como em produção: uma nota só, uma grafia só.
+        rec = {"barcode": BC_1613, "amount": AMT_1613, "issue_date": ISS_1613,
+               "due_date": IMPRESSO_1613, "processing_notes": None}
+        e.apply_barcode_due_date(rec)
+        self.R._apply_barcode_due_date(rec)
+        self.assertEqual(rec["processing_notes"].count("Vencimento gravado"), 1)
+        self.assertEqual(rec["due_date"], IMPRESSO_1613)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -206,20 +206,57 @@ class MarcaDeVencimentoTest(unittest.TestCase):
             return {"barcode": "123", "amount": 362.62, "issue_date": "2026-09-14",
                     "due_date": due, "processing_notes": PRESUMIDO}
 
-        with mock.patch.object(R, "_febraban_fn", return_value=lambda *a, **k: "2026-09-27"):
+        # 🔴 O mock substitui SO a derivacao do fator; a POLITICA (barcode_due_date_supersedes)
+        # e as NOTAS vem das canonicas de verdade. Um `return_value` unico para todo nome
+        # devolvia "2026-09-27" ate como texto da nota, e o teste deixava de enxergar a regra
+        # que diz quem vence.
+        def so_o_fator(nome):
+            if nome == "authoritative_barcode_due_date":
+                return lambda *a, **k: "2026-09-27"
+            return getattr(R._febraban(), nome)
+
+        with mock.patch.object(R, "_febraban_fn", side_effect=so_o_fator):
             corrigido = payload("2026-09-14")
             R._apply_barcode_due_date(corrigido)
             confirmado = payload("2026-09-27")
             R._apply_barcode_due_date(confirmado)
         self.assertEqual(corrigido["due_date"], "2026-09-27")
         self.assertFalse(R._has_presumed_due_marker(corrigido["processing_notes"]))
-        self.assertIn("codigo de barras", corrigido["processing_notes"])
+        self.assertIn("código de barras", corrigido["processing_notes"])
         self.assertIsNone(confirmado["processing_notes"])
 
+        # Sem fator derivavel (barcode que nao decodifica): a marca de presumido PERMANECE.
         with mock.patch.object(R, "_febraban_fn", return_value=lambda *a, **k: None):
             sem_fator = payload("2026-09-14")
             R._apply_barcode_due_date(sem_fator)
         self.assertEqual(sem_fator["processing_notes"], PRESUMIDO)
+
+    def test_vencimento_PRESUMIDO_nunca_vence_o_fator(self):
+        """🔴 Presumido NÃO é data impressa — o fator manda sempre.
+
+        A conta do CORPO nasce com `due_date` = data do e-mail e a marca de presumido.
+        Submetê-la à política de prorrogação fazia o código ler um PALPITE como "o papel diz":
+        a data do e-mail é quase sempre posterior ao fator, então saía "prorrogação", a conta
+        ficava com vencimento FUTURO (fora do aging e da cobrança) e — pior — a marca era
+        removida logo em seguida, de modo que nenhum lembrete poderia corrigi-la depois.
+        """
+        BC = "00198157600025092000000003580329000000432917"   # fator 2026-09-21, valor 25092,00
+        payload = {"barcode": BC, "amount": 25092.00, "issue_date": None,
+                   "due_date": "2026-10-01",            # presumida (data do e-mail)
+                   "processing_notes": PRESUMIDO}
+        R._apply_barcode_due_date(payload)
+        self.assertEqual(payload["due_date"], "2026-09-21")          # o fator venceu
+        self.assertFalse(R._has_presumed_due_marker(payload["processing_notes"]))
+        self.assertIn("Vencimento corrigido", payload["processing_notes"])
+
+    def test_data_LIDA_de_documento_segue_vencendo_o_fator(self):
+        # Contraprova (anti-vacuidade): sem a marca de presumido, a mesma data é tratada como
+        # lida do documento e prevalece — é a correção do boleto prorrogado.
+        BC = "00198157600025092000000003580329000000432917"
+        payload = {"barcode": BC, "amount": 25092.00, "issue_date": "2026-09-17",
+                   "due_date": "2026-10-01", "processing_notes": None}
+        R._apply_barcode_due_date(payload)
+        self.assertEqual(payload["due_date"], "2026-10-01")
 
     def test_migration_136_grava_na_1474_exatamente_a_marca_do_codigo(self):
         sql = (_ROOT / "supabase" / "migrations" / "136_fornecedor_pagadora_e_leadster.sql"

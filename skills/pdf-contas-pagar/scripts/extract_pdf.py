@@ -252,11 +252,15 @@ EXTRACTION_PROMPT = (
     "- other_additions: (+) Outros acrescimos (decimal; 0 se em branco)\n"
     "- amount_charged: (=) Valor cobrado (decimal; 0 se em branco)\n"
     "- nosso_numero: Nosso Numero (texto)\n"
-    "- barcode: linha digitavel de 47 digitos OU codigo de barras de 44 digitos. "
-    "Em boletos bancarios, a linha digitavel aparece logo abaixo do codigo de barras "
-    "impresso, no formato XXXXX.XXXXX XXXXX.XXXXXX XXXXX.XXXXXX X XXXXXXXXXXXXXX. "
-    "Retorne apenas os digitos (sem pontos, espacos ou separadores). "
-    "Retorne o valor mais completo visivel no documento. null se ausente.\n"
+    "- barcode: TRANSCREVA a LINHA DIGITAVEL exatamente como impressa, digito a digito. "
+    "Em boletos bancarios ela tem 47 digitos e aparece acima ou abaixo do codigo de barras, "
+    "no formato XXXXX.XXXXX XXXXX.XXXXXX XXXXX.XXXXXX X XXXXXXXXXXXXXX; em guias de "
+    "arrecadacao tem 48 digitos, em 4 blocos. Retorne apenas os digitos (sem pontos, "
+    "espacos ou separadores). NUNCA converta, reordene ou resuma os digitos: nao transforme "
+    "a linha digitavel de 47 em codigo de barras de 44 nem remova digitos verificadores — a "
+    "conversao e feita depois, por codigo. So devolva 44 digitos quando o documento NAO "
+    "imprimir a linha digitavel e voce estiver lendo o codigo de barras/chave de acesso. "
+    "null se ausente.\n"
     "- payment_method: boleto|pix|ted|cartao|outro. IMPORTANTE: se o documento e um "
     "boleto/guia com codigo de barras ou linha digitavel E TAMBEM mostra um QR Code "
     "PIX ou 'PIX copia e cola', classifique como 'boleto' (nao 'pix') e extraia a "
@@ -485,7 +489,9 @@ from febraban import (  # noqa: F401 — reexport intencional
     _coerce_date, _due_date_plausible, _normalize_barcode_format,
     amount_from_arrecadacao, amount_from_barcode, arrecadacao_44,
     arrecadacao_dv_refuted, arrecadacao_value_refuted,
-    authoritative_barcode_due_date, barcode_dv_refuted,
+    authoritative_barcode_due_date, barcode_discarded_note,
+    barcode_due_date_supersedes, barcode_dv_refuted, barcode_was_discarded,
+    due_date_corrected_note, due_date_extension_note, strip_due_date_notes,
     barcode_self_refuted, due_date_from_barcode, extract_barcode,
     extract_linha_digitavel, is_boleto_barcode, normalize_barcode,
     normalize_barcode_allow_misread,
@@ -531,13 +537,24 @@ from docx_content import (  # noqa: F401 — reexport intencional
 
 
 def apply_barcode_due_date(rec: dict) -> bool:
-    """A data de vencimento AUTORITATIVA de um boleto e o fator de vencimento do codigo de
-    barras (deterministico), NAO a data impressa — que o Vision/OCR pode inverter (dia/mes).
-    Quando ha boleto FEBRABAN com fator valido E CONSISTENTE (valor do barcode == amount, ver
-    `authoritative_barcode_due_date`), deriva o vencimento do barcode e SOBRESCREVE o due_date
-    extraido se divergir. Barcode mal lido (valor divergente) NAO sobrescreve — preserva a data
-    correta. Retorna True se corrigiu. Usa emissao/extracao como referencia para desambiguar o
-    reset da base FEBRABAN. Idempotente (no-op se ja bate)."""
+    """Vencimento pelo FATOR do codigo de barras — quando a politica canonica disser que ele
+    vence a data LIDA do documento.
+
+    O fator e deterministico e imune a inversao dia/mes do Vision/OCR, mas NAO acompanha uma
+    PRORROGACAO: o beneficiario reimprime a data nova (e os juros "a partir de" dela) mantendo
+    o fator ORIGINAL na linha digitavel. Quem arbitra e `barcode_due_date_supersedes` (fonte
+    unica, compartilhada com `read_emails._apply_barcode_due_date`); aqui so se aplica a
+    decisao. Barcode mal lido (valor divergente) nem chega ate ela —
+    `authoritative_barcode_due_date` ja devolve None (id 463).
+
+    Duas saidas, NENHUMA silenciosa: sobrescreve com nota, ou PRESERVA a data lida com a nota
+    de divergencia. Retorna True somente quando ALTEROU a data.
+
+    🔴 A nota e ESTADO, nao evento: a anterior e REMOVIDA (`strip_due_date_notes`) antes de a
+    nova entrar. Isso cobre as duas passagens do caminho de texto (builder e pos-processamento)
+    e, principalmente, o caso em que `apply_text_due_date` troca a data DEPOIS — ali a nota
+    escrita aqui passaria a citar um vencimento que o registro nao tem mais. A conta 1613
+    gravou duas notas contraditorias por esse caminho."""
     bc_due = authoritative_barcode_due_date(
         rec.get("barcode"), rec.get("amount"),
         rec.get("issue_date") or rec.get("extracted_at"),
@@ -547,11 +564,16 @@ def apply_barcode_due_date(rec: dict) -> bool:
     cur = str(rec.get("due_date") or "")[:10]
     if cur == bc_due:
         return False
-    note = f"Vencimento corrigido pelo código de barras (fator FEBRABAN): {cur or '—'} → {bc_due}"
+    # A nota de vencimento e ESTADO: a anterior sai antes de a nova entrar (ver
+    # `strip_due_date_notes`). Sem isso ficavam duas, com datas diferentes, e a mais antiga
+    # citava uma data que o registro nao tem mais — o `apply_text_due_date` roda DEPOIS desta
+    # funcao e pode trocar a data de novo.
+    rec["processing_notes"] = strip_due_date_notes(rec.get("processing_notes"))
+    if not barcode_due_date_supersedes(cur, bc_due, rec.get("issue_date")):
+        _append_note(rec, due_date_extension_note(cur, bc_due))
+        return False
     rec["due_date"] = bc_due
-    rec["processing_notes"] = (
-        f'{rec["processing_notes"]} | {note}' if rec.get("processing_notes") else note
-    )
+    _append_note(rec, due_date_corrected_note(cur, bc_due))
     return True
 
 
@@ -621,6 +643,18 @@ def _append_note(rec: dict, note: str) -> None:
     rec["processing_notes"] = (
         f'{rec["processing_notes"]} | {note}' if rec.get("processing_notes") else note
     )
+
+
+def _append_note_once(rec: dict, note: str) -> None:
+    """`_append_note` IDEMPOTENTE: nao repete uma nota que ja esta em `processing_notes`.
+
+    O caminho de TEXTO passa pelo mesmo `apply_*` duas vezes (uma no builder, outra no
+    pos-processamento do documento inteiro), e a nota de vencimento saia duplicada — a conta
+    1613 gravou a mesma frase duas vezes, em duas grafias. Nota repetida nao e cosmetica: ela
+    e o que o operador le na coluna 'Observações' para decidir se confere o papel."""
+    if note in (rec.get("processing_notes") or ""):
+        return
+    _append_note(rec, note)
 
 
 def _iso_date(value) -> "str | None":
@@ -778,6 +812,13 @@ def apply_text_due_date(rec: dict, raw) -> bool:
     alterou = False
     text_due = extract_due_date_from_text(raw)
     if text_due and _due_date_plausible(text_due, rec.get("issue_date")):
+        if str(rec.get("due_date") or "")[:10] != text_due:
+            # 🔴 A nota de vencimento escrita por `apply_barcode_due_date` foi decidida contra
+            # a data do MODELO; trocando a data aqui, ela passaria a citar um valor que o
+            # registro nao tem mais. Sai agora — quem reavalia a divergencia contra a data
+            # FINAL e o choke point de gravacao (`read_emails._apply_barcode_due_date`), que
+            # usa a mesma politica e a mesma redacao.
+            rec["processing_notes"] = strip_due_date_notes(rec.get("processing_notes"))
         rec["due_date"] = text_due
         alterou = True
     if apply_arrecadacao_deadline(rec, extract_payment_deadline_from_text(raw)):
@@ -1517,9 +1558,16 @@ def build_record_from_json(pdf_path, data: dict, source: str) -> dict:
             rec["barcode"], rec.get("amount"),
             rec.get("due_date") or rec.get("issue_date")):
         rec["barcode"] = None
-        notes.append("Código de barras descartado — leitura visual refutada pelo próprio código")
+        notes.append(barcode_discarded_note(
+            "leitura visual refutada pelo próprio código"))
+    # 🔴 As notas acumuladas ate aqui sao MATERIALIZADAS antes dos `apply_*` abaixo: eles
+    # escrevem em `processing_notes` (via `_append_note`), e o join no FIM da funcao — como
+    # era — apagava o que eles tinham anotado. A troca de vencimento pelo fator ficava sem
+    # rastro nenhum no caminho visual (as 5 contas do scan de 21/09/2026).
+    rec["processing_notes"] = " | ".join(notes) if notes else None
     apply_boleto_barcode_override(rec)
-    apply_barcode_due_date(rec)   # vencimento AUTORITATIVO = fator do barcode (corrige inversao dia/mes)
+    apply_barcode_due_date(rec)   # fator do barcode x data lida — politica em barcode_due_date_supersedes
+    notes = []
     ensure_due_date(rec, notes)
     # Emissao nao confiavel em guia de tributo: prefira nulo a uma data errada.
     if rec["document_type"] in TAX_DOC_TYPES and rec.get("issue_date"):
@@ -1529,7 +1577,8 @@ def build_record_from_json(pdf_path, data: dict, source: str) -> dict:
         rec["invoice_number"] = fallback_invoice_number(
             rec["document_type"], rec["due_date"], rec.get("amount"), rec.get("payment_method"))
         notes.append(SYNTHETIC_INVOICE_NOTE)
-    rec["processing_notes"] = " | ".join(notes) if notes else None
+    for nota in notes:
+        _append_note(rec, nota)
     return rec
 
 
@@ -1559,14 +1608,19 @@ def build_record_regex(pdf_path, raw: str, source: str) -> dict:
     rec["amount_charged"] = resolve_amount_charged(rec)
     if len(raw) < 80:
         notes.append("Texto insuficiente — considerar Vision")
+    # Materializa ANTES dos `apply_*`, pelo mesmo motivo de `build_record_from_json`: o join
+    # no fim apagava a nota que eles escrevem em `processing_notes`.
+    rec["processing_notes"] = " | ".join(notes)
     apply_boleto_barcode_override(rec)
-    apply_barcode_due_date(rec)   # vencimento AUTORITATIVO = fator do barcode (corrige inversao dia/mes)
+    apply_barcode_due_date(rec)   # fator do barcode x data lida — politica em barcode_due_date_supersedes
+    notes = []
     ensure_due_date(rec, notes)
     if not has_document_number(rec["invoice_number"]):
         rec["invoice_number"] = fallback_invoice_number(
             rec["document_type"], rec["due_date"], rec.get("amount"), rec.get("payment_method"))
         notes.append(SYNTHETIC_INVOICE_NOTE)
-    rec["processing_notes"] = " | ".join(notes)
+    for nota in notes:
+        _append_note(rec, nota)
     return rec
 
 
@@ -1586,6 +1640,32 @@ def build_records(pdf_path, raw, source, doc_text=None) -> list:
     if source in VISION_SOURCES:
         return _build_records_vision(pdf_path, raw, source, doc_text)
     return _build_records_text(pdf_path, raw, source)
+
+
+def _discard_dv_refuted_barcode(rec: dict) -> bool:
+    """2a barreira do caminho VISUAL: o DV geral do codigo de barras. Retorna True se descartou.
+
+    O `barcode_self_refuted` (no builder) so pega o codigo cujo VALOR e FATOR saem deslocados;
+    o modo de falha MEDIDO no acervo e outro — o modelo CONVERTE por conta propria a linha
+    digitavel de 47 para 44 e erra o campo livre, deixando valor e fator INTACTOS (e por isso
+    nao refutados). Medido: 20 barcodes assim, 100% `pdf_vision` — ZERO em pdf_text/email_body,
+    onde os digitos vem do texto do PDF. Codigo errado e pior que ausente: nao casa a 2a via na
+    dedup e nasce conta DUPLICADA.
+
+    🔴 RODA NO FIM DA CADEIA, depois de `apply_barcode_due_date`/`apply_barcode_amount`, e nao
+    dentro do builder. O motivo e o modo de falha: valor e fator continuam CERTOS num codigo
+    assim, entao anula-lo antes da derivacao jogava fora a unica fonte deterministica do
+    vencimento — desligando no Vision a rede que existe desde o id 435 (inversao dia/mes). O
+    codigo alimenta a derivacao e so DEPOIS sai, porque o que nao se pode gravar e a chave de
+    dedup corrompida.
+
+    🔴 A NOTA e a marca canonica (`barcode_discarded_note`): `read_emails.find_financial_duplicate`
+    a le para nao fundir este boleto com um irmao de mesmo valor e vencimento."""
+    if not barcode_dv_refuted(rec.get("barcode")):
+        return False
+    rec["barcode"] = None
+    _append_note_once(rec, barcode_discarded_note("DV não confere na leitura visual"))
+    return True
 
 
 def _build_records_vision(pdf_path, raw, source, doc_text=None) -> list:
@@ -1638,6 +1718,7 @@ def _build_records_vision(pdf_path, raw, source, doc_text=None) -> list:
         # data-limite acima (o regex é do documento inteiro).
         if len(itens) == 1:
             apply_boleto_document_number(rec, doc_text)
+        _discard_dv_refuted_barcode(rec)
         recs.append(rec)
     if not recs:
         return [_failure_record(

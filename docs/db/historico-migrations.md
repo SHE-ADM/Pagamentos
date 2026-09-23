@@ -16,6 +16,28 @@
 
 ## Changelog (mais recente primeiro)
 
+**A `146` corrige os 16 códigos de barras corrompidos que restavam na base** — sem DDL, aplicada
+via psql em 2026-09-23. São o saldo da medição de 2026-09-22 (20 códigos, **100% `pdf_vision`**,
+zero em `pdf_text`/`email_body`): quatro saíram pela `144` e estes 16 fecham a dívida. A causa é o
+modelo CONVERTER por conta própria a linha digitável de 47 dígitos em código de 44 e errar o campo
+livre — valor e fator saem intactos, e só o DV geral acusa. Desde 2026-09-22 o pipeline descarta o
+código refutado em vez de gravá-lo, então a dívida é FECHADA: não nascem códigos novos assim.
+Cada valor foi lido da linha digitável **impressa** no PDF original (todos sem camada de texto) e
+validado por três testes independentes — DV geral, valor embutido == `amount` e fator == vencimento
+impresso —, com os dois primeiros repetidos como sonda em SQL, porque os dígitos foram transcritos à
+mão. A **sonda P6 é o oráculo do acervo**: nenhuma conta da base inteira segue com DV de boleto
+refutado. ⚠️ Achado registrado e **não corrigido**: em 9 dessas contas o `due_date` diverge do
+vencimento impresso (ex.: 646 gravado 20/07 × boleto 07/08; 1572 gravado 21/09 × boleto 19/10) —
+consequência do mesmo defeito (o código corrompido reprovava no gate de valor e o fator nunca
+corrigia a data). Todas estão **pagas**; mexer no vencimento de conta fechada é decisão do usuário.
+
+**A `145` limpa a nota contraditória de 7 contas** — aplicada em 2026-09-22. A `144` devolveu a
+linha digitável às parcelas 4-10 da NF 1724, mas não tocou a `processing_notes` gravada quando o
+código fora descartado: a coluna "Observações" — a única instrução que o operador tem para conferir
+o papel — dizia "Código de barras descartado" numa conta cujo código estava lá. O UPDATE remove só
+o segmento de descarte (separador ' | '), e a sonda P2 prova que a nota **sobrevive onde é
+verdadeira** (conta sem barcode).
+
 **A `142` corrige o `invoice_number` de 5 contas em que a Espécie/Aceite foi gravada junto do "Nº do
 Documento"** — sem DDL, aplicada via psql em 2026-09-15 (17:56 UTC). A origem é a execução real de
 `scripts/reprocess_document_number.py` no mesmo dia (14:44–14:50 UTC, 338 contas), feita com o

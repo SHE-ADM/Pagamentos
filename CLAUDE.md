@@ -584,6 +584,10 @@ npm run test:e2e
 **Scripts de manutenção** (reprocessar, backfill, purga, varredura): skill
 `.claude/skills/scripts-manutencao`. 🔴 Todos rodam no DEV e escrevem na Supabase compartilhada
 dev+prod; os destrutivos exigem `--dry-run` antes, sempre.
+🔴 **O sufixo `#N` do `gmail_message_id` é POSICIONAL e o gravador faz UPSERT por ele** —
+reprocessar e-mail cuja leitura anterior gravou MENOS contas que anexos faz o mesmo id descrever
+OUTRO documento, e curadoria + anexo viajam presos ao id. `reprocess_message.py` confere e
+**relata** (exit 3); a correção é por documento, nunca por id (precedente: migration 144).
 
 **Publicar em produção e verificar paridade:** skill `.claude/skills/deploy-producao`.
 
@@ -691,18 +695,28 @@ digitável válida (contexto **só pelo ASSUNTO** — ampliar destruiria contas 
 boleto ⇒ `ignorado`, não `falha` · NF-e/NFS-e pura ⇒ pulada, **exceto** combinada com boleto no
 mesmo PDF.
 
-🔴 **A guarda de VALOR preserva o 2º boleto escaneado** — o descarte só vale quando o valor
-COINCIDE com um boleto real. Valor distinto é outra dívida. Bias intencional: **preservar a
-conta**; perda silenciosa é pior que uma linha a revisar.
+🔴 **A guarda de VALOR preserva o 2º boleto escaneado** (valor distinto = outra dívida), **mas num
+CARNÊ o valor não discrimina nada** e ela sozinha apagava as parcelas: **6 boletos, R$ 150.552,00**.
+`_has_own_bank_title` isenta **NOSSO NÚMERO próprio e distinto** OU **código DESCARTADO** — fatura e
+extrato não têm nenhum — e vale nas regras de VALOR **e de EXTRATO** (esta julga pelo NOME do
+arquivo: sem a isenção, um boleto escaneado "relatorio_*.pdf" some). O **dead-man switch**
+(`pagavel_descartado`) fica só na **seguradora**, a única que não isenta; nas outras seria
+inalcançável. Bias: **preservar a conta** — perda silenciosa é pior que linha a revisar.
 
-🔴 **Vencimento é AUTORITATIVO pelo fator do código de barras, com dois gates:** o valor embutido
-tem de bater o `amount` (barcode corrompido por OCR não dita data) e `venc >= emissão`. No caminho
-`pdf_text`, a data **impressa** vence o LLM e o fator. `ref_date` é a data do **documento**, nunca
-"hoje". **Fator 0 = boleto à vista**, legítimo.
+🔴 **O FATOR É AUTORITATIVO, MENOS CONTRA PRORROGAÇÃO**, por política **única**
+(`febraban.barcode_due_date_supersedes`) nos DOIS call sites — a rede do `register_financial` era a
+ÚLTIMA a falar e revertia a data impressa (6 contas + a 1029, corrigida à mão em 14/08). Ele vence
+se a data lida falta, é anterior à emissão ou ao próprio fator, é a **inversão dia/mês** dele (id
+435), ou está **>60 dias** depois; fora disso vence a **IMPRESSA**, com ressalva. Gates seguem:
+valor == `amount` (463) e `venc >= emissão` (473/474); `ref_date` = data do **documento**, nunca
+"hoje"; **fator 0 = à vista**. 🔴 **Vencimento PRESUMIDO não é impresso** — ali o fator vence sempre.
 
-🔴 **Barcode que se REFUTA é DESCARTADO** — o OCR de scan desloca dígitos e produz código de
-comprimento válido com valor 10×. É proteção **contra duplicata**: código corrompido não casa o
-boleto real na 2ª via, e nasce conta duplicada. Releitura **não** recupera.
+🔴 **Barcode que se REFUTA é DESCARTADO** — o OCR desloca dígitos e gera código de comprimento
+válido com valor 10×; código corrompido não casa a 2ª via e nasce conta duplicada. 🔴 **No VISUAL há
+2ª barreira, o DV geral**: o modelo converte a linha de 47 para 44 sozinho e erra o campo livre, com
+valor e fator intactos (**20 códigos, 100% `pdf_vision`**) — o prompt exige **transcrever**, nunca
+converter. 🔴 **O descarte roda no FIM da cadeia e é MARCADO**: o código dita o vencimento antes de
+sair, e a dedup não funde irmãs — **nem ambas descartadas** (veto por título distinto; ver a skill).
 
 🔴 **Resposta do modelo TRUNCADA nunca vira dado.** JSON cortado virava registro vazio e o e-mail
 era logado como `sem_valor` — a falha do EXTRATOR disfarçada de "documento sem valor". Custou 21

@@ -51,6 +51,20 @@ preenche rota/peso/frete em linha que já existe em `fiscal_document`. Rodá-lo 
 `backfill_fiscal_documents.py` não dá erro — simplesmente não encontra o que atualizar e reporta
 `chave sem registro`, o que se lê como "não havia dado" em vez de "faltou o passo anterior".
 
+🔴 **Reprocessar e-mail que JÁ TEM contas remaneja os ids.** O sufixo `#N` do `gmail_message_id` é
+**posicional** (ordem dos anexos) e `register_financial` faz **UPSERT** por essa chave: se a
+leitura anterior gravou MENOS contas que anexos, as posições andam e o mesmo id passa a descrever
+OUTRO documento. O que está preso ao **id** viaja junto — a **curadoria manual**
+(`has_bank_slip`/`has_invoice`) e o **anexo já vinculado**. Medido em 22/09/2026 ao recuperar as 6
+parcelas da NF 1724: 5 contas ficaram com o anexo do documento anterior e 4 marcas de boleto
+conferido foram parar em contas erradas.
+
+O script confere isso ao final e **relata** (sai com **exit 3**); ele não conserta, de propósito —
+a quem pertence cada marca é decisão do operador. **A correção é por DOCUMENTO
+(`invoice_number`), nunca por id**: precedente completo, com sondas, na migration
+`144_rainha_maria_reconciliacao_reprocesso.sql`. Antes de reprocessar, guarde o estado atual
+(`id, invoice_number, source_file, has_bank_slip`) — é ele que permite remapear depois.
+
 **Link antes de corpo.** `reprocess_link_emails.py` e `reprocess_body_emails.py` varrem a mesma
 fila (`status='falha'`) e são complementares: rode o de **link** primeiro (o boleto real, com linha
 digitável) e só depois o de **corpo** — senão o corpo cria a conta sem barcode e o boleto vira

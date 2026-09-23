@@ -12,7 +12,11 @@ import extract_pdf as e  # noqa: E402
 
 
 # Codigo de barras FEBRABAN de boleto: 44 digitos, moeda '9' (pos 4), banco != '000'.
-BOLETO_44 = "0019" + "0" * 40
+# 🔴 Codigo REAL (conta da NF 1724, R$ 25.092,00, venc. 24/09/2026) e nao mais '0019' + 40
+# zeros: o DV daquele sintetico NAO fechava, e desde a 2a barreira do caminho VISUAL
+# (`barcode_dv_refuted` em build_record_from_json) ele era DESCARTADO — o teste do override
+# pix->boleto passava a exercitar o descarte, nao o override.
+BOLETO_44 = "00195157900025092000000003580329000000433217"
 # Chave de acesso NF-e/CT-e: 44 digitos, moeda != '9' -> NAO e boleto.
 CHAVE_44 = "1234" + "0" * 40
 # Linha digitavel de arrecadacao (guia/tributo/concessionaria): 48 digitos.

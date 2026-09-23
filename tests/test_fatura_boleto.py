@@ -77,7 +77,8 @@ class FakeControl:
         return True
 
 
-def _row(name, barcode, doc_type="boleto", amount="20100.80"):
+def _row(name, barcode, doc_type="boleto", amount="20100.80", nosso_numero=None,
+         invoice_number="", due_date="2026-07-10"):
     """Linha de CSV minima (as chaves ausentes viram None em build_financial_payload)."""
     return {
         "source_file": name,
@@ -85,8 +86,9 @@ def _row(name, barcode, doc_type="boleto", amount="20100.80"):
         "barcode": barcode,
         "amount": amount,
         "supplier_name": "PADARIA BELGA",
-        "invoice_number": "",
-        "due_date": "2026-07-10",
+        "invoice_number": invoice_number,
+        "nosso_numero": nosso_numero,
+        "due_date": due_date,
         "extraction_source": "pdf_text",
     }
 
@@ -298,6 +300,134 @@ class ExtractAndStoreFaturaBoletoTest(_StoreRunnerMixin, unittest.TestCase):
         ctrl, saved, _ = self._run(["lixo.pdf"], rows)
         self.assertEqual(saved, 0)
         self.assertEqual(ctrl.attachment_calls, [])
+
+
+class CarneParcelasMesmoValorTest(_StoreRunnerMixin, unittest.TestCase):
+    """🔴 CARNÊ: todas as parcelas têm o MESMO valor — a guarda de valor sozinha as apagava.
+
+    Caso real (RAINHA MARIA, NF 1724, e-mail de 22/09/2026): 10 boletos de R$ 25.092,00 em
+    anexos separados. Um veio em PDF de texto (linha digitável íntegra); os outros nove são
+    imagem, e em seis deles o código de barras lido pelo Vision foi descartado por corrupção.
+    Sem barcode e com o MESMO valor do boleto real, as seis linhas viraram "fatura do mesmo
+    débito" e sumiram — R$ 150.552,00, sem erro, sem linha em /erros, e-mail 'extraído'.
+
+    O discriminador é o NOSSO NÚMERO: identifica um TÍTULO registrado no banco, coisa que
+    fatura/extrato/relatório não têm.
+    """
+
+    def _carne(self, n_parcelas=4):
+        """1 boleto com linha digitável + (n-1) parcelas sem barcode, mesmo valor, nosso
+        número próprio em cada uma."""
+        rows = {"p1.pdf": _row("p1.pdf", BOLETO_REAL, amount="25092.00",
+                               nosso_numero="00035803290000004329-7",
+                               invoice_number="NF17241-10")}
+        for i in range(2, n_parcelas + 1):
+            nome = f"p{i}.pdf"
+            rows[nome] = _row(nome, None, amount="25092.00",
+                              nosso_numero=f"0003580329000000433{i}-1",
+                              invoice_number=f"NF1724{i}-10")
+        return rows
+
+    def test_parcelas_sem_barcode_nao_sao_descartadas(self):
+        rows = self._carne(4)
+        ctrl, saved, _ = self._run(list(rows), rows)
+        self.assertEqual(saved, 4)
+        self.assertEqual(
+            sorted(c["invoice_number"] for c in ctrl.financial_calls),
+            ["NF17241-10", "NF17242-10", "NF17243-10", "NF17244-10"])
+        # Nenhuma perda silenciosa e nenhum ruído: o dead-man switch não dispara.
+        self.assertEqual(ctrl.error_calls, [])
+        # Cada parcela leva o SEU anexo.
+        self.assertEqual(len(ctrl.attachment_calls), 4)
+
+    def test_parcela_com_codigo_DESCARTADO_e_preservada_mesmo_sem_nosso_numero(self):
+        # 🔴 A outra metade da perda da NF 1724: o Vision corrompeu o código E o modelo não
+        # leu o nosso número. A linha TINHA instrumento de pagamento (a marca de descarte
+        # prova), e fatura/extrato nunca têm um para descartar — logo, é pagável.
+        rows = {
+            "p1.pdf": _row("p1.pdf", BOLETO_REAL, amount="25092.00",
+                           nosso_numero="00035803290000004329-7"),
+            "p2.pdf": _row("p2.pdf", None, amount="25092.00", invoice_number="NF17242-10"),
+        }
+        rows["p2.pdf"]["processing_notes"] = (
+            "Código de barras descartado — DV não confere na leitura visual")
+        ctrl, saved, _ = self._run(["p1.pdf", "p2.pdf"], rows)
+        self.assertEqual(saved, 2)
+        self.assertEqual(ctrl.error_calls, [])          # preservado, não reportado
+
+    def test_fatura_sem_nosso_numero_continua_descartada(self):
+        # A isenção é ESTREITA: sem nosso número próprio, a regra fatura+boleto vale como antes.
+        rows = self._carne(2)
+        rows["fatura.pdf"] = _row("fatura.pdf", None, doc_type="fatura", amount="25092.00")
+        ctrl, saved, _ = self._run(list(rows), rows)
+        self.assertEqual(saved, 2)
+        self.assertNotIn("fatura.pdf", [c[1] for c in ctrl.attachment_calls])
+
+    def test_fatura_que_repete_o_nosso_numero_do_boleto_e_descartada(self):
+        # Mesmo título, dois documentos: a 2ª via não vira conta nova.
+        rows = {
+            "boleto.pdf": _row("boleto.pdf", BOLETO_REAL, amount="500.00",
+                               nosso_numero="00035803290000004329-7"),
+            "fatura.pdf": _row("fatura.pdf", None, doc_type="fatura", amount="500.00",
+                               nosso_numero="00035803290000004329-7"),
+        }
+        ctrl, saved, _ = self._run(list(rows), rows)
+        self.assertEqual(saved, 1)
+        self.assertEqual(ctrl.financial_calls[0]["barcode"], BOLETO_REAL)
+
+    def test_nosso_numero_curto_ou_zerado_nao_isenta(self):
+        # `_is_real_nosso_numero`: >= 8 dígitos e não-zero. Lixo não vira salvo-conduto.
+        for lixo in ("123", "0000000000", "", None, "  "):
+            rows = {
+                "boleto.pdf": _row("boleto.pdf", BOLETO_REAL, amount="500.00",
+                                   nosso_numero="00035803290000004329-7"),
+                "x.pdf": _row("x.pdf", None, doc_type="fatura", amount="500.00",
+                              nosso_numero=lixo),
+            }
+            ctrl, saved, _ = self._run(list(rows), rows)
+            self.assertEqual(saved, 1, f"nosso_numero={lixo!r} não deveria isentar")
+
+    def test_boleto_com_NOME_de_relatorio_e_titulo_proprio_e_preservado(self):
+        # 🔴 `_is_statement_document` julga pelo NOME DO ARQUIVO/descrição e só se protege
+        # sozinha enquanto a linha tem barcode. Com o descarte de código refutado no Vision,
+        # essa proteção caiu justamente para o boleto ESCANEADO: um PDF chamado
+        # "relatorio_cobranca.pdf" perderia o código e seria apagado por causa do nome.
+        # Título próprio (nosso número distinto ou código descartado) o preserva.
+        rows = {
+            "boleto.pdf": _row("boleto.pdf", BOLETO_REAL, amount="500.00",
+                               nosso_numero="00035803290000004329-7"),
+            "relatorio_cobranca.pdf": _row("relatorio_cobranca.pdf", None, amount="900.00",
+                                           nosso_numero="00035803290000009999-1"),
+        }
+        ctrl, saved, _ = self._run(list(rows), rows)
+        self.assertEqual(saved, 2)
+        self.assertEqual(ctrl.error_calls, [])
+
+    def test_extrato_SEM_titulo_proprio_segue_descartado(self):
+        # Anti-regressão do caso Correios (id 605/606): o extrato sintético não tem nosso
+        # número nem código — nada prova que seja pagável, e ele continua fora.
+        rows = {
+            "boleto.pdf": _row("boleto.pdf", BOLETO_REAL, amount="5158.34",
+                               nosso_numero="00035803290000004329-7"),
+            "Extrato_sintetico_07.pdf": _row("Extrato_sintetico_07.pdf", None, amount="5295.58"),
+        }
+        ctrl, saved, _ = self._run(list(rows), rows)
+        self.assertEqual(saved, 1)
+        self.assertEqual(float(ctrl.financial_calls[0]["amount"]), 5158.34)
+
+    def test_seguradora_com_titulo_proprio_dispara_o_dead_man_switch(self):
+        # A regra da SEGURADORA não isenta — ela exige linha digitável válida por decisão de
+        # negócio —, então o switch continua alcançável ali: o descarte vira linha em /erros.
+        rows = {
+            "boleto_link.pdf": _row("boleto_link.pdf", BOLETO_REAL, amount="133.94",
+                                    nosso_numero="00035803290000004329-7"),
+            "carne_escaneado.pdf": _row("carne_escaneado.pdf", None, amount="1607.28",
+                                        nosso_numero="00035803290000009999-1"),
+        }
+        ctrl, saved, _ = self._run(list(rows), rows,
+                                   subject="SEGUROS SURA VID_G_002_930_2011924_15")
+        self.assertEqual(saved, 1)
+        self.assertEqual([t for t, _ in ctrl.error_calls], ["pagavel_descartado"])
 
 
 class NfseComBoletoTest(_StoreRunnerMixin, unittest.TestCase):

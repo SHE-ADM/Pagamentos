@@ -570,6 +570,88 @@ emissão**, isto é, nascendo `vencido` (a tela mostrava um bloco inteiro de gui
   saíram de `vencido` para `a vencer`. A **32ª (id 266)** não foi tocada — é lançamento
   manual, sem barcode e sem PDF, logo sem fonte para verificar.
 
+### Carnê da RAINHA MARIA: 6 boletos perdidos, 6 vencimentos errados (2026-09-22)
+
+Um único levantamento — 81 contas do fornecedor, 10 e-mails, releitura dos PDFs no bucket —
+revelou **quatro** defeitos independentes. Dois custaram dinheiro em silêncio.
+
+**1. As parcelas de valor idêntico viravam "fatura" (R$ 150.552,00).** O e-mail de 22/09 trouxe
+15 anexos: a NF 1724 em 10 parcelas de R$ 25.092,00 e a NF 1735 em 5. Só 9 contas nasceram. O
+mecanismo, reproduzido rodando o extrator sobre os PDFs guardados:
+
+1. a parcela 1 é PDF de texto e entrega a linha digitável íntegra → é o "boleto real" do e-mail;
+2. as parcelas 2-10 são **imagem** e vão ao Vision, que lê tudo certo (`NF17244-10`, 24/09,
+   R$ 25.092,00) mas devolve o código convertido errado;
+3. em 6 delas o código é descartado pelas guardas de barcode — decisão correta;
+4. a linha fica **sem barcode** e com **o mesmo valor** do boleto real → a regra fatura+boleto a
+   trata como "a fatura do mesmo débito" e a descarta.
+
+Num carnê o valor **não discrimina nada**: todas as parcelas são iguais por construção. O e-mail
+ficou `extraído`, sem erro, sem linha em `/erros` — só 9 anexos viraram conta e ninguém tinha
+como notar. A isenção passou a ser o **NOSSO NÚMERO** próprio e distinto (`_has_own_bank_title`):
+ele identifica um título registrado no banco, e fatura/extrato/relatório não têm um. O segundo
+sinal, igualmente suficiente, é o **código de barras DESCARTADO**: a linha tinha instrumento de
+pagamento. A isenção vale nas regras de **VALOR** e de **EXTRATO**. O **dead-man switch**
+(`pagavel_descartado` em `/erros`) ficou só na regra da **SEGURADORA**, a única que não isenta —
+nas outras duas a condição de entrada já é a negação exata da isenção, e ele seria inalcançável.
+
+**2. Boleto PRORROGADO nascia vencido.** A RAINHA MARIA reimprime a ficha com data nova e juros
+"A PARTIR DE" dela, mantendo o **fator original** na linha digitável (conta 1613: impresso
+05/10 nas duas vias, fator 21/09). O fator era autoritativo em toda situação — e, pior, a
+decisão era tomada **duas vezes**: o extrator aplicava a precedência da data impressa
+(`apply_text_due_date`) e a "rede de segurança" do `register_financial`, sendo a **última a
+falar**, a desfazia. A assinatura ficou gravada: a conta 1613 tinha a **mesma nota duas vezes**,
+uma acentuada (extrator) e outra sem acento (gravador). Precedente ignorado: a conta **1029** foi
+corrigida **à mão pelo usuário em 14/08/2026** — mesma falha, um mês antes, sem investigação.
+
+A política virou **função única** (`febraban.barcode_due_date_supersedes`), consultada pelos dois
+call sites: o fator vence quando a data lida falta, é anterior à emissão, é a **inversão dia/mês**
+dele, é **anterior** a ele, ou está a mais de **60 dias** depois (4× o extremo medido, de 14
+dias; a 1ª versão usava 180 e acolhia um dígito de MÊS trocado como "prorrogação"); fora disso
+vence o papel, com ressalva em `processing_notes`. Vencimento **PRESUMIDO** (caminho do corpo)
+não é papel: ali o fator vence sempre. Corrigir só o extrator não teria mudado nada — a última
+palavra era do gravador.
+
+**3. O modelo converte a linha digitável e erra.** O prompt aceitava "47 OU 44 dígitos" e o
+modelo, às vezes, **fazia a conversão sozinho**, reempacotando os DVs de bloco dentro do campo
+livre. Valor e fator saem intactos, então `barcode_self_refuted` não vê nada. Quem vê é o **DV
+geral**: 20 códigos na base, **100% `pdf_vision`** (zero em `pdf_text`/`email_body`, onde os
+dígitos vêm do texto). Código errado é pior que ausente — não casa a 2ª via e faz nascer conta
+duplicada. Hoje o visual descarta o DV refutado e o prompt exige **transcrever** a linha impressa.
+
+**4. A correção de vencimento não deixava rastro no visual.** `build_record_from_json` montava
+`processing_notes` com um `" | ".join(notes)` **depois** de chamar os `apply_*`, apagando o que
+eles tinham anotado. Por isso as 5 contas do scan de 21/09 têm a data do fator e observação
+**vazia** — a troca aconteceu e nada a registrou.
+
+**Correções de dados:** migrations `143` (6 vencimentos, 9 empresas pagadoras, 4 códigos) e `144`
+(reconciliação do reprocessamento). A recuperação das 6 parcelas foi feita **pelo pipeline
+corrigido** (`reprocess_message.py`), o que serviu de prova de ponta a ponta — e revelou o efeito
+colateral do sufixo `#N` posicional, hoje conferido e relatado pelo próprio script. A migration
+`146` (23/09) devolveu a linha digitável impressa aos 16 códigos corrompidos restantes.
+
+**O que os dois reviews `max` acharam na própria correção** (22 e 23/09 —
+[2026-09-22](../review/2026-09-22-Features-max.md), [2026-09-23](../review/2026-09-23-Features-max.md)):
+descartar o código reabre a perda por **outra porta**, a dedup. A impressão 3 (fornecedor + valor
++ vencimento) trata o documento sem barcode como a conta do corpo da mesma dívida. Um boleto com
+código descartado virava esse documento e se fundia com o irmão. A correção veio em duas etapas:
+
+1. o descarte é **MARCADO** (`barcode_discarded_note`), e com a marca a impressão 3 só casa
+   candidato **sem** barcode (22/09);
+2. isso não bastava, porque o **irmão também descartado** tem barcode nulo. Com os dois
+   marcados, o casamento é **vetado** quando os títulos são provadamente distintos — nosso
+   número ou Nº de documento próprio diferentes, as mesmas provas das impressões 1b e 2. A
+   2ª via do mesmo título continua casando (23/09). O caso concreto era o lote
+   1582/1583/1584 (R$ 29.949,43 cada, mesmo e-mail, mesmo vencimento impresso, 100% Vision).
+
+⚠️ Residual preexistente, **não** coberto: irmãos que **nunca** tiveram código lido (não
+descartados) seguem casando pela impressão 3 ampla.
+
+Na mesma rodada, a rede do `register_financial` passou a **preservar** a nota "Vencimento
+corrigido pelo código de barras" cujo destino é a data do próprio registro
+(`strip_due_date_notes(..., keep_corrected_to=)`). Sem isso, ao limpar as notas de decisão ela
+apagava a nota que o extrator acabara de escrever, e o defeito 4 acima voltava pelo gravador.
+
 ### A regra chega ao caminho VISUAL (2026-08-20)
 
 Por 16 dias as duas correções acima valeram **só no `pdf_text`**: elas eram chamadas em
