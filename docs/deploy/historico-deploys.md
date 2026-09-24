@@ -1,5 +1,32 @@
 # Histórico de deploys
 
+## 2026-09-24 — Conta quitada não é reemitida pela dedup (conta 417, AMIL)
+
+**O que foi ao ar** (PR #256, merge `2667854`). O manifesto de produção é o da `main`
+(`53712D50…C214BF`, 32 arquivos).
+- **Conta QUITADA + vencimento posterior = dívida NOVA** (`_dup_is_settled_earlier_debt`). O
+  "Nº do Documento" Amil é o nº do contrato, igual todo mês, e a impressão 2 casava o boleto de
+  outubro com a 417 (julho, paga) e a reescrevia. `cancelado` fica fora de propósito.
+- **A busca é REFEITA com o veto** (`find_financial_duplicate(skip_settled=True)`), não
+  abandonada: a impressão 3 ainda casa a conta do corpo da mesma dívida. Achado do review max de
+  24/09 — a 1ª versão parava na quitada e criava uma 2ª conta em aberto.
+
+**Arquivos:** `read_emails.py`, `deploy-manifest.json`. Sem módulo novo, sem dependência nova,
+sem migration. Dados já corrigidos no DEV antes do deploy (417 restaurada, 1680 criada pelo
+reprocessamento do e-mail 2382).
+
+**Verificação em produção:** `check_deploy_parity.py` → **32/32 conferem, 0 faltando, 0
+divergentes, 0 extras** + validação funcional **2/2 `True`** (`quitada_nova_divida`,
+`reenvio_mesma_data`) — print do usuário, 2026-09-24. A função validada não existia no
+`read_emails.py` anterior, então o `True` prova também que o manifesto é o novo (o 32/32 sozinho
+não provaria: arquivo e manifesto antigos também dariam paridade). Sinal no dado a observar: o
+boleto Amil de novembro deve gerar conta própria com a nota, e a 417 não pode voltar ao
+`audit_log`.
+
+**Lição não-óbvia:** `check_deploy_parity.py` compara os arquivos com o manifesto **copiado
+junto** — ele prova coerência, não atualidade. Para provar que a cópia é a nova, a validação
+funcional precisa exercitar um símbolo que **só existe na versão nova**.
+
 ## 2026-09-23 — Carnê RAINHA MARIA, boleto prorrogado e barcode convertido errado no Vision
 
 **O que foi ao ar** (PR #255, merge `86595ab`). A cópia foi feita depois do merge, então o
