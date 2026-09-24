@@ -747,8 +747,8 @@ mesmo carnê (RAINHA MARIA). O número **impresso** vence o modelo
 🔴 **A consulta de dedup RE-TENTA em falha de rede.** Um hiccup faria `find_financial_duplicate`
 devolver "sem duplicata" e o pipeline **gravaria conta duplicada**. Resultado vazio não é erro.
 
-**Reemissão** (vencimento mais recente) atualiza a conta existente, não cria outra. 🔴 **Dedup que
-descarta tudo do PDF ⇒ status `duplicidade`**, nunca `extraído` — é o que torna a perda auditável.
+**Reemissão** atualiza a conta existente — 🔴 **salvo QUITADA**: é dívida NOVA e a dedup REFAZ a busca
+sem ela (`skip_settled`, conta 417). 🔴 **Dedup que descarta tudo do PDF ⇒ `duplicidade`**, nunca `extraído`.
 
 🔴 **Boleto casado por dedup TAMBÉM vincula o anexo à conta EXISTENTE** (`register_attachment` no
 bloco de dedup, não só no de conta nova). O PDF já está no Storage desde o Passo 1; sem o vínculo,

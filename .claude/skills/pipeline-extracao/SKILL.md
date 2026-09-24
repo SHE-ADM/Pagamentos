@@ -203,6 +203,23 @@ devolver "sem duplicata" e o pipeline **gravaria conta duplicada**. Resultado va
 **Reemissão** (vencimento mais recente) atualiza a conta existente. **Dedup que descarta tudo do
 PDF ⇒ status `duplicidade`**, nunca `extraído` — é o que torna a perda auditável.
 
+🔴 **Conta QUITADA (pago/baixado) nunca é reemitida** (`_dup_is_settled_earlier_debt`): casou
+conta quitada e o documento vence DEPOIS, sem ser o mesmo barcode ⇒ dívida NOVA. 🔴 **A busca é
+REFEITA, não abandonada:** o call site chama `find_financial_duplicate(payload, skip_settled=True)`,
+que veta a quitada nas impressões **1b e 2** e SEGUE para a 3 — a conta da mesma dívida vinda do
+CORPO (sem barcode, mesmo valor e vencimento) é enriquecida com o boleto. Parar na quitada fazia
+nascer uma 2ª conta de outubro EM ABERTO ao lado dela (review max 2026-09-24). Só sem outra
+candidata grava conta própria com nota (`SETTLED_DUP_NOTE`). ⚠️ **Só no caminho de ANEXO**
+(`skip_settled` é opt-in): o caminho do CORPO (`try_extract_from_body`) segue tratando o casamento
+com quitada como duplicata — sem ocorrência medida (21 casos, todos a mesma dívida). Caso de origem: AMIL, conta 417 (23/09/2026) — o "Nº do
+Documento" é o CONTRATO (003071000), igual todo mês, e o valor é fixo; a impressão 2 casou o boleto
+de outubro com a conta de julho (manual, sem nosso número, paga) e a reemissão a reescreveu — o
+boleto novo nasceu pago. `cancelado` fica FORA (lembrete repetido de seguradora, medido no
+`audit_log`). 🔴 **`status_id` em TODO select da dedup** — sem ele a guarda fica inerte.
+⚠️ Guarda por distância de vencimento foi REJEITADA: reemissões legítimas medidas chegam a 52 dias.
+⚠️ Resíduo: conta manual EM ABERTO, sem nosso número, de outro mês, com mesmo Nº e valor ainda
+seria movida — nenhuma prova de título distinto existe nesse par.
+
 🔴 **Boleto casado por dedup TAMBÉM vincula o anexo à conta EXISTENTE** (`register_attachment` no
 bloco de dedup, não só no de conta nova). O PDF já está no Storage desde o Passo 1; sem o vínculo,
 a conta ficava sem nenhum comprovante — sem erro, sem status distinto (achado 2026-09-04,

@@ -24,6 +24,33 @@ vencimento **mais recente**, chama `update_financial` para atualizar `due_date` 
 guia paga uma vez, sempre com o boleto válido. A trigger recalcula a situação em `status` no
 UPDATE (só quando em aberto — migration 034).
 
+🔴 **Conta QUITADA não é reemitida (2026-09-24, caso AMIL / conta 417).** O "Nº do Documento" do
+boleto Amil é o **número do CONTRATO** (`003071000`), igual todo mês, e o valor do plano é fixo
+(R$ 7.217,91). A impressão 2 casou o boleto de **outubro** com a conta **417** — a de **julho**,
+lançada à mão, sem nosso número e já **paga** (o veto `_distinct_nosso_numero` exige os dois
+lados) — e a reemissão reescreveu vencimento e barcode dela: o boleto novo nasceu pago, o pagamento
+de julho sumiu do histórico, e-mail `duplicidade`, nada em `/erros`.
+
+- **Regra** (`_dup_is_settled_earlier_debt`): conta casada com `status_id` ∈ {pago, baixado} +
+  documento que vence **depois** + barcode **diferente** ⇒ dívida NOVA. Barcode idêntico (mesmo
+  título) e vencimento igual/anterior (reenvio do boleto pago) seguem deduplicados.
+- **`cancelado` fica fora**: conta cancelada que recebe "reemissão" é o padrão medido de lembrete
+  repetido de seguradora (contas 69/100/483/547/1050 no `audit_log`).
+- **Guarda por distância de vencimento foi rejeitada**: reemissões legítimas medidas chegam a 52 dias.
+- **A busca é refeita com veto, não abandonada** (review max 2026-09-24): `find_financial_duplicate`
+  devolve a PRIMEIRA impressão que casa, então parar na quitada escondia a conta legítima da mesma
+  dívida que a impressão 3 casaria (a do corpo, sem barcode) — e nasciam **duas contas de outubro em
+  aberto**. Com `skip_settled=True` a quitada é vetada nas impressões 1b e 2 e a busca segue; só
+  sem outra candidata nasce conta própria, com a nota `SETTLED_DUP_NOTE` em "Observações".
+- 🔴 **`status_id` em TODO select da dedup** — sem ele a conta nunca parece quitada e a guarda fica
+  inerte em produção (travado por teste que executa a dedup real).
+- ⚠️ **Resíduos aceitos:** (a) o caminho do **corpo** não aplica a regra (`skip_settled` é opt-in) —
+  medidos 21 e-mails do corpo deduplicados contra conta paga, todos recebidos perto do vencimento
+  dela (mesma dívida), nenhum de mês posterior; (b) conta manual **em aberto**, sem nosso número, de
+  outro mês, com mesmo Nº e valor ainda seria movida — nenhuma prova de título distinto existe nesse
+  par; (c) `_find` usa `limit=1` sem `order` — medido: 12 grupos (fornecedor, Nº, valor) com mais de
+  uma conta, só 1 misturando quitada e aberta (1019/1040), protegido pelo veto de nosso número.
+
 🔴 **A impressão 1b tem uma GUARDA DE TÍTULO desde 2026-08-04 — não removê-la** (`_same_title`).
 O campo que o LLM extrai como "nosso número" **nem sempre identifica o título**: em alguns
 layouts ele copia o **código AGÊNCIA/CONTA do cedente** — no T.R.T Monitoramento,
