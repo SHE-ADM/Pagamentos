@@ -1,5 +1,40 @@
 # Histórico de deploys
 
+## 2026-09-23 — Carnê RAINHA MARIA, boleto prorrogado e barcode convertido errado no Vision
+
+**O que foi ao ar** (PR #255, merge `86595ab`). A cópia foi feita depois do merge, então o
+manifesto de produção é o da `main` (`EE982709…73E21`, 32 arquivos).
+- **Carnê não perde parcela.** `_has_own_bank_title` isenta das regras de VALOR e de EXTRATO a
+  linha com nosso número próprio e distinto **ou** com código descartado. Isso fecha a perda da
+  NF 1724: 6 boletos, R$ 150.552,00, e-mail `extraído`. Dead-man switch (`pagavel_descartado`)
+  só na seguradora.
+- **Boleto prorrogado não nasce vencido.** O fator × data lida passa a ser decidido pela política
+  única `febraban.barcode_due_date_supersedes` nos dois call sites. Teto de 60 dias; o vencimento
+  presumido do corpo segue cedendo ao fator.
+- **Vision: 2ª barreira do DV geral**, no fim da cadeia e com descarte marcado. O prompt exige
+  transcrever a linha digitável.
+- **Dedup não funde irmãos descartados** (veto por título distinto na impressão 3), e a gravação
+  preserva a nota "Vencimento corrigido" do extrator. As duas correções vieram dos reviews max de
+  22 e 23/09.
+
+**Arquivos:** `febraban.py`, `extract_pdf.py`, `read_emails.py`, `deploy-manifest.json` — copiados
+**juntos**: `read_emails.py` novo chama `strip_due_date_notes(..., keep_corrected_to=)`, e com o
+`febraban.py` antigo a gravação levantaria `TypeError`. Sem módulo novo, sem dependência nova, nada
+muda no `.env` e não há re-registro de tarefa. **Migrations 143–146** já estavam aplicadas (base
+compartilhada dev+prod).
+
+**Verificação em produção:** `check_deploy_parity.py` → **32/32 conferem, 0 faltando, 0
+divergentes, 0 extras** (print do usuário, 2026-09-23). ⏳ A validação funcional (3 checagens:
+`prorrogacao`, `nota_preservada`, `isencao_carne`) foi proposta e **não foi reportada**. O sinal
+no dado também fica por observar: `email_processing_errors` com `error_type='pagavel_descartado'`
+deve seguir em 0, e o próximo lote da RAINHA MARIA deve gerar uma conta por anexo.
+
+**Lição não-óbvia:** a correção que o 1º review aprovou tinha **metade** da proteção. Marcar o
+descarte e exigir `barcode=is.null` do candidato parecia fechar a dedup, mas o **irmão também
+descartado** tem barcode nulo. O teste daquela correção usava uma tabela simulada que devolvia `[]`
+sempre: provava qual URL era montada, nunca que o irmão gravado deixava de ser casado. Guarda de
+dedup precisa de uma tabela simulada **com a linha que ela deveria recusar**.
+
 ## 2026-09-15 — Fornecedor (falha da RPC, contribuinte, beneficiário = pagadora) + Nº do Documento
 
 **O que foi ao ar** (PR #253, merge `3b66e47`). A cópia para produção foi feita do working tree,

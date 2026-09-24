@@ -453,6 +453,49 @@ _STATUS_NAME_TO_ID = {   # 'falha' -> 10 (estado fechado, a trigger preserva)
     "protestado": 6, "cartório": 7, "pago": 8, "cancelado": 9, "falha": 10,
 }
 
+# Situacoes QUITADAS — a divida ja saiu do caixa. Derivadas do mapa acima (fonte unica dos ids).
+# `cancelado` fica FORA de proposito: conta cancelada que recebe reemissao e o padrao medido de
+# lembrete repetido de seguradora (contas 69/100/483/547/1050 no audit_log), e mudar isso
+# criaria conta nova a cada lembrete.
+SETTLED_STATUS_IDS = frozenset({_STATUS_NAME_TO_ID["pago"], _STATUS_NAME_TO_ID["baixado"]})
+
+# Nota de auditoria da conta NOVA que a dedup casou com uma conta QUITADA (ver
+# `_dup_is_settled_earlier_debt`). Vai para "Observações" para o operador conferir o papel.
+SETTLED_DUP_NOTE = ("Nº do documento e valor iguais aos da conta {dup_id} (quitada, venc. "
+                    "{old_due}) — vencimento posterior tratado como dívida NOVA, não reemissão")
+
+
+def _dup_is_settled_earlier_debt(dup: dict, payload: dict) -> bool:
+    """True quando a conta que a dedup casou esta QUITADA e o documento novo vence DEPOIS dela
+    sem ser o MESMO codigo de barras — entao e a divida SEGUINTE, nao uma reemissao.
+
+    🔴 Caso de origem (conta 417, AMIL, 23/09/2026): o "Nº do Documento" do boleto Amil e o
+    NUMERO DO CONTRATO (003071000), igual todo mes, e o valor do plano e fixo. A impressao 2
+    (Nº + valor) casou o boleto de OUTUBRO com a conta de JULHO, ja paga e lancada a mao sem
+    nosso numero (o veto `_distinct_nosso_numero` exige os dois lados) — e a "reemissao"
+    reescreveu vencimento e barcode dela. Resultado: o boleto de outubro nasceu PAGO, o
+    pagamento de julho sumiu do historico, e-mail `duplicidade`, nada em /erros.
+
+    Uma conta quitada nao e reemitida: vencimento posterior e divida nova. O bias e o do resto
+    do pipeline — conta a revisar (visivel, com nota) e melhor que pagavel perdido em silencio.
+
+    Nao dispara quando:
+      * o barcode e IDENTICO — impressao 1, mesmo titulo por definicao (uma prorrogacao
+        impressa mantem o fator original e pode ler data posterior);
+      * o vencimento novo e igual/anterior — reenvio do boleto ja pago segue deduplicado;
+      * falta `status_id` ou alguma das datas — sem prova, mantem o comportamento anterior."""
+    try:
+        status_id = int(dup.get("status_id"))
+    except (TypeError, ValueError):
+        return False
+    if status_id not in SETTLED_STATUS_IDS:
+        return False
+    new_due, old_due = payload.get("due_date"), dup.get("due_date")
+    if not new_due or not old_due or str(new_due) <= str(old_due):  # ISO compara como string
+        return False
+    new_barcode = (payload.get("barcode") or "").strip()
+    return not (new_barcode and new_barcode == (dup.get("barcode") or "").strip())
+
 
 def _apply_status_id(payload: dict) -> None:
     """Traduz o `status` TEXTO do payload para `status_id` (fonte unica) e remove o texto.
@@ -992,7 +1035,7 @@ class SupabaseControl:
             log.warning(f"    [FISCAL] falha ao gravar conteudo de {item['access_key'][-8:]}: {e}")
             return False
 
-    def find_financial_duplicate(self, payload: dict) -> dict | None:
+    def find_financial_duplicate(self, payload: dict, skip_settled: bool = False) -> dict | None:
         """Retorna a conta existente que representa o MESMO documento, ou None.
 
         Cobre a duplicidade real que a dedup por message_id NAO pega: o mesmo
@@ -1020,6 +1063,12 @@ class SupabaseControl:
         decidir entre pular ou ATUALIZAR (ex.: reemissao com vencimento mais novo).
         Conservador: so deduplica com um identificador de fornecedor presente.
         Em caso de erro de consulta, retorna None (nao bloqueia a insercao).
+
+        `skip_settled`: VETA nas impressoes 1b e 2 a conta QUITADA de vencimento anterior
+        (`_dup_is_settled_earlier_debt`) e SEGUE para as impressoes seguintes. 🔴 Parar a busca
+        nela escondia a conta legitima da MESMA divida que a impressao 3 casaria (conta do
+        corpo sem barcode) e fazia nascer uma 2a conta em aberto. Opt-in: so o caminho de
+        anexo aplica a regra da conta quitada.
         """
         if not self._available:
             return None
@@ -1031,7 +1080,9 @@ class SupabaseControl:
             return f"{col}=eq.{urllib.parse.quote(sval, safe='')}"
 
         # `processing_notes` vem junto: a reemissao retira dela a marca de vencimento presumido.
-        def _find(clauses: list, select: str = "id,due_date,barcode,processing_notes") -> dict | None:
+        # 🔴 `status_id` tambem, em TODA consulta: sem ele `_dup_is_settled_earlier_debt` nunca
+        # ve a conta quitada e a reemissao volta a reescrever conta paga (conta 417).
+        def _find(clauses: list, select: str = "id,due_date,barcode,processing_notes,status_id") -> dict | None:
             # Re-tenta em falha TRANSITORIA (rede/timeout): uma consulta que falha
             # e retorna None seria lida como "sem duplicata" e criaria conta
             # duplicada. Um resultado vazio (rows == []) NAO e erro — retorna None
@@ -1098,7 +1149,7 @@ class SupabaseControl:
         if _is_real_nosso_numero(nosso):
             m = _find([supplier_clause,
                        f"nosso_numero=eq.{urllib.parse.quote(nosso, safe='')}"],
-                      select="id,due_date,barcode,invoice_number,processing_notes,nosso_numero")
+                      select="id,due_date,barcode,invoice_number,processing_notes,nosso_numero,status_id")
             if m and not _same_title(
                     _own_document_number(payload.get("invoice_number"), nosso),
                     _own_document_number(m.get("invoice_number"), m.get("nosso_numero"))):
@@ -1107,6 +1158,8 @@ class SupabaseControl:
                     f"({payload.get('invoice_number')!r} x {m.get('invoice_number')!r}) — "
                     "titulos distintos, nao deduplica"
                 )
+                m = None
+            if m and skip_settled and _dup_is_settled_earlier_debt(m, payload):
                 m = None
             if m:
                 return m
@@ -1123,7 +1176,7 @@ class SupabaseControl:
                 supplier_clause,
                 f"invoice_number=eq.{urllib.parse.quote(invoice, safe='')}",
                 _eq_clause("amount", payload.get("amount")),
-            ], select="id,due_date,barcode,processing_notes,nosso_numero")
+            ], select="id,due_date,barcode,processing_notes,nosso_numero,status_id")
             # GUARDA (2026-09-15 — nao regredir): desde que `invoice_number` de boleto e o
             # 'Nº do Documento' (e nao mais o nosso numero), parcelas de carne que repetem o
             # MESMO numero e o MESMO valor casariam aqui e a 2a parcela SUMIRIA em silencio.
@@ -1134,6 +1187,8 @@ class SupabaseControl:
                     "    [DEDUP-2] Nº de documento e valor iguais mas nosso numero diferente "
                     f"({nosso!r} x {m.get('nosso_numero')!r}) — titulos distintos, nao deduplica"
                 )
+                m = None
+            if m and skip_settled and _dup_is_settled_earlier_debt(m, payload):
                 m = None
             if m:
                 return m
@@ -1163,7 +1218,7 @@ class SupabaseControl:
             # digitavel. O candidato sem barcode e a conta do corpo/notificacao da
             # mesma divida.
             m = _find(base3 + ["barcode=is.null"],
-                      select="id,due_date,barcode,processing_notes,nosso_numero,invoice_number")
+                      select="id,due_date,barcode,processing_notes,nosso_numero,invoice_number,status_id")
             # 🔴 ...a menos que o candidato TAMBEM tenha tido o codigo descartado: ai ele nao e
             # conta do corpo, e um BOLETO real — e barcode nulo deixa de separar os irmaos. Sem
             # este veto, dois boletos do mesmo lote (mesmo fornecedor, valor e vencimento, lidos
@@ -6299,6 +6354,25 @@ def extract_and_store_accounts(saved_pdfs: list, message_id: str,
         # manter dados de pagamento vencidos. Roda ANTES da uniquificacao do
         # invoice_number para nao gravar duplicata.
         dup = ctrl.find_financial_duplicate(payload)
+        # 🔴 Conta QUITADA + vencimento posterior = divida SEGUINTE, nunca reemissao — senao a
+        # reemissao abaixo reescreveria a conta paga e o boleto novo nasceria "pago" (conta 417).
+        # A busca e REFEITA com o veto, nao abandonada: a conta legitima da mesma divida (ex.:
+        # a do corpo, sem barcode) so aparece nas impressoes seguintes.
+        if dup and _dup_is_settled_earlier_debt(dup, payload):
+            settled = dup
+            dup = ctrl.find_financial_duplicate(payload, skip_settled=True)
+            log.warning(
+                f"    [DEDUP-QUITADA] conta {settled.get('id')} esta quitada (venc. "
+                f"{settled.get('due_date')}) e o documento vence em {payload.get('due_date')} — "
+                + (f"casa a conta {dup.get('id')} da mesma divida" if dup
+                   else "divida nova, grava conta propria")
+                + f" ({row.get('source_file')})"
+            )
+            if not dup:
+                note = SETTLED_DUP_NOTE.format(dup_id=settled.get("id"),
+                                               old_due=settled.get("due_date"))
+                prev = payload.get("processing_notes")
+                payload["processing_notes"] = f"{prev} | {note}" if prev else note
         if dup:
             new_due = payload.get("due_date")
             old_due = dup.get("due_date")
