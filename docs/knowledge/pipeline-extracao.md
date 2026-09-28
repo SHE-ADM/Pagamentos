@@ -1026,14 +1026,43 @@ mudam, **todos** de nome-lixo para vazio (`referente ao pedido`, `REF. PEÇAS PA
 ou seja, a guarda só deixa de criar cadastro-lixo. Testes:
 `tests/test_body_platform_invoice.py`.
 
-> **Oportunidade NÃO implementada — o boleto está atrás de LINK** (`visualizacao.gerencianet.com.br`).
-> Verificado em 2026-07-28: o link **responde** e devolve o boleto em **HTML** (não PDF) com
-> linha digitável, beneficiário e CNPJ. Hoje `extract_pdf_links` **não o reconhece** (a âncora é
-> "Acessar", a URL não tem `.pdf`) e `download_pdf_from_url` só aceita PDF — o PDF real é montado
-> por **JS** (`download.sejaefi.com.br/<id>.pdf`), mesma classe do handler adiado da SIEG. Um
-> handler Efí resolveria os três defeitos na origem, pelo caminho canônico de PDF. O `barcode` da
-> conta 694 foi preenchido **manualmente** a partir dessa página (registrado em
-> `processing_notes`) — não é capacidade do pipeline.
+**BOLETO EFÍ POR LINK — handler implementado em 2026-09-25 (contas 766 e 1685, não regredir).**
+A oportunidade registrada em 2026-07-28 virou defeito recorrente: a mesma cobrança da AGENCIA K1
+caiu no corpo **três vezes** (694, 766, 1685) e, a partir da 766, gravou o fornecedor-lixo
+**"Nome"** (sk 1319). Três causas, três correções:
+
+- **O link não levava ao PDF.** Formas reais: a PÁGINA
+  `visualizacao.gerencianet.com.br/emissao/<conta>_<n>_<chave>/<XXXX>-<conta>-<m>-<chave>`
+  (e-mails 1085/2422 — âncora "Acessar Bolix", URL sem `.pdf`, nem era candidata) e
+  `download.sejaefi.com.br/v1/<id>` (1190/1299 — era candidata por casar "download", mas devolve
+  HTML). Nenhuma das duas tem `<a href>` para o PDF: o botão monta a URL em JS.
+  **`_efi_pdf_url`** espelha a função `pdf()` da página — trecho após `emissao/`, 1º `/XXXX-` →
+  `/`, prefixo `^\w{2}/` (`v1/`) removido → `download.sejaefi.com.br/<id>.pdf`. Verificado: 200
+  `application/pdf` para as duas formas, inclusive o boleto de julho. `extract_pdf_links` troca o
+  link pela URL derivada, com **prioridade** (como a fatura SSW); `download_pdf_from_url` cobre
+  também a página alcançada por **redirect** de rastreamento. Allowlist de host + forma do id +
+  portas padrão; o conteúdo ainda passa pelo guard SSRF e pelo `%PDF`.
+  🔴 **Falha da URL derivada é `log.warning`, não `info`** — a regra espelha o JS da plataforma, e
+  o aviso é o único sinal de que ela mudou; calado, o e-mail voltaria ao corpo sem ninguém saber.
+  🔴 **O site INSTITUCIONAL (`sejaefi.com.br`, `gerencianet.com.br`) nunca é candidato** — o
+  rodapé linka "Clique aqui e abra a sua conta" e a âncora casa `_LINK_TEXT_RE`; como o laço
+  baixa **todos** os candidatos, um PDF de marketing ali viraria conta.
+- **O corpo gravava o CABEÇALHO como fornecedor.** A Efí passou a mandar "Dados do emissor" como
+  tabela achatada ("Nome / Telefone / AGENCIA K1…"). `_BODY_ISSUER_RE` pula até 4 linhas de
+  rótulo e tem **lookahead negativo** que proíbe o valor de ser rótulo — sem ele o backtracking
+  desfaz o pulo e volta a capturar "Nome". Os rótulos vivem em **`_FIELD_LABEL_TERMS`** (fonte
+  única: gera o regex e alimenta `_is_non_supplier_term`, que os recusa em QUALQUER caminho,
+  por igualdade exata — "Empresa Nome Ltda" segue válido).
+- **O e-mail da plataforma sequestrava o cadastro.** `naoresponda@notificacao.sejaefimail.com.br`
+  é de TODO emissor Efí, mas `_is_platform_email` só conhecia a SSW: o auto-insert gravou-o no sk
+  1319, e o passo por e-mail da RPC atribuiria a ele qualquer cobrança Efí sem nome. Migration 147.
+
+A/B contra a base (HEAD × novo): **1.299 corpos** e **1.397 fornecedores** — mudam só os 4
+e-mails Efí e o sk 1319. Reprocessado o e-mail 2422: a 1685 recebeu o código de barras e o PDF.
+Testes: `tests/test_efi_boleto_link.py` (7 mutantes, todos vermelhos).
+⚠️ **Residual medido, não corrigido:** a ficha Efí imprime a **Espécie como código numérico**
+("25/09/2026 668 26 25/09/2026"), e `extract_boleto_document_number` só descarta Espécie **sem
+dígito** — lê "668 26". Não se separa de "504811 01" (Nº com espaço, legítimo) sem medir a base.
 
 ### Auto-resolução de fornecedor
 

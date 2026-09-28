@@ -16,6 +16,19 @@
 
 ## Changelog (mais recente primeiro)
 
+**A `147` trata o e-mail da Efí como PLATAFORMA e desfaz o fornecedor-lixo "Nome"** — aplicada
+via psql em 2026-09-25 (ensaio em ROLLBACK + mutante da sonda antes; reexecução = UPDATE 0).
+`_is_platform_email` passa a reconhecer `sejaefimail.com.br` (endereço de todo emissor que cobra
+pela Efí — mesma classe da SSW na `109`): o auto-insert o havia gravado no cadastro sk 1319
+"Nome", e o passo por e-mail da RPC atribuiria a ele qualquer cobrança Efí sem nome legível. As
+contas 766 (cancelada, segue cancelada) e 1685 voltam ao sk 1092 (AGENCIA K1) com a classificação
+default **lida do cadastro**; o 1319 recebe soft delete e perde o e-mail. A função ganhou o
+`REVOKE` explícito que nunca teve (os três chamadores são `SECURITY DEFINER`). Sondas: domínio de
+plataforma nos dois sentidos (`evilsejaefimail.com.br` NÃO casa), situação das contas movidas
+inalterada contra o baseline, a RPC **recusa** só com o e-mail da Efí e resolve o 1092 pelo nome
+que o corpo agora extrai. Causa no código: ver "BOLETO EFÍ POR LINK" em
+[pipeline-extracao.md](../knowledge/pipeline-extracao.md).
+
 **A `146` corrige os 16 códigos de barras corrompidos que restavam na base** — sem DDL, aplicada
 via psql em 2026-09-23. São o saldo da medição de 2026-09-22 (20 códigos, **100% `pdf_vision`**,
 zero em `pdf_text`/`email_body`): quatro saíram pela `144` e estes 16 fecham a dívida. A causa é o

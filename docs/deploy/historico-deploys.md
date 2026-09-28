@@ -1,5 +1,60 @@
 # Histórico de deploys
 
+## 2026-09-28 — Cobrança de vencidos: cliente sem grupo econômico voltava a ficar de fora
+
+**O que foi ao ar.** Os 6 filtros de exclusão por grupo da query Firebird (`db_firebird.py`, nos
+dois blocos do `UNION ALL`) passaram de `PK.CD_GP_NO <> '...'` para
+`COALESCE(PK.CD_GP_NO,'') <> '...'`. Com `CD_GP_NO` nulo, `NULL <> 'X'` é UNKNOWN e o `WHERE`
+descartava a linha: **todo cliente sem grupo econômico deixava de ser cobrado, sem erro e sem
+linha em `/cobranca/erros`**. O defeito nasceu no deploy de 2026-08-31 (troca de `CD_ID` por
+`CD_GP_NO`).
+
+**Arquivos:** `db_firebird.py`, `deploy-manifest.json`. Sem `.env` novo, sem dependência nova, sem
+re-registro de tarefa, sem migration.
+
+**Efeito esperado na 1ª execução:** os títulos vencidos nos últimos 7 dias de clientes sem grupo
+entram de uma vez — nunca estiveram em `cobranca_envios_log`, então todos recebem e-mail.
+
+**Verificação em produção** (print do usuário, 2026-09-28): `check_deploy_parity.py` → **32/32
+conferem, 0 faltando, 0 divergentes, 0 extras** — o `read_emails.py` pendente foi copiado junto e
+também confere. `run.py --dry-run` → **total=101 · enviados=93 · pulados=0 · erros=8** (todos
+"sem e-mail/inválido", 0 operacionais), contra **18** no dry-run de 2026-08-31.
+
+⚠️ **O dry-run NÃO prova a correção sozinho:** ele não consulta `cobranca_envios_log`
+(`already_sent` só roda fora do dry-run), então `pulados=0` e os 93 "enviados" incluem títulos já
+cobrados em dias anteriores — o envio real será menor. E 101 × 18 compara dias diferentes. A prova
+direta é a contagem de `CD_GP_NO IS NULL` nas duas views.
+
+**Lição não-óbvia:** filtro de exclusão com `<>` sobre coluna anulável **exclui também o nulo**.
+Toda exclusão por lista em coluna que pode vir vazia precisa de `COALESCE` (ou `IS NULL OR`).
+
+## 2026-09-24 — Conta quitada não é reemitida pela dedup (conta 417, AMIL)
+
+**O que foi ao ar** (PR #256, merge `2667854`). O manifesto de produção é o da `main`
+(`53712D50…C214BF`, 32 arquivos).
+- **Conta QUITADA + vencimento posterior = dívida NOVA** (`_dup_is_settled_earlier_debt`). O
+  "Nº do Documento" Amil é o nº do contrato, igual todo mês, e a impressão 2 casava o boleto de
+  outubro com a 417 (julho, paga) e a reescrevia. `cancelado` fica fora de propósito.
+- **A busca é REFEITA com o veto** (`find_financial_duplicate(skip_settled=True)`), não
+  abandonada: a impressão 3 ainda casa a conta do corpo da mesma dívida. Achado do review max de
+  24/09 — a 1ª versão parava na quitada e criava uma 2ª conta em aberto.
+
+**Arquivos:** `read_emails.py`, `deploy-manifest.json`. Sem módulo novo, sem dependência nova,
+sem migration. Dados já corrigidos no DEV antes do deploy (417 restaurada, 1680 criada pelo
+reprocessamento do e-mail 2382).
+
+**Verificação em produção:** `check_deploy_parity.py` → **32/32 conferem, 0 faltando, 0
+divergentes, 0 extras** + validação funcional **2/2 `True`** (`quitada_nova_divida`,
+`reenvio_mesma_data`) — print do usuário, 2026-09-24. A função validada não existia no
+`read_emails.py` anterior, então o `True` prova também que o manifesto é o novo (o 32/32 sozinho
+não provaria: arquivo e manifesto antigos também dariam paridade). Sinal no dado a observar: o
+boleto Amil de novembro deve gerar conta própria com a nota, e a 417 não pode voltar ao
+`audit_log`.
+
+**Lição não-óbvia:** `check_deploy_parity.py` compara os arquivos com o manifesto **copiado
+junto** — ele prova coerência, não atualidade. Para provar que a cópia é a nova, a validação
+funcional precisa exercitar um símbolo que **só existe na versão nova**.
+
 ## 2026-09-23 — Carnê RAINHA MARIA, boleto prorrogado e barcode convertido errado no Vision
 
 **O que foi ao ar** (PR #255, merge `86595ab`). A cópia foi feita depois do merge, então o

@@ -313,6 +313,15 @@ http(s), porta malformada e host que resolve para IP **interno**; `_SafeRedirect
 - **Links suspeitos são ignorados** (redirecionadores ofuscados, SafeLinks, Proofpoint).
 - **SSW:** preferir o link de **FATURA** (`F`) e descartar os DACTE (`D`/`E`/`X`) — o 1º byte do
   `id` em hex→ASCII indica o tipo.
+- 🔴 **Efí/Gerencianet:** o link é uma PÁGINA sem `<a href>` para o PDF (o botão monta a URL em
+  JS). `_efi_pdf_url` espelha essa regra → `download.sejaefi.com.br/<id>.pdf`, com prioridade;
+  falha da URL derivada é **`log.warning`** (sinal de que a plataforma mudou). O site
+  institucional (`sejaefi.com.br`) nunca é candidato. Sem o handler, a conta caía no corpo sem
+  boleto (contas 694, 766, 1685).
+- 🔴 **Rótulo de campo nunca é fornecedor** (`_FIELD_LABEL_TERMS`, fonte única do regex do bloco
+  "Dados do emissor" e de `_is_non_supplier_term`) — a tabela achatada "Nome / Telefone / …"
+  gravava o cabeçalho "Nome" (sk 1319). E-mail de plataforma (SSW, Efí) vive em
+  `_is_platform_email` no banco (109, 147): nova plataforma de cobrança entra ali.
 
 ## Robustez — o que já congelou ou perdeu dado
 
