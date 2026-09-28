@@ -2,7 +2,7 @@
 
 ## 2026-09-28 — Cobrança de vencidos: cliente sem grupo econômico voltava a ficar de fora
 
-**O que foi ao ar.** Os 6 filtros de exclusão por grupo da query Firebird (`db_firebird.py`, nos
+**O que foi ao ar** (PR #257, merge `25d502a`). Os 6 filtros de exclusão por grupo da query Firebird (`db_firebird.py`, nos
 dois blocos do `UNION ALL`) passaram de `PK.CD_GP_NO <> '...'` para
 `COALESCE(PK.CD_GP_NO,'') <> '...'`. Com `CD_GP_NO` nulo, `NULL <> 'X'` é UNKNOWN e o `WHERE`
 descartava a linha: **todo cliente sem grupo econômico deixava de ser cobrado, sem erro e sem
@@ -24,6 +24,19 @@ também confere. `run.py --dry-run` → **total=101 · enviados=93 · pulados=0 
 (`already_sent` só roda fora do dry-run), então `pulados=0` e os 93 "enviados" incluem títulos já
 cobrados em dias anteriores — o envio real será menor. E 101 × 18 compara dias diferentes. A prova
 direta é a contagem de `CD_GP_NO IS NULL` nas duas views.
+
+**Prova direta** (2026-09-28, janela de 7 dias): `CD_GP_NO IS NULL` → **6** em
+`VW_PSQ_FIN_REC_BAN` + **78** em `VW_PSQ_FIN_REC_BAN_004` = **84 de 101** títulos. Os 17 restantes
+batem com o patamar de 18 medido em 2026-08-31 — **a queda daquele deploy era, na maior parte, o
+defeito**, não o filtro de grupos. A `_004` quase inteira não tem grupo.
+
+**Passivo que a correção NÃO recupera:** a janela é de 7 dias, então os títulos de cliente sem
+grupo que venceram entre o deploy de 2026-08-31 e ~2026-09-21 já saíram dela e **nunca foram
+cobrados** — a query corrigida não os alcança. Medido em 2026-09-28: **169 títulos** ainda
+`VENCIDO`, sem grupo, com `DTVC` entre 2026-08-24 e `CURRENT_DATE - 8` (antes do cruzamento com
+`cobranca_envios_log`, que separa os já cobrados pela query anterior a 31/08). **Encerrado em
+2026-09-28 por decisão do usuário:** o passivo não será cruzado nem cobrado pelo sistema — risco
+aceito, após testes feitos pelo próprio usuário.
 
 **Lição não-óbvia:** filtro de exclusão com `<>` sobre coluna anulável **exclui também o nulo**.
 Toda exclusão por lista em coluna que pode vir vazia precisa de `COALESCE` (ou `IS NULL OR`).
