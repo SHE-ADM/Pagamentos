@@ -1848,15 +1848,48 @@ _NON_SUPPLIER_TERMS = frozenset(_norm_term(t) for t in {
 })
 
 
+# ROTULOS DE CAMPO de um bloco de dados cadastrais — cabecalho de coluna, nunca valor. A
+# Efi passou a enviar "Dados do emissor" como TABELA ("Nome | Telefone" na 1a linha, os
+# valores na 2a); achatada pelo webmail, o rotulo "Nome" ficava logo abaixo do titulo do
+# bloco e virava o fornecedor — cadastro-lixo sk 1319 "Nome", contas 766 (07/2026) e 1685
+# (09/2026). FONTE UNICA: alimenta o regex do bloco (_BODY_ISSUER_RE, que PULA estas linhas)
+# e a guarda _is_non_supplier_term (que as recusa em QUALQUER caminho). Comparacao EXATA —
+# "Empresa Nome Ltda" continua valida. Grafia sem acento e minuscula; o regex e gerado por
+# _accent_tolerant_pattern.
+_FIELD_LABEL_TERMS = (
+    "nome", "nome fantasia", "razao social", "telefone", "celular", "whatsapp", "contato",
+    "e-mail", "email", "site", "endereco", "cnpj", "cpf", "cnpj/cpf", "cpf/cnpj",
+    "fornecedor", "emissor", "beneficiario", "cedente", "sacador", "favorecido", "empresa",
+)
+_FIELD_LABEL_SET = frozenset(_norm_term(t) for t in _FIELD_LABEL_TERMS)
+
+# Vogal/cedilha sem acento -> classe que aceita as formas acentuadas (pt-BR).
+_ACCENT_CLASSES = {"a": "[aáàâã]", "e": "[eéê]", "i": "[ií]", "o": "[oóôõ]", "u": "[uúü]",
+                   "c": "[cç]"}
+
+
+def _accent_tolerant_pattern(term: str) -> str:
+    """Padrao regex que casa `term` (grafado sem acento) com ou sem acento e com espacos
+    variaveis — "razao social" casa "Razão  Social". Usar com re.IGNORECASE."""
+    parts = []
+    for ch in term:
+        if ch.isspace():
+            parts.append(r"\s+")
+        else:
+            parts.append(_ACCENT_CLASSES.get(ch, re.escape(ch)))
+    return "".join(parts)
+
+
 def _is_non_supplier_term(name: str | None) -> bool:
     """True quando `name` E, no todo, um tipo de documento/pagamento (ex.: 'GNRE',
-    'Boleto', 'PIX', 'DARF SP') — robustez para nao cadastrar um TIPO como
+    'Boleto', 'PIX', 'DARF SP') ou um ROTULO DE CAMPO ('Nome', 'Telefone' — ver
+    _FIELD_LABEL_TERMS) — robustez para nao cadastrar um TIPO ou um cabecalho como
     fornecedor. NAO rejeita nomes que apenas CONTÊM a palavra ('Porto Seguro',
     'Vale Fertilizantes' permanecem fornecedores validos)."""
-    n = re.sub(r"\s+", " ", _norm_term(name)).strip(" .-/")
+    n = re.sub(r"\s+", " ", _norm_term(name)).strip(" .-/:")
     if not n:
         return False
-    if n in _NON_SUPPLIER_TERMS:
+    if n in _NON_SUPPLIER_TERMS or n in _FIELD_LABEL_SET:
         return True
     # acronimo isolado + ruido (UF de 2 letras / numero solto): "gnre mg", "darf sp".
     core = [t for t in re.split(r"[\s/]+", n) if t and not t.isdigit() and len(t) > 2]
@@ -2553,6 +2586,76 @@ FINANCIAL_VALUE_FIELDS = [
 # Valores em lowercase — comparados com dtype.lower() em extract_and_store_accounts().
 SKIP_ACCOUNT_TYPES = ("nfe", "nfse")
 
+# NFS-e que E A PROPRIA COBRANCA. O prestador pessoa/ME (MEI, freelancer) nao emite boleto: a
+# nota traz no campo de discriminacao COMO pagar ("Pagamento por PIX para chave email: ...") e
+# e o unico documento da divida. Caso de origem: DANIEL TOSHIAKI SUZUKI (sk 1289), NFS-e 34 de
+# Barueri, R$ 2.051,96, e-mail 2419 (24/09/2026) — descartada por SKIP_ACCOUNT_TYPES e o e-mail
+# virou 'ignorado'; a de julho so existe porque foi lancada a mao (conta 559).
+# 🔴 O sinal e uma INSTRUCAO DE PAGAMENTO PIX com destino — nunca a palavra "pix" solta, nem
+# "Forma Pagamento" (rotulo VAZIO impresso em todo layout de NFS-e de Barueri). Afrouxar depois e
+# facil; o inverso destroi o 'ignorado' das NFS-e de prestador que cobra por boleto separado.
+# ⚠️ So NFS-e: NF-e de MERCADORIA e paga por duplicata/boleto que chega em outro e-mail, e
+# promove-la criaria a 2a conta da mesma divida (valor total x parcela nao casa na dedup).
+_NFSE_PAYABLE_TYPES = ("nfse",)
+_PIX_PAYMENT_INSTRUCTION_RE = re.compile(
+    r"\bchave\s+(?:do\s+|de\s+)?pix\b"
+    r"|\bpix\s+(?:para|na|pela|p/)\s+(?:a\s+)?chave\b"
+    r"|\b(?:pagamento|pagar|pague|deposito|transferencia|quitacao)\s+"
+    r"(?:por|via|pelo|pela|atraves\s+(?:de|do)|em)\s+pix\b"
+    r"|\bpix\s*(?:copia\s+e\s+cola|copia\s*/\s*cola)\b"
+)
+
+
+def _nfse_payment_instruction(*texts: str | None) -> bool:
+    """True se ALGUM texto traz instrucao EXPLICITA de pagamento por PIX (frase com destino)
+    ou um PIX Copia-e-Cola (payload EMV com a chave de cobranca do BC).
+
+    Comparacao sem acento e com espacos colapsados — o pdfplumber quebra a frase em linhas e
+    o PDF de prefeitura chega com acentos corrompidos ('Descri��o'); a frase-gatilho
+    real ("Pagamento por PIX para chave email") nao tem acento, mas "deposito"/"transferencia"
+    tem. Tolerante a None/vazio (devolve False)."""
+    for text in texts:
+        if not text:
+            continue
+        flat = re.sub(r"\s+", " ", _strip_accents_lower(str(text)))
+        if "br.gov.bcb.pix" in flat.replace(" ", ""):
+            return True
+        if _PIX_PAYMENT_INSTRUCTION_RE.search(flat):
+            return True
+    return False
+
+
+NFSE_OWN_CHARGE_NOTE = ("NFS-e com instrução de pagamento PIX e sem boleto no e-mail — "
+                        "o próprio documento é a cobrança")
+
+
+def _nfse_is_own_charge(row: dict, pix_instruction_files: set, has_real_boleto: bool) -> bool:
+    """True se a linha NFS-e sem barcode deve virar conta: o documento traz instrucao PIX e o
+    e-mail NAO tem boleto real.
+
+    🔴 `not has_real_boleto` nao e redundante: NFS-e + boleto em ANEXOS SEPARADOS e o caso
+    normal do prestador PJ, e ali a nota continua pulada — senao a mesma divida entraria duas
+    vezes (a regra fatura+boleto so descarta linha de valor IGUAL, e nota com retencao de
+    tributo tem valor bruto distinto do boleto liquido).
+    Fontes do sinal: o TEXTO CRU do anexo (colhido no Passo 1) e, para o PDF escaneado sem
+    camada de texto, a `description` que o modelo transcreveu."""
+    dtype = (row.get("document_type") or "").strip().lower()
+    if dtype not in _NFSE_PAYABLE_TYPES or has_real_boleto:
+        return False
+    return (row.get("source_file") in pix_instruction_files
+            or _nfse_payment_instruction(row.get("description")))
+
+
+def _mark_nfse_own_charge(row: dict) -> None:
+    """Carimba a linha promovida: forma de pagamento PIX (quando o modelo nao a leu) e a nota
+    em "Observacoes" que explica por que uma NFS-e virou conta. Idempotente."""
+    method = (row.get("payment_method") or "").strip().lower()
+    if method in ("", "outro", "none"):
+        row["payment_method"] = "pix"
+    notes = (row.get("processing_notes") or "").strip()
+    if NFSE_OWN_CHARGE_NOTE not in notes:
+        row["processing_notes"] = f"{notes} | {NFSE_OWN_CHARGE_NOTE}" if notes else NFSE_OWN_CHARGE_NOTE
+
 
 def _none_if_blank(value):
     """Normaliza vazios do CSV ('', 'None', 'nan') para None."""
@@ -3021,9 +3124,22 @@ _BODY_NAME_RE    = re.compile(
 # O `(?:\r?\n[ \t]*){0,2}` aceita o valor na MESMA linha (0), na linha SEGUINTE (1) ou
 # apos UMA linha em branco (2) — limite baixo de proposito: alem disso o texto capturado
 # ja nao e o valor do rotulo, e sim uma linha distante.
+#
+# LAYOUT EM TABELA (conta 766 em diante): "Dados do emissor / Nome / Telefone / AGENCIA K1…
+# / (87) 98862-0378" — a linha de CABECALHO vem antes dos valores. O regex PULA ate
+# _FIELD_LABEL_MAX_SKIP linhas que sao so rotulo (_FIELD_LABEL_TERMS) e o lookahead
+# negativo PROIBE que o valor capturado seja um rotulo — sem ele, o backtracking desfaria o
+# pulo e voltaria a capturar "Nome". O teto e baixo pelo mesmo motivo do {0,2}: um cabecalho
+# real tem poucas colunas.
+_FIELD_LABEL_MAX_SKIP = 4
+_FIELD_LABEL_LINE = (r"(?:" + "|".join(_accent_tolerant_pattern(t) for t in _FIELD_LABEL_TERMS)
+                     + r")[ \t]*:?[ \t\r]*")
 _BODY_ISSUER_RE = re.compile(
     r"(?im)^[ \t]*dados\s+do\s+(?:emissor|benefici[aá]rio|cedente|sacador)"
-    r"[ \t]*:?[ \t]*(?:\r?\n[ \t]*){0,2}([A-ZÀ-Þ0-9][^\r\n]*?)[ \t\r]*$")
+    r"[ \t]*:?[ \t]*(?:\r?\n[ \t]*){0,2}"
+    r"(?:" + _FIELD_LABEL_LINE + r"\n[ \t]*(?:\r?\n[ \t]*)?){0," + str(_FIELD_LABEL_MAX_SKIP) + r"}"
+    r"(?!" + _FIELD_LABEL_LINE + r"$)"
+    r"([A-ZÀ-Þ0-9][^\r\n]*?)[ \t\r]*$")
 # Valor monetario. Tolera separadores entre "R$" e o numero ("R$:", "R$ -")
 # porque varios e-mails internos escrevem "R$:  297,08".
 _BODY_AMOUNT_RE  = re.compile(r"R\$\s*[:\-]?\s*([\d.,]+)")
@@ -5049,6 +5165,87 @@ def _braspress_download_url(page_url: str) -> "str | None":
     return ("https://www.braspress.com.br/fatura/download"
             f"?protocolo={m.group(1)}&protocoloWeb=true")
 
+
+# Plataforma Efi (ex-Gerencianet) — boleto de assinatura ("Bolix"). O e-mail NUNCA traz o PDF:
+# traz o link de uma PAGINA HTML, em duas formas reais (e-mails 1085/2422 e 1190/1299):
+#   visualizacao.gerencianet.com.br/emissao/<conta>_<n>_<chave>/<XXXX>-<conta>-<m>-<chave>
+#   download.sejaefi.com.br/v1/<conta>_<n>_<chave>/<conta>-<m>-<chave>
+# Nenhuma das paginas tem <a href> para o PDF — o botao "Download PDF" monta a URL em JS
+# (funcao pdf() da pagina): pega o trecho apos "emissao/"/"exibir/cobranca/", troca o 1o
+# "/XXXX-" por "/" e remove um prefixo de 2 caracteres ("v1/"), e baixa
+# https://download.sejaefi.com.br/<id>.pdf. Sem este handler o link era ignorado (ancora
+# "Acessar Bolix", URL sem .pdf) ou dava HTML sem PDF, e a conta caia no fallback do CORPO:
+# sem codigo de barras, sem anexo e com o fornecedor-lixo "Nome" (contas 766 e 1685).
+# 🔴 O host e a forma do id sao conferidos (allowlist) — a URL derivada so aponta para o host
+# de download da propria plataforma, e o conteudo ainda passa pelo guard SSRF e pelo %PDF.
+_EFI_VIEW_HOSTS = frozenset({"visualizacao.gerencianet.com.br", "visualizacao.sejaefi.com.br"})
+_EFI_DOWNLOAD_HOST = "download.sejaefi.com.br"
+# Site INSTITUCIONAL da plataforma — o rodape do e-mail linka "Clique aqui e abra a sua
+# conta" para ele, e a ancora casa _LINK_TEXT_RE. Nunca e boleto: o laco de download baixa
+# TODOS os candidatos, e um PDF de marketing/tarifas achado ali viraria conta espuria.
+_EFI_INSTITUTIONAL_HOSTS = frozenset({"sejaefi.com.br", "www.sejaefi.com.br",
+                                      "gerencianet.com.br", "www.gerencianet.com.br"})
+_EFI_VIEW_PATH_RE = re.compile(r"/(?:emissao|exibir/cobranca)/(.+)$")
+_EFI_ID_RE = re.compile(r"[A-Za-z0-9_\-]+(?:/[A-Za-z0-9_\-]+)+")
+
+
+def _efi_pdf_url(page_url: "str | None") -> "str | None":
+    """URL direta do PDF de um link de boleto Efi/Gerencianet; None se nao for um.
+
+    Espelha a funcao pdf() da pagina da plataforma (ver bloco acima). Funcao pura: nao
+    acessa rede. Devolve None para URL malformada, host fora da allowlist, link que ja e
+    o .pdf (o download direto cuida dele) e id que nao tenha a forma esperada."""
+    try:
+        parts = urllib.parse.urlsplit((page_url or "").strip())
+        port = parts.port  # porta malformada levanta ValueError
+    except ValueError:
+        return None
+    host = (parts.hostname or "").lower()
+    path = parts.path.rstrip("/")
+    # A plataforma so publica nas portas padrao; outra porta nao e link dela.
+    if (parts.scheme not in ("http", "https") or port not in (None, 80, 443)
+            or path.lower().endswith(".pdf")):
+        return None
+    if host in _EFI_VIEW_HOSTS:
+        m = _EFI_VIEW_PATH_RE.search(path)
+        raw_id = m.group(1) if m else ""
+    elif host == _EFI_DOWNLOAD_HOST:
+        raw_id = path.lstrip("/")
+    else:
+        return None
+    urlid = re.sub(r"/\w{4}-", "/", raw_id, count=1, flags=re.ASCII)
+    urlid = re.sub(r"^\w{2}/", "", urlid, count=1, flags=re.ASCII)
+    if not _EFI_ID_RE.fullmatch(urlid):
+        return None
+    return f"https://{_EFI_DOWNLOAD_HOST}/{urlid}.pdf"
+
+
+def _is_efi_institutional_url(url: "str | None") -> bool:
+    """True para link do site institucional da Efi/Gerencianet (nunca e boleto)."""
+    try:
+        host = (urllib.parse.urlsplit((url or "").strip()).hostname or "").lower()
+    except ValueError:
+        return False
+    return host in _EFI_INSTITUTIONAL_HOSTS
+
+
+def _is_efi_pdf_url(url: "str | None") -> bool:
+    """True para a URL de PDF que `_efi_pdf_url` produz (host de download + .pdf)."""
+    try:
+        parts = urllib.parse.urlsplit((url or "").strip())
+    except ValueError:
+        return False
+    return ((parts.hostname or "").lower() == _EFI_DOWNLOAD_HOST
+            and parts.path.lower().endswith(".pdf"))
+
+
+def _warn_efi_pdf_missing(url: str) -> None:
+    """WARNING, nao info: a derivacao espelha o JS da plataforma, e falhar e o sinal de que
+    ele mudou (ou o boleto foi retirado) — sem o aviso, o e-mail voltaria a cair no corpo
+    em silencio, que e exatamente o defeito que o handler existe para fechar."""
+    log.warning("    PDF Efí/Gerencianet derivado não retornou PDF — o formato do link "
+                f"pode ter mudado ou o boleto foi retirado: {url[:90]}")
+
 # Wrappers de redirecionamento/rastreamento de cliques usados em phishing — a
 # Locaweb marca mensagens com esses links como "potencialmente suspeitas".
 # Nao seguir (poderiam baixar malware no lugar do boleto). Ex.: redirect do Bing
@@ -5249,7 +5446,9 @@ def extract_pdf_links(text: str, html: str) -> list[str]:
         return []
 
     candidates, seen = [], set()
-    ssw_faturas: list[str] = []  # links SSW de FATURA (id=F) — têm PRIORIDADE (trazem o boleto)
+    # Links de PRIORIDADE (trazem o boleto com certeza): fatura SSW (id=F) e o PDF derivado
+    # de um link Efi/Gerencianet.
+    priority_links: list[str] = []
 
     def _add(url: str, *, front: bool = False):
         # Desescapa entidades HTML (&amp; → &) — links de boleto vêm escapados no
@@ -5258,12 +5457,25 @@ def extract_pdf_links(text: str, html: str) -> list[str]:
         # Ignora links que a Locaweb entende como suspeitos (redirect/ofuscados).
         if u and u not in seen and u.startswith("http") and not _is_suspicious_link(u):
             seen.add(u)
-            (ssw_faturas if front else candidates).append(u)
+            (priority_links if front else candidates).append(u)
+
+    def _add_efi(url: str) -> bool:
+        # Efi/Gerencianet: a pagina do link nao tem o PDF — entra a URL DERIVADA dele; o
+        # site institucional e CONSUMIDO sem entrar. True = link ja tratado aqui.
+        u = html_unescape(url.strip())
+        if _is_efi_institutional_url(u):
+            return True
+        efi_pdf = _efi_pdf_url(u)
+        if efi_pdf:
+            _add(efi_pdf, front=True)
+        return efi_pdf is not None
 
     for m in _LINK_HREF_RE.finditer(html or ""):
         url         = m.group(1).strip()
         anchor_text = _HTML_TAG_RE.sub("", m.group(2)).strip()
         if not url.startswith("http"):
+            continue
+        if _add_efi(url):
             continue
         # SSW: o link de FATURA (id=F) traz o boleto; o de DACTE (id=D/E/X) é fiscal, sem
         # boleto. Preferimos a fatura (prioridade máxima) e DESCARTAMOS os DACTE — senão o
@@ -5281,6 +5493,8 @@ def extract_pdf_links(text: str, html: str) -> list[str]:
             _add(url)
 
     for url in _LINK_IN_TEXT_RE.findall(text or ""):
+        if _add_efi(url):
+            continue
         if _ssw_doc_kind(url) == "dacte":
             continue  # nunca seguir o DACTE do SSW pelo texto puro
         if _ssw_doc_kind(url) == "fatura":
@@ -5290,8 +5504,8 @@ def extract_pdf_links(text: str, html: str) -> list[str]:
         if url_path.endswith(".pdf") or _LINK_URL_RE.search(url):
             _add(url)
 
-    # Faturas SSW primeiro (trazem o boleto), depois as demais candidatas.
-    return (ssw_faturas + candidates)[:10]
+    # Links de prioridade primeiro (trazem o boleto), depois as demais candidatas.
+    return (priority_links + candidates)[:10]
 
 
 # ── Guarda anti-SSRF do download por link ───────────────────────────────────
@@ -5550,8 +5764,11 @@ def download_pdf_from_url(url: str, sender_email: str, subject: str,
     cj = http.cookiejar.CookieJar()
     opener = _build_safe_opener(urllib.request.HTTPCookieProcessor(cj))
 
-    result = _fetch_url(url, opener=opener)
+    efi_derived = _is_efi_pdf_url(url)
+    result = _fetch_url(url, timeout=60 if efi_derived else 30, opener=opener)
     if not result:
+        if efi_derived:
+            _warn_efi_pdf_missing(url)
         return None
     data, content_type, final_url = result
 
@@ -5561,6 +5778,9 @@ def download_pdf_from_url(url: str, sender_email: str, subject: str,
     # Caso 1: PDF direto (checa assinatura %PDF independente do Content-Type)
     if b"%PDF" in data[:32]:
         return _save_pdf_data(data, sender_email, subject, received_at)
+    if efi_derived:
+        _warn_efi_pdf_missing(url)
+        return None
 
     # Caso 2: portal BRASPRESS — a página inicial setou o JSESSIONID; agora baixa
     # a fatura pela URL direta (mesma sessão/cookies).
@@ -5571,6 +5791,16 @@ def download_pdf_from_url(url: str, sender_email: str, subject: str,
         if inner and b"%PDF" in inner[0][:32]:
             return _save_pdf_data(inner[0], sender_email, subject, received_at)
         log.info("    Download BRASPRESS não retornou PDF")
+
+    # Caso 2b: pagina de boleto Efi/Gerencianet alcancada por REDIRECT (link de rastreamento
+    # no e-mail) — extract_pdf_links ja converte o link direto; aqui cobre o destino final.
+    efi_url = _efi_pdf_url(final_url)
+    if efi_url and efi_url != url:
+        log.info(f"    Boleto Efí/Gerencianet — baixando PDF: {efi_url[:80]}")
+        inner = _fetch_url(efi_url, timeout=60, opener=opener)
+        if inner and b"%PDF" in inner[0][:32]:
+            return _save_pdf_data(inner[0], sender_email, subject, received_at)
+        _warn_efi_pdf_missing(efi_url)
 
     # Caso 3: página HTML intermediária — busca link PDF na página
     is_html = "text/html" in content_type or b"<html" in data[:200].lower()
@@ -6011,6 +6241,9 @@ def extract_and_store_accounts(saved_pdfs: list, message_id: str,
     # Tamanho de cada anexo, colhido AQUI (no passo 2 o arquivo pode nao estar mais em
     # disco) — vai para financial_account_attachment.size_bytes.
     attachment_sizes = {}
+    # Anexos cujo TEXTO CRU traz instrucao de pagamento PIX (ver _nfse_payment_instruction).
+    # Colhido AQUI pelo mesmo motivo do tamanho: o CSV nao carrega o texto do PDF ao passo 2.
+    pix_instruction_files = set()
     # Regra LEBIANCO — parte "anexo do email": o texto CRU do PDF nao chega ao passo 2 (o CSV
     # so traz description/source_file) e o arquivo pode nao estar mais em disco la, entao a
     # varredura acontece AQUI, uma vez por e-mail (flag no nivel da MENSAGEM: qualquer anexo
@@ -6039,6 +6272,8 @@ def extract_and_store_accounts(saved_pdfs: list, message_id: str,
         # `_attachment_text` (e nao `_pdf_text`) porque o anexo tambem pode ser .docx, que o
         # pdfplumber so faria falhar em silencio.
         pdf_raw_text = _attachment_text(pdf_path)
+        if _nfse_payment_instruction(pdf_raw_text):
+            pix_instruction_files.add(pdf_path.name)
 
         if not pdf_lebianco and _has_lebianco_reference(pdf_raw_text):
             pdf_lebianco = True   # curto-circuito da FLAG (a leitura acima ja aconteceu)
@@ -6125,6 +6360,13 @@ def extract_and_store_accounts(saved_pdfs: list, message_id: str,
                          "(documento fiscal + ficha de compensacao no mesmo arquivo)")
                 row["document_type"] = "boleto"
                 dtype = "boleto"
+            elif _nfse_is_own_charge(row, pix_instruction_files, has_real_boleto):
+                # 2a EXCECAO — NFS-e que E a cobranca (instrucao PIX no proprio documento, sem
+                # boleto no e-mail). Mantem o tipo 'nfse' (convencao das contas manuais 559,
+                # 1134, 1402, 1668) e segue o fluxo normal: valor, fornecedor e dedup.
+                log.info("    NFS-e com instrucao de pagamento PIX e sem boleto no e-mail — "
+                         f"gera conta ({row.get('source_file')})")
+                _mark_nfse_own_charge(row)
             else:
                 log.info(f"    {dtype.upper()} ignorado — nao gera conta a pagar")
                 skipped_nonpayable += 1
