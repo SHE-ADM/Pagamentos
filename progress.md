@@ -51,8 +51,8 @@ Procedimento completo na skill **`deploy-producao`**. Histórico de cada deploy:
 
 | Item | Estado |
 |---|---|
-| Último deploy | **2026-09-24** — conta QUITADA + vencimento posterior = dívida nova, com a dedup refeita sob veto (`skip_settled`, conta 417 AMIL). Arquivos: `read_emails.py`, `deploy-manifest.json`. Sem migration. PR #256, merge `2667854` — manifesto `53712D50…C214BF`. Anterior: 2026-09-23 (RAINHA MARIA, PR #255) |
-| Paridade verificada | ✅ **em produção** (2026-09-24) — `check_deploy_parity.py`: **32/32 conferem, 0 faltando, 0 divergentes, 0 extras** + validação funcional **2/2 `True`** (`quitada_nova_divida`, `reenvio_mesma_data`), que prova o `read_emails.py` novo. Sinais no dado a observar: boleto Amil de novembro com conta própria e a nota · 417 fora do `audit_log` · `pagavel_descartado` = 0 · uma conta por anexo no próximo lote da RAINHA MARIA |
+| Último deploy | **2026-09-28** — cobrança de vencidos: filtro de grupo com `COALESCE(CD_GP_NO,'')`, porque cliente **sem grupo** era descartado pelo `<>` (defeito desde 2026-08-31). Arquivos: `db_firebird.py`, `deploy-manifest.json`. Sem migration. Ainda não commitado. Anterior: 2026-09-24 (conta 417 AMIL, PR #256) |
+| Paridade verificada | ✅ **em produção** (2026-09-28) — `check_deploy_parity.py`: **32/32 conferem, 0 faltando, 0 divergentes, 0 extras** (o `read_emails.py` pendente foi copiado junto). `--dry-run`: total=101 · erros=8 (sem e-mail) · 0 operacionais. ⚠️ O dry-run não consulta `cobranca_envios_log`, então não prova a correção: a prova é a contagem de `CD_GP_NO IS NULL` nas duas views |
 | Tarefas agendadas | 5 ativas — Email Reader (5 min) · Cobrança (10:00) · Backup (02:00) · Baixa (08:00) · Gatilhos Roadmap (dia 1, 07:00) |
 
 ⏳ **Não exercitado em produção ainda:** a captura **automática** de conteúdo de CT-e a partir
