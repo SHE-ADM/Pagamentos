@@ -1,5 +1,36 @@
 # Histórico de deploys
 
+## 2026-09-29 — Cobrança de vencidos: query migrada para as colunas `FIN_*` das views
+
+**O que foi ao ar** (sem PR até o registro). A query Firebird de `db_firebird.py` foi substituída
+pela versão do usuário: as duas views (`VW_PSQ_FIN_REC_BAN` e `_004`) passaram a ser lidas pelas
+colunas `FIN_*` (`FIN_TITULO`, `FIN_VCT_DATA`, `FIN_VDUP`, `FIN_CLI_NO`, `FIN_CLI_EMAIL`,
+`FIN_VEN_EMAIL`, `FIN_EMP_NO`, `FIN_STF_NO`, `FIN_CLI_GP_NO`). A existência das colunas nas duas
+views foi confirmada pelo usuário. Filtros de negócio **inalterados** — mesma janela de 7 dias e
+os mesmos 6 grupos excluídos com `COALESCE` (a correção de 2026-09-28 foi preservada).
+
+**Mudança de forma:** a query devolve uma **1ª coluna nova** (`FIN_CLI_GP_NO`), então a linha tem
+8 posições. O desempacotamento foi ajustado para descartá-la: com 7 variáveis, toda execução
+levantaria `ValueError` na primeira linha. A ordenação ficou em `ORDER BY 2` (`DOCUMENT_ID`),
+equivalente à anterior.
+
+**Arquivos:** `db_firebird.py`, `deploy-manifest.json`. Sem `.env` novo, sem dependência nova, sem
+re-registro de tarefa, sem migration.
+
+**Verificação em produção** (print do usuário, 2026-09-29): `check_deploy_parity.py` → **32/32
+conferem, 0 faltando, 0 divergentes, 0 extras**. `run.py --dry-run` → **total=65 · enviados=58 ·
+pulados=0 · erros=7** (todos "sem e-mail/inválido", 0 operacionais), com a lista em ordem crescente
+de `DOCUMENT_ID` (`ORDER BY 2` efetivo). A query nas colunas `FIN_*` executou sem erro nas duas
+views.
+
+⚠️ **65 × 101 de ontem não é regressão medível:** a janela de 7 dias andou um dia e títulos
+quitados saem do `VENCIDO` — são populações diferentes.
+
+⚠️ **O título `246580-D` aparece DUAS vezes no dry-run** (mesmo destinatário). No envio real não
+gera e-mail duplicado: `already_sent` é consultado por linha e a 1ª ocorrência já grava em
+`cobranca_envios_log` (UNIQUE em `document_id`), então a 2ª vira `pulado`. A origem da duplicata
+(mesmo título nas duas views do `UNION ALL`, ou duas linhas na mesma view) não foi investigada.
+
 ## 2026-09-28 — Cobrança de vencidos: cliente sem grupo econômico voltava a ficar de fora
 
 **O que foi ao ar** (PR #257, merge `25d502a`). Os 6 filtros de exclusão por grupo da query Firebird (`db_firebird.py`, nos

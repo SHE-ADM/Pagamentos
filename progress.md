@@ -51,8 +51,8 @@ Procedimento completo na skill **`deploy-producao`**. Histórico de cada deploy:
 
 | Item | Estado |
 |---|---|
-| Último deploy | **2026-09-28** — cobrança de vencidos: filtro de grupo com `COALESCE(CD_GP_NO,'')`, porque cliente **sem grupo** era descartado pelo `<>` (defeito desde 2026-08-31). Arquivos: `db_firebird.py`, `deploy-manifest.json`. Sem migration. PR #257, merge `25d502a`. Anterior: 2026-09-24 (conta 417 AMIL, PR #256) |
-| Paridade verificada | ✅ **em produção** (2026-09-28) — `check_deploy_parity.py`: **32/32 conferem, 0 faltando, 0 divergentes, 0 extras** (o `read_emails.py` pendente foi copiado junto). `--dry-run`: total=101 · erros=8 (sem e-mail) · 0 operacionais. Prova direta: `CD_GP_NO IS NULL` = **84 de 101** (6 BAN + 78 BAN_004). Passivo de 169 títulos sem grupo fora da janela: **encerrado sem cobrança**, risco aceito pelo usuário (2026-09-28) |
+| Último deploy | **2026-09-29** — cobrança de vencidos: query Firebird migrada para as colunas `FIN_*` das views (1ª coluna nova `FIN_CLI_GP_NO`, descartada na leitura; `ORDER BY 2`). Arquivos: `db_firebird.py`, `deploy-manifest.json`. Sem migration. Ainda sem commit/PR. Anterior: 2026-09-28 (cliente sem grupo, PR #257) |
+| Paridade verificada | ✅ **em produção** (2026-09-29) — `check_deploy_parity.py`: **32/32 conferem, 0 faltando, 0 divergentes, 0 extras**. `--dry-run`: total=65 · enviados=58 · erros=7 (sem e-mail) · 0 operacionais. Título `246580-D` veio duplicado na query (vira `pulado` no envio real; origem não investigada) |
 | Tarefas agendadas | 5 ativas — Email Reader (5 min) · Cobrança (10:00) · Backup (02:00) · Baixa (08:00) · Gatilhos Roadmap (dia 1, 07:00) |
 
 ⏳ **Não exercitado em produção ainda:** a captura **automática** de conteúdo de CT-e a partir
