@@ -25,41 +25,43 @@ class TituloVencido:
 
 _QUERY = """
 SELECT
-    PK.TITULO   AS DOCUMENT_ID,
-    PK.DTVC     AS DUE_DATE,
-    PK.VDUP     AS BILL_AMOUNT,
-    PK.CD_NO    AS CUSTOMER_NAME,
-    PK.CD_EMAIL AS PRIMARY_EMAIL,
-    PK.CV_EMAIL AS CC_EMAIL,
-    'COBRANÇA' || ' ' || PK.EP_NO AS EMAIL_SUBJECT
+    PK.FIN_CLI_GP_NO,
+    PK.FIN_TITULO    AS DOCUMENT_ID,
+    PK.FIN_VCT_DATA  AS DUE_DATE,
+    PK.FIN_VDUP      AS BILL_AMOUNT,
+    PK.FIN_CLI_NO    AS CUSTOMER_NAME,
+    PK.FIN_CLI_EMAIL AS PRIMARY_EMAIL,
+    PK.FIN_VEN_EMAIL AS CC_EMAIL,
+    'COBRANÇA' || ' ' || PK.FIN_EMP_NO AS EMAIL_SUBJECT
 FROM VW_PSQ_FIN_REC_BAN PK
-WHERE PK.STFI = 'VENCIDO'
-  AND PK.DTVC >= CURRENT_DATE - 7
-  AND COALESCE(PK.CD_GP_NO,'') <> 'INBRANDS'
-  AND COALESCE(PK.CD_GP_NO,'') <> 'RESTOQUE'
-  AND COALESCE(PK.CD_GP_NO,'') <> 'SHOULDER'
-  AND COALESCE(PK.CD_GP_NO,'') <> 'SKAI'
-  AND COALESCE(PK.CD_GP_NO,'') <> 'SOMA'
-  AND COALESCE(PK.CD_GP_NO,'') <> 'LOJAS MEL'
+WHERE PK.FIN_STF_NO = 'VENCIDO'
+  AND PK.FIN_VCT_DATA >= CURRENT_DATE - 7
+  AND COALESCE(PK.FIN_CLI_GP_NO,'') <> 'INBRANDS'
+  AND COALESCE(PK.FIN_CLI_GP_NO,'') <> 'RESTOQUE'
+  AND COALESCE(PK.FIN_CLI_GP_NO,'') <> 'SHOULDER'
+  AND COALESCE(PK.FIN_CLI_GP_NO,'') <> 'SKAI'
+  AND COALESCE(PK.FIN_CLI_GP_NO,'') <> 'SOMA'
+  AND COALESCE(PK.FIN_CLI_GP_NO,'') <> 'LOJAS MEL'
 UNION ALL
 SELECT
-    PK.TITULO   AS DOCUMENT_ID,
-    PK.DTVC     AS DUE_DATE,
-    PK.VDUP     AS BILL_AMOUNT,
-    PK.CD_NO    AS CUSTOMER_NAME,
-    PK.CD_EMAIL AS PRIMARY_EMAIL,
-    PK.CV_EMAIL AS CC_EMAIL,
-    'COBRANÇA' || ' ' || PK.EP_NO AS EMAIL_SUBJECT
+    PK.FIN_CLI_GP_NO,
+    PK.FIN_TITULO    AS DOCUMENT_ID,
+    PK.FIN_VCT_DATA  AS DUE_DATE,
+    PK.FIN_VDUP      AS BILL_AMOUNT,
+    PK.FIN_CLI_NO    AS CUSTOMER_NAME,
+    PK.FIN_CLI_EMAIL AS PRIMARY_EMAIL,
+    PK.FIN_VEN_EMAIL AS CC_EMAIL,
+    'COBRANÇA' || ' ' || PK.FIN_EMP_NO AS EMAIL_SUBJECT
 FROM VW_PSQ_FIN_REC_BAN_004 PK
-WHERE PK.STFI = 'VENCIDO'
-  AND PK.DTVC >= CURRENT_DATE - 7
-  AND COALESCE(PK.CD_GP_NO,'') <> 'INBRANDS'
-  AND COALESCE(PK.CD_GP_NO,'') <> 'RESTOQUE'
-  AND COALESCE(PK.CD_GP_NO,'') <> 'SHOULDER'
-  AND COALESCE(PK.CD_GP_NO,'') <> 'SKAI'
-  AND COALESCE(PK.CD_GP_NO,'') <> 'SOMA'
-  AND COALESCE(PK.CD_GP_NO,'') <> 'LOJAS MEL'
-ORDER BY 1
+WHERE PK.FIN_STF_NO = 'VENCIDO'
+  AND PK.FIN_VCT_DATA >= CURRENT_DATE - 7
+  AND COALESCE(PK.FIN_CLI_GP_NO,'') <> 'INBRANDS'
+  AND COALESCE(PK.FIN_CLI_GP_NO,'') <> 'RESTOQUE'
+  AND COALESCE(PK.FIN_CLI_GP_NO,'') <> 'SHOULDER'
+  AND COALESCE(PK.FIN_CLI_GP_NO,'') <> 'SKAI'
+  AND COALESCE(PK.FIN_CLI_GP_NO,'') <> 'SOMA'
+  AND COALESCE(PK.FIN_CLI_GP_NO,'') <> 'LOJAS MEL'
+ORDER BY 2
 """
 
 def _get_driver():
@@ -80,7 +82,8 @@ def fetch_titulos_vencidos() -> list[TituloVencido]:
         cur = con.cursor(); cur.execute(_QUERY)
         rows = []
         for row in cur.fetchall():
-            d, dt, amt, nm, mail, cc, subj = row
+            # A 1ª coluna (FIN_CLI_GP_NO, grupo econômico) não é consumida pelo envio.
+            _grupo, d, dt, amt, nm, mail, cc, subj = row
             # Só descarta linha SEM título (document_id) — inutilizável (sem chave de
             # dedup/registro). Linha SEM e-mail SEGUE adiante para virar "email_ausente"
             # em /cobranca/erros: cliente vencido sem e-mail é problema acionável, não some.
