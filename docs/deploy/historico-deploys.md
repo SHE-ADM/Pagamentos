@@ -1,5 +1,94 @@
 # Histórico de deploys
 
+## 2026-09-30 (noite) — Cobrança: remetente no domínio do Return Path
+
+**O que foi ao ar** (ainda sem commit/PR no registro): `email_sender.py` lê o remetente de
+`SMTP_FROM_ADDR` (`.env`) e, quando ele difere do e-mail da `company`, envia
+`Reply-To: financeiro@otimotex.com.br`. Valor malformado falha o lote antes de conectar.
+
+**Por quê:** com `From: financeiro@otimotex.com.br`, o SMTP Locaweb reescrevia **From, Return-Path
+e DKIM** para `@smtplw-12.com` — mesmo com o Return Path `envio.otimotex.com.br` "Verificado" desde
+2026-09-01 e o endereço "Confirmado" no painel. Diagnóstico pelos cabeçalhos recebidos; recadastrar
+o Return Path não mudou nada; o **suporte Locaweb confirmou** que o From tem de estar em
+`@envio.otimotex.com.br`. O `Reply-To` é obrigatório: o MX de `envio` é o bounce da Locaweb
+(`saasbounce*.correio.biz`), então a resposta do cliente se perderia em silêncio.
+
+**Arquivos:** `email_sender.py`, `deploy-manifest.json` + **linha nova no `.env` de produção**
+(`SMTP_FROM_ADDR=financeiro@envio.otimotex.com.br`). Sem migration nem dependência nova.
+
+**Verificação:** envio de teste do DEV às 12:22 chegou como `OTIMOTEX TECIDOS
+<financeiro@envio.otimotex.com.br>`. Em produção, `check_deploy_parity.py` → **32/32 conferem, 0
+faltando, 0 divergentes, 0 extras** (cobre também o `send_core.py` da entrada abaixo); `.env`
+atualizado pelo usuário. ⏳ **Pendente:** conferir From/Reply-To num e-mail real da execução de
+**2026-10-01 10:00**.
+
+**Lição:** painel e DNS "Autenticado" não provam o envio — só os **cabeçalhos recebidos** provam. A
+paridade também não cobre o `.env`: variável nova de produção precisa de conferência própria.
+
+## 2026-09-30 (tarde) — Cobrança: domínio com o `com.` esquecido
+
+**O que foi ao ar** (ainda sem commit/PR no registro): `send_core.suggest_domain_fix` passou a
+tratar como erro de digitação o domínio de provedor gratuito sem o `com.` (`yahoo.br` →
+`yahoo.com.br`; `gmail.br` → `gmail.com`), só com o rótulo do provedor EXATO. Achado no próprio
+`--dry-run` de validação do PR #260: o título **244621-D** (`lidercouros@yahoo.br`) seria enviado e
+voltaria como devolução, com o run dizendo "enviado".
+
+**Arquivos:** `send_core.py`, `deploy-manifest.json`. Sem migration, `.env` ou dependência nova.
+
+**Verificação em produção** (print do usuário): `validate_email('lidercouros@yahoo.br')` →
+`(False, '… (o correto seria @yahoo.com.br?)')`. Paridade: 32/32 na conferência da entrada acima.
+
+## 2026-09-30 — Leitura adia com API fora, prazo legal de guia e cobrança mais segura
+
+**O que foi ao ar** (PR #260, merge `16b12bf`; review max em
+[docs/review/2026-09-29-Features-max.md](../review/2026-09-29-Features-max.md)):
+
+- **Email Reader:** com a API Anthropic recusando, os e-mails financeiros são **adiados** (sem
+  registro, voltam no próximo run) em vez de a fila parar; o CLI sai com **exit 3** e o
+  `run_reader.ps1` grava Event Log **1002** com o motivo literal; `erro_api` uma vez por e-mail e
+  limpo ao concluir; `faulthandler` só no `__main__`.
+- **Guia de tributo:** o fator do barcode nunca empurra o vencimento para depois do "Pagar até"
+  (conta 1757), inclusive quando só o assunto reclassifica o documento.
+- **Cobrança:** uma linha por título (preferindo o e-mail válido), domínio digitado errado vira
+  `email_invalido`, aviso de falha só a CC de `otimotex.com.br`/`lebianco.com.br`.
+
+**Arquivos:** `read_emails.py`, `febraban.py`, `extract_pdf.py`, `run_reader.ps1`,
+`db_firebird.py`, `failure_notify.py`, `run.py`, `send_core.py`, `deploy-manifest.json`. Sem
+migration, sem `.env` novo, sem dependência nova, sem re-registro de tarefa. O aviso novo de
+`/emails` saiu pela Vercel com o merge.
+
+**Verificação em produção** (print do usuário, 2026-09-30 ~09:54): `check_deploy_parity.py` →
+**32/32 conferem, 0 faltando, 0 divergentes, 0 extras**; hash do manifesto
+`618DAF63…E9E8BB2`, idêntico ao de `main`. **11 sondas funcionais `True`** (exit 3 definido,
+`erro_api` uma vez, API fora adia o lote, import sem crash log, prazo da guia no extrator, na
+gravação e na reclassificação pelo assunto, boleto segue o fator, `@gemail.com` barrado, aviso só a
+vendedor, título único) e `$EXIT_API_UNAVAILABLE = 3` presente no `run_reader.ps1`. No banco
+(consulta read-only, 09:52): leitor gravando normalmente após a cópia, com `extraído` às 09h e
+nenhum `erro_api` novo.
+
+**Cobrança em produção** (`run.py --dry-run`, 09:55 e 09:57, log `cobranca_vencidos.log`):
+`Firebird: 1 linha(s) duplicada(s) por título descartada(s)` e **245821-D uma vez só** (em 29/09 saiu
+duas vezes); **251796-A** (`@gemail.com`) e **252108-A** (`@gamil.com`, caso novo, não visto no
+desenvolvimento) viraram erro com a sugestão `@gmail.com`. Resumo: **total=162 · enviaria=147 ·
+erros=15** (sem e-mail/inválido), **0 operacionais**; todos os CC são dos domínios de vendedor. O
+total maior que o de 29/09 (80) é dado — a query não mudou neste deploy, e a dedup só reduz.
+
+**Email Reader em produção** (`logsalidacao-deploy-20260930-095922.txt`): `LastTaskResult = 0`
+na execução de 09:55:55 e log do dia terminando em `===== Fim OK (exit: 0) =====` (0 novos, 40
+duplicados). 3ª execução do `--dry-run` idêntica às anteriores, `exit code: 0`. **Validação encerrada.**
+
+⚠️ **Acentos quebrados no `.txt` de validação são só da CAPTURA** (`py ... 2>&1 | Out-File`: o
+PowerShell decodifica o stderr do Python pela página de código do console). O `cobranca_vencidos.log`
+gravado pelo próprio script está correto. Para capturar limpo, antes do comando:
+`$env:PYTHONIOENCODING='utf-8'; [Console]::OutputEncoding=[Text.Encoding]::UTF8`.
+
+**Lição:** sondar pela **função**, não pelo símbolo — a sonda 4 (`_CRASH_LOG is None`) só é `True`
+com o código novo, porque a versão antiga também definia `_CRASH_LOG`, só que como caminho.
+
+**Sinais a observar no dado:** numa próxima recusa da API, o Agendador mostra `0x3` (não `0x0`) e
+`/erros` recebe **uma** linha `erro_api` por e-mail; nenhuma guia nova com `due_date` posterior ao
+"Pagar até"; no `--dry-run` da cobrança, `245821-D`/`246580-D` aparecem **uma** vez.
+
 ## 2026-09-29 — Cobrança de vencidos: query migrada para as colunas `FIN_*` das views
 
 **O que foi ao ar** (PR #259, merge `be0e5cf`). A query Firebird de `db_firebird.py` foi substituída

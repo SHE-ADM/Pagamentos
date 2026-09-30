@@ -66,10 +66,18 @@ SMTP_PORT=587            # 587 STARTTLS (usado pelo código) | 465 SSL/TLS
 SMTP_USER=otimotex1      # usuário do painel SMTP Locaweb (NÃO o e-mail)
 SMTP_PASSWORD=<senha/token do painel SMTP>
 # SMTP_FROM_NAME=OTIMOTEX   # opcional — default: trade_name/legal_name da company
+SMTP_FROM_ADDR=financeiro@envio.otimotex.com.br   # OBRIGATÓRIO p/ preservar o remetente
 ```
 
-> O domínio de remetente (`otimotex.com.br`) precisa estar autorizado no painel
-> (Configurações → Domínio de Remetente / Endereços de remetente).
+> 🔴 **O From TEM de estar no domínio do Return Path (`@envio.otimotex.com.br`).** Com
+> `financeiro@otimotex.com.br` no From, o relay reescreve From, Return-Path e DKIM para
+> `@smtplw-12.com` — mesmo com o Return Path "Verificado" e o endereço "Confirmado" no painel.
+> Diagnosticado pelos cabeçalhos e confirmado pelo suporte Locaweb em 2026-09-30.
+>
+> Com `SMTP_FROM_ADDR` diferente do mailbox, o código envia **`Reply-To`** = e-mail da
+> `company` (`financeiro@otimotex.com.br`): o subdomínio `envio` **não recebe e-mail** (o MX dele
+> é o bounce da Locaweb), então sem o Reply-To a resposta do cliente se perderia em silêncio.
+> Valor malformado em `SMTP_FROM_ADDR` falha o lote (`ValueError`) em vez de enviar errado.
 
 ### Fallback (sem `SMTP_*`) — credenciais do mailbox IMAP
 
@@ -102,7 +110,8 @@ COBRANCA_SEND_DELAY_SECONDS=10
 
 ## Entregabilidade (SPF / DKIM / DMARC) — DNS, fora do `.env`
 
-Estado em 2026-09-01: **SPF ✅** · **DKIM ✅** · **Return Path ✅**. Resolvido via o produto
+Estado em 2026-09-30: **SPF ✅** · **DKIM ✅** · **Return Path ✅ no painel** — mas só vale no envio
+com `SMTP_FROM_ADDR` no subdomínio (ver o aviso ao fim desta seção). Configurado via o produto
 **"Domínio de Remetente" do painel SMTP Locaweb** (`smtplw.com.br/panel/settings/return_path`),
 que usa o subdomínio dedicado `envio.otimotex.com.br` — não o `otimotex.com.br` raiz nem um
 seletor manual. Registros publicados e confirmados por consulta pública ao DNS:
@@ -122,14 +131,14 @@ nslookup -type=TXT smtp._domainkey.envio.otimotex.com.br
 ```
 
 > **Não confundir com "Endereços de remetente"** (`smtplw.com.br/panel/settings/emails`) — tela
-> separada e **não obrigatória** desde a mudança de política do Google ("não é mais obrigatório
-> configurar um e-mail de remetente… você precisa apenas configurar o seu domínio como Return
-> Path"). Um domínio `smtp.otimotex.com.br` chegou a ser cadastrado ali por engano (fora do padrão
-> `smtplw.<domínio-alvo>` que a verificação exige) e não afeta o envio — o Return Path acima já
-> cobre a entregabilidade.
+> separada e **não obrigatória** desde a mudança de política do Google. Ter `otimotex.com.br` e
+> `financeiro@otimotex.com.br` confirmados ali **NÃO** impede a reescrita do From.
 
-> Esses passos são executados no **painel da Locaweb + DNS do domínio** — não há nada a mudar no
-> código nem no `.env`.
+> ⚠️ **Painel + DNS verificados NÃO bastam.** De 2026-09-01 a 2026-09-30 tudo aparecia
+> "Autenticado" e os e-mails saíam como `financeiro@smtplw-12.com`. O que faz o Return Path valer
+> é o **From no subdomínio** — `SMTP_FROM_ADDR` no `.env` (seção acima). Para conferir, olhar os
+> cabeçalhos recebidos: `From`, `Return-Path` e `DKIM-Signature d=` devem estar em
+> `envio.otimotex.com.br`.
 
 ---
 

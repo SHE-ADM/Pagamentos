@@ -62,7 +62,8 @@ py -3 -c "import sys; sys.path.insert(0,'skills/email-reader/scripts'); import r
 **Pré-requisitos (diferentes do reader):** driver Firebird **`fdb`** instalado; `.env` com
 `FB_HOST`/`FB_PORT`/`FB_DATABASE`/`FB_USER`/`FB_PASSWORD`/`FB_CHARSET` **e** o bloco SMTP
 transacional (`SMTP_HOST=smtplw.com.br`, `SMTP_PORT=587`, `SMTP_USER`, `SMTP_PASSWORD`) —
-sem ele cai no fallback IMAP, que tem o gargalo `451`. Mais `COBRANCA_SEND_DELAY_SECONDS` (10s).
+sem ele cai no fallback IMAP, que tem o gargalo `451`. 🔴 **E `SMTP_FROM_ADDR=financeiro@envio.otimotex.com.br`**
+— sem ela a Locaweb reescreve o remetente para `@smtplw-12.com` (ver `env_reference.md`). Mais `COBRANCA_SEND_DELAY_SECONDS` (10s).
 
 **Validar** — o `--dry-run` cobre imports **e** a conexão Firebird, sem enviar e-mail:
 
@@ -207,7 +208,9 @@ Firebird (VW_PSQ_FIN_REC_BAN + _004)  →  run.py  →  SMTP Locaweb
   o relay **aceita** `@gemail.com` e a devolução chega depois, com o run dizendo "enviado"
   (251796-A). Só provedores gratuitos, **distância 1**; domínio de país (`com.ar`) e provedor
   real vizinho (`ymail`, `mail`, `email`) não são erro. Afrouxar gera falso positivo = cliente
-  sem cobrança.
+  sem cobrança. O **`com.` esquecido** (`yahoo.br` → `yahoo.com.br`, 244621-D) também é erro, só
+  com rótulo de provedor EXATO; a forma curta (`_MISSING_COM_SUFFIXES`) é **derivada** de
+  `_GENERIC_SUFFIXES`, nunca uma 2ª lista.
 - **Entregabilidade (fora do código):** SPF ✅ · DMARC `p=none` · **DKIM a configurar**.
 
 ## Backup do Supabase — terceiro pipeline, de INFRA
