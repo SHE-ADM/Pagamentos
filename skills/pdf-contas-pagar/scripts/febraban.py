@@ -497,7 +497,25 @@ def _day_month_swapped(a: "date", b: "date") -> bool:
             and a.month != a.day)
 
 
-def barcode_due_date_supersedes(read_due, bc_due, issue_date=None) -> bool:
+# Guias de TRIBUTO: o vencimento impresso e a DATA-LIMITE LEGAL de pagamento ("Pagar este
+# documento ate"). Conjunto CANONICO para a decisao de vencimento — os dois call sites da
+# politica (extrator e gravacao) o consultam por `is_tax_guide`, e um teste de paridade trava
+# que ele cobre os conjuntos de guia de extract_pdf e read_emails. Inclui 'gps': a exclusao
+# dela em read_emails e de FORNECEDOR (decisao do usuario), nao de prazo — prazo legal e prazo.
+TAX_GUIDE_TYPES = frozenset({
+    "tributo", "darf", "das", "gps", "gru", "dae", "gnre", "gare", "ipva", "iptu",
+    "iss", "itbi", "simples nacional",
+    "dar", "dare", "dar / dare", "dam", "duam", "dam / duam",
+})
+
+
+def is_tax_guide(document_type) -> bool:
+    """True quando o `document_type` e uma guia de tributo (prazo impresso = data-limite legal)."""
+    return str(document_type or "").strip().lower() in TAX_GUIDE_TYPES
+
+
+def barcode_due_date_supersedes(read_due, bc_due, issue_date=None, *,
+                                tax_guide: bool = False) -> bool:
     """O fator do codigo de barras deve SOBREPOR a data lida do documento? (True = sim.)
 
     FONTE UNICA da precedencia entre as duas datas de vencimento de um boleto. Existe porque
@@ -521,6 +539,15 @@ def barcode_due_date_supersedes(read_due, bc_due, issue_date=None) -> bool:
     autoritativo ali fazia a conta nascer com a data VELHA e aparecer vencida; medido: 6
     boletos da RAINHA MARIA num lote, mais a conta 1029, corrigida A MAO em 14/08/2026.
 
+    🔴 `tax_guide=True` (guia de TRIBUTO): o fator NUNCA empurra o vencimento para DEPOIS da
+    data lida. Ali a data impressa e a data-limite LEGAL ("Pagar este documento ate") — o DAS
+    do Simples traz linha digitavel em formato BANCARIO (nao a arrecadacao com '8', que tem
+    regra propria), com DV e valor corretos, e fator ~3 semanas a frente do prazo. A regra
+    "data lida anterior ao fator = campo vizinho" gravava o prazo DEPOIS do legal: pagamento
+    em atraso, com multa e juros, sem erro nenhum (conta 1757: 29/09 -> 22/10; conta 607:
+    20/07 -> 28/07). O vies e o seguro: guia lida cedo demais e paga antes; tarde demais,
+    paga com multa. As demais saidas (sem data lida, inversao dia/mes, >60 dias) seguem.
+
     `bc_due` invalida/ausente => False: nao ha o que sobrepor. Funcao pura."""
     bc = _coerce_date(bc_due)
     if bc is None:
@@ -534,7 +561,8 @@ def barcode_due_date_supersedes(read_due, bc_due, issue_date=None) -> bool:
     if _day_month_swapped(read, bc):
         return True                       # inversao dia/mes (id 435)
     if read < bc:
-        return True                       # prorrogacao nao anda para tras
+        # Boleto: prorrogacao nao anda para tras (campo vizinho). Guia: prazo legal vence.
+        return not tax_guide
     return (read - bc).days > _DUE_DATE_EXTENSION_MAX_DAYS
 
 
@@ -630,6 +658,38 @@ def due_date_corrected_note(read_due, bc_due) -> str:
     de duplicidade possivel."""
     return (f"Vencimento corrigido pelo código de barras (fator FEBRABAN): "
             f"{read_due or '—'} → {bc_due}")
+
+
+# Leitura da nota acima (e da grafia antiga "->"). Ancorada no FIM do segmento: a origem e a
+# data imediatamente antes da seta, o destino fecha o segmento.
+_CORRECTED_NOTE_DATES_RE = re.compile(r"(\d{4}-\d{2}-\d{2})\s*(?:→|->)\s*(\d{4}-\d{2}-\d{2})\s*$")
+
+
+def due_date_corrected_from(processing_notes, bc_due) -> "str | None":
+    """Data LIDA que a nota "corrigido pelo codigo de barras" registrou ao trocar para `bc_due`.
+
+    Existe porque a decisao de vencimento roda em DUAS camadas e o TIPO do documento pode mudar
+    entre elas: o extrator decide com o tipo lido do PDF, e a gravacao reclassifica pelo
+    acronimo do ASSUNTO (DAS/DARF...). Um DAS lido como 'boleto' saia do extrator com o fator ja
+    aplicado, e a gravacao — ja vendo 'das' — encontrava `due_date == fator` sem a data impressa
+    para devolver. A nota e o unico lugar onde ela sobrevive ao CSV; ler e escrever a nota no
+    MESMO modulo mantem o contrato de uma redacao so.
+
+    Devolve None quando nao ha nota com esse destino, quando a origem era vazia ('—') ou quando
+    a data nao e valida — nunca inventa uma origem."""
+    target = _coerce_date(bc_due)
+    if target is None or not processing_notes:
+        return None
+    for seg in str(processing_notes).split(" | "):
+        s = seg.strip()
+        if not s.startswith(_DUE_DATE_CORRECTED_PREFIXES):
+            continue
+        m = _CORRECTED_NOTE_DATES_RE.search(s)
+        if not m or _coerce_date(m.group(2)) != target:
+            continue
+        origin = _coerce_date(m.group(1))
+        return origin.isoformat() if origin else None
+    return None
 
 
 def _due_date_plausible(due, issue) -> bool:
