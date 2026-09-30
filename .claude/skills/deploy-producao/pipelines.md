@@ -196,6 +196,18 @@ Firebird (VW_PSQ_FIN_REC_BAN + _004)  →  run.py  →  SMTP Locaweb
   `minimum_version = TLSv1_2`.
 - **Notificação ao CC:** só as falhas **definitivas** viram resumo por representante; transitórias
   re-tentam sozinhas. O reenvio manual **não** notifica (o usuário já vê os erros na tela).
+  🔴 **Só sai para CC de `otimotex.com.br`/`lebianco.com.br`** (`SELLER_EMAIL_DOMAINS`, domínio
+  EXATO após o `@`) — o resumo lista títulos de OUTROS clientes; CC externo fica só no log.
+- 🔴 **Uma linha por título:** o `UNION ALL` das duas views devolve o mesmo título quando ele
+  consta em ambas (245821-D). `_dedupe_by_document_id` funde; **não** trocar por `UNION`, que só
+  funde linhas idênticas em todas as colunas. Entre duplicatas fica a **enviável** pelo MESMO
+  `validate_email` do envio, injetado pelo `run.py` (`is_sendable`) — `db_firebird` não importa
+  o módulo de SMTP.
+- 🔴 **Domínio digitado errado é `email_invalido`** (`suggest_domain_fix`, em `validate_email`):
+  o relay **aceita** `@gemail.com` e a devolução chega depois, com o run dizendo "enviado"
+  (251796-A). Só provedores gratuitos, **distância 1**; domínio de país (`com.ar`) e provedor
+  real vizinho (`ymail`, `mail`, `email`) não são erro. Afrouxar gera falso positivo = cliente
+  sem cobrança.
 - **Entregabilidade (fora do código):** SPF ✅ · DMARC `p=none` · **DKIM a configurar**.
 
 ## Backup do Supabase — terceiro pipeline, de INFRA

@@ -2,7 +2,7 @@
 
 ## 2026-09-29 — Cobrança de vencidos: query migrada para as colunas `FIN_*` das views
 
-**O que foi ao ar** (sem PR até o registro). A query Firebird de `db_firebird.py` foi substituída
+**O que foi ao ar** (PR #259, merge `be0e5cf`). A query Firebird de `db_firebird.py` foi substituída
 pela versão do usuário: as duas views (`VW_PSQ_FIN_REC_BAN` e `_004`) passaram a ser lidas pelas
 colunas `FIN_*` (`FIN_TITULO`, `FIN_VCT_DATA`, `FIN_VDUP`, `FIN_CLI_NO`, `FIN_CLI_EMAIL`,
 `FIN_VEN_EMAIL`, `FIN_EMP_NO`, `FIN_STF_NO`, `FIN_CLI_GP_NO`). A existência das colunas nas duas
@@ -15,7 +15,13 @@ levantaria `ValueError` na primeira linha. A ordenação ficou em `ORDER BY 2` (
 equivalente à anterior.
 
 **Arquivos:** `db_firebird.py`, `deploy-manifest.json`. Sem `.env` novo, sem dependência nova, sem
-re-registro de tarefa, sem migration.
+re-registro de tarefa, sem migration. O teste novo (`tests/test_db_firebird.py`) não vai para
+produção.
+
+**Lição do PR:** o SonarCloud reprovou a 1ª rodada por **cobertura 0% no código novo** — os testes
+da cobrança substituem `fetch_titulos_vencidos` por mock, então nenhum executava a leitura da
+linha. `tests/test_db_firebird.py` executa a função de topo com driver Firebird falso (validado por
+mutante: leitura de 7 posições → 4 falhas).
 
 **Verificação em produção** (print do usuário, 2026-09-29): `check_deploy_parity.py` → **32/32
 conferem, 0 faltando, 0 divergentes, 0 extras**. `run.py --dry-run` → **total=65 · enviados=58 ·

@@ -703,13 +703,13 @@ arquivo: sem a isenção, um boleto escaneado "relatorio_*.pdf" some). O **dead-
 (`pagavel_descartado`) fica só na **seguradora**, a única que não isenta; nas outras seria
 inalcançável. Bias: **preservar a conta** — perda silenciosa é pior que linha a revisar.
 
-🔴 **O FATOR É AUTORITATIVO, MENOS CONTRA PRORROGAÇÃO**, por política **única**
-(`febraban.barcode_due_date_supersedes`) nos DOIS call sites — a rede do `register_financial` era a
-ÚLTIMA a falar e revertia a data impressa (6 contas + a 1029, corrigida à mão em 14/08). Ele vence
-se a data lida falta, é anterior à emissão ou ao próprio fator, é a **inversão dia/mês** dele (id
-435), ou está **>60 dias** depois; fora disso vence a **IMPRESSA**, com ressalva. Gates seguem:
-valor == `amount` (463) e `venc >= emissão` (473/474); `ref_date` = data do **documento**, nunca
-"hoje"; **fator 0 = à vista**. 🔴 **Vencimento PRESUMIDO não é impresso** — ali o fator vence sempre.
+🔴 **O FATOR É AUTORITATIVO, MENOS CONTRA PRORROGAÇÃO E PRAZO DE GUIA**, por política **única**
+(`febraban.barcode_due_date_supersedes`) nos DOIS call sites — a rede do `register_financial` é a
+ÚLTIMA a falar (6 contas + a 1029). Ele vence se a data lida falta, é anterior à emissão ou ao
+fator, é a **inversão dia/mês** dele (435) ou está **>60 dias** depois; senão vence a **IMPRESSA**,
+com ressalva. 🔴 **Guia de tributo** (`is_tax_guide`): lida ANTES do fator = prazo legal, vence (1757),
+inclusive quando só o ASSUNTO a reclassifica (a gravação a relê da nota "corrigido"). Gates: valor ==
+`amount` (463), `venc >= emissão` (473/474); `ref_date` = do **documento**; **fator 0 = à vista**; 🔴 **PRESUMIDO: fator vence sempre**.
 
 🔴 **Barcode que se REFUTA é DESCARTADO** — o OCR desloca dígitos e gera código de comprimento
 válido com valor 10×; código corrompido não casa a 2ª via e nasce conta duplicada. 🔴 **No VISUAL há
