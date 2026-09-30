@@ -58,6 +58,13 @@ _FREEMAIL_SUFFIXES: dict[str, tuple[str, ...]] = {
 # Sufixos genéricos: só se compara o rótulo quando o domínio é "<rótulo>.<genérico>" —
 # "hotmal.empresa.com.br" é subdomínio corporativo, não erro de digitação.
 _GENERIC_SUFFIXES = ("com", "com.br")
+# O sufixo genérico SEM o "com." inicial ("br" de "com.br"): "yahoo.br" não recebe e-mail
+# de ninguém — é "yahoo.com.br" com o "com." esquecido (caso real 244621-D, 2026-09-30).
+# Derivado de _GENERIC_SUFFIXES, nunca escrito à mão: um sufixo genérico novo ganha a sua
+# forma encurtada sem uma segunda lista para divergir. Mapeia forma curta -> genérico.
+_MISSING_COM_SUFFIXES: dict[str, str] = {
+    s.removeprefix("com."): s for s in _GENERIC_SUFFIXES if s.startswith("com.")
+}
 # Provedores reais a 1 edição de um da lista (ymail/mail/email x gmail) — nunca são erro.
 _LEGIT_NEAR_LABELS = frozenset({"ymail", "mail", "email"})
 # "com.<país>" de 2 letras (com.ar, com.pt, com.mx): sufixo real de outro país.
@@ -101,22 +108,36 @@ def suggest_domain_fix(domain: str) -> str | None:
     label, _, suffix = domain.partition(".")
     if not label or not suffix:
         return None
-
     if label in _FREEMAIL_SUFFIXES:
-        valid = _FREEMAIL_SUFFIXES[label]
-        if suffix in valid:
-            return None
-        # Só sufixo genérico mal digitado (gmail.con, yahoo.com.b) ou o genérico que o
-        # provedor não usa (gmail.com.br). hotmail.fr / hotmail.co.uk / yahoo.com.ar são
-        # domínios de país legítimos — "com.ar" está a 1 edição de "com.br", mas não é erro.
-        if suffix in _GENERIC_SUFFIXES:
-            return f"{label}.{_closest(suffix, valid)}"
-        if _COUNTRY_SUFFIX_RE.match(suffix):
-            return None
-        if _near(suffix, _GENERIC_SUFFIXES):
-            return f"{label}.{_closest(suffix, valid)}"
-        return None
+        return _fix_provider_suffix(label, suffix)
+    return _fix_provider_label(label, suffix)
 
+
+def _fix_provider_suffix(label: str, suffix: str) -> str | None:
+    """Rótulo de provedor EXATO: o erro, se houver, está no sufixo."""
+    valid = _FREEMAIL_SUFFIXES[label]
+    if suffix in valid:
+        return None
+    # Só sufixo genérico mal digitado (gmail.con, yahoo.com.b) ou o genérico que o
+    # provedor não usa (gmail.com.br). hotmail.fr / hotmail.co.uk / yahoo.com.ar são
+    # domínios de país legítimos — "com.ar" está a 1 edição de "com.br", mas não é erro.
+    if suffix in _GENERIC_SUFFIXES:
+        return f"{label}.{_closest(suffix, valid)}"
+    # "com." esquecido (yahoo.br -> yahoo.com.br). A distância de "br" a "com.br" é 4,
+    # então o `_near` abaixo nunca o pegaria. Destino pelo sufixo REAL do provedor:
+    # gmail.br -> gmail.com, porque o gmail não usa .com.br. Só vale para rótulo de
+    # provedor EXATO: "yaho.br" seriam dois erros juntos — conservador, fica de fora.
+    if suffix in _MISSING_COM_SUFFIXES:
+        return f"{label}.{_closest(_MISSING_COM_SUFFIXES[suffix], valid)}"
+    if _COUNTRY_SUFFIX_RE.match(suffix):
+        return None
+    if _near(suffix, _GENERIC_SUFFIXES):
+        return f"{label}.{_closest(suffix, valid)}"
+    return None
+
+
+def _fix_provider_label(label: str, suffix: str) -> str | None:
+    """Rótulo que NÃO é de provedor: erro de digitação do rótulo (gemail, hotmial)."""
     if label in _LEGIT_NEAR_LABELS:
         return None
     if suffix not in _GENERIC_SUFFIXES and (
