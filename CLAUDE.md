@@ -1193,6 +1193,9 @@ tarefa; antes, um run 100% OK com clientes sem e-mail aparecia como `0x1` no Age
 normalizado (`_strip_crlf`) e Cc com quebra de linha **descartado** — no header **e** no envelope.
 STARTTLS com `minimum_version = TLSv1_2`.
 
+🔴 **O From da cobrança fica no domínio do Return Path** (`SMTP_FROM_ADDR=financeiro@envio.otimotex.com.br`)
+— no domínio raiz a Locaweb reescreve o remetente para `@smtplw-12.com`. E o **`Reply-To`** para o
+mailbox não se remove: `envio` não recebe e-mail, e a resposta do cliente sumiria em silêncio.
 ⚠️ **`send_core.py` é o núcleo compartilhado** pelo batch e pelo reenvio manual — não duplicar
 entre os fluxos.
 ⚠️ **Backup é COMPLETO todo dia** (re-baixa o bucket inteiro), não incremental; e `pg_dump ≥ 17` é

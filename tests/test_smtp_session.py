@@ -9,10 +9,13 @@ Cobre o ganho central do reuso de conexão e suas garantias:
   - DEV_MODE: To/Cc são redirecionados para as caixas de teste.
 """
 
+import os
 import smtplib
 import sys
 import unittest
+from email import message_from_string
 from pathlib import Path
+from unittest import mock
 
 # Os modulos vivem em skills/cobranca-vencidos/scripts/ (diretorio com hifen --
 # nao importavel como pacote). Adiciona o caminho ao sys.path, como run.py faz.
@@ -44,6 +47,7 @@ class _FakeSMTP:
         self.starttls_called = 0
         self.quit_called = 0
         self.sent: list[tuple[str, tuple[str, ...]]] = []
+        self.raws: list[str] = []
         _FakeSMTP.instances.append(self)
 
     def ehlo(self, *_a):
@@ -61,6 +65,7 @@ class _FakeSMTP:
             if isinstance(behavior, Exception):
                 raise behavior
         self.sent.append((from_addr, tuple(to_list)))
+        self.raws.append(raw)
 
     def quit(self):
         self.quit_called += 1
@@ -76,8 +81,14 @@ class SmtpSessionTest(unittest.TestCase):
         _FakeSMTP.sendmail_script = []
         self._orig_smtp = email_sender.smtplib.SMTP
         email_sender.smtplib.SMTP = _FakeSMTP
+        # Isola do .env local: SMTP_FROM_ADDR herdado do ambiente mudaria o remetente
+        # esperado pelos casos abaixo.
+        self._env = mock.patch.dict(os.environ)
+        self._env.start()
+        os.environ.pop("SMTP_FROM_ADDR", None)
 
     def tearDown(self):
+        self._env.stop()
         email_sender.smtplib.SMTP = self._orig_smtp
 
     def test_reusa_uma_conexao_para_varios_envios(self):
@@ -133,6 +144,42 @@ class SmtpSessionTest(unittest.TestCase):
         from_addr, to_tuple = _FakeSMTP.instances[0].sent[0]
         self.assertEqual(from_addr, "financeiro@otimotex.com.br")
         self.assertEqual(to_tuple, ("teste@sheild.app.br",))  # redirecionado
+
+    # --- Remetente do Return Path (SMTP_FROM_ADDR) + Reply-To -----------------------
+
+    def _send_one(self):
+        with SmtpSession(_COMPANY) as session:
+            session.send(to_email="a@cliente.com", cc_email=None, subject="s", html_body="<p>x</p>")
+        conn = _FakeSMTP.instances[0]
+        return conn.sent[0][0], message_from_string(conn.raws[0])
+
+    def test_sem_from_addr_usa_mailbox_da_company_sem_reply_to(self):
+        envelope, msg = self._send_one()
+        self.assertEqual(envelope, "financeiro@otimotex.com.br")
+        self.assertEqual(msg["From"], "Otimotex <financeiro@otimotex.com.br>")
+        self.assertIsNone(msg["Reply-To"])
+
+    def test_from_addr_do_return_path_com_reply_to_no_mailbox(self):
+        # O SMTP Locaweb só preserva o From no domínio do Return Path; a resposta do
+        # cliente tem de voltar ao mailbox real (o subdomínio não recebe e-mail).
+        os.environ["SMTP_FROM_ADDR"] = "financeiro@envio.otimotex.com.br"
+        envelope, msg = self._send_one()
+        self.assertEqual(envelope, "financeiro@envio.otimotex.com.br")
+        self.assertEqual(msg["From"], "Otimotex <financeiro@envio.otimotex.com.br>")
+        self.assertEqual(msg["Reply-To"], "financeiro@otimotex.com.br")
+
+    def test_from_addr_igual_ao_mailbox_nao_gera_reply_to(self):
+        os.environ["SMTP_FROM_ADDR"] = "  Financeiro@Otimotex.com.br "
+        _envelope, msg = self._send_one()
+        self.assertIsNone(msg["Reply-To"])
+
+    def test_from_addr_malformado_falha_antes_de_conectar(self):
+        for invalido in ("sem-arroba", "a@b@c.com", "fin@", "fin@x.com\r\nBcc: evil@e.com"):
+            with self.subTest(invalido=invalido):
+                os.environ["SMTP_FROM_ADDR"] = invalido
+                with self.assertRaises(ValueError):
+                    SmtpSession(_COMPANY)
+        self.assertEqual(len(_FakeSMTP.instances), 0)
 
 
 if __name__ == "__main__":
