@@ -4,7 +4,8 @@ Composição e envio de email de cobrança via SMTP Locaweb.
 Remetente: campo `email` da tabela `company` no Supabase (ex.: financeiro@otimotex.com.br).
 Senha do mailbox: variável `SMTP_PASSWORD` no .env (segredo nunca vai para o banco).
 Host/porta/nome: default Locaweb (smtp.locaweb.com.br:587), com override opcional por .env
-(`SMTP_HOST`, `SMTP_PORT`, `SMTP_FROM_NAME`, `SMTP_USER`).
+(`SMTP_HOST`, `SMTP_PORT`, `SMTP_FROM_NAME`, `SMTP_USER`, `SMTP_FROM_ADDR`).
+Com `SMTP_FROM_ADDR` (domínio do Return Path), o mailbox da company vira o `Reply-To`.
 
 Conexão reaproveitada (SmtpSession): abrir conexão + STARTTLS + LOGIN a cada e-mail
 multiplica o handshake por título e aumenta a pressão sobre o relay da Locaweb (limite
@@ -49,14 +50,35 @@ def _secure_tls_context() -> ssl.SSLContext:
     return ctx
 
 
+def _resolve_from_addr(mailbox: str) -> str:
+    """Endereço do From/envelope: `SMTP_FROM_ADDR` do .env, senão o mailbox da company.
+
+    O SMTP Locaweb só preserva o From quando o domínio dele É o domínio de Return Path
+    cadastrado no painel (`envio.otimotex.com.br`); com `@otimotex.com.br` o relay reescreve
+    From, Return-Path e DKIM para `@smtplw-XX.com` (confirmado pelo suporte em 2026-09-30).
+    Valor malformado FALHA o lote (ValueError) em vez de enviar com remetente errado.
+    """
+    override = os.environ.get("SMTP_FROM_ADDR", "").strip()
+    if not override:
+        return mailbox
+    if "\r" in override or "\n" in override or override.count("@") != 1 or override.endswith("@"):
+        raise ValueError("SMTP_FROM_ADDR inválido no .env: informe um único endereço de e-mail.")
+    return override
+
+
 def _load_smtp_config(company_row: dict | None) -> dict:
-    # Remetente: campo `email` da tabela company (financeiro@otimotex.com.br) — o MESMO
+    # Mailbox: campo `email` da tabela company (financeiro@otimotex.com.br) — o MESMO
     # mailbox usado para recebimento (IMAP). Por isso a senha SMTP reusa `IMAP_PASS` do
     # .env quando `SMTP_PASSWORD` não está definido — sem duplicar segredo. Host/porta/
     # nome têm default Locaweb e aceitam override por .env; `SMTP_USER` só é necessário
     # se o login do mailbox diferir do endereço remetente.
     row = company_row or {}
-    sender = row.get("email") or os.environ.get("SMTP_USER") or os.environ.get("IMAP_USER", "")
+    mailbox = row.get("email") or os.environ.get("SMTP_USER") or os.environ.get("IMAP_USER", "")
+    sender = _resolve_from_addr(mailbox)
+    # Regra de negócio: o subdomínio de Return Path não recebe e-mail (o MX dele é o bounce
+    # da Locaweb). Quando o From difere do mailbox, a resposta do cliente precisa voltar
+    # para o mailbox real via Reply-To — sem ele, a resposta se perderia em silêncio.
+    reply_to = mailbox if mailbox and mailbox.lower() != sender.lower() else None
     from_name = (
         os.environ.get("SMTP_FROM_NAME")
         or row.get("trade_name")
@@ -73,6 +95,7 @@ def _load_smtp_config(company_row: dict | None) -> dict:
         "password": os.environ.get("SMTP_PASSWORD") or os.environ.get("IMAP_PASS", ""),
         "from_name": from_name,
         "from_addr": sender,
+        "reply_to": reply_to,
     }
 
 
@@ -116,6 +139,8 @@ def _build_message(
     # S4-4: from_name/from_addr vêm de env / company (Supabase) — sanitiza CR/LF para
     # barrar header injection no From (mesma proteção já aplicada ao Subject/To/Cc).
     msg["From"] = f"{_strip_crlf(smtp['from_name'])} <{_strip_crlf(smtp['from_addr'])}>"
+    if smtp.get("reply_to"):
+        msg["Reply-To"] = _strip_crlf(smtp["reply_to"])
     msg["To"] = actual_to
     if actual_cc:
         msg["Cc"] = actual_cc
