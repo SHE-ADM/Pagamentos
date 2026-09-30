@@ -22,14 +22,22 @@ load_dotenv(Path(__file__).parents[3] / ".env")
 # ---------------------------------------------------------------------------
 # Faulthandler — captura crashes nativos (segfault, stack overflow, etc.)
 # Grava stack trace em arquivo antes do processo morrer.
+#
+# SÓ quando executado como script (o Agendador): segue no topo do módulo para cobrir
+# crash nativo já nos imports pesados (pdfplumber, pypdf). Importado (Flask, pytest,
+# scripts de manutenção), o arquivo era criado e NUNCA removido — a limpeza vive no
+# main() — e a pasta acumulou 1.906 crash_*.log vazios que escondem o crash real.
 # ---------------------------------------------------------------------------
-_CRASH_LOG_DIR = Path(__file__).parents[3] / "logs" / "scheduler"
-_CRASH_LOG_DIR.mkdir(parents=True, exist_ok=True)
-_CRASH_LOG = _CRASH_LOG_DIR / f"crash_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
-_crash_file = open(_CRASH_LOG, "w", encoding="utf-8")
-_crash_file.write(f"faulthandler ativado em {datetime.now().isoformat()}\n")
-_crash_file.flush()
-faulthandler.enable(file=_crash_file, all_threads=True)
+_CRASH_LOG: Path | None = None
+_crash_file = None
+if __name__ == "__main__":
+    _CRASH_LOG_DIR = Path(__file__).parents[3] / "logs" / "scheduler"
+    _CRASH_LOG_DIR.mkdir(parents=True, exist_ok=True)
+    _CRASH_LOG = _CRASH_LOG_DIR / f"crash_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
+    _crash_file = open(_CRASH_LOG, "w", encoding="utf-8")
+    _crash_file.write(f"faulthandler ativado em {datetime.now().isoformat()}\n")
+    _crash_file.flush()
+    faulthandler.enable(file=_crash_file, all_threads=True)
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -47,6 +55,16 @@ log = logging.getLogger("email-reader")
 # a API voltar. Evita gravar dados incompletos (fornecedor vazio, valor errado).
 class ApiUnavailableError(RuntimeError):
     """API Anthropic indisponivel durante a extracao — para o pipeline."""
+
+
+# error_type do log de falha de API (email_processing_errors). Fonte única: gravado uma
+# vez por e-mail e LIMPO quando o e-mail conclui (ver has_error / delete_errors).
+API_ERROR_TYPE = "erro_api"
+
+# Exit code do CLI quando a API ficou indisponível no run. Distinto de 1 (falha de IMAP /
+# crash) para o Agendador e o Event Log dizerem a causa: com exit 0, a falta de crédito de
+# 2026-09-29 deixou 7 h de e-mails parados com a tarefa marcada como sucesso.
+EXIT_API_UNAVAILABLE = 3
 
 
 # Console do Windows (cp1252) nao encoda os simbolos de log (✓/→/✗).
@@ -303,7 +321,9 @@ def _apply_barcode_due_date(payload: dict) -> None:
     supersedes = _febraban_fn("barcode_due_date_supersedes")
     note_fn = _febraban_fn("due_date_extension_note")
     corrected_fn = _febraban_fn("due_date_corrected_note")
-    if fn is None or supersedes is None or note_fn is None or corrected_fn is None:
+    tax_guide_fn = _febraban_fn("is_tax_guide")
+    if (fn is None or supersedes is None or note_fn is None or corrected_fn is None
+            or tax_guide_fn is None):
         # Sem a politica canonica, NAO se decide por conta propria: aplicar o fator as cegas
         # aqui e exatamente o defeito que esta funcao deixou de ter. Preserva o que veio.
         return
@@ -346,9 +366,15 @@ def _apply_barcode_due_date(payload: dict) -> None:
     notes = _strip_due_date_notes(_without_due_date_markers(payload.get("processing_notes")),
                                   keep_corrected_to=bc_due if cur == bc_due else None)
     payload["processing_notes"] = notes
+    tax_guide = tax_guide_fn(payload.get("document_type"))
     if cur == bc_due:
+        if tax_guide and not presumido:
+            _restore_tax_guide_deadline(payload, bc_due, supersedes, note_fn)
         return
-    if not presumido and not supersedes(cur, bc_due, payload.get("issue_date")):
+    # Guia de tributo: esta camada e a ULTIMA a falar — sem o mesmo `tax_guide` do extrator,
+    # ela desfaria aqui a data-limite legal que ele acabou de preservar (conta 1757).
+    if not presumido and not supersedes(cur, bc_due, payload.get("issue_date"),
+                                        tax_guide=tax_guide):
         # Data lida POSTERIOR e plausivel: o documento vence o fator, com ressalva.
         note = note_fn(cur, bc_due)
         payload["processing_notes"] = f"{notes} | {note}" if notes else note
@@ -356,6 +382,30 @@ def _apply_barcode_due_date(payload: dict) -> None:
     payload["due_date"] = bc_due
     note = corrected_fn(cur, bc_due)
     payload["processing_notes"] = f"{notes} | {note}" if notes else note
+
+
+def _restore_tax_guide_deadline(payload: dict, bc_due: str, supersedes, note_fn) -> None:
+    """Devolve a data-limite IMPRESSA a uma guia que o EXTRATOR tratou como boleto.
+
+    O extrator decide com o tipo lido do PDF; o acronimo do ASSUNTO (DAS/DARF...) so
+    reclassifica depois, em `build_financial_payload`. Um DAS lido como 'boleto' chega aqui
+    com o fator ja aplicado (`due_date == bc_due`), e sem isto a guia seria gravada com o
+    prazo POSTERIOR ao legal — o defeito da conta 1757 pela outra porta. A data lida so
+    sobrevive na nota "corrigido X -> fator"; sem ela, nada muda (nunca se inventa data).
+    A MESMA politica decide (`supersedes` com tax_guide=True): inversao dia/mes e data
+    implausivelmente distante continuam dando o fator."""
+    corrected_from = _febraban_fn("due_date_corrected_from")
+    if corrected_from is None:
+        return
+    read_due = corrected_from(payload.get("processing_notes"), bc_due)
+    if not read_due or supersedes(read_due, bc_due, payload.get("issue_date"), tax_guide=True):
+        return
+    notes = _strip_due_date_notes(payload.get("processing_notes"))
+    note = note_fn(read_due, bc_due)
+    payload["due_date"] = read_due
+    payload["processing_notes"] = f"{notes} | {note}" if notes else note
+    log.info(f"  [BARCODE] guia de tributo: prazo impresso {read_due} restaurado "
+             f"(extrator havia aplicado o fator {bc_due})")
 
 
 def _is_boleto_barcode(barcode: str | None) -> bool:
@@ -746,6 +796,52 @@ class SupabaseControl:
         except Exception as e:
             log.exception(f"Falha ao gravar erro no Supabase: {e}")
             return False
+
+    def has_error(self, message_id: str | None, error_type: str) -> bool:
+        """True se JÁ existe linha `error_type` para o e-mail em email_processing_errors.
+
+        Base da gravação ÚNICA de erro que se repete a cada run (erro_api): com a API
+        fora, o mesmo e-mail falhava a cada 5 min e gerou 83 linhas idênticas em /erros
+        num só dia (2026-09-29). Falha de consulta devolve False — FAIL-OPEN de propósito:
+        uma linha a mais em /erros é ruído; um erro que some é o defeito que isto combate.
+        """
+        if not self._available or not message_id:
+            return False
+        try:
+            mid_enc = urllib.parse.quote(message_id, safe="")
+            req = urllib.request.Request(
+                f"{self.base}/rest/v1/email_processing_errors"
+                f"?gmail_message_id=eq.{mid_enc}&error_type=eq.{urllib.parse.quote(error_type)}"
+                f"&select=id&limit=1",
+                headers=self.headers,
+            )
+            with urllib.request.urlopen(req, timeout=10) as r:
+                return len(json.loads(r.read())) > 0
+        except Exception as e:  # noqa: BLE001 — fail-open, ver docstring
+            log.warning(f"Não foi possível consultar erros existentes ({error_type}): {e}")
+            return False
+
+    def delete_errors(self, message_id: str | None, error_type: str) -> None:
+        """Remove as linhas `error_type` de um e-mail que acabou de ser processado.
+
+        Só para erro TRANSITÓRIO de infraestrutura (erro_api): ele descreve a API, não o
+        e-mail, e deixa de ser verdade quando a leitura conclui — mantê-lo deixaria em
+        /erros um e-mail que já virou conta. Best-effort: falha aqui não desfaz a leitura.
+        """
+        if not self._available or not message_id:
+            return
+        try:
+            mid_enc = urllib.parse.quote(message_id, safe="")
+            req = urllib.request.Request(
+                f"{self.base}/rest/v1/email_processing_errors"
+                f"?gmail_message_id=eq.{mid_enc}&error_type=eq.{urllib.parse.quote(error_type)}",
+                headers=self.headers,
+                method="DELETE",
+            )
+            with urllib.request.urlopen(req, timeout=10):
+                pass  # só o status importa; o `with` devolve a conexão
+        except Exception as e:  # noqa: BLE001 — limpeza best-effort, ver docstring
+            log.warning(f"Não foi possível limpar erros resolvidos ({error_type}): {e}")
 
     def register_financial(self, payload: dict):
         """UPSERT de uma conta extraida em financial_account_control (service_role).
@@ -6309,13 +6405,16 @@ def extract_and_store_accounts(saved_pdfs: list, message_id: str,
             # Falha de API na extracao: registra erro_api e interrompe o run com
             # seguranca (sem gravar conta, sem fallback regex silencioso).
             if (row.get("extraction_source") or "").strip().lower() == "erro_api":
-                ctrl.register_error(
-                    {**err_ctx, "source_file": row.get("source_file")},
-                    "erro_api",
-                    row.get("processing_notes")
-                    or "API Anthropic indisponível (crédito/auth/limite)",
-                    raw_payload=row,
-                )
+                # Uma linha por e-mail, não uma por run: o mesmo e-mail volta a cada 5 min
+                # enquanto a API estiver fora (83 linhas idênticas em 2026-09-29).
+                if not ctrl.has_error(err_ctx.get("message_id"), API_ERROR_TYPE):
+                    ctrl.register_error(
+                        {**err_ctx, "source_file": row.get("source_file")},
+                        API_ERROR_TYPE,
+                        row.get("processing_notes")
+                        or "API Anthropic indisponível (crédito/auth/limite)",
+                        raw_payload=row,
+                    )
                 raise ApiUnavailableError(
                     row.get("processing_notes") or "API Anthropic indisponível"
                 )
@@ -7543,6 +7642,9 @@ def process_message(mail, uid: bytes, keywords: list,
     # O status já foi definido em process_message (extraído/recebido/pendente/falha).
     # No caminho de exceção fica a cargo de _derive_status (→ 'falha').
     ctrl.register(rec)
+    # A leitura concluiu (a API respondeu): o erro_api de runs anteriores deste e-mail
+    # deixou de ser verdade e sairia de /erros só à mão.
+    ctrl.delete_errors(rec.get("message_id"), API_ERROR_TYPE)
     append_log_csv(rec)
     return rec
 
@@ -7699,9 +7801,10 @@ def run_reader(days: int = 0, all_: bool = False,
     mail, uids = _connect_and_search(criteria)
     log.info(f"E-mails no servidor ({criteria}): {len(uids)}")
 
-    processed = skipped_kw = skipped_dup = 0
+    processed = skipped_kw = skipped_dup = deferred = 0
     new_subjects = []
     api_aborted = False
+    api_error: str | None = None   # motivo da 1ª recusa do run (crédito, auth, 529, 500...)
     total = len(uids)
 
     def _emit(phase: str, done: int) -> None:
@@ -7794,18 +7897,30 @@ def run_reader(days: int = 0, all_: bool = False,
                 skipped_kw += 1
                 continue
 
+            # API fora (detectado num e-mail anterior DESTE run): o financeiro é ADIADO —
+            # fica sem registro e volta no próximo run. NÃO é `break`: com ele, o 1º e-mail
+            # financeiro parava o lote e nem os não-financeiros seguintes eram registrados
+            # (2026-09-29: 7 h sem nenhum e-mail em /emails). E não se chama a API de novo
+            # para cada e-mail: uma recusa por run basta como sonda.
+            if api_aborted:
+                log.warning(f"  [ADIADO — API indisponível] {subject[:55]}")
+                deferred += 1
+                continue
+
             log.info(f"  [NEW] {subject[:65]}")
             try:
                 process_message(mail, uid, keywords, dry_run, mark_seen, ctrl)
             except ApiUnavailableError as e:
                 log.error("=" * 58)
-                log.error("  PIPELINE INTERROMPIDO — API Anthropic indisponível.")
+                log.error("  API Anthropic indisponível — e-mails financeiros ADIADOS.")
                 log.exception(f"  Motivo: {str(e)[:160]}")
-                log.error("  Nenhum dado adicional gravado. Recarregue os créditos "
-                          "e rode novamente.")
+                log.error("  Nenhuma conta gravada para eles; voltam no próximo run. Os "
+                          "não-financeiros seguem sendo registrados.")
                 log.error("=" * 58)
                 api_aborted = True
-                break
+                api_error = str(e)[:160]
+                deferred += 1
+                continue
             processed += 1
             new_subjects.append(subject[:120])
 
@@ -7822,7 +7937,7 @@ def run_reader(days: int = 0, all_: bool = False,
     log.info(f"  Sem palavra-chave : {skipped_kw}")
     log.info(f"  Duplicados (skip) : {skipped_dup}")
     if api_aborted:
-        log.info("  Interrompido      : API Anthropic indisponível")
+        log.info(f"  Adiados (API)     : {deferred} — API Anthropic indisponível")
     log.info(f"  Log local         : {EMAILS_LOG}")
     log.info("=" * 58)
 
@@ -7837,6 +7952,8 @@ def run_reader(days: int = 0, all_: bool = False,
         "new_subjects":    new_subjects,
         "dry_run":         dry_run,
         "api_aborted":     api_aborted,
+        "api_error":       api_error,
+        "deferred":        deferred,
     }
 
 
@@ -7858,18 +7975,49 @@ def main():
     args = parser.parse_args()
 
     try:
-        run_reader(days=args.days, all_=args.all,
-                   dry_run=args.dry_run, mark_seen=args.mark_seen)
-        # Encerramento normal: remove arquivo de crash vazio para não poluir logs/
-        try:
-            _crash_file.close()
-            if _CRASH_LOG.stat().st_size < 200:
-                _CRASH_LOG.unlink(missing_ok=True)
-        except Exception:
-            pass
+        summary = run_reader(days=args.days, all_=args.all,
+                             dry_run=args.dry_run, mark_seen=args.mark_seen)
     except RuntimeError as e:
         log.exception(str(e))
         sys.exit(1)
+
+    # Encerramento sem crash: remove o arquivo de crash vazio para não poluir logs/.
+    _remove_empty_crash_log()
+    sys.exit(exit_code_for(summary))
+
+
+def exit_code_for(summary: dict) -> int:
+    """Exit code do CLI a partir do resumo do run.
+
+    0 = run completo. EXIT_API_UNAVAILABLE = e-mails financeiros ADIADOS porque a API
+    Anthropic recusou: o run terminou, mas o pipeline NÃO cumpriu seu papel — tem de
+    aparecer no Agendador e no Event Log (run_reader.ps1), não só no log.
+
+    O motivo vai LITERAL na mensagem: a recusa tanto é crédito/autenticação (ação humana)
+    quanto sobrecarga 529 / erro 500 (transitória, o próximo run tenta de novo). Uma frase
+    fixa "verifique os créditos" mandava o operador conferir a fatura num soluço da API.
+    """
+    if summary.get("api_aborted"):
+        log.error(
+            f"Saindo com exit {EXIT_API_UNAVAILABLE}: {summary.get('deferred', 0)} e-mail(s) "
+            "financeiro(s) adiado(s) — API Anthropic recusou: "
+            f"{summary.get('api_error') or 'motivo não informado'}"
+        )
+        return EXIT_API_UNAVAILABLE
+    return 0
+
+
+def _remove_empty_crash_log() -> None:
+    """Fecha e apaga o crash log se ele só tem o cabeçalho (nenhum crash gravado)."""
+    if _crash_file is None or _CRASH_LOG is None:
+        return
+    try:
+        faulthandler.disable()  # nunca deixar o handler apontando para um arquivo fechado
+        _crash_file.close()
+        if _CRASH_LOG.stat().st_size < 200:
+            _CRASH_LOG.unlink(missing_ok=True)
+    except OSError as e:
+        log.warning(f"Não foi possível remover o crash log vazio {_CRASH_LOG}: {e}")
 
 
 if __name__ == "__main__":

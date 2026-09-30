@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import logging
 import os
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
@@ -73,7 +74,58 @@ def _get_driver():
     except ImportError:
         raise ImportError("Nenhum driver Firebird. Instale: .venv\\Scripts\\pip install fdb")
 
-def fetch_titulos_vencidos() -> list[TituloVencido]:
+def _has_email(titulo: TituloVencido) -> bool:
+    """Critério default de "e-mail enviável": só a presença. O run injeta a validação real
+    (`send_core.validate_email`) — esta camada não depende do módulo de envio."""
+    return bool(titulo.primary_email)
+
+
+def _dedupe_by_document_id(
+    rows: list[TituloVencido],
+    is_sendable: Callable[[TituloVencido], bool] = _has_email,
+) -> list[TituloVencido]:
+    """Uma linha por título, preservando a ordem da query.
+
+    O UNION ALL entre VW_PSQ_FIN_REC_BAN e _004 devolve o MESMO título quando ele consta
+    nas duas views (caso real 245821-D, 2026-09-29). O envio já era barrado pelo
+    cobranca_envios_log, mas a duplicata inflava total/pulados, aparecia duas vezes no
+    dry-run e, sem e-mail, gravaria DOIS erros e dois itens no aviso ao vendedor.
+
+    Não se troca por UNION (DISTINCT): ele só funde linhas idênticas em TODAS as colunas,
+    e as views podem divergir no e-mail/CC do mesmo título. Entre duplicatas vence a
+    primeira — salvo quando ela não é enviável e a outra é (`is_sendable`): uma view com
+    "@gemail.com" e a outra com "@gmail.com" deve cobrar pelo endereço certo, não virar erro.
+    """
+    by_doc: dict[str, int] = {}
+    unique: list[TituloVencido] = []
+    dropped = 0
+    for t in rows:
+        idx = by_doc.get(t.document_id)
+        if idx is None:
+            by_doc[t.document_id] = len(unique)
+            unique.append(t)
+            continue
+        dropped += 1
+        kept = unique[idx]
+        if (kept.primary_email, kept.cc_email, kept.bill_amount, kept.due_date) != \
+           (t.primary_email, t.cc_email, t.bill_amount, t.due_date):
+            logger.warning(
+                "Título %s duplicado com dados DIVERGENTES entre as views "
+                "(e-mail %r x %r, CC %r x %r, valor %s x %s, vencimento %s x %s).",
+                t.document_id, kept.primary_email, t.primary_email, kept.cc_email,
+                t.cc_email, kept.bill_amount, t.bill_amount, kept.due_date, t.due_date,
+            )
+        if not is_sendable(kept) and is_sendable(t):
+            unique[idx] = t
+    if dropped:
+        logger.info("Firebird: %d linha(s) duplicada(s) por título descartada(s).", dropped)
+    return unique
+
+
+def fetch_titulos_vencidos(
+    is_sendable: Callable[[TituloVencido], bool] = _has_email,
+) -> list[TituloVencido]:
+    """Títulos vencidos, UMA linha por título. `is_sendable` decide qual duplicata fica."""
     fdb = _get_driver()
     dsn = f"{os.environ['FB_HOST']}/{int(os.environ.get('FB_PORT','3050'))}:{os.environ['FB_DATABASE']}"
     logger.info("Conectando Firebird: %s", dsn)
@@ -99,6 +151,7 @@ def fetch_titulos_vencidos() -> list[TituloVencido]:
                 cc_email=str(cc).strip() if cc else None,
                 email_subject=str(subj).strip() if subj else 'COBRANÇA',
             ))
+        rows = _dedupe_by_document_id(rows, is_sendable)
         logger.info("Firebird: %d títulos vencidos", len(rows))
         return rows
     finally: con.close()

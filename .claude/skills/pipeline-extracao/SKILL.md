@@ -216,6 +216,19 @@ Documento" é o CONTRATO (003071000), igual todo mês, e o valor é fixo; a impr
 de outubro com a conta de julho (manual, sem nosso número, paga) e a reemissão a reescreveu — o
 boleto novo nasceu pago. `cancelado` fica FORA (lembrete repetido de seguradora, medido no
 `audit_log`). 🔴 **`status_id` em TODO select da dedup** — sem ele a guarda fica inerte.
+🔴 **GUIA DE TRIBUTO: o fator nunca EMPURRA o vencimento para depois da data impressa**
+(`barcode_due_date_supersedes(..., tax_guide=True)`, conjunto canônico
+`febraban.TAX_GUIDE_TYPES`, consultado pelos DOIS call sites). O DAS do Simples traz linha
+digitável em formato BANCÁRIO (não a arrecadação '8'), com DV e valor corretos e fator semanas
+à frente do "Pagar até"; a regra "data lida anterior ao fator = campo vizinho" gravava o prazo
+DEPOIS do legal (conta 1757: 29/09 → 22/10; conta 607). Guia lida cedo demais é paga antes;
+tarde demais, paga com multa. `tests/test_tax_guide_due_date.py` trava a paridade dos conjuntos.
+🔴 **O TIPO pode virar guia só DEPOIS do extrator** (acrônimo do ASSUNTO, em
+`build_financial_payload`): o extrator, vendo 'boleto', já aplicou o fator. A gravação então
+**relê a data impressa da nota "corrigido X → fator"** (`febraban.due_date_corrected_from`, no
+mesmo módulo que a escreve) e a devolve se a MESMA política aceitar (`_restore_tax_guide_deadline`).
+Sem a nota, nada muda — nunca se inventa data; presumido segue com o fator.
+
 ⚠️ Guarda por distância de vencimento foi REJEITADA: reemissões legítimas medidas chegam a 52 dias.
 ⚠️ Resíduo: conta manual EM ABERTO, sem nosso número, de outro mês, com mesmo Nº e valor ainda
 seria movida — nenhuma prova de título distinto existe nesse par.
@@ -333,6 +346,15 @@ http(s), porta malformada e host que resolve para IP **interno**; `_SafeRedirect
 | **Claude API com timeout** (`CLAUDE_API_TIMEOUT`, 90 s) | o SDK usa ~10 min/request; um request travado congela o pipeline |
 | **Extração IN-PROCESS** (`extract_to_csv`, sem subprocess) | `rc=0xC0000142` — 100% das extrações falhavam quando o spawn partia do Flask |
 | **`_rfc822_from_fetch`** | `imaplib` intercala respostas e `data[0][1]` devolve um `int` → crash intermitente |
+| **API fora ADIA, não PARA o lote** (`deferred`) | 29/09/2026, crédito esgotado: o `break` parou a fila no 1º financeiro e **7 h de e-mails** (inclusive os não-financeiros) sumiram de `/emails` |
+| **Exit `EXIT_API_UNAVAILABLE` (3)** + Event Log 1002 no `run_reader.ps1`, com o **motivo LITERAL** (`summary["api_error"]`) na linha "Saindo com exit 3" | com exit 0 o Agendador mostrava sucesso durante toda a parada; e a recusa nem sempre é crédito — 529/500 são transitórios |
+| **`erro_api` UMA vez por e-mail** (`has_error`) e **limpo ao concluir** (`delete_errors`) | 83 linhas idênticas em `/erros` num só dia, que sobreviveriam à recarga |
+
+🔴 **Com a API fora, o financeiro fica SEM registro de propósito** — é o que o faz voltar no
+próximo run. ⚠️ **A janela é `--days 1`:** um e-mail adiado por mais de ~1 dia sai do `SINCE` e
+não volta sozinho — após uma parada longa, rode `read_emails.py --days N` cobrindo o período.
+🔴 **`faulthandler` só no `__main__`** — importado (Flask, pytest, scripts), o `crash_*.log` era
+criado e nunca apagado (1.906 arquivos vazios escondendo o crash real).
 
 🔴 **Resposta do modelo TRUNCADA nunca vira dado.** Boleto escaneado de 6-8 páginas vai numa única
 leitura Vision e o modelo responde um **ARRAY**; cortado no teto, o JSON não parseava, virava

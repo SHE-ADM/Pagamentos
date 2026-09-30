@@ -20,8 +20,11 @@ interface ReaderSummary {
   skipped_dup: number;
   new_subjects: string[];
   dry_run: boolean;
-  // true quando o run foi interrompido por indisponibilidade da API Anthropic.
+  // true quando a API Anthropic recusou no run: os financeiros foram ADIADOS (não é
+  // interrupção — os demais e-mails seguem registrados). Aviso: lib/readerSummary.ts.
   api_aborted?: boolean;
+  // Quantos e-mails financeiros ficaram adiados (ausente em backend anterior ao campo).
+  deferred?: number;
 }
 
 // Snapshot de progresso do job assíncrono (GET /api/emails/progress).

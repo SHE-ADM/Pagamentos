@@ -72,7 +72,7 @@ class MainExitCodeTest(unittest.TestCase):
         os.environ["COBRANCA_SEND_DELAY_SECONDS"] = "0"
         os.environ.pop("DEV_MODE", None)
         self._patches = {
-            "fetch_titulos_vencidos": lambda: [_Titulo("doc1", ""), _Titulo("doc2", "")],
+            "fetch_titulos_vencidos": lambda **_: [_Titulo("doc1", ""), _Titulo("doc2", "")],
             "fetch_company_smtp": lambda: {"email": "financeiro@otimotex.com.br"},
             "already_sent": lambda doc_id: False,
             "send_and_log": lambda **kw: SendResult("sent"),

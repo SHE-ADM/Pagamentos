@@ -367,6 +367,9 @@ class ProcessMessageAnexoNaoPagavelComCorpoTest(unittest.TestCase):
             self.registrados.append(dict(rec))
             return True
 
+        def delete_errors(self, message_id, error_type):
+            """Limpeza do erro transitório (erro_api) ao concluir — inerte no dublê."""
+
         def register_error(self, rec, tipo, msg, raw_payload=None):
             self.erros.append((tipo, msg))
             return True

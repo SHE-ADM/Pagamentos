@@ -173,11 +173,24 @@ if ((Test-Path $STDERR_TMP) -and (Get-Item $STDERR_TMP).Length -gt 0) {
 # ---------------------------------------------------------------------------
 # Resultado
 # ---------------------------------------------------------------------------
+# Exit 3 = EXIT_API_UNAVAILABLE de read_emails.py: o run terminou, mas a API Anthropic
+# recusou e os e-mails financeiros ficaram ADIADOS. A recusa tanto e credito/autenticacao
+# (acao humana) quanto sobrecarga 529 / erro 500 (transitoria) — o motivo LITERAL esta no log
+# do dia, na linha "Saindo com exit 3". Nao ha crash_*.log nesse caso.
+$EXIT_API_UNAVAILABLE = 3
+
 if ($EXIT -eq 0) {
     Write-Log "===== Fim OK (exit: $EXIT) ====="
 } else {
+    if ($EXIT -eq $EXIT_API_UNAVAILABLE) {
+        $detail = "API Anthropic recusou a extracao: e-mails financeiros ADIADOS para o proximo run. Motivo na linha 'Saindo com exit 3' de $LOG_FILE (credito/autenticacao exige acao; 529/500 e transitorio)."
+        $eventId = 1002
+    } else {
+        $detail = "Verifique $LOG_DIR\crash_*.log para o stack trace do faulthandler."
+        $eventId = 1001
+    }
     Write-Log "===== CRASH / ERRO (exit: $EXIT) ====="
-    Write-Log "Verifique logs\scheduler\crash_*.log para o stack trace do faulthandler."
+    Write-Log $detail
 
     # Registra no Event Log do Windows para rastreamento centralizado
     try {
@@ -185,9 +198,9 @@ if ($EXIT -eq 0) {
         if (-not [System.Diagnostics.EventLog]::SourceExists($src)) {
             [System.Diagnostics.EventLog]::CreateEventSource($src, "Application")
         }
-        Write-EventLog -LogName Application -Source $src -EventId 1001 `
+        Write-EventLog -LogName Application -Source $src -EventId $eventId `
             -EntryType Error `
-            -Message "read_emails.py terminou com exit code $EXIT em $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss'). Verifique $LOG_DIR\crash_*.log"
+            -Message "read_emails.py terminou com exit code $EXIT em $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss'). $detail"
     } catch {
         Write-Log "Aviso: nao foi possivel gravar no Event Log do Windows: $_"
     }

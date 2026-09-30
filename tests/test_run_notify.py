@@ -57,20 +57,26 @@ class RunNotifyTest(unittest.TestCase):
         # doc2: e-mail válido mas smtp_falha (transitória) -> NÃO notifica.
         # doc4: email_ausente sem CC -> não há quem notificar.
         self._titulos = [
-            _Titulo("doc1", "", "rep1@x.com"),
-            _Titulo("doc2", "c2@x.com", "rep1@x.com"),
-            _Titulo("doc3", "", "rep1@x.com"),
+            _Titulo("doc1", "", "rep1@lebianco.com.br"),
+            _Titulo("doc2", "c2@x.com", "rep1@lebianco.com.br"),
+            _Titulo("doc3", "", "rep1@lebianco.com.br"),
             _Titulo("doc4", "", ""),
         ]
+        self.sent_to_client: list[str] = []
+        self.logged_errors: list[dict] = []
+
+        def _send_and_log(**kw):
+            self.sent_to_client.append(kw["document_id"])
+            return SendResult("error", "smtp_falha", "instável")
 
         self._patches = {
-            "fetch_titulos_vencidos": lambda: list(self._titulos),
+            "fetch_titulos_vencidos": lambda **_: list(self._titulos),
             "fetch_company_smtp": lambda: {"email": "financeiro@otimotex.com.br"},
             "already_sent": lambda doc_id: False,
-            "send_and_log": lambda **kw: SendResult("error", "smtp_falha", "instável"),
+            "send_and_log": _send_and_log,
             "fetch_error_document_ids": lambda: set(),
             "delete_erro_rows_by_document_id": lambda doc: None,
-            "log_envio_erro": lambda **kw: None,
+            "log_envio_erro": lambda **kw: self.logged_errors.append(kw),
             "SmtpSession": _CapturingSession,
         }
         self._orig = {name: getattr(run, name) for name in self._patches}
@@ -95,11 +101,55 @@ class RunNotifyTest(unittest.TestCase):
         # Exatamente 1 notificação: para rep1 (doc1 + doc3). doc2 (transitória) e doc4 (sem CC) fora.
         self.assertEqual(len(session.sent), 1)
         msg = session.sent[0]
-        self.assertEqual(msg["to"], "rep1@x.com")
+        self.assertEqual(msg["to"], "rep1@lebianco.com.br")
         self.assertIn("Cliente doc1", msg["html"])
         self.assertIn("Cliente doc3", msg["html"])
         self.assertNotIn("Cliente doc2", msg["html"])
         self.assertNotIn("Cliente doc4", msg["html"])
+
+    def test_dominio_digitado_errado_nao_envia_ao_cliente_e_avisa_o_vendedor(self):
+        # Caso real 251796-A (2026-09-29): "@gemail.com" passava no regex e o relay aceitava.
+        self._titulos = [_Titulo("251796-A", "marceloaugustobranco@gemail.com",
+                                 "marcio@lebianco.com.br")]
+        rc = run.main(dry_run=False)
+
+        self.assertEqual(rc, 0)                      # erro de DADO não reprova a tarefa
+        self.assertEqual(self.sent_to_client, [])    # a cobrança NÃO foi ao cliente
+        self.assertEqual([e["error_type"] for e in self.logged_errors], ["email_invalido"])
+        self.assertIn("@gmail.com", self.logged_errors[0]["error_message"])
+
+        sent = _CapturingSession.instances[0].sent
+        self.assertEqual([m["to"] for m in sent], ["marcio@lebianco.com.br"])
+        self.assertIn("251796-A", sent[0]["html"])
+        self.assertIn("@gmail.com", sent[0]["html"])  # o vendedor vê a correção sugerida
+
+    def test_run_desempata_duplicatas_pela_mesma_validacao_do_envio(self):
+        # Wiring: o critério que o run injeta na leitura É o validate_email do envio.
+        recebido = {}
+
+        def _fetch(**kw):
+            recebido.update(kw)
+            return []
+
+        run.fetch_titulos_vencidos = _fetch      # restaurado no tearDown (está em _patches)
+        run.main(dry_run=False)
+        is_sendable = recebido["is_sendable"]
+        self.assertTrue(is_sendable(_Titulo("t", "cliente@gmail.com", "")))
+        self.assertFalse(is_sendable(_Titulo("t", "cliente@gemail.com", "")))
+        self.assertFalse(is_sendable(_Titulo("t", "", "")))
+
+    def test_cc_fora_dos_dominios_de_vendedor_nao_recebe_aviso(self):
+        self._titulos = [
+            _Titulo("doc1", "", "rep@otimotex.com.br"),
+            _Titulo("doc2", "", "contato@cliente.com.br"),
+        ]
+        with self.assertLogs(run.logger, level="WARNING") as logs:
+            run.main(dry_run=False)
+
+        sent = _CapturingSession.instances[0].sent
+        self.assertEqual([m["to"] for m in sent], ["rep@otimotex.com.br"])
+        self.assertNotIn("Cliente doc2", sent[0]["html"])
+        self.assertTrue(any("contato@cliente.com.br" in m for m in logs.output))
 
     def test_dry_run_nao_notifica(self):
         # Em dry-run os erros são todos de DADO (email_ausente) -> exit code 0.

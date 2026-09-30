@@ -5,6 +5,7 @@ import type { EmailControl, FinancialAccountControl } from '@sheild/shared';
 import { getEmailControl, getEmailStats, getAccountsByMessageId, getInvoiceNumbersByMessageIds, markEmailReviewed, getCompanyEmail, type EmailStats } from '../services/supabase';
 import { startEmailRead, getEmailReadProgress, type ReadProgress } from '../services/emailReader';
 import { EMAIL_READER_ENABLED } from '../lib/featureFlags';
+import { apiDeferralNotice } from '../lib/readerSummary';
 import { suspendIdleLogout, resumeIdleLogout } from '../hooks/useIdleLogout';
 import { getEmailColumns } from '../hooks/useGridColumns';
 import { getErrorMessage } from '../lib/getErrorMessage';
@@ -192,9 +193,7 @@ export default function Emails() {
         if (mode === 'novos') criterio = 'não lidos';
         else if (mode === 'geral') criterio = readDays === 0 ? 'todos os e-mails' : `últimos ${readDays} dias`;
         else criterio = 'processamento retomado';
-        const abortAviso = s.api_aborted
-          ? ' ⚠️ Processamento interrompido por limite da API — rode novamente para continuar.'
-          : '';
+        const abortAviso = apiDeferralNotice(s);
         setReadMsg(
           `Busca concluída (${criterio}) — ${s.found} no servidor · ` +
             `${s.processed} financeiro(s) extraído(s) · ${s.skipped_keyword} ignorado(s) · ` +

@@ -490,7 +490,7 @@ from febraban import (  # noqa: F401 — reexport intencional
     amount_from_arrecadacao, amount_from_barcode, arrecadacao_44,
     arrecadacao_dv_refuted, arrecadacao_value_refuted,
     authoritative_barcode_due_date, barcode_discarded_note,
-    barcode_due_date_supersedes, barcode_dv_refuted, barcode_was_discarded,
+    barcode_due_date_supersedes, barcode_dv_refuted, barcode_was_discarded, is_tax_guide,
     due_date_corrected_note, due_date_extension_note, strip_due_date_notes,
     barcode_self_refuted, due_date_from_barcode, extract_barcode,
     extract_linha_digitavel, is_boleto_barcode, normalize_barcode,
@@ -569,7 +569,8 @@ def apply_barcode_due_date(rec: dict) -> bool:
     # citava uma data que o registro nao tem mais — o `apply_text_due_date` roda DEPOIS desta
     # funcao e pode trocar a data de novo.
     rec["processing_notes"] = strip_due_date_notes(rec.get("processing_notes"))
-    if not barcode_due_date_supersedes(cur, bc_due, rec.get("issue_date")):
+    if not barcode_due_date_supersedes(cur, bc_due, rec.get("issue_date"),
+                                       tax_guide=is_tax_guide(rec.get("document_type"))):
         _append_note(rec, due_date_extension_note(cur, bc_due))
         return False
     rec["due_date"] = bc_due

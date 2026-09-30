@@ -56,11 +56,11 @@ class _FakeDriver:
 
 
 class FetchTitulosVencidosTest(unittest.TestCase):
-    def _run(self, rows):
+    def _run(self, rows, **kwargs):
         driver = _FakeDriver(rows)
         with mock.patch.dict(os.environ, _ENV), \
              mock.patch.object(db_firebird, "_get_driver", return_value=driver):
-            result = db_firebird.fetch_titulos_vencidos()
+            result = db_firebird.fetch_titulos_vencidos(**kwargs)
         return driver, result
 
     def test_query_seleciona_grupo_como_primeira_coluna(self):
@@ -100,6 +100,38 @@ class FetchTitulosVencidosTest(unittest.TestCase):
         driver, result = self._run(rows)
         self.assertEqual(result, [])
         self.assertTrue(driver.con.closed)
+
+    def test_titulo_nas_duas_views_vira_uma_linha(self):
+        # Caso real 245821-D (2026-09-29): o UNION ALL devolveu o título duas vezes.
+        dup = ("G", "245821-D", date(2026, 9, 22), 10, "C", "a@b.com", "rep@x.com", "S")
+        other = ("G", "245826-G", date(2026, 9, 22), 20, "D", "d@b.com", "rep@x.com", "S")
+        _driver, result = self._run([dup, dup, other])
+        self.assertEqual([t.document_id for t in result], ["245821-D", "245826-G"])
+
+    def test_duplicata_prefere_a_linha_com_email(self):
+        sem_email = ("G", "T1", date(2026, 9, 22), 10, "C", None, "rep@x.com", "S")
+        com_email = ("G", "T1", date(2026, 9, 22), 10, "C", "a@b.com", "rep@x.com", "S")
+        _driver, result = self._run([sem_email, com_email])
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0].primary_email, "a@b.com")
+
+    def test_duplicata_prefere_a_linha_enviavel_pelo_criterio_injetado(self):
+        # Duas views, dois e-mails: a primeira com domínio digitado errado. O critério do run
+        # (validate_email) decide — a cobrança sai pelo endereço certo em vez de virar erro.
+        errado = ("G", "T1", date(2026, 9, 22), 10, "C", "a@gemail.com", "rep@x.com", "S")
+        certo = ("G", "T1", date(2026, 9, 22), 10, "C", "a@gmail.com", "rep@x.com", "S")
+        with self.assertLogs(db_firebird.logger, level="WARNING"):
+            _driver, result = self._run(
+                [errado, certo], is_sendable=lambda t: not t.primary_email.endswith("gemail.com"))
+        self.assertEqual([t.primary_email for t in result], ["a@gmail.com"])
+
+    def test_duplicata_divergente_mantem_a_primeira_e_avisa(self):
+        a = ("G", "T1", date(2026, 9, 22), 10, "C", "a@b.com", "rep@x.com", "S")
+        b = ("G", "T1", date(2026, 9, 22), 10, "C", "outro@b.com", "rep@x.com", "S")
+        with self.assertLogs(db_firebird.logger, level="WARNING") as logs:
+            _driver, result = self._run([a, b])
+        self.assertEqual([t.primary_email for t in result], ["a@b.com"])
+        self.assertTrue(any("DIVERGENTES" in m for m in logs.output))
 
     def test_conexao_fecha_mesmo_com_erro_na_leitura(self):
         # Linha de 7 colunas (formato antigo) quebra o desempacotamento; a conexão fecha.

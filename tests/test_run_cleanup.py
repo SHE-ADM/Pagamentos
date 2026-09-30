@@ -62,7 +62,7 @@ class RunCleanupTest(unittest.TestCase):
         error_ids = {"doc1", "doc2", "doc3"}
 
         self._patches = {
-            "fetch_titulos_vencidos": lambda: list(self._titulos),
+            "fetch_titulos_vencidos": lambda **_: list(self._titulos),
             "fetch_company_smtp": lambda: {"email": "financeiro@otimotex.com.br"},
             "already_sent": lambda doc_id: doc_id == "doc2",
             "send_and_log": self._fake_send_and_log,

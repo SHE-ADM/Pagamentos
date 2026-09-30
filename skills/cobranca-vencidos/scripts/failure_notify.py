@@ -19,13 +19,29 @@ from decimal import Decimal, InvalidOperation
 # Falhas que EXIGEM ação humana -> notificam o CC. As transitórias ficam de fora.
 DEFINITIVE_ERROR_TYPES = frozenset({"email_ausente", "email_invalido", "smtp_bloqueio"})
 
+# O aviso só vai a VENDEDOR interno (decisão do usuário, 2026-09-29). O CC vem do
+# cadastro do Firebird: um CC externo receberia a lista de títulos vencidos de OUTROS
+# clientes — dado financeiro de terceiros. Comparação pelo domínio EXATO após o "@"
+# (endswith aceitaria "x@fake-otimotex.com.br").
+SELLER_EMAIL_DOMAINS = frozenset({"otimotex.com.br", "lebianco.com.br"})
+
+
+def is_seller_email(value: str | None) -> bool:
+    """True quando `value` é um endereço de vendedor dos domínios internos."""
+    email = (value or "").strip().lower()
+    if email.count("@") != 1:
+        return False
+    local, domain = email.split("@")
+    return bool(local) and domain in SELLER_EMAIL_DOMAINS
+
 
 def group_by_cc(failures: list[dict]) -> dict[str, list[dict]]:
-    """Agrupa as falhas por cc_email. Falhas SEM CC são ignoradas (não há quem notificar)."""
+    """Agrupa as falhas por cc_email. Falhas SEM CC ou com CC fora dos domínios de
+    vendedor são ignoradas (não há quem notificar)."""
     by_cc: dict[str, list[dict]] = {}
     for f in failures:
         cc = (f.get("cc_email") or "").strip()
-        if cc:
+        if is_seller_email(cc):
             by_cc.setdefault(cc, []).append(f)
     return by_cc
 
@@ -70,7 +86,8 @@ def render_failure_digest(failures: list[dict]) -> str:
 <div style="max-width:760px;margin:0 auto;padding:24px;">
   <p>Olá,</p>
   <p>As cobranças abaixo <strong>não puderam ser enviadas ao cliente</strong> e precisam de
-     atenção (ex.: cliente sem e-mail cadastrado ou e-mail recusado pelo destino).</p>
+     atenção (ex.: cliente sem e-mail cadastrado, e-mail com erro de digitação ou e-mail
+     recusado pelo destino).</p>
   <table style="border-collapse:collapse;width:100%;font-size:11pt;">
     <thead>
       <tr style="background-color:#f0f0f0;">

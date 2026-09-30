@@ -35,6 +35,7 @@ vi.mock('../services/emailReader', () => ({
 vi.mock('../hooks/useIdleLogout', () => ({ suspendIdleLogout: vi.fn(), resumeIdleLogout: vi.fn() }));
 
 import Emails from './Emails';
+import { getEmailReadProgress } from '../services/emailReader';
 
 describe('Emails', () => {
   beforeEach(() => {
@@ -95,5 +96,27 @@ describe('Emails', () => {
 
     // Após o estado atualizar, o check de revisado aparece.
     await waitFor(() => expect(screen.getByLabelText('Revisado')).toBeInTheDocument());
+  });
+
+  it('API indisponível no run: o aviso diz ADIADOS com a quantidade, não "interrompido"', async () => {
+    // Caminho real da página: reconexão a um job em andamento que termina com a API recusando.
+    const base = {
+      phase: 'lendo', total: 3, done: 3, processed: 0, skipped_keyword: 1, skipped_dup: 0,
+      elapsed: 2, error: null,
+    };
+    vi.mocked(getEmailReadProgress)
+      .mockResolvedValueOnce({ ...base, running: true, summary: null })
+      .mockResolvedValueOnce({
+        ...base, running: false, phase: 'concluído',
+        summary: {
+          imap_user: 'x', supabase_ok: true, found: 3, processed: 0, skipped_keyword: 1,
+          skipped_dup: 0, new_subjects: [], dry_run: false, api_aborted: true, deferred: 2,
+        },
+      });
+    render(<Emails />);
+
+    const aviso = await screen.findByText(/2 e-mail\(s\) financeiro\(s\) adiado\(s\)/, {}, { timeout: 5000 });
+    expect(aviso.textContent).toContain('próxima execução');
+    expect(aviso.textContent).not.toMatch(/interrompido/i);
   });
 });
