@@ -16,8 +16,10 @@ sys.path.insert(0, str(_SCRIPTS_DIR))
 
 from failure_notify import (  # noqa: E402
     DEFINITIVE_ERROR_TYPES,
+    SELLER_EMAIL_DOMAINS,
     build_subject,
     group_by_cc,
+    is_seller_email,
     render_failure_digest,
 )
 
@@ -33,16 +35,32 @@ class FailureNotifyTest(unittest.TestCase):
 
     def test_group_by_cc_agrupa_e_ignora_sem_cc(self):
         falhas = [
-            {"cc_email": "rep1@x.com", "document_id": "d1"},
-            {"cc_email": "rep1@x.com", "document_id": "d2"},
-            {"cc_email": "rep2@x.com", "document_id": "d3"},
+            {"cc_email": "rep1@lebianco.com.br", "document_id": "d1"},
+            {"cc_email": "rep1@lebianco.com.br", "document_id": "d2"},
+            {"cc_email": "rep2@otimotex.com.br", "document_id": "d3"},
             {"cc_email": "", "document_id": "d4"},        # sem CC -> ignorado
             {"cc_email": None, "document_id": "d5"},       # sem CC -> ignorado
         ]
         by_cc = group_by_cc(falhas)
-        self.assertEqual(set(by_cc), {"rep1@x.com", "rep2@x.com"})
-        self.assertEqual(len(by_cc["rep1@x.com"]), 2)
-        self.assertEqual(len(by_cc["rep2@x.com"]), 1)
+        self.assertEqual(set(by_cc), {"rep1@lebianco.com.br", "rep2@otimotex.com.br"})
+        self.assertEqual(len(by_cc["rep1@lebianco.com.br"]), 2)
+        self.assertEqual(len(by_cc["rep2@otimotex.com.br"]), 1)
+
+    def test_group_by_cc_ignora_cc_fora_dos_dominios_de_vendedor(self):
+        falhas = [
+            {"cc_email": "rep@lebianco.com.br", "document_id": "d1"},
+            {"cc_email": "cliente@gmail.com", "document_id": "d2"},
+            {"cc_email": "x@fake-otimotex.com.br", "document_id": "d3"},
+        ]
+        self.assertEqual(set(group_by_cc(falhas)), {"rep@lebianco.com.br"})
+
+    def test_is_seller_email_so_aceita_os_dois_dominios_exatos(self):
+        self.assertEqual(SELLER_EMAIL_DOMAINS, frozenset({"otimotex.com.br", "lebianco.com.br"}))
+        self.assertTrue(is_seller_email("Rose@Otimotex.com.br "))
+        self.assertTrue(is_seller_email("marcio@lebianco.com.br"))
+        for bad in ("", None, "@lebianco.com.br", "a@b@lebianco.com.br",
+                    "x@fake-otimotex.com.br", "x@otimotex.com.br.evil.com", "x@lebianco.com"):
+            self.assertFalse(is_seller_email(bad), bad)
 
     def test_render_contem_campos_formatados(self):
         html = render_failure_digest([{

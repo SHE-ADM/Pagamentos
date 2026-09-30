@@ -42,8 +42,10 @@ from db_firebird   import fetch_titulos_vencidos   # noqa: E402
 from email_sender  import SmtpSession              # noqa: E402
 from failure_notify import (                       # noqa: E402
     DEFINITIVE_ERROR_TYPES,
+    SELLER_EMAIL_DOMAINS,
     build_subject,
     group_by_cc,
+    is_seller_email,
     render_failure_digest,
 )
 from send_core     import SendResult, send_and_log, validate_email  # noqa: E402
@@ -191,9 +193,18 @@ def _notify_failures(session, failures: list[dict], send_delay: float) -> None:
     Best-effort: uma falha no envio da notificação não derruba o run (os e-mails de
     cobrança já saíram). Throttle entre representantes, como nos envios."""
     by_cc = group_by_cc(failures)
-    sem_cc = len(failures) - sum(len(v) for v in by_cc.values())
+    sem_cc = sum(1 for f in failures if not (f.get("cc_email") or "").strip())
     if sem_cc:
         logger.warning("%d falha(s) definitiva(s) sem CC — sem representante para notificar.", sem_cc)
+    externos = sorted({
+        f["cc_email"].strip() for f in failures
+        if (f.get("cc_email") or "").strip() and not is_seller_email(f["cc_email"])
+    })
+    if externos:
+        logger.warning(
+            "Aviso de falha NÃO enviado a CC fora dos domínios de vendedor (%s): %s",
+            ", ".join(sorted(SELLER_EMAIL_DOMAINS)), ", ".join(externos),
+        )
     enviados = 0
     total = len(by_cc)
     for i, (cc, itens) in enumerate(by_cc.items()):
@@ -293,7 +304,9 @@ def main(dry_run: bool = False) -> int:
     )
 
     try:
-        titulos = fetch_titulos_vencidos()
+        # Entre duplicatas das duas views, fica a de e-mail VÁLIDO pela mesma regra do envio.
+        titulos = fetch_titulos_vencidos(
+            is_sendable=lambda t: validate_email(t.primary_email)[0])
     except Exception as exc:
         logger.exception("Falha critica ao consultar Firebird.")
         log_envio_erro(

@@ -37,12 +37,109 @@ class SendResult(NamedTuple):
 EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 
 
+# ---------------------------------------------------------------------------
+# Domínio com erro de digitação
+# ---------------------------------------------------------------------------
+# O relay (Locaweb) ACEITA qualquer destinatário sintaticamente válido e a devolução
+# chega depois, na caixa do financeiro — o run registra "enviado" e a cobrança nunca
+# chega (caso real 251796-A, "@gemail.com", 2026-09-29). Por isso o erro de digitação
+# nos provedores gratuitos é barrado ANTES do envio e vira email_invalido, que já é
+# registrado e notificado ao vendedor como o "sem e-mail".
+#
+# Rótulo do provedor -> sufixos em que ele recebe e-mail. Só provedores gratuitos: um
+# domínio corporativo não tem "grafia certa" conhecida, e compará-lo geraria falso positivo.
+_FREEMAIL_SUFFIXES: dict[str, tuple[str, ...]] = {
+    "gmail":   ("com",),
+    "icloud":  ("com",),
+    "hotmail": ("com", "com.br"),
+    "outlook": ("com", "com.br"),
+    "yahoo":   ("com", "com.br"),
+}
+# Sufixos genéricos: só se compara o rótulo quando o domínio é "<rótulo>.<genérico>" —
+# "hotmal.empresa.com.br" é subdomínio corporativo, não erro de digitação.
+_GENERIC_SUFFIXES = ("com", "com.br")
+# Provedores reais a 1 edição de um da lista (ymail/mail/email x gmail) — nunca são erro.
+_LEGIT_NEAR_LABELS = frozenset({"ymail", "mail", "email"})
+# "com.<país>" de 2 letras (com.ar, com.pt, com.mx): sufixo real de outro país.
+_COUNTRY_SUFFIX_RE = re.compile(r"^com\.[a-z]{2}$")
+# Distância máxima tolerada. 1 cobre inserção/remoção/troca/transposição de UMA letra
+# (gemail, gmial, hotmial, gmail.con); 2 já alcança domínios legítimos diferentes.
+_MAX_TYPO_DISTANCE = 1
+
+
+def _edit_distance(a: str, b: str) -> int:
+    """Distância de Damerau-Levenshtein (variante OSA): transposição de letras vizinhas
+    conta como UMA edição — "hotmial" está a 1 de "hotmail", não a 2."""
+    prev2: list[int] = []
+    prev = list(range(len(b) + 1))
+    for i in range(1, len(a) + 1):
+        cur = [i] + [0] * len(b)
+        for j in range(1, len(b) + 1):
+            cost = 0 if a[i - 1] == b[j - 1] else 1
+            cur[j] = min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + cost)
+            if i > 1 and j > 1 and a[i - 1] == b[j - 2] and a[i - 2] == b[j - 1]:
+                cur[j] = min(cur[j], prev2[j - 2] + 1)
+        prev2, prev = prev, cur
+    return prev[len(b)]
+
+
+def _near(value: str, targets: tuple[str, ...]) -> bool:
+    return any(_edit_distance(value, t) <= _MAX_TYPO_DISTANCE for t in targets)
+
+
+def _closest(value: str, targets: tuple[str, ...]) -> str:
+    return min(targets, key=lambda t: (_edit_distance(value, t), t))
+
+
+def suggest_domain_fix(domain: str) -> str | None:
+    """Devolve o domínio provavelmente pretendido quando `domain` é erro de digitação de
+    um provedor gratuito (gemail.com -> gmail.com); None quando não há indício de erro.
+
+    Conservador de propósito: falso positivo deixa um cliente real SEM cobrança.
+    """
+    domain = (domain or "").strip().lower().strip(".")
+    label, _, suffix = domain.partition(".")
+    if not label or not suffix:
+        return None
+
+    if label in _FREEMAIL_SUFFIXES:
+        valid = _FREEMAIL_SUFFIXES[label]
+        if suffix in valid:
+            return None
+        # Só sufixo genérico mal digitado (gmail.con, yahoo.com.b) ou o genérico que o
+        # provedor não usa (gmail.com.br). hotmail.fr / hotmail.co.uk / yahoo.com.ar são
+        # domínios de país legítimos — "com.ar" está a 1 edição de "com.br", mas não é erro.
+        if suffix in _GENERIC_SUFFIXES:
+            return f"{label}.{_closest(suffix, valid)}"
+        if _COUNTRY_SUFFIX_RE.match(suffix):
+            return None
+        if _near(suffix, _GENERIC_SUFFIXES):
+            return f"{label}.{_closest(suffix, valid)}"
+        return None
+
+    if label in _LEGIT_NEAR_LABELS:
+        return None
+    if suffix not in _GENERIC_SUFFIXES and (
+            _COUNTRY_SUFFIX_RE.match(suffix) or not _near(suffix, _GENERIC_SUFFIXES)):
+        return None
+    candidates = sorted(p for p in _FREEMAIL_SUFFIXES if _near(label, (p,)))
+    if not candidates:
+        return None
+    provider = candidates[0]
+    return f"{provider}.{_closest(suffix, _FREEMAIL_SUFFIXES[provider])}"
+
+
 def validate_email(value: str | None) -> tuple[bool, str | None]:
     """Retorna (ok, motivo). Mensagens em linguagem simples (coluna "Motivo")."""
     if not value or not value.strip():
         return False, "Cliente sem e-mail cadastrado."
-    if not EMAIL_RE.match(value.strip()):
-        return False, f"E-mail do cliente parece inválido: {value.strip()}"
+    email = value.strip()
+    if not EMAIL_RE.match(email):
+        return False, f"E-mail do cliente parece inválido: {email}"
+    fix = suggest_domain_fix(email.rsplit("@", 1)[1])
+    if fix:
+        return False, (f"E-mail do cliente com provável erro de digitação no domínio: "
+                       f"{email} (o correto seria @{fix}?)")
     return True, None
 
 
