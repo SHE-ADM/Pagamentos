@@ -2,7 +2,7 @@
 Testes da leitura de títulos vencidos (db_firebird.fetch_titulos_vencidos).
 
 Executa a função de topo com um driver Firebird FALSO: a query devolve 8 colunas
-(a 1ª é FIN_CLI_GP_NO, grupo econômico, descartada na leitura). Um desempacotamento
+(a 1ª é CLI_GP_NO, grupo econômico, descartada na leitura). Um desempacotamento
 de 7 posições levantaria ValueError em toda execução — este teste trava isso no
 call site executado, não por texto.
 """
@@ -66,7 +66,7 @@ class FetchTitulosVencidosTest(unittest.TestCase):
     def test_query_seleciona_grupo_como_primeira_coluna(self):
         # Sanidade do contrato: a 1ª coluna do SELECT é o grupo, que o código descarta.
         first_select_col = db_firebird._QUERY.split("SELECT", 1)[1].split(",", 1)[0].strip()
-        self.assertEqual(first_select_col, "PK.FIN_CLI_GP_NO")
+        self.assertEqual(first_select_col, "PK.CLI_GP_NO")
 
     def test_linha_de_8_colunas_mapeia_campos_sem_o_grupo(self):
         row = ("LOJAS X", " 241781-E ", date(2026, 9, 25), 150.5, " CLIENTE ",
