@@ -51,8 +51,8 @@ Procedimento completo na skill **`deploy-producao`**. Histórico de cada deploy:
 
 | Item | Estado |
 |---|---|
-| Último deploy | **2026-09-30 (noite)** — cobrança com remetente `financeiro@envio.otimotex.com.br` + `Reply-To` (`SMTP_FROM_ADDR` no `.env`); antes, no mesmo dia: domínio sem `com.` e **2026-09-30** — leitura adia com API fora (exit 3), prazo legal de guia, cobrança (título único, domínio digitado errado, aviso só a vendedor). PR #260, merge `16b12bf`. Sem migration. Anterior: 2026-09-29 (query `FIN_*`, PR #259) |
-| Paridade verificada | ✅ **em produção** (2026-09-30) — `check_deploy_parity.py`: **32/32 conferem, 0 faltando, 0 divergentes, 0 extras**; 11 sondas funcionais `True`. Cobrança `--dry-run` ✅ (162 títulos, 1 duplicata descartada, `@gemail`/`@gamil` barrados, 0 operacionais). Email Reader ✅ (`LastTaskResult = 0`, `Fim OK (exit: 0)`). **Validação encerrada.** Depois: regra do `com.` esquecido (`yahoo.br`, 244621-D) em `send_core.py` — ✅ **em produção** (sonda `validate_email` OK) · **aguardando commit/PR** — produção está À FRENTE da `main` até o merge. O título duplicado das duas views (`246580-D`, `245821-D`) passa a sair **uma** vez (`_dedupe_by_document_id`) |
+| Último deploy | **2026-10-03** — cobrança: query com as colunas renomeadas das views (`CLI_*`, `TITULO`, `VCT_DATA`, `FIN_STATUS_NO`), sem o prefixo `FIN_`. Query testada e deploy feito pelo usuário. Sem migration. Anterior: **2026-09-30 (noite)** — remetente `financeiro@envio.otimotex.com.br` + `Reply-To` e domínio sem `com.` (PR #261, merge `669a400`) |
+| Paridade verificada | ✅ **em produção** (2026-10-03) — `check_deploy_parity.py`: **32/32 conferem, 0 faltando, 0 divergentes, 0 extras** (inclui o `db_firebird.py` com a query nova) · **aguardando commit/PR** — produção está À FRENTE da `main` até o merge |
 | Tarefas agendadas | 5 ativas — Email Reader (5 min) · Cobrança (10:00) · Backup (02:00) · Baixa (08:00) · Gatilhos Roadmap (dia 1, 07:00) |
 
 ⏳ **Não exercitado em produção ainda:** a captura **automática** de conteúdo de CT-e a partir
