@@ -7,7 +7,7 @@
 > 🔴 **Contador que o comando responde melhor NÃO se escreve aqui.** Antes de anotar um número,
 > pergunte se existe comando que o produz — se existir, anote o comando, não o número.
 >
-> **Atualizado em:** 2026-09-23
+> **Atualizado em:** 2026-10-03
 
 ---
 
@@ -51,8 +51,8 @@ Procedimento completo na skill **`deploy-producao`**. Histórico de cada deploy:
 
 | Item | Estado |
 |---|---|
-| Último deploy | **2026-10-03** — cobrança: query com as colunas renomeadas das views (`CLI_*`, `TITULO`, `VCT_DATA`, `FIN_STATUS_NO`), sem o prefixo `FIN_`. Query testada e deploy feito pelo usuário. Sem migration. Anterior: **2026-09-30 (noite)** — remetente `financeiro@envio.otimotex.com.br` + `Reply-To` e domínio sem `com.` (PR #261, merge `669a400`) |
-| Paridade verificada | ✅ **em produção** (2026-10-03) — `check_deploy_parity.py`: **32/32 conferem, 0 faltando, 0 divergentes, 0 extras** (inclui o `db_firebird.py` com a query nova) · **aguardando commit/PR** — produção está À FRENTE da `main` até o merge |
+| Último deploy | **2026-10-03** — cobrança: query com as colunas renomeadas das views (`CLI_*`, `TITULO`, `VCT_DATA`, `FIN_STATUS_NO`), sem o prefixo `FIN_`. Query testada e deploy feito pelo usuário. PR #262, merge `c2e14d2`. Sem migration. Anterior: **2026-09-30 (noite)** — remetente `financeiro@envio.otimotex.com.br` + `Reply-To` e domínio sem `com.` (PR #261, merge `669a400`) |
+| Paridade verificada | ✅ **em produção** (2026-10-03) — `check_deploy_parity.py`: **32/32 conferem, 0 faltando, 0 divergentes, 0 extras** (inclui o `db_firebird.py` com a query nova). `main` e produção alinhadas desde o merge do PR #262 |
 | Tarefas agendadas | 5 ativas — Email Reader (5 min) · Cobrança (10:00) · Backup (02:00) · Baixa (08:00) · Gatilhos Roadmap (dia 1, 07:00) |
 
 ⏳ **Não exercitado em produção ainda:** a captura **automática** de conteúdo de CT-e a partir
@@ -79,7 +79,7 @@ próxima fatura agregada (são semanais). Conferir com
 | CT-e via DACTE individual (5.3-b, com LLM) | **não implementado** | layout por transportadora inviabiliza regex |
 | Handler SIEG (boleto por link) | **ADIADO** | entrar uma fatura SIEG **em aberto** para validar o download |
 | Lmed/mdnet (boleto por link) | **ADIADO** | tem CAPTCHA com imagem — sem solução automática |
-| Remetente da cobrança (Return Path) | **em produção desde 2026-09-30 — validar no run de 2026-10-01 10:00** (From `@envio`, Reply-To no mailbox) | DNS/painel de `envio.otimotex.com.br` autenticados desde 2026-09-01, mas a Locaweb reescrevia o From para `@smtplw-12.com` porque ele estava no domínio raiz (suporte confirmou em 2026-09-30). Correção: `SMTP_FROM_ADDR=financeiro@envio.otimotex.com.br` + `Reply-To` automático para o mailbox. Ver [env_reference.md](skills/cobranca-vencidos/references/env_reference.md) |
+| Remetente da cobrança (Return Path) | ✅ **VALIDADO em produção (2026-10-02)** | E-mail real da execução de 2026-10-02 10:12 (título 252949-A) chegou com From `financeiro@envio.otimotex.com.br`, To no cliente e Cc no vendedor — sem reescrita para `@smtplw-12.com`; validação confirmada pelo usuário. Causa: a Locaweb reescrevia o From quando ele estava no domínio raiz (suporte confirmou em 2026-09-30). Correção: `SMTP_FROM_ADDR=financeiro@envio.otimotex.com.br` + `Reply-To` automático para o mailbox. Ver [env_reference.md](skills/cobranca-vencidos/references/env_reference.md) |
 | RBAC completo (`permission`/`group_*`) | **desenhado, não implementado** | [docs/design/permissoes-por-grupo.md](docs/design/permissoes-por-grupo.md) |
 | Upload no `/contas` pré-preencher campos | **ideia, não implementar ainda** | decisão registrada na memória |
 | Guia de arrecadação lida por **Vision** não recebe as duas correções de guia | ✅ **RESOLVIDO em 2026-08-20** | As duas regras passaram a valer nas **3** fontes visuais. O ramo Vision virou `_build_records_vision` (a assimetria com `_build_records_text` era o defeito); a data-limite chega pelo campo novo **`payment_deadline`** do prompt e quem decide adotá-la é `apply_arrecadacao_deadline`, gated pelo barcode e **compartilhada com o caminho de texto**; texto disponível (tier 2, página espelhada) vence o campo do modelo. O valor ganhou 2ª barreira contra OCR (`arrecadacao_value_refuted`, ≥10× ⇒ não sobrescreve e anota). Fechada de carona a lacuna do `docx_vision` no gate `barcode_self_refuted` (era tupla literal). Suíte **1593** (+26), **7 mutantes** vermelhos. **Nenhum dado histórico precisou de correção** — a medição de 2026-08-19 achou 0 divergências nas 9 guias auditáveis. Detalhe em [docs/knowledge/pipeline-extracao.md](docs/knowledge/pipeline-extracao.md) |

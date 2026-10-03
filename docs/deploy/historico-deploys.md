@@ -37,8 +37,9 @@ o Return Path não mudou nada; o **suporte Locaweb confirmou** que o From tem de
 **Verificação:** envio de teste do DEV às 12:22 chegou como `OTIMOTEX TECIDOS
 <financeiro@envio.otimotex.com.br>`. Em produção, `check_deploy_parity.py` → **32/32 conferem, 0
 faltando, 0 divergentes, 0 extras** (cobre também o `send_core.py` da entrada abaixo); `.env`
-atualizado pelo usuário. ⏳ **Pendente:** conferir From/Reply-To num e-mail real da execução de
-**2026-10-01 10:00**.
+atualizado pelo usuário. ✅ **Validado em produção:** e-mail real da execução de
+**2026-10-02 10:12** (título 252949-A) chegou com From `financeiro@envio.otimotex.com.br`, sem
+reescrita para `@smtplw-12.com`; validação confirmada pelo usuário.
 
 **Lição:** painel e DNS "Autenticado" não provam o envio — só os **cabeçalhos recebidos** provam. A
 paridade também não cobre o `.env`: variável nova de produção precisa de conferência própria.

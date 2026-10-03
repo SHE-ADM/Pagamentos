@@ -110,8 +110,9 @@ COBRANCA_SEND_DELAY_SECONDS=10
 
 ## Entregabilidade (SPF / DKIM / DMARC) — DNS, fora do `.env`
 
-Estado em 2026-09-30: **SPF ✅** · **DKIM ✅** · **Return Path ✅ no painel** — mas só vale no envio
-com `SMTP_FROM_ADDR` no subdomínio (ver o aviso ao fim desta seção). Configurado via o produto
+Estado em 2026-10-02: **SPF ✅** · **DKIM ✅** · **Return Path ✅ no painel** · **From ✅ em envio
+real** (execução de 2026-10-02 10:12 chegou como `financeiro@envio.otimotex.com.br`, já com
+`SMTP_FROM_ADDR` no subdomínio). Só vale com essa variável — ver o aviso ao fim desta seção. Configurado via o produto
 **"Domínio de Remetente" do painel SMTP Locaweb** (`smtplw.com.br/panel/settings/return_path`),
 que usa o subdomínio dedicado `envio.otimotex.com.br` — não o `otimotex.com.br` raiz nem um
 seletor manual. Registros publicados e confirmados por consulta pública ao DNS:
