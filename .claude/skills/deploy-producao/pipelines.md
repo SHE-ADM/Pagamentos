@@ -170,7 +170,7 @@ Lê títulos vencidos no **Firebird**, monta e-mail HTML e envia por **SMTP tran
 
 ```
 Firebird (VW_PSQ_FIN_REC_BAN + _004)  →  run.py  →  SMTP Locaweb
-   FIN_STF_NO='VENCIDO', FIN_VCT_DATA >= hoje-7 │    To: cliente · Cc: representante
+   FIN_STATUS_NO='VENCIDO', VCT_DATA >= hoje-7 │    To: cliente · Cc: representante
                                               ├─ dedup: already_sent() × cobranca_envios_log (document_id UNIQUE)
                                               ├─ sucesso → cobranca_envios_log (+ limpa erros antigos do título)
                                               ├─ falha   → cobranca_erros_log  → UI /cobranca/erros

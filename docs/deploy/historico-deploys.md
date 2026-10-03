@@ -1,5 +1,23 @@
 # Histórico de deploys
 
+## 2026-10-03 — Cobrança: query com as colunas renomeadas das views
+
+**O que foi ao ar** (ainda sem commit/PR no registro): a query de `db_firebird.py` passou a usar as
+colunas sem o prefixo `FIN_` (`CLI_GP_NO`, `TITULO`, `VCT_DATA`, `VDUP`, `CLI_NO`, `CLI_EMAIL`,
+`VEN_EMAIL`, `EMP_NO`) e o status em `FIN_STATUS_NO` (antes `FIN_STF_NO`), nas duas views
+(`VW_PSQ_FIN_REC_BAN` e `_004`). Filtros, grupos excluídos, aliases e ordenação inalterados — o
+contrato com o Python (8 colunas, `DOCUMENT_ID`…`EMAIL_SUBJECT`) é o mesmo.
+
+**Arquivos:** `db_firebird.py`, `deploy-manifest.json`. Sem migration, `.env` ou dependência nova.
+
+**Verificação:** query fornecida e testada pelo usuário contra o Firebird; deploy em produção feito
+pelo usuário. No DEV: `tests/test_db_firebird.py` 9/9 e manifesto regravado (`--update`). Em
+produção, `check_deploy_parity.py` → **32/32 conferem, 0 faltando, 0 divergentes, 0 extras**.
+
+**Lição:** coluna de view renomeada no Firebird derruba a query inteira — com `UNION ALL`, basta
+uma das duas views divergir para nenhuma cobrança sair no dia. Mudança de schema das views exige
+o deploy da query no mesmo momento.
+
 ## 2026-09-30 (noite) — Cobrança: remetente no domínio do Return Path
 
 **O que foi ao ar** (ainda sem commit/PR no registro): `email_sender.py` lê o remetente de

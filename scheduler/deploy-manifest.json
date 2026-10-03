@@ -18,7 +18,7 @@
     "skills/backup-supabase/scripts/retention.py": "65e5d03f9a52eb6a792c6fe6eb98ef283f1f670afdf5d2667a98e01afea93276",
     "skills/backup-supabase/scripts/run.py": "a6699759443aa8c46a769f9264d84eacbcef8f54004c1ad45fe94adc53ca4d57",
     "skills/baixa-automatica/scripts/run.py": "b72f7dcc84e4b9dc9399056967b8cc77b06abf2a27e2e3ccef8cde3aa6731160",
-    "skills/cobranca-vencidos/scripts/db_firebird.py": "22adfbcea265be54f33b679151923f38e6c3fa53ae82d48d387a77623c98959a",
+    "skills/cobranca-vencidos/scripts/db_firebird.py": "b2c763683486ac5637b643b9fbbdf214e08760b54d7d05a36ed4a615d6fa079c",
     "skills/cobranca-vencidos/scripts/email_sender.py": "e309a92566b6f0988cde04302923175b977dc1ee35c990b3289521b568cb21b0",
     "skills/cobranca-vencidos/scripts/failure_notify.py": "58295e4de26c36bbf902607c65636d6363f784c1900ffaf761d9c4038db0550f",
     "skills/cobranca-vencidos/scripts/resend.py": "2caee52f4f0cdf0c2cc5d4ed04ea41a0de80ec49be284349508cd96f5b7a1e80",

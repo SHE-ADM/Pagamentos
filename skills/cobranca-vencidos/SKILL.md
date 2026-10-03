@@ -6,7 +6,7 @@ Consulta títulos vencidos no Firebird 5 (views `VW_PSQ_FIN_REC_BAN` e
 `VW_PSQ_FIN_REC_BAN_004`), envia email de cobrança HTML via SMTP Locaweb para cada
 cliente e registra o log de envio na tabela `cobranca_envios` do Supabase.
 
-**Regra de negócio central:** cada `DOCUMENT_ID` (campo `FIN_TITULO` no Firebird) é
+**Regra de negócio central:** cada `DOCUMENT_ID` (campo `TITULO` no Firebird) é
 enviado **uma única vez para sempre**. Antes de enviar, o script consulta o Supabase;
 se o título já constar como `sent`, pula. Isso garante idempotência mesmo que o
 agendador rode múltiplas vezes.
@@ -23,7 +23,7 @@ skills/cobranca-vencidos/scripts/run.py
         │
         ├── Firebird 5 (fdb / firebirdsql)
         │     └── VW_PSQ_FIN_REC_BAN  UNION ALL  VW_PSQ_FIN_REC_BAN_004
-        │         WHERE FIN_STF_NO = 'VENCIDO' AND FIN_VCT_DATA >= CURRENT_DATE - 7
+        │         WHERE FIN_STATUS_NO = 'VENCIDO' AND VCT_DATA >= CURRENT_DATE - 7
         │
         ├── Supabase REST (httpx)
         │     ├── GET  cobranca_envios?document_id=eq.X  → dedup check
