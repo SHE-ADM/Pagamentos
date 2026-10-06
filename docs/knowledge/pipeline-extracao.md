@@ -1064,6 +1064,81 @@ Testes: `tests/test_efi_boleto_link.py` (7 mutantes, todos vermelhos).
 ("25/09/2026 668 26 25/09/2026"), e `extract_boleto_document_number` só descarta Espécie **sem
 dígito** — lê "668 26". Não se separa de "504811 01" (Nº com espaço, legítimo) sem medir a base.
 
+### Guia impressa pelo NAVEGADOR como imagem — DAMSP, conta 1863 (2026-10-06)
+
+**Sintoma:** guia DAMSP/ISS da Prefeitura de São Paulo (R$ 79,66, vencimento impresso
+**13/10/2026**) gravada com vencimento **05/10/2026** — a data da extração — e já marcada
+`vencido` no dia seguinte. E-mail `extraído`, nada em `/erros`.
+
+**Causa:** o PDF é um "Salvar como PDF" do Chrome em que a guia é uma **IMAGEM**. O único texto
+extraível é a **moldura do navegador** — `05/10/2026, 14:32 Usuário: …` no topo e a URL com
+`1/1` no rodapé —, ~220 caracteres, acima do limiar de 80 do `is_scanned_pdf`. Daí a cadeia:
+
+1. o caminho de **texto** mandou a moldura ao modelo, que não viu documento nenhum;
+2. `_try_barcode_vision` recuperou a linha de 48 e `apply_arrecadacao_amount` tirou dela o
+   **valor**;
+3. código de arrecadação **não tem fator**, então nada supriu a data e `ensure_due_date`
+   gravou "hoje";
+4. o tier 2 (Vision) só disparava por **valor** ausente — e o valor estava lá.
+
+**Correções, uma por camada** (`tests/test_browser_print_guia.py`; 13 mutantes vermelhos somando
+a correção, o review light e as melhorias opcionais — [docs/review/2026-10-06-Features-light.md](../review/2026-10-06-Features-light.md)):
+
+- 🔴 **A moldura não conta como conteúdo** (`strip_browser_print_chrome` / `content_text_len`,
+  limiar `MIN_CONTENT_TEXT_CHARS`), nos DOIS pontos que medem texto (`is_scanned_pdf` e o
+  fallback de `_extract_records`). Linhas reconhecidas (`_is_browser_print_chrome_line`):
+  data+hora no início (Chrome/Edge, 24 h ou AM/PM), URL `http(s)`/`file` com contador opcional,
+  contador de página isolado. 🔴 **Contador só com até 3 dígitos e 1 ≤ N ≤ M** — sem isso, uma
+  linha isolada de competência ("09/2026") ou de dia/mês ("12/10") seria lida como moldura. A
+  remoção serve **só para medir**: o texto enviado ao modelo não muda, e um PDF digital impresso
+  pelo navegador segue no caminho de texto. Um falso positivo só empurra para o Vision — a
+  direção segura.
+- 🔴 **Tier 2b — vencimento** (`_tier2_vision` / `_text_read_incomplete`). Guia de **arrecadação**
+  cujo registro de texto ficou com a marca `DUE_DATE_ABSENT_NOTE` **e cujo texto não tem data
+  determinística nenhuma** (`extract_due_date_from_text` e `extract_payment_deadline_from_text`
+  nulos sobre `doc_text`) vai ao Vision. O Vision só é adotado se trouxer data **lida**
+  (`_vision_recovers` — senão troca-se um registro sem data por outro). Boleto **bancário** fica
+  de fora: o fator já deu a data, e o Vision extra seria custo sem ganho. É a rede para molduras
+  que o item anterior não reconheça (Firefox, outros formatos).
+  - 🔴 **A marca SOZINHA não basta** (achado do review light): numa GNRE digital cujo modelo não
+    devolveu `due_date`, a data-limite sai do regex e está certa, mas a marca sobrevivia — e um
+    Vision pago era chamado para trocar um registro bom. A checagem do texto é a 2ª trava,
+    independente da limpeza abaixo; cobre também a data impressa porém implausível, que deixa a
+    conta com a presunção (comportamento anterior, conservador).
+- 🔴 **A marca de presunção sai quando a data é LIDA** (`_drop_absent_due_date_note`), nos três
+  pontos que substituem a data presumida: fator do boleto (`apply_barcode_due_date`), rótulo
+  "Vencimento" (`apply_text_due_date`) e data-limite da guia (`apply_arrecadacao_deadline`). Antes
+  ela ficava na coluna "Observações" afirmando "usando data da extração" sobre um vencimento que
+  veio do documento.
+- 🔴 **Código de arrecadação refutado no VISUAL é descartado** (`_discard_dv_refuted_barcode`
+  passou a consultar `arrecadacao_dv_refuted`). Lido pelo Vision, este mesmo PDF voltou com
+  `81836577352500299670000000796657016100130200` — 44 dígitos, começa por `8`, **blocos
+  embaralhados**: a `barcode_dv_refuted` não cobre arrecadação e ele seria gravado como chave de
+  dedup. O valor já não era adotado de código refutado; faltava não **gravá-lo**.
+  - **Releitura dedicada** (`_recover_arrecadacao_barcode`): descartado um código de
+    ARRECADAÇÃO, `_try_barcode_vision` relê a linha de 48 como impressa. Adotada só com **DV
+    geral não refutado E valor embutido == valor lido** (`_adopt_arrecadacao_barcode`), e a
+    marca de descarte sai junto. Só com UM registro — com N não se sabe de qual guia é a linha.
+  - 🔴 **Vale nas TRÊS fontes visuais:** `_extract_records` (`pdf_vision`), `_extract_image`
+    (`image_vision`) e `_extract_docx` (`docx_vision`). `_try_barcode_vision` monta o bloco por
+    `_vision_source_block` e aceita **PDF ou imagem** — `.docx` segue recusado no guard (seria
+    um ZIP declarado com o tipo errado, 400 pago). No `.docx` a releitura recebe a **imagem
+    embutida** e roda **dentro** do `TemporaryDirectory`: fora dele o arquivo já não existe e
+    a releitura falharia calada, devolvendo None.
+  - ⚠️ **Exceção deliberada à regra "releitura não recupera"**, que segue valendo para o boleto
+    **bancário**: lá o defeito medido é o campo livre convertido, que nenhum DV externo confere.
+    Aqui a linha de 48 tem DV por bloco + DV geral, e a adoção ainda cruza o valor (11 dígitos).
+  - O tier 2b reaproveita a mesma adoção com o código que o caminho de **texto** já tinha.
+
+Medido no PDF real depois da correção: `pdf_vision`, vencimento **2026-10-13**, valor **79,66**,
+código **idêntico ao gravado** na 1863 (a dedup não muda) e nenhuma observação.
+
+⚠️ **Residual medido, não corrigido:** 6 contas `docx_vision` com código de arrecadação e
+vencimento presumido (1076, 1077, 1078, 1204, 1401, 1843) — o modelo não leu a data da imagem
+embutida no Word. Todas pagas ou canceladas, e **não foram reprocessadas**. Daqui em diante o
+`.docx` ganhou a releitura do CÓDIGO, mas **não o tier 2b** (que é do caminho de PDF de texto):
+uma guia em `.docx` cujo Vision não leia a data segue nascendo com a data da extração.
+
 ### Auto-resolução de fornecedor
 
 > **Três regras de fornecedor moram na seção "Normalização de `document_type`"**, junto do caso de

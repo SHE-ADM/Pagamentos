@@ -1,8 +1,37 @@
 # Histórico de deploys
 
+## 2026-10-06 — Extração: guia de arrecadação impressa pelo navegador como imagem
+
+**O que foi ao ar** (ainda sem commit/PR no registro): correção do vencimento da guia DAMSP/ISS da
+conta 1863, gravada com a data da extração (05/10) em vez da impressa (13/10). O PDF era um
+"Salvar como PDF" do Chrome com a guia em imagem; o único texto era a moldura do navegador, que
+passava no limiar de 80 caracteres e mandava o PDF ao caminho de texto. Em `extract_pdf.py`:
+
+- moldura do navegador (data/hora, URL, contador de página) fora da medição de texto ⇒ Vision;
+- tier 2b: guia de arrecadação com vencimento presumido **e sem data no texto** ⇒ Vision;
+- código de arrecadação com DV geral refutado no visual é descartado e relido pela leitura
+  dedicada da linha de 48 (adotado só se o valor embutido bater), nas 3 fontes visuais;
+- a marca "Vencimento ausente" sai quando a data é lida do documento.
+
+Detalhe: [docs/knowledge/pipeline-extracao.md](../knowledge/pipeline-extracao.md) § "Guia impressa
+pelo NAVEGADOR como imagem".
+
+**Arquivos:** `extract_pdf.py`, `deploy-manifest.json`. Sem migration, `.env` ou dependência nova.
+
+**Verificação:** no DEV, `pytest` 1964 passed (`tests/test_browser_print_guia.py`, 13 mutantes
+vermelhos), manifesto regravado (`--update`) e o PDF real da 1863 reextraído: `pdf_vision`,
+2026-10-13, R$ 79,66, código idêntico ao gravado. Deploy em produção feito pelo usuário;
+`check_deploy_parity.py` em produção → **32/32 conferem, 0 faltando, 0 divergentes, 0 extras**.
+A conta 1863 foi corrigida manualmente pelo usuário no app.
+
+**Lição:** o limiar de "PDF tem texto" media caracteres, não conteúdo — a moldura que o navegador
+imprime em toda página basta para enganá-lo. E o tier 2 só olhava o VALOR: numa guia de
+arrecadação o valor sai do código, que não carrega data, então a ausência do vencimento passava
+despercebida.
+
 ## 2026-10-03 — Cobrança: query com as colunas renomeadas das views
 
-**O que foi ao ar** (ainda sem commit/PR no registro): a query de `db_firebird.py` passou a usar as
+**O que foi ao ar** (PR #262, merge `c2e14d2`): a query de `db_firebird.py` passou a usar as
 colunas sem o prefixo `FIN_` (`CLI_GP_NO`, `TITULO`, `VCT_DATA`, `VDUP`, `CLI_NO`, `CLI_EMAIL`,
 `VEN_EMAIL`, `EMP_NO`) e o status em `FIN_STATUS_NO` (antes `FIN_STF_NO`), nas duas views
 (`VW_PSQ_FIN_REC_BAN` e `_004`). Filtros, grupos excluídos, aliases e ordenação inalterados — o
@@ -14,13 +43,21 @@ contrato com o Python (8 colunas, `DOCUMENT_ID`…`EMAIL_SUBJECT`) é o mesmo.
 pelo usuário. No DEV: `tests/test_db_firebird.py` 9/9 e manifesto regravado (`--update`). Em
 produção, `check_deploy_parity.py` → **32/32 conferem, 0 faltando, 0 divergentes, 0 extras**.
 
+**1ª execução real** (2026-10-03, 10:01–10:09 BRT): `LastTaskResult = 0` no Agendador (print do
+usuário). No Supabase (consulta read-only): **27** envios em `cobranca_envios_log` e **11** linhas
+em `cobranca_erros_log` — 7 `email_ausente` e 4 `email_invalido` (`@gamil.com` ×3, `@yahoo.br`),
+**0 operacionais** e nenhum título repetido. Vencimentos entre 26/09 e 30/09, dentro da janela de 7
+dias; assuntos `COBRANÇA LEBIANCO` / `COBRANÇA OTIMOTEX TECIDO` (`EMP_NO` lido). Volume no patamar
+dos dias anteriores (38 títulos × 40 em 02/10 e 47 em 01/10). ⚠️ A exclusão dos 6 grupos não é
+observável pelos logs — o grupo não é gravado.
+
 **Lição:** coluna de view renomeada no Firebird derruba a query inteira — com `UNION ALL`, basta
 uma das duas views divergir para nenhuma cobrança sair no dia. Mudança de schema das views exige
 o deploy da query no mesmo momento.
 
 ## 2026-09-30 (noite) — Cobrança: remetente no domínio do Return Path
 
-**O que foi ao ar** (ainda sem commit/PR no registro): `email_sender.py` lê o remetente de
+**O que foi ao ar** (PR #261, merge `669a400`): `email_sender.py` lê o remetente de
 `SMTP_FROM_ADDR` (`.env`) e, quando ele difere do e-mail da `company`, envia
 `Reply-To: financeiro@otimotex.com.br`. Valor malformado falha o lote antes de conectar.
 
@@ -46,7 +83,7 @@ paridade também não cobre o `.env`: variável nova de produção precisa de co
 
 ## 2026-09-30 (tarde) — Cobrança: domínio com o `com.` esquecido
 
-**O que foi ao ar** (ainda sem commit/PR no registro): `send_core.suggest_domain_fix` passou a
+**O que foi ao ar** (PR #261, merge `669a400`): `send_core.suggest_domain_fix` passou a
 tratar como erro de digitação o domínio de provedor gratuito sem o `com.` (`yahoo.br` →
 `yahoo.com.br`; `gmail.br` → `gmail.com`), só com o rótulo do provedor EXATO. Achado no próprio
 `--dry-run` de validação do PR #260: o título **244621-D** (`lidercouros@yahoo.br`) seria enviado e

@@ -150,6 +150,30 @@ meio). Medido: **20 códigos** na base, **100% `pdf_vision`** — zero em `pdf_t
 onde os dígitos vêm do texto. Por isso a guarda é **só do visual**, e o `EXTRACTION_PROMPT` passou
 a exigir a linha digitável **como impressa**, proibindo a conversão. Perder a chave de dedup só
 é aceitável porque a linha sem barcode deixou de ser confundida com fatura (isenção de carnê).
+🔴 **A barreira cobre ARRECADAÇÃO também** (`arrecadacao_dv_refuted`): o Vision devolveu a DAMSP
+da conta 1863 com os blocos EMBARALHADOS, e a `barcode_dv_refuted` não a via. Descartado um código
+de arrecadação, **e só ele**, `_recover_arrecadacao_barcode` relê a linha de 48 como impressa e a
+adota só com DV geral íntegro **e** valor embutido == valor lido. Vale nas **três** fontes visuais
+(`pdf_vision`, `image_vision`, `docx_vision`): `_try_barcode_vision` aceita PDF **ou imagem**
+(bloco por `_vision_source_block`; `.docx` segue recusado), e no `.docx` a releitura roda
+**dentro** do `TemporaryDirectory`, com a imagem embutida ainda existindo. Para o bancário a regra
+"releitura não recupera" segue valendo.
+
+## PDF cujo único texto é a MOLDURA do navegador
+
+🔴 **"Salvar como PDF" de uma guia que é imagem** traz só `dd/mm/aaaa, hh:mm <título>` + URL +
+`1/1` — passa no limiar de 80 chars e ia para o caminho de TEXTO, que não via a guia (conta
+1863: vencimento = data da extração). `content_text_len` mede o texto **sem a moldura**, nos dois
+pontos que decidem texto × Vision; o texto enviado ao modelo não muda. Contador "N/M" só com até
+3 dígitos e 1 ≤ N ≤ M — competência isolada ("09/2026") é conteúdo, não moldura.
+🔴 **Tier 2b** (`_tier2_vision`): guia de arrecadação com `DUE_DATE_ABSENT_NOTE` **e sem data
+determinística no TEXTO** (`extract_due_date_from_text` / `extract_payment_deadline_from_text`
+nulos) vai ao Vision — o código de arrecadação não tem fator, a data só vem do papel. A marca
+sozinha disparava um Vision pago numa GNRE digital cuja data-limite o regex já tinha lido. Boleto
+bancário fica fora (o fator já dá a data). Vision sem data lida ⇒ mantém o texto.
+🔴 **A marca de presunção sai quando a data é LIDA** (`_drop_absent_due_date_note`) — nos três
+pontos que trocam a data presumida: fator, rótulo "Vencimento" e data-limite da guia.
+Testes: `tests/test_browser_print_guia.py`. Detalhe: `docs/knowledge/pipeline-extracao.md`.
 
 ## Lembrete de vencimento — corrige a data PRESUMIDA (`apply_due_date_reminder`)
 

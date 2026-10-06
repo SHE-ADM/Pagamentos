@@ -7,7 +7,7 @@
 > 🔴 **Contador que o comando responde melhor NÃO se escreve aqui.** Antes de anotar um número,
 > pergunte se existe comando que o produz — se existir, anote o comando, não o número.
 >
-> **Atualizado em:** 2026-10-03
+> **Atualizado em:** 2026-10-06
 
 ---
 
@@ -51,8 +51,8 @@ Procedimento completo na skill **`deploy-producao`**. Histórico de cada deploy:
 
 | Item | Estado |
 |---|---|
-| Último deploy | **2026-10-03** — cobrança: query com as colunas renomeadas das views (`CLI_*`, `TITULO`, `VCT_DATA`, `FIN_STATUS_NO`), sem o prefixo `FIN_`. Query testada e deploy feito pelo usuário. PR #262, merge `c2e14d2`. Sem migration. Anterior: **2026-09-30 (noite)** — remetente `financeiro@envio.otimotex.com.br` + `Reply-To` e domínio sem `com.` (PR #261, merge `669a400`) |
-| Paridade verificada | ✅ **em produção** (2026-10-03) — `check_deploy_parity.py`: **32/32 conferem, 0 faltando, 0 divergentes, 0 extras** (inclui o `db_firebird.py` com a query nova). `main` e produção alinhadas desde o merge do PR #262 |
+| Último deploy | **2026-10-06** — extração: guia de arrecadação impressa pelo navegador como imagem (conta 1863, DAMSP/ISS): moldura do navegador fora da medição de texto, tier 2b por vencimento, descarte + releitura do código de arrecadação refutado nas 3 fontes visuais e retirada da marca "Vencimento ausente" quando a data é lida. Deploy feito pelo usuário (`extract_pdf.py` + `deploy-manifest.json`). Sem migration, `.env` ou dependência nova. **Ainda sem commit/PR.** Anterior: **2026-10-03** — cobrança: query com as colunas renomeadas das views (`CLI_*`, `TITULO`, `VCT_DATA`, `FIN_STATUS_NO`), sem o prefixo `FIN_`. Query testada e deploy feito pelo usuário. PR #262, merge `c2e14d2`. Sem migration. |
+| Paridade verificada | ✅ **em produção** (2026-10-06) — `check_deploy_parity.py`: **32/32 conferem, 0 faltando, 0 divergentes, 0 extras** (inclui o `extract_pdf.py` da correção da guia impressa pelo navegador). ⚠️ Produção está À FRENTE do `main` até o PR desta correção ser mesclado |
 | Tarefas agendadas | 5 ativas — Email Reader (5 min) · Cobrança (10:00) · Backup (02:00) · Baixa (08:00) · Gatilhos Roadmap (dia 1, 07:00) |
 
 ⏳ **Não exercitado em produção ainda:** a captura **automática** de conteúdo de CT-e a partir
@@ -75,6 +75,7 @@ próxima fatura agregada (são semanais). Conferir com
 
 | Item | Estado | Gatilho de reabertura |
 |---|---|---|
+| Guia impressa pelo navegador como imagem: vencimento = data da extração (DAMSP, conta 1863 — 2026-10-06) | ✅ **corrigido** · ✅ **em produção (2026-10-06)**, paridade 32/32 · ainda sem commit/PR · conta 1863: correção **manual** do usuário pelo app (13/10/2026) | Moldura do navegador fora da medição de texto, tier 2b por vencimento em guia de arrecadação e descarte + releitura do código de arrecadação refutado no Vision. Detalhe em [docs/knowledge/pipeline-extracao.md](docs/knowledge/pipeline-extracao.md). Residual: 6 contas `docx_vision` com vencimento presumido (1076, 1077, 1078, 1204, 1401, 1843), todas pagas/canceladas |
 | Onda 5 — itens de NF-e (5.1/5.2) | **SUSPENSO** | acervo de DANFEs crescer (eram 15, com 6 detectáveis) |
 | CT-e via DACTE individual (5.3-b, com LLM) | **não implementado** | layout por transportadora inviabiliza regex |
 | Handler SIEG (boleto por link) | **ADIADO** | entrar uma fatura SIEG **em aberto** para validar o download |
