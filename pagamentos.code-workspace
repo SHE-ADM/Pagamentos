@@ -5,6 +5,7 @@
 		}
 	],
 	"settings": {
-		"terminal.integrated.allowChords": true
+		"terminal.integrated.allowChords": true,
+		"python-envs.defaultEnvManager": "ms-python.python:system"
 	}
 }
