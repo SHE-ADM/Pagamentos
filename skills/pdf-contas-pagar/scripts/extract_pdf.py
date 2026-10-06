@@ -488,7 +488,7 @@ def extract_date(text):
 from febraban import (  # noqa: F401 — reexport intencional
     _coerce_date, _due_date_plausible, _normalize_barcode_format,
     amount_from_arrecadacao, amount_from_barcode, arrecadacao_44,
-    arrecadacao_dv_refuted, arrecadacao_value_refuted,
+    arrecadacao_dv_refuted, arrecadacao_value_refuted, BARCODE_DISCARDED_NOTE_PREFIX,
     authoritative_barcode_due_date, barcode_discarded_note,
     barcode_due_date_supersedes, barcode_dv_refuted, barcode_was_discarded, is_tax_guide,
     due_date_corrected_note, due_date_extension_note, strip_due_date_notes,
@@ -574,6 +574,7 @@ def apply_barcode_due_date(rec: dict) -> bool:
         _append_note(rec, due_date_extension_note(cur, bc_due))
         return False
     rec["due_date"] = bc_due
+    _drop_absent_due_date_note(rec)
     _append_note(rec, due_date_corrected_note(cur, bc_due))
     return True
 
@@ -780,6 +781,7 @@ def apply_arrecadacao_deadline(rec: dict, deadline, *, doc_due_date=None) -> boo
     if iso == anterior:
         return False
     rec["due_date"] = iso
+    _drop_absent_due_date_note(rec)
     _append_note(rec, f"Vencimento corrigido para a data-limite da guia de arrecadação: "
                       f"{anterior or '—'} → {iso}")
     return True
@@ -820,6 +822,7 @@ def apply_text_due_date(rec: dict, raw) -> bool:
             # FINAL e o choke point de gravacao (`read_emails._apply_barcode_due_date`), que
             # usa a mesma politica e a mesma redacao.
             rec["processing_notes"] = strip_due_date_notes(rec.get("processing_notes"))
+            _drop_absent_due_date_note(rec)
         rec["due_date"] = text_due
         alterou = True
     if apply_arrecadacao_deadline(rec, extract_payment_deadline_from_text(raw)):
@@ -910,37 +913,36 @@ _BARCODE_ONLY_PROMPT = (
 
 
 def _try_barcode_vision(pdf_path: Path) -> str | None:
-    """Extrai linha digitável via Claude PDF API quando pdf_text não a encontra.
+    """Extrai linha digitável via Claude Vision quando o texto não a entrega.
 
-    Envia o PDF diretamente para o Claude (sem pdftoppm/poppler).
+    Envia o PDF (ou a IMAGEM) diretamente para o Claude (sem pdftoppm/poppler).
     Claude renderiza internamente e lê fontes OCR-B ilegíveis pelo pdfplumber.
-    Retorna 47 ou 44 dígitos, ou None se não encontrada.
+    Retorna 47, 48 ou 44 dígitos, ou None se não encontrada.
 
-    🔴 SÓ ACEITA PDF — o bloco abaixo é `application/pdf` HARDCODED.
-    O guard fica AQUI, e não no call site, porque é esta função que carrega o media_type fixo:
-    quem chamasse com outro formato mandaria os bytes declarados como PDF (um .docx é um ZIP)
-    e receberia 400 da Anthropic — requisição paga, erro remoto e longe da causa. É o mesmo
-    defeito que `_vision_source_block` tinha, por outra porta. Chegou a ser alcançável: o
+    🔴 SÓ ACEITA PDF OU IMAGEM — o bloco sai de `_vision_source_block`, que declara o
+    media_type pela extensão. O guard fica AQUI, e não no call site: quem chamasse com outro
+    formato mandaria bytes declarados com o tipo errado (um .docx é um ZIP) e receberia 400 da
+    Anthropic — requisição paga, erro remoto e longe da causa. Chegou a ser alcançável: o
     caminho `docx_text` passa por `_build_records_text`, que chama esta função quando
     `extract_linha_digitavel` não casa (boleto de arrecadação de 48 dígitos, por exemplo).
+    A IMAGEM entrou para que a releitura da arrecadação descartada
+    (`_recover_arrecadacao_barcode`) valha também em `image_vision` e `docx_vision`.
     """
-    import base64, anthropic
-    if Path(pdf_path).suffix.lower() != ".pdf":
-        log.debug(f"  barcode Vision pulado ({Path(pdf_path).name}): o bloco é application/pdf")
+    import anthropic
+    sufixo = Path(pdf_path).suffix.lower()
+    if sufixo != ".pdf" and sufixo not in _IMAGE_MEDIA_TYPES:
+        log.debug(f"  barcode Vision pulado ({Path(pdf_path).name}): só PDF ou imagem")
         return None
     api_key = os.getenv("ANTHROPIC_API_KEY")
     if not api_key:
         return None
     try:
-        pdf_b64 = base64.standard_b64encode(pdf_path.read_bytes()).decode()
+        block, _src = _vision_source_block(Path(pdf_path))
         client = anthropic.Anthropic(api_key=api_key, timeout=CLAUDE_API_TIMEOUT_SECONDS)
         resp = client.messages.create(
             model=CLAUDE_MODEL, max_tokens=100, temperature=0,
             messages=[{"role": "user", "content": [
-                {"type": "document",
-                 "source": {"type": "base64",
-                            "media_type": "application/pdf",
-                            "data": pdf_b64}},
+                block,
                 {"type": "text", "text": _BARCODE_ONLY_PROMPT},
             ]}],
         )
@@ -1142,15 +1144,77 @@ def extract_payment_method(text, doc_type):
     return "outro"
 
 # --- Verificar se PDF é scan ---
+# Abaixo disto o texto extraível não descreve documento nenhum: o PDF é imagem.
+MIN_CONTENT_TEXT_CHARS = 80
+
+# Cabeçalho/rodapé que o NAVEGADOR imprime em "Salvar como PDF" — não é conteúdo do documento.
+#   cabeçalho: "05/10/2026, 14:32   <título da aba>"   (Chrome/Edge; hora 12h aceita AM/PM)
+#   rodapé:    "https://…/guiaprint.aspx?guia=…   1/1"  (URL da página + contador)
+# 🔴 Caso de origem: conta 1863 (DAMSP/ISS da Prefeitura de SP, 05/10/2026). A guia é uma
+# IMAGEM dentro da página impressa; o único texto do PDF era essa moldura (~220 chars), que
+# passava no limiar acima. O modelo de TEXTO não viu a guia, o vencimento caiu no default
+# "data da extração" (05/10) em vez de 13/10, e o tier 2 não disparou porque o VALOR veio do
+# código de arrecadação. A moldura é removida SÓ para MEDIR o conteúdo — o texto enviado ao
+# modelo não muda, então um PDF digital impresso pelo navegador segue no caminho de texto.
+_BROWSER_PRINT_HEADER_RE = re.compile(
+    r"^\s*\d{1,2}/\d{1,2}/\d{2,4},?\s+\d{1,2}:\d{2}(?::\d{2})?"
+    r"(?:\s*[AaPp]\.?\s?[Mm]\.?)?(?:\s.*)?$")
+# Contador "N/M" (ou "N de M", "N of M"), isolado ou no fim da linha da URL. Os dois números
+# têm até 3 dígitos e N <= M (`_is_page_counter`): sem isso, uma linha isolada de COMPETÊNCIA
+# ("09/2026") ou de data parcial ("12/10") seria tomada por moldura.
+_BROWSER_PRINT_URL_RE = re.compile(
+    r"^\s*(?:https?|file)://\S*(?:\s+(\d{1,3})\s*(?:/|de|of)\s*(\d{1,3}))?\s*$", re.IGNORECASE)
+_BROWSER_PRINT_COUNTER_RE = re.compile(
+    r"^\s*(?:p[áa]gina\s+|page\s+)?(\d{1,3})\s*(?:/|de|of)\s*(\d{1,3})\s*$", re.IGNORECASE)
+
+
+def _is_page_counter(n, m) -> bool:
+    """'N/M' só é contador de página se 1 <= N <= M."""
+    return 1 <= int(n) <= int(m)
+
+
+def _is_browser_print_chrome_line(line: str) -> bool:
+    """A linha é moldura de impressão do navegador (cabeçalho, URL ou contador)?"""
+    if _BROWSER_PRINT_HEADER_RE.match(line):
+        return True
+    m = _BROWSER_PRINT_URL_RE.match(line)
+    if m:
+        return m.group(1) is None or _is_page_counter(m.group(1), m.group(2))
+    m = _BROWSER_PRINT_COUNTER_RE.match(line)
+    return bool(m) and _is_page_counter(m.group(1), m.group(2))
+
+
+def strip_browser_print_chrome(text) -> str:
+    """Texto sem as linhas de moldura de impressão do navegador (data/hora, URL, contador).
+
+    Usada só para decidir se o PDF tem CONTEÚDO em texto (`content_text_len`). Uma linha de
+    conteúdo que por acaso case um padrão (ex.: começa com data e hora) só pode empurrar o
+    PDF para o Vision — a direção segura: custa uma leitura visual, nunca perde o documento."""
+    if not text:
+        return ""
+    return "\n".join(line for line in str(text).splitlines()
+                     if not _is_browser_print_chrome_line(line))
+
+
+def content_text_len(text) -> int:
+    """Tamanho do texto que descreve o DOCUMENTO (moldura do navegador excluída)."""
+    return len(strip_browser_print_chrome(text).strip())
+
+
 def is_scanned_pdf(pdf_path):
     """Heurística sem dependência externa: PDF com pouco/nenhum texto extraível
     é provavelmente escaneado (imagem). Usa pdfplumber (já requerido) em vez de
-    pdffonts/poppler. Em qualquer erro, assume digital (não bloqueia o fluxo)."""
+    pdffonts/poppler. Em qualquer erro, assume digital (não bloqueia o fluxo).
+
+    A moldura de impressão do navegador NÃO conta como texto (ver
+    `_is_browser_print_chrome_line`): uma guia impressa da web como imagem é um scan."""
     try:
         with pdfplumber.open(str(pdf_path)) as pdf:
-            text = "".join((p.extract_text() or "") for p in pdf.pages[:2])
-        return len(text.strip()) < 80
+            text = "\n".join((p.extract_text() or "") for p in pdf.pages[:2])
+        return content_text_len(text) < MIN_CONTENT_TEXT_CHARS
     except Exception:
+        log.warning(f"  is_scanned_pdf: falha ao ler texto de {Path(pdf_path).name} "
+                    f"— assumindo PDF digital", exc_info=True)
         return False
 
 # --- Pré-processamento: corrige linhas invertidas (boletos RTL) ---
@@ -1494,6 +1558,23 @@ def has_document_number(value) -> bool:
     return bool(s) and any(c.isdigit() for c in s)
 
 
+# Marca do vencimento PRESUMIDO pela data da extracao. Lida pelo tier 2 (`_text_read_incomplete`)
+# para reconhecer guia de arrecadacao cujo texto nao trouxe data — fonte unica da frase.
+DUE_DATE_ABSENT_NOTE = "Vencimento ausente — usando data da extração"
+
+
+def _drop_absent_due_date_note(rec: dict) -> None:
+    """Retira `DUE_DATE_ABSENT_NOTE` — chamada por quem SUBSTITUI a data presumida por uma lida.
+
+    Sem isso a marca sobrevivia na coluna "Observações" afirmando "usando data da extração"
+    sobre um vencimento que veio do documento (GNRE digital: data-limite pelo regex)."""
+    notas = rec.get("processing_notes")
+    if not notas or DUE_DATE_ABSENT_NOTE not in notas:
+        return
+    restantes = [seg for seg in notas.split(" | ") if seg != DUE_DATE_ABSENT_NOTE]
+    rec["processing_notes"] = " | ".join(restantes) or None
+
+
 def ensure_due_date(rec: dict, notes: list) -> None:
     """Regra de negocio: vencimento ausente -> usa a data da extracao (hoje).
 
@@ -1503,7 +1584,7 @@ def ensure_due_date(rec: dict, notes: list) -> None:
     """
     if not rec.get("due_date"):
         rec["due_date"] = datetime.now().strftime("%Y-%m-%d")
-        notes.append("Vencimento ausente — usando data da extração")
+        notes.append(DUE_DATE_ABSENT_NOTE)
 
 
 # --- Montar registro a partir de JSON (Claude texto ou visao) ---
@@ -1643,6 +1724,11 @@ def build_records(pdf_path, raw, source, doc_text=None) -> list:
     return _build_records_text(pdf_path, raw, source)
 
 
+# Motivo do descarte de codigo de ARRECADACAO no visual — lido por `_extract_records` para
+# tentar a releitura dedicada da linha de 48 (`_recover_arrecadacao_barcode`).
+ARRECADACAO_DV_DISCARD_REASON = "DV geral da arrecadação não confere na leitura visual"
+
+
 def _discard_dv_refuted_barcode(rec: dict) -> bool:
     """2a barreira do caminho VISUAL: o DV geral do codigo de barras. Retorna True se descartou.
 
@@ -1661,11 +1747,22 @@ def _discard_dv_refuted_barcode(rec: dict) -> bool:
     dedup corrompida.
 
     🔴 A NOTA e a marca canonica (`barcode_discarded_note`): `read_emails.find_financial_duplicate`
-    a le para nao fundir este boleto com um irmao de mesmo valor e vencimento."""
-    if not barcode_dv_refuted(rec.get("barcode")):
+    a le para nao fundir este boleto com um irmao de mesmo valor e vencimento.
+
+    🔴 ARRECADACAO tambem (`arrecadacao_dv_refuted`, modulo 10/11 pelo id_valor). A
+    `barcode_dv_refuted` declara nao cobri-la, e o modo de falha existe la: na conta 1863 o
+    Vision devolveu a guia DAMSP com os blocos EMBARALHADOS (44 digitos, comeca por '8', DV
+    geral refutado) — passava inteiro e seria gravado como chave de dedup. O valor ja nao e
+    adotado de codigo refutado (`amount_from_arrecadacao`); faltava nao GRAVA-LO."""
+    barcode = rec.get("barcode")
+    if barcode_dv_refuted(barcode):
+        motivo = "DV não confere na leitura visual"
+    elif arrecadacao_dv_refuted(barcode):
+        motivo = ARRECADACAO_DV_DISCARD_REASON
+    else:
         return False
     rec["barcode"] = None
-    _append_note_once(rec, barcode_discarded_note("DV não confere na leitura visual"))
+    _append_note_once(rec, barcode_discarded_note(motivo))
     return True
 
 
@@ -2016,6 +2113,119 @@ def process_pdf(pdf_path, force_vision=False, pdf_passwords=None):
 
 
 # --- Extrair os documentos de um PDF (1+ pagáveis) ---
+_TIER2_AMOUNT = "valor"
+_TIER2_DUE_DATE = "vencimento"
+
+
+def _text_read_incomplete(rec: dict, doc_text=None) -> "str | None":
+    """O que a leitura de TEXTO deixou de trazer, e que so o Vision pode ler? None = nada.
+
+    - valor ausente depois de texto + codigo de barras (tier 2 original);
+    - vencimento PRESUMIDO numa guia de ARRECADACAO: sem fator no codigo, a data nao tem
+      outra fonte alem do papel. Boleto bancario fica de fora — o fator ja deu a data.
+
+    🔴 A marca `DUE_DATE_ABSENT_NOTE` SOZINHA nao basta: ela sobrevive quando o proprio texto
+    corrige a data depois (`apply_text_due_date` / `apply_arrecadacao_deadline` nao a retiram).
+    Numa GNRE digital cujo modelo nao devolveu `due_date`, a data-limite sai do regex e esta
+    certa — sem esta checagem, um Vision pago era chamado e o registro bom, trocado. Por isso
+    exige-se tambem que o TEXTO nao tenha data deterministica nenhuma."""
+    if not rec.get("amount"):
+        return _TIER2_AMOUNT
+    if (arrecadacao_44(rec.get("barcode")) is not None
+            and DUE_DATE_ABSENT_NOTE in (rec.get("processing_notes") or "")
+            and extract_due_date_from_text(doc_text) is None
+            and extract_payment_deadline_from_text(doc_text) is None):
+        return _TIER2_DUE_DATE
+    return None
+
+
+def _vision_recovers(motivo: str, vrecs: list) -> bool:
+    """A leitura Vision trouxe o que faltava? Criterio POR MOTIVO — o do valor e o de
+    sempre (algum registro com valor); o do vencimento exige data LIDA, nao o mesmo
+    default presumido, senao trocariamos um registro por outro igualmente sem data."""
+    if motivo == _TIER2_AMOUNT:
+        return any(v.get("amount") for v in vrecs)
+    return any(v.get("due_date") and v.get("amount")
+               and DUE_DATE_ABSENT_NOTE not in (v.get("processing_notes") or "")
+               for v in vrecs)
+
+
+def _adopt_arrecadacao_barcode(vrec: dict, candidate) -> bool:
+    """Devolve ao registro Vision um codigo de arrecadacao lido por OUTRA via confiavel.
+
+    A leitura Vision completa tende a CONVERTER a linha de 48 para 44 e embaralhar blocos
+    (conta 1863: DV geral refutado, codigo descartado), enquanto `_try_barcode_vision`
+    transcreve a linha de 48 como impressa. Perder o codigo tira a chave de dedup.
+
+    So adota quando os tres fecham: o registro Vision ficou SEM codigo, o candidato e
+    arrecadacao com DV geral nao refutado, e o VALOR embutido nele bate com o valor que o
+    Vision leu (mesmo documento — 11 digitos conferidos contra uma leitura independente).
+    Retira a marca de descarte, que deixou de descrever o registro."""
+    if vrec.get("barcode") or arrecadacao_44(candidate) is None:
+        return False
+    if arrecadacao_dv_refuted(candidate):
+        return False
+    bc_amount = amount_from_arrecadacao(candidate)
+    try:
+        v_amount = float(vrec.get("amount"))
+    except (TypeError, ValueError):
+        return False
+    if bc_amount is None or abs(v_amount - bc_amount) > 0.01:
+        return False
+    vrec["barcode"] = normalize_barcode_allow_misread(candidate)
+    restantes = [s for s in (vrec.get("processing_notes") or "").split(" | ")
+                 if s and not s.startswith(BARCODE_DISCARDED_NOTE_PREFIX)]
+    vrec["processing_notes"] = " | ".join(restantes) or None
+    return True
+
+
+def _recover_arrecadacao_barcode(pdf_path, recs: list) -> bool:
+    """Releitura DEDICADA da linha de arrecadacao quando o Vision descartou o codigo.
+
+    Estreita de proposito: so com UM registro (com N, nao ha como saber de qual guia e a
+    linha relida) e so quando o descarte foi de ARRECADACAO (`ARRECADACAO_DV_DISCARD_REASON`).
+    Para boleto BANCARIO a regra segue "releitura nao recupera": la o defeito medido e o
+    campo livre convertido, que nenhum DV externo confere. Aqui a linha de 48 traz DV por
+    bloco + DV geral, e a adocao ainda exige o valor embutido == valor lido.
+    Falha da releitura nunca derruba o registro: `_try_barcode_vision` devolve None."""
+    if len(recs) != 1 or ARRECADACAO_DV_DISCARD_REASON not in (recs[0].get("processing_notes") or ""):
+        return False
+    ld = _try_barcode_vision(pdf_path)
+    if ld and _adopt_arrecadacao_barcode(recs[0], ld):
+        log.info("  → código de arrecadação recuperado pela releitura dedicada")
+        return True
+    log.info("  → releitura da linha de arrecadação não confirmou o código — segue sem barcode")
+    return False
+
+
+def _tier2_vision(pdf_path, recs: list, doc_text) -> list:
+    """Tier 2: o registro UNICO de texto ficou sem o que so o Vision le — devolve os registros
+    a gravar (os do Vision se recuperaram o que faltava; senao os de texto, intactos).
+
+    Erro de API propaga (circuit breaker); qualquer outra falha mantem a extracao de texto."""
+    motivo = _text_read_incomplete(recs[0], doc_text)
+    if not motivo:
+        return recs
+    log.info(f"  → {motivo} ausente após texto/barcode — fallback Vision")
+    try:
+        vraw, vsrc = extract_with_vision(pdf_path)
+        # `doc_text` aqui é o texto que JÁ foi extraído com sucesso: a data-limite impressa
+        # continua determinística, mesmo trocando o registro inteiro pelo do Vision.
+        vrecs = build_records(pdf_path, vraw, vsrc, doc_text=doc_text)
+    except Exception as ve:
+        if _is_api_unavailable(ve):
+            raise
+        log.warning(f"  → Vision para {motivo} falhou ({ve}) — mantendo extração de texto")
+        return recs
+    if not _vision_recovers(motivo, vrecs):
+        log.warning(f"  → Vision não recuperou o {motivo} — mantendo extração de texto")
+        return recs
+    log.info(f"  → {motivo} recuperado via Vision ({len(vrecs)} registro(s))")
+    if len(vrecs) == 1:
+        _adopt_arrecadacao_barcode(vrecs[0], recs[0].get("barcode"))
+    return vrecs
+
+
 def _extract_records(pdf_path, force_vision=False) -> list:
     """Registros de um PDF — 1 por pagável. Nunca levanta: falha vira registro."""
     log.info(f"Processando: {pdf_path.name}")
@@ -2031,8 +2241,9 @@ def _extract_records(pdf_path, force_vision=False) -> list:
             log.info("  → pdfplumber")
             raw, src = extract_with_pdfplumber(pdf_path)
             doc_text = raw
-            if len(raw) < 80:
-                log.warning(f"  → Texto curto ({len(raw)} chars) — fallback Vision")
+            if content_text_len(raw) < MIN_CONTENT_TEXT_CHARS:
+                log.warning(f"  → Texto curto ({content_text_len(raw)} chars de conteúdo, "
+                            f"{len(raw)} no total) — fallback Vision")
                 # Vision envia o PDF em base64 ao Claude (sem poppler/pdftoppm).
                 raw, src = extract_with_vision(pdf_path)
             elif is_mirrored_text(raw):
@@ -2042,6 +2253,8 @@ def _extract_records(pdf_path, force_vision=False) -> list:
                 log.info("  → Texto espelhado (página invertida) — fallback Vision")
                 raw, src = extract_with_vision(pdf_path)
         recs = build_records(pdf_path, raw, src, doc_text=doc_text)
+        if src == "pdf_vision":
+            _recover_arrecadacao_barcode(pdf_path, recs)
         if len(recs) > 1:
             log.info(f"  → {len(recs)} pagáveis lidos do documento")
         # Tier 2: texto extraiu o documento mas sem valor, e o codigo de barras
@@ -2049,21 +2262,14 @@ def _extract_records(pdf_path, force_vision=False) -> list:
         # visualmente. Erro de API propaga; outras falhas mantem o rec de texto.
         # So se aplica ao documento UNICO: com varios pagaveis, "o valor" nao e
         # um valor so e trocar a lista inteira pela leitura Vision perderia itens.
-        if len(recs) == 1 and not recs[0].get("amount") and src == "pdf_text":
-            log.info("  → valor ausente após texto/barcode — fallback Vision para valor")
-            try:
-                vraw, vsrc = extract_with_vision(pdf_path)
-                # `doc_text` aqui é o texto que JÁ foi extraído com sucesso (só não trouxe
-                # valor): a data-limite impressa continua determinística, mesmo trocando o
-                # registro inteiro pelo do Vision.
-                vrecs = build_records(pdf_path, vraw, vsrc, doc_text=doc_text)
-                if any(v.get("amount") for v in vrecs):
-                    log.info(f"  → valor recuperado via Vision ({len(vrecs)} registro(s))")
-                    return vrecs
-            except Exception as ve:
-                if _is_api_unavailable(ve):
-                    raise
-                log.warning(f"  → Vision para valor falhou ({ve}) — mantendo extração de texto")
+        #
+        # Tier 2b (vencimento): guia de ARRECADACAO cujo texto nao trouxe data nenhuma. O
+        # codigo de arrecadacao NAO tem fator de vencimento, entao o valor sai dele mas a
+        # data so podia vir do papel — e o default "data da extracao" grava um vencimento
+        # inventado (conta 1863). Rede para moldura de impressao que `content_text_len` nao
+        # reconheca; o caso conhecido ja vai direto ao Vision.
+        if len(recs) == 1 and src == "pdf_text":
+            return _tier2_vision(pdf_path, recs, doc_text)
         return recs
     except Exception as e:
         # Erro de API (credito/auth/rate-limit) — falha dura, sem regex.
@@ -2085,7 +2291,9 @@ def _extract_image(img_path) -> list:
     log.info(f"Processando imagem: {img_path.name}")
     try:
         raw, src = extract_with_vision(img_path)
-        return build_records(img_path, raw, src)
+        recs = build_records(img_path, raw, src)
+        _recover_arrecadacao_barcode(img_path, recs)
+        return recs
     except Exception as e:
         if _is_api_unavailable(e):
             log.exception(f"  ✗ API Anthropic indisponível ({img_path.name}): {e}")
@@ -2130,11 +2338,14 @@ def _extract_docx(docx_path) -> list:
                 return [_failure_record(docx_path, motivo)]
             log.info("  → Claude Vision sobre a imagem embutida no .docx")
             raw, _src = extract_with_vision(imagem)
-        # `build_records` recebe o DOCX (não o temporário): é o .docx que vira `source_file`,
-        # e o temporário já não existe fora do bloco acima. `doc_text` é o texto do próprio
-        # Word — não provou pagável (por isso a camada 2), mas pode trazer a data-limite
-        # impressa da guia, que é determinística e vence o campo do modelo.
-        return build_records(docx_path, raw, "docx_vision", doc_text=texto)
+            # `build_records` recebe o DOCX (não o temporário): é o .docx que vira
+            # `source_file`. `doc_text` é o texto do próprio Word — não provou pagável (por
+            # isso a camada 2), mas pode trazer a data-limite impressa da guia, que é
+            # determinística e vence o campo do modelo. Fica DENTRO do bloco porque a
+            # releitura da linha de arrecadação precisa do temporário ainda existindo.
+            recs = build_records(docx_path, raw, "docx_vision", doc_text=texto)
+            _recover_arrecadacao_barcode(imagem, recs)
+            return recs
     except Exception as e:
         if _is_api_unavailable(e):
             log.exception(f"  ✗ API Anthropic indisponível ({docx_path.name}): {e}")

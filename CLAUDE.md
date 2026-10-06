@@ -713,9 +713,9 @@ inclusive quando só o ASSUNTO a reclassifica (a gravação a relê da nota "cor
 
 🔴 **Barcode que se REFUTA é DESCARTADO** — o OCR desloca dígitos e gera código de comprimento
 válido com valor 10×; código corrompido não casa a 2ª via e nasce conta duplicada. 🔴 **No VISUAL há
-2ª barreira, o DV geral**: o modelo converte a linha de 47 para 44 sozinho e erra o campo livre, com
-valor e fator intactos (**20 códigos, 100% `pdf_vision`**) — o prompt exige **transcrever**, nunca
-converter. 🔴 **O descarte roda no FIM da cadeia e é MARCADO**: o código dita o vencimento antes de
+2ª barreira, o DV geral**: bancário com o campo livre convertido errado (**20 códigos, 100%
+`pdf_vision`** — o prompt exige **transcrever**) e **arrecadação** de blocos embaralhados (1863; releitura
+nas 3 fontes visuais, só se o valor bater). 🔴 **O descarte roda no FIM e é MARCADO**: o código dita o vencimento antes de
 sair, e a dedup não funde irmãs — **nem ambas descartadas** (veto por título distinto; ver a skill).
 
 🔴 **Resposta do modelo TRUNCADA nunca vira dado.** JSON cortado virava registro vazio e o e-mail
@@ -906,9 +906,9 @@ da LEBIANCO: nome ou texto de QUALQUER anexo marca todas as contas do e-mail. �
   `image001.png` do rodapé como "Rua … | CEP … | (37) 3249-4200", nunca como "assinatura". O
   detector exige **≥2 sinais de contato E nenhum termo financeiro** — qualquer sinal de documento
   real **desqualifica** o descarte.
-- **PDF com texto ESPELHADO** (pdfplumber entrega cada linha invertida) vai ao **Vision**, que lê a
-  página renderizada. A heurística é **por LINHA**, não por contagem global — o PDF é misto
-  (páginas normais + a do boleto espelhada) e um placar agregado poderia empatar.
+- **Texto que não descreve o documento ⇒ Vision:** ESPELHADO (heurística **por LINHA**; PDF misto) e
+  🔴 **MOLDURA do navegador** (`content_text_len` — guia-imagem só com data/hora + URL dava vencimento
+  = data da extração, conta 1863). 🔴 Arrecadação PRESUMIDA **e sem data no texto** ⇒ Vision (tier 2b).
 - **Split multi-pagável é por INSTRUMENTO DE PAGAMENTO**, não por "é boleto": linha digitável
   **ou** arrecadação de 48 **ou** PIX EMV. Página de detalhamento não tem instrumento ⇒ não conta.
   O gate `>=2` preserva "1 pagável ⇒ 1 registro".

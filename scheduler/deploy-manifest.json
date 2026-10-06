@@ -29,7 +29,7 @@
     "skills/email-reader/scripts/read_emails.py": "939f952b823cd35a71ff4486dce8903578a2b54fc81cc48e7477d4981a678a6d",
     "skills/pdf-contas-pagar/scripts/cte_content.py": "1877e67b3009552785430b4230cc799ce2632f78764d1c24adacde97377aec29",
     "skills/pdf-contas-pagar/scripts/docx_content.py": "21fc2a5dd2d787788bd0c6a56c71e6506aaa5ddb93110eeb96d2c7b456ef0cb4",
-    "skills/pdf-contas-pagar/scripts/extract_pdf.py": "fec27db5fbfb0cb623b89098469ca71167de7849c8b095715be00f86b6b8f1fe",
+    "skills/pdf-contas-pagar/scripts/extract_pdf.py": "521f480d679cc25fb541a2621a63203bcb810145c215cbb996411192f4bab55d",
     "skills/pdf-contas-pagar/scripts/febraban.py": "88cde22c0d43857ccba6044ff5839b696d1de73e502ff954c241cc9daf5885a6",
     "skills/pdf-contas-pagar/scripts/fiscal_key.py": "2a6e34f3e849960d26725f7b2aedd9c1d7d23f2e1af6d067a71ebf3fd90b9994",
     "skills/roadmap-gatilhos/scripts/run.py": "17219c1f5a87c066499328c1cff94b70647c14716ac8c55b9e173155e63b5966"
