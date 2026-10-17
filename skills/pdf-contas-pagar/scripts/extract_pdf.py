@@ -2128,10 +2128,16 @@ def _text_read_incomplete(rec: dict, doc_text=None) -> "str | None":
     corrige a data depois (`apply_text_due_date` / `apply_arrecadacao_deadline` nao a retiram).
     Numa GNRE digital cujo modelo nao devolveu `due_date`, a data-limite sai do regex e esta
     certa — sem esta checagem, um Vision pago era chamado e o registro bom, trocado. Por isso
-    exige-se tambem que o TEXTO nao tenha data deterministica nenhuma."""
+    exige-se tambem que o TEXTO nao tenha data deterministica nenhuma.
+
+    Guia de TRIBUTO sem codigo nenhum entra na mesma regra (FGTS Digital, conta 2034): a guia e uma
+    IMAGEM na pagina 1 e o texto das demais paginas e o relatorio de detalhe, sem vencimento nem
+    favorecido. Sem barcode nao ha fator nem codigo de arrecadacao que de a data — so o papel."""
     if not rec.get("amount"):
         return _TIER2_AMOUNT
-    if (arrecadacao_44(rec.get("barcode")) is not None
+    barcode = rec.get("barcode")
+    tax_guide_without_code = rec.get("document_type") == "tributo" and not barcode
+    if ((arrecadacao_44(barcode) is not None or tax_guide_without_code)
             and DUE_DATE_ABSENT_NOTE in (rec.get("processing_notes") or "")
             and extract_due_date_from_text(doc_text) is None
             and extract_payment_deadline_from_text(doc_text) is None):

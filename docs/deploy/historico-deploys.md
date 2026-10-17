@@ -1,8 +1,28 @@
 # Histórico de deploys
 
+## 2026-10-17 — Extração: guia de tributo sem código entra no tier 2b
+
+**O que foi ao ar:** a guia do FGTS Digital (conta 2034) é uma IMAGEM na pág. 1; as demais páginas
+são o relatório de detalhe (só totais, sem vencimento nem favorecido). O texto passava de 80
+caracteres, ia como `pdf_text` e gravava vencimento = data da extração, com fornecedor na OTIMOTEX
+(sk 1). Em `extract_pdf.py`, `_text_read_incomplete` passa a tratar `document_type == 'tributo'`
+sem barcode como a guia de arrecadação: marca "Vencimento ausente" **e** nenhuma data determinística
+no texto ⇒ Vision. Só tributo — fatura ou nota sem data segue no texto.
+
+**Arquivos:** `extract_pdf.py`, `deploy-manifest.json`. Sem migration, `.env` ou dependência nova.
+
+**Verificação:** no DEV, `pytest` 1966 passed (+1), mutante vermelho (remover a condição derruba os
+2 testes de tributo), `npm run lint` e `typecheck` OK. Nos PDFs reais do cache: o FGTS de
+2026-10-16 (texto sem data) dispara o tier 2b; o de 2026-07-16 (data no texto) não. Review light:
+[docs/review/2026-10-17-Features-light.md](../review/2026-10-17-Features-light.md). Cópia para
+produção feita pelo usuário; paridade a confirmar com `check_deploy_parity.py`.
+
+**Lição:** teste da função pura não prova o call site — o caso foi coberto também por
+`_extract_records`. A resposta real do Vision para a guia segue não exercitada (custa API).
+
 ## 2026-10-06 — Extração: guia de arrecadação impressa pelo navegador como imagem
 
-**O que foi ao ar** (ainda sem commit/PR no registro): correção do vencimento da guia DAMSP/ISS da
+**O que foi ao ar** (PR #264): correção do vencimento da guia DAMSP/ISS da
 conta 1863, gravada com a data da extração (05/10) em vez da impressa (13/10). O PDF era um
 "Salvar como PDF" do Chrome com a guia em imagem; o único texto era a moldura do navegador, que
 passava no limiar de 80 caracteres e mandava o PDF ao caminho de texto. Em `extract_pdf.py`:

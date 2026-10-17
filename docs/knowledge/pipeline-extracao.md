@@ -1100,6 +1100,11 @@ a correção, o review light e as melhorias opcionais — [docs/review/2026-10-0
   (`_vision_recovers` — senão troca-se um registro sem data por outro). Boleto **bancário** fica
   de fora: o fator já deu a data, e o Vision extra seria custo sem ganho. É a rede para molduras
   que o item anterior não reconheça (Firefox, outros formatos).
+  - 🔴 **Guia de TRIBUTO sem código nenhum entra no tier 2b** (FGTS Digital, conta 2034): a guia é
+    uma IMAGEM na pág. 1 e as demais páginas são o relatório de detalhe (só totais, sem vencimento
+    nem favorecido). O texto passava de 80 caracteres, então ia como `pdf_text`: vencimento = data
+    da extração e fornecedor caía na OTIMOTEX (sk 1). Só `document_type == 'tributo'` — fatura ou
+    nota sem data segue no texto, para não virar Vision em massa.
   - 🔴 **A marca SOZINHA não basta** (achado do review light): numa GNRE digital cujo modelo não
     devolveu `due_date`, a data-limite sai do regex e está certa, mas a marca sobrevivia — e um
     Vision pago era chamado para trocar um registro bom. A checagem do texto é a 2ª trava,
