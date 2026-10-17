@@ -13,5 +13,13 @@
   "sonarlint.connectedMode.project": {
     "connectionId": "she-adm",
     "projectKey": "SHE-ADM_email-financeiro"
-  }
+  },
+  "python.terminal.useEnvFile": true,
+  "python-envs.pythonProjects": [
+    {
+      "path": ".",
+      "envManager": "ms-python.python:system",
+      "packageManager": "ms-python.python:pip"
+    }
+  ]
 }
