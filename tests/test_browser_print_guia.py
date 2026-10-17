@@ -300,6 +300,40 @@ class Tier2VencimentoTest(unittest.TestCase):
         self.assertIsNone(E._text_read_incomplete(
             rec, "Documento Válido para pagamento 31/07/2026"))
 
+    def test_tributo_sem_codigo_e_sem_data_no_texto_dispara_o_vision(self):
+        """FGTS Digital (conta 2034): a guia é imagem na pág. 1 e o texto é só o relatório de
+        detalhe. Tributo SEM barcode e SEM data no texto não tem outra fonte além do papel."""
+        rec = {"amount": 19338.54, "barcode": None, "document_type": "tributo",
+               "processing_notes": E.DUE_DATE_ABSENT_NOTE}
+        self.assertEqual(E._text_read_incomplete(rec, "Detalhe da Guia Emitida"), "vencimento")
+        # Data determinística no texto: o registro de texto está certo, sem Vision pago.
+        self.assertIsNone(E._text_read_incomplete(rec, "Vencimento 20/10/2026"))
+        # Só tributo: documento comum sem data segue no texto (não vira Vision em massa).
+        self.assertIsNone(E._text_read_incomplete({**rec, "document_type": "fatura"}, "sem data"))
+        # Sem a marca de presunção, a data veio do documento.
+        self.assertIsNone(E._text_read_incomplete({**rec, "processing_notes": None}, "sem data"))
+
+    def test_tributo_sem_codigo_executa_o_vision_pela_funcao_de_topo(self):
+        """Call site EXECUTADO (não só a função pura): `_extract_records` com um tributo sem
+        barcode e sem data no texto chama o Vision e adota a data lida da guia."""
+        texto = ("Relatório de detalhe da guia emitida pelo FGTS Digital — totais "
+                                "por competência, sem campos de vencimento nem favorecido.\n")
+        with mock.patch.object(E, "is_scanned_pdf", return_value=False), \
+                mock.patch.object(E, "extract_with_pdfplumber", return_value=(texto, "pdf_text")), \
+                mock.patch.object(E, "extract_fields_with_claude",
+                                  return_value={"document_type": "tributo", "amount": 19338.54,
+                                                "due_date": None}), \
+                mock.patch.object(E, "_try_barcode_vision", return_value=None), \
+                mock.patch.object(E, "extract_with_vision",
+                                  return_value=(_json_visual(document_type="tributo",
+                                                             amount=19338.54, barcode=None,
+                                                             due_date="2026-10-20"),
+                                                "pdf_vision")) as vis:
+            recs = E._extract_records(Path("fgts.pdf"))
+        vis.assert_called_once()
+        self.assertEqual(recs[0]["due_date"], "2026-10-20")
+        self.assertEqual(recs[0]["extraction_source"], "pdf_vision")
+
     def test_motivos(self):
         self.assertEqual(E._text_read_incomplete({"amount": None}), "valor")
         self.assertEqual(E._text_read_incomplete(
