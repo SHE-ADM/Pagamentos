@@ -164,20 +164,23 @@ class FiacaoNoProcessMessageTest(unittest.TestCase):
                     nomes.add(alvo.attr)
         return nomes
 
-    def test_process_message_chama_o_detector_de_placeholder(self):
-        chamadas = self._chamadas_em("process_message")
+    def test_process_message_usa_o_corpo_efetivo(self):
+        self.assertIn("_effective_body_text", self._chamadas_em("process_message"))
+
+    def test_corpo_efetivo_chama_o_detector_de_placeholder(self):
+        chamadas = self._chamadas_em("_effective_body_text")
         # Sanidade do parser: se o AST parasse de casar, o assert seguinte viraria
         # vacuo. get_body_text e chamada obrigatoria e estavel nessa funcao.
-        self.assertIn("get_body_text", chamadas, "parser do AST nao leu process_message")
+        self.assertIn("get_body_text", chamadas, "parser do AST nao leu _effective_body_text")
         self.assertIn(
             "_plain_body_is_placeholder",
             chamadas,
-            "process_message parou de detectar o corpo-placeholder: e-mails so-HTML "
+            "_effective_body_text parou de detectar o corpo-placeholder: e-mails so-HTML "
             "voltam a gravar o aviso como corpo (ver o cabecalho deste arquivo)",
         )
 
-    def test_process_message_ainda_cai_no_html(self):
-        self.assertIn("_html_to_text", self._chamadas_em("process_message"))
+    def test_corpo_efetivo_ainda_cai_no_html(self):
+        self.assertIn("_html_to_text", self._chamadas_em("_effective_body_text"))
 
 
 def textwrap_dedent(s: str) -> str:

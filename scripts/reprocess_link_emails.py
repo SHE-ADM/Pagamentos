@@ -56,7 +56,7 @@ def _get_body(msg) -> "tuple[str, str]":
 
 def fetch_falha_rows(ctrl) -> list:
     q = ("?status=eq.falha&select=id,message_id,received_at,sender_email,"
-         "sender_name,subject,has_attachment&order=received_at.desc")
+         "sender_name,subject,has_attachment,body_full&order=received_at.desc")
     req = urllib.request.Request(ctrl.base + "/rest/v1/email_control" + q, headers=ctrl.headers)
     return json.loads(urllib.request.urlopen(req, timeout=20).read())
 
@@ -88,7 +88,8 @@ def _store_pdf(pdf, ec, ctrl) -> str:
     rec = {"message_id": mid, "received_at": ec["received_at"],
            "sender_email": ec.get("sender_email"), "sender_name": ec.get("sender_name"),
            "subject": ec.get("subject")}
-    csvs, saved, _nonpayable, _att_account = R.extract_and_store_accounts([Path(pdf)], mid, ctrl, email_rec=rec)
+    csvs, saved, _nonpayable, _att_account = R.extract_and_store_accounts(
+        [Path(pdf)], mid, ctrl, email_rec=rec, body_text=ec.get("body_full") or "")
     if saved > 0:
         mark_extraido(ctrl, ec["id"])
         log.info(f"    ✓ {saved} conta(s) nova(s); email_control {ec['id']} -> extraído")

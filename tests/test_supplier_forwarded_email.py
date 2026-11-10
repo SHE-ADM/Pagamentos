@@ -36,11 +36,13 @@ sys.path.insert(0, str(_ROOT / "skills" / "email-reader" / "scripts"))
 import read_emails as R  # noqa: E402
 
 SK_DESPACHANTE = 1262
-EMAIL_DESPACHANTE = "ricardo.advogado@yahoo.com.br"
+# Encaminhador generico: o endereco real do Dr. Ricardo segue a regra propria
+# (tests/test_fixed_chain_supplier.py), que vence este fallback.
+EMAIL_DESPACHANTE = "despachante.exemplo@yahoo.com.br"
 
-# Corpo REAL do e-mail da conta 1101 (email_control id 1573).
+# Corpo do e-mail da conta 1101 (email_control id 1573), com o endereco trocado pelo generico.
 CORPO_1101 = (
-    "De: JOSE RICARDO PRUDENTE <ricardo.advogado@yahoo.com.br> \r\n"
+    "De: JOSE RICARDO PRUDENTE <despachante.exemplo@yahoo.com.br> \r\n"
     "Enviada em: terça-feira, 18 de agosto de 2026 13:13\r\n"
     "Para: Bárbara <barbara@otimotex.com.br>\r\n"
     "Assunto: R. A UTILIDADES E ACESSORIOS LTDA - 52.595.513/0001-96\r\n"
