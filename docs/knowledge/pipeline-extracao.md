@@ -827,6 +827,22 @@ antes do SIEG e antes do nº sintético `{tipo}_{ddmmyy}`. Conservador de propó
 frouxos (`documento nº`) capturavam lixo ("Banco"). Backfill da migration 043 corrigiu os ids 5,
 18 e 171.
 
+🔴 **Nº CURTO de nota ("NF 57") é número de documento, mas NUNCA a SÉRIE de um par série-número**
+(2026-11-09, conta 2396): `_BODY_INVOICE_RE` exigia 3+ dígitos e as notas internas da LE BIANCO
+("pagamento da NF 57 em anexo") nasciam com o nº sintético `pix_R$ …` — **9 contas** na varredura
+dos 1.992 corpos. O curto (`_short_body_invoice_number`) é o **ÚLTIMO recurso**, depois de toda
+fonte rotulada e da linha da tabela — nunca uma alternativa dentro de `_BODY_INVOICE_RE`: o aviso de
+NF-e autorizada imprime "Série da Nota Fiscal: 1" **antes** de "Número da Nota Fiscal: 1792" (e-mails
+161/1592), e o curto, chegando primeiro, roubava o número. Ele também pula a ocorrência precedida de
+"série" e a colada a `-`/`/`/`.`/`,` + dígito **na mesma linha** ("NFe 1 - 000137869"). Medido contra
+a base: o diff é exatamente as 9 contas, 0 regressões. Dedup não muda: a impressão 2 exige ≥6
+caracteres e `_same_title` compara curto por igualdade.
+🔴 **`unique_invoice_number` consulta a FAMÍLIA exata (`base` + `base(N)`), nunca o prefixo
+`base%`** — com o prefixo e `limit`, a base "11" trazia 50 notas iniciadas por "11" sem o "11"
+exato, e o número ocupado voltava como livre, sem erro (não há UNIQUE em `invoice_number`). O valor
+vai entre aspas (`_pgrst_quote`): a vírgula e o ponto de `pix_R$ 1.590,00` partiriam o `or=(...)`.
+Teste: `tests/test_body_short_invoice_number.py`.
+
 **Fallback "Fatura No: NNNN"** (`_BODY_INVOICE_NO_RE`, não regredir): variante de "fatura Nº"
 escrita por extenso ("No", sem o sinal º/°) que `_BODY_INVOICE_RE` não cobre — a letra "o" de "No"
 não está na classe opcional `[º°.]?` do regex principal, então o número nunca casava e a conta
@@ -1144,6 +1160,53 @@ embutida no Word. Todas pagas ou canceladas, e **não foram reprocessadas**. Daq
 `.docx` ganhou a releitura do CÓDIGO, mas **não o tier 2b** (que é do caminho de PDF de texto):
 uma guia em `.docx` cujo Vision não leia a data segue nascendo com a data da extração.
 
+### Três causas recorrentes de conta errada: cobrança, pedido interno, reembolso (2026-11-04)
+
+Partiu das contas 2215, 2227 e 2247. A trilha `audit_log` mostrou que os erros vinham de desenho, não
+de leitura, e que as demais correções manuais do período eram casos isolados.
+
+**1. Resposta à nossa cobrança.** "Re: COBRANÇA OTIMOTEX TECIDO" casava a keyword, e o corpo citava
+título e valor (conta 2247, "Me envia o boleto por favor"). Backtest da regra: 23 e-mails, nenhum fora da
+família. Contas falsas: 17, a maioria cancelada à mão. Três continuam `pago` e somavam despesa (162, 167,
+194; migration 148). As contas 161, 166 e 182 são honorários confirmados por Rose e Bárbara (2026-11-05) e
+ficam, embora seus e-mails não citem a palavra. Efeito colateral
+corrigido: `_is_receivable_notice` casava por substring e descartava boleto real de fornecedor com assunto
+"COBRANÇA OTIMOTEX".
+
+**2. Pedido interno com anexo.** "O anexo vence o corpo" valia mesmo com o anexo sendo só comprovante.
+2215: pedido de compra, sem vencimento, caía na data da extração, forma `outro`. 2227: duas fotos de
+recibo; gravou uma, AC IMBITUBA R$ 114,30, no lugar de PRPP R$ 140,28, e pôs o rastreio dos Correios em
+`nosso_numero`. Backtest: 5 contas (822, 1242, 1383, 2215, 2227). A 1242 mostrou que o pedido pode vir
+acima de uma conversa encaminhada: a guarda olha só o texto escrito pelo remetente. ⚠️ A causa de a 1ª foto
+da 2227 não gerar conta não foi confirmada: o CSV está só na produção. Provavelmente uma saída `continue`
+do Passo 2, que segue existindo no caminho normal de anexo.
+
+**3. Reembolso ao Dr. Ricardo.** 125 das 165 contas encaminhadas por ele foram corrigidas à mão. O fallback
+1b exigia `not has_real_supplier`, então o Tribunal lido no PDF vencia. Nas correções de vencimento, 82 de
+123 usaram o dia do recebimento e 29 o dia seguinte, sem padrão por horário: a regra grava o dia do
+recebimento e o "dia seguinte" segue manual. Backtest: os 165 corpos que citam o endereço entram na regra.
+As 3 contas que os usuários deixaram fora do sk 1262 (1076, 1077 no 1371; 1951 no 1453) entrariam nele hoje,
+e estão todas canceladas: nenhuma conta ativa com ele na cadeia está fora do cadastro (medido em 2026-11-05).
+
+**4. Citação de honorários (2026-11-05).** Decisão do usuário: citar no assunto ou no corpo gera conta. O
+e-mail 1720 (R$ 450,00, "p/ fornecedor Wesley", sem cadeia) não virou conta: a RPC recusou por falta de
+identificador e o status ficou `ignorado`, sem erro. Histórico: 19 e-mails citam, 17 têm conta, 1 é reenvio
+(2215, duplicata legítima da 1532) e 1 é esse, lançado depois pela migration 149 (conta 2346), por decisão
+do usuário com vencimento no dia do lançamento e observação de atraso. No Inbox (323 mensagens desde 22/10) nenhuma cita. A leitura
+vale para o assunto e o corpo inteiro; o texto de anexo só conta em resposta interna à cobrança. ⚠️ Assim,
+comprovante que cite honorários passa a gerar conta, e a dedup é a barreira contra duplicar. Sem credor, a
+conta fica no sk 1 com nota e fora da dedup de valor + vencimento: um reenvio duplica de forma visível.
+Único remetente que ainda barra: `is_ignored_sender` (postmaster e afins), porque NDR não é mensagem de ninguém.
+
+**5. Dr. Ricardo sempre gera conta (2026-11-05).** Decisão do usuário: e-mails dele geralmente são reembolso.
+Mesmo mecanismo da citação (`_forces_account`), valendo para remetente imediato e qualquer elo `De:`. No Inbox
+(327 mensagens) 27 têm ele na cadeia, todas já com keyword, e no histórico nenhuma ficou sem conta além de 2
+duplicidades. ⚠️ Resposta interna sem valor que apenas cite a cadeia dele vira `falha` em `/erros`.
+
+**Deploy de 2026-11-05.** No mesmo dia, antes da cópia, a versão anterior gravou a conta 2343 a partir de
+"RES: COBRANÇA OTIMOTEX TECIDO" (e-mail 3364, R$ 2.987,25 do título 254697-A, a receber). A regra nova ignora
+esse corpo; a conta foi cancelada pela migration 150.
+
 ### Auto-resolução de fornecedor
 
 > **Três regras de fornecedor moram na seção "Normalização de `document_type`"**, junto do caso de
@@ -1334,6 +1397,26 @@ errada (conferido lendo o beneficiário de cada PDF no bucket). Duas travas inde
    `_add_supplier_email`** — sem o terceiro, a limpeza dos cadastros se desfaria na fatura
    seguinte. Ao descobrir plataforma nova (endereço presente em fornecedores de empresas
    diferentes), acrescente o domínio na função **e** limpe os cadastros que já o capturaram.
+🔴 **CPF de CHAVE PIX no corpo não identifica o fornecedor quando há nome rotulado ou CNPJ**
+(`_is_pix_key_cpf`, em `_resolve_body_supplier_identity` — fonte única dos dois caminhos). O PIX
+pode ir a um TERCEIRO. Caso (06/11/2026, e-mails 3390-3392): RDR, TURBO DRIVE e ELG com "Pix CPF"
+do mecânico; o CPF entrou no cadastro da RDR (sk 1497), o passo de CPF da RPC puxou as outras duas
+e a TURBO DRIVE (mesmo valor e vencimento) virou `duplicidade` — NF perdida em silêncio. Sem nome
+nem CNPJ a chave segue valendo (e-mails da Liftec, "PIX (CPF)" sem rótulo). Correção de dados:
+migrations 151 e 153.
+🔴 **Com nome, a chave volta SÓ se o CADASTRO confirmar que o CPF já é daquele fornecedor**
+(`_confirmed_pix_key_cpf`, em `_finalize_supplier`, ponto único dos dois caminhos). A chave pode
+ser do PRÓPRIO fornecedor pessoa física (conta 1677, "NOME: DR.FLAVIO PRADO (ADVOGADO) / PIX CPF"):
+descartada sempre, uma grafia nova do nome criaria cadastro duplicado pelo auto-insert. Confirma
+quando o CPF está em **um único** cadastro **ativo** cujo nome bate (`_supplier_names_match`:
+palavras do nome menor contidas no maior, 2+ palavras). CPF sem cadastro, de outro cadastro,
+removido ou com falha de consulta ⇒ a RPC vê só o nome. 🔴 **Nunca o contrário:** o passo por nome
+da RPC chama `_enrich_supplier`, e um CPF de terceiro enviado ali seria GRAVADO no cadastro — foi
+assim que o do mecânico entrou na RDR. Por isso o CPF de um cadastro tem de ser da identidade dele,
+nunca a chave de um terceiro (a 153 limpou JACACAR e o cadastro-duplicata da Liftec).
+A marca PIX vale antes **ou depois** do número ("CPF … (PIX)"), mas não "PIX:" — rótulo de outra
+chave na mesma linha. Todos os CPFs do corpo são avaliados: um "CPF:" de identidade depois de uma
+chave descartada vale.
 **Não regride** (verificado contra o banco com rollback): CNPJ cadastrado casa; nome cadastrado
 casa; e-mail LEGÍTIMO sem CNPJ **segue casando** (regra da 054 preservada). Correção de dados:
 conta 794 → PANTANAL (sk 1323) com a classificação de transporte preservada.

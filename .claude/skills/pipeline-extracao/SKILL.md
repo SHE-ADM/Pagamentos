@@ -22,7 +22,8 @@ description: >-
 leitura** — o CLI e o `server/app.py` chamam a mesma função. Nunca duplique lógica no Flask.
 `read_emails.py` carrega o `.env` da raiz; `server/app.py` insere o caminho no `sys.path`.
 
-⚠️ **O Flask não tem auto-reload** — reinicie depois de mexer no pipeline.
+⚠️ **O Flask não tem auto-reload** — reinicie depois de mexer no pipeline. Só no DEV: em produção não há
+Flask, e a tarefa agendada lê o arquivo a cada run.
 
 ## Ordem de precedência da extração
 
@@ -278,6 +279,13 @@ auto-insert.
   OTIMOTEX com o plano dela (contas 895/1396). Agora a conta vai a `/erros` com o motivo.
 - 🔴 **A sondagem do pagador NÃO leva o `sender_email`** — a RPC anexa o e-mail recebido ao
   cadastro que resolveu, e o de terceiro passava a sequestrar contas pelo passo de e-mail (139).
+- 🔴 **CPF de CHAVE PIX no corpo** ("Pix CPF", "CPF … (PIX)"): sem nome nem CNPJ, é a identidade
+  (Liftec). Com nome rotulado, `_resolve_body_supplier_identity` o descarta e só
+  `_confirmed_pix_key_cpf` (em `_finalize_supplier`) o devolve, quando ele está em **um único**
+  cadastro **ativo** de nome compatível (`_supplier_names_match`). Falha de consulta ⇒ não confirma.
+  O mesmo vetor da 139 por outra porta: o passo por nome da RPC chama `_enrich_supplier` e **grava**
+  o CPF recebido — o do mecânico entrou assim na RDR e puxou ELG e TURBO DRIVE (151). Ao achar CPF
+  de terceiro num cadastro, limpe-o por migration (153): o passo de CPF ignora `deleted_at`.
 - 🔴 **Guia de tributo com CNPJ de uma PAGADORA:** o CNPJ (do CONTRIBUINTE) sai **sempre** —
   mantido, casaria a OTIMOTEX no passo de CNPJ da RPC, antes do nome. O **nome** sai só se for o
   contribuinte (`_is_contribuinte_name`: razão social exata · token de MARCA · repete o
@@ -415,6 +423,40 @@ curinga no LIKE (62 dos 1.462 têm).
 
 🔴 **`run_reader` registra TODOS os e-mails** em `email_control` — a keyword decide **o que
 extrair**, não o que registrar.
+
+🔴 **E-mail que SEMPRE gera conta** (`_forces_account`, decisões do usuário, 2026-11-05): cita honorários
+no assunto ou no corpo, de qualquer remetente e inclusive na cadeia, ou tem o Dr. Ricardo como remetente
+ou em qualquer elo `De:`. Filtros de assunto, guardas do corpo, seguro, transporte e NF não o descartam;
+ficam só as regras que não eliminam a dívida (fatura + boleto, extrato) e a imagem sem valor. `run_reader` baixa o corpo (PEEK)
+só do e-mail que os filtros ignorariam; falha de IMAP não registra nada, e o e-mail volta no run seguinte.
+Sem identificador: "p/ fornecedor X" por consulta pura (`find_honorarios_supplier_by_name`; com homônimos, decide o único com
+histórico de honorários), senão sk 1 com nota. **Dead-man switch:** sem conta nem duplicata ⇒ `falha` em `/erros`, nunca `ignorado`
+(e-mail 1720, R$ 450,00). Só o remetente de sistema (`is_ignored_sender`) ainda barra.
+
+🔴 **Conversa da NOSSA cobrança não vira conta** (`own_collection_ignore_reason`). Cliente é ignorado
+em `run_reader`, sem download; resposta interna só segue se citar honorários, também no texto do anexo.
+As contas 161, 166 e 182 são honorários confirmados, mas seus e-mails não citam a palavra: um reprocesso
+os ignoraria (as contas ficam). O título `COBRANÇA LEBIANCO|OTIMOTEX TECIDO` exige prefixo de resposta,
+porque fornecedor pode cobrar com "COBRANÇA OTIMOTEX". Empresa nova em `EMP_NO` entra em
+`_OWN_COLLECTION_TITLE_RE`. Até lá, o corpo citando o modelo da cobrança ainda a pega.
+⚠️ `decode_str` devolve espaços duplos quando só a palavra acentuada vem codificada: regex sobre
+assunto decodificado precisa colapsar espaços.
+
+🔴 **Pedido interno com anexo que só comprova: o corpo vence** (`_body_wins_over_attachments`, opt-in
+`route_body_when_no_instrument`). Exige remetente interno, frase de pedido e valor rotulado no texto
+**acima** da cadeia encaminhada, e nenhuma linha com barcode, código descartado, boleto, guia, tipo
+fora de `outro/recibo/nfe/nfse` ou instrução PIX no anexo. `nosso_numero` não é sinal: a 2227 traz ali
+o rastreio dos Correios. Os anexos se vinculam a partir dos **arquivos**, nunca das linhas.
+
+🔴 **Cadeia de reembolso** (`_FIXED_CHAIN_SENDERS`): qualquer elo `De:` da cadeia casa, não só o mais
+profundo; o sk vem de `find_supplier_by_email`, que nunca cria. Com `DUE_DATE_FIXED_KEY`,
+`register_financial` lê a flag **antes** do strip e pula `_apply_barcode_due_date`; a dedup para antes
+de valor + vencimento (senão processos de mesmo valor e dia se fundem: 2031/2032); a reemissão não move a
+data quando o barcode é o mesmo ou está ausente. Classificação forçada e write-back de contato não se aplicam.
+
+⚠️ O corpo chega a `_finalize_supplier` por **parâmetro `body_text`**: `email_body_excerpt` nunca é
+povoado no caminho de anexo, e por isso o **fallback 3 (por NOME) está morto ali**. Não foi revivido de
+propósito, porque ele desemboca no auto-insert.
 
 - 🔴 **`match_keyword` casa acrônimo de tributo por PALAVRA INTEIRA** (`das`, `iss`, `gru`, `dae`)
   — substring pegaria "ca**das**tro", "em**iss**ão", "**gru**po".
