@@ -16,6 +16,48 @@
 
 ## Changelog (mais recente primeiro)
 
+**A `153` tira dos cadastros o CPF que não é identidade deles** — aplicada via psql em 2026-11-10
+(ensaio em ROLLBACK + mutante da sonda antes; a 1ª versão foi barrada no ensaio por
+`chk_supplier_has_identifier`, sem gravar nada; reexecução = UPDATE 0). Sem DDL. O sk 1326
+(JACACAR) perde o CPF de Eliezer Nogueira, terceiro que recebe o PIX por ele (`pix_key1` fica). O
+sk 1424, cadastro sem nome criado pelo "PIX (CPF)" do titular da Liftec, é removido: a conta 1562
+(cancelada) vai para o sk 1210, o CPF e a chave PIX passam à LIFTEC, e o 1424 fica com o
+nome-marcador `DUPLICADO DE LIFTEC SK 1210 (REMOVIDO)` e sem identificadores — o passo de CPF da
+RPC ignora `deleted_at`. Origem: review max 2026-11-10; o reader agora confia no CPF do cadastro
+(`_confirmed_pix_key_cpf`).
+
+**A `152` grava a NF CURTA do corpo nas 9 contas com nº sintético** — aplicada via psql em 2026-11-09
+(ensaio em ROLLBACK antes; reexecução sem efeito, 9 linhas em `audit_log`). Sem DDL. Contas 964, 1251,
+1305, 1381, 1528, 1789, 2120, 2121 e 2396 (H20IL, EFE INDUSTRIA, TURBO DRIVE) trocam `pix_R$ …` pela NF
+citada ("NF 57"), com a regra de unicidade do pipeline: "56" e "57" já existiam no sk 1434, então 964 e
+2396 ficaram `56(2)`/`57(2)`. Causa no reader: `_short_body_invoice_number`.
+
+**A `151` desfaz a fusão de fornecedores pelo CPF de uma chave PIX** — aplicada via psql em 2026-11-09
+(1ª tentativa abortou por sintaxe na sonda, sem efeito; reexecução = UPDATE 0). Sem DDL. Tira o CPF do
+mecânico (`28046637874`, "Pix CPF" dos e-mails 3390-3392) do sk 1497 (RDR) e move a conta 2374 para o
+cadastro novo da ELG (sk 1500). A TURBO DRIVE, descartada como `duplicidade`, nasceu pelo reprocesso do
+e-mail 3391 (conta 2396, sk 1501). Causa no reader: `_is_pix_key_cpf`.
+
+**A `150` cancela a conta falsa 2343** — aplicada via psql em 2026-11-05 (ensaio em ROLLBACK antes; reexecução =
+UPDATE 0). Sem DDL. R$ 2.987,25, nascida de "RES: COBRANÇA OTIMOTEX TECIDO" (e-mail 3364) pela versão do reader
+anterior ao deploy do mesmo dia: o valor era do título 254697-A, a receber. Decisão do usuário. O sk 1472 fica.
+
+**A `149` grava a conta de honorários do e-mail 1720** — aplicada via psql em 2026-11-05 (ensaio em ROLLBACK
+antes; reexecução = 0 linhas). Sem DDL. R$ 450,00, sk 1188, PIX, anexo `image001.png` vinculado; o e-mail passa
+de `ignorado` a `recebido`. Por decisão do usuário, vence no dia do lançamento (05/11/2026) e a observação declara
+o atraso e a data real do e-mail (26/08/2026), para abrir no topo de `/consulta`, que ordena por `created_at`
+e filtra o mês por `due_date`. Nasce em aberto: a data de pagamento não foi inventada.
+⚠️ A sonda de situação vale só quando a execução criou a conta.
+
+**A `148` reconcilia as contas das regras de cobrança e de pedido interno** — aplicada via psql em
+2026-11-04 (ensaio em ROLLBACK antes; reexecução = UPDATE 0). Sem DDL. As contas 162, 167 e 194
+(respostas de cliente à cobrança, `pago` desde junho, R$ 8.883,44) vão para `cancelado`, e a trigger
+limpa `payment_date`. A 2215 recebe do corpo o vencimento 28/10 e a forma PIX. A 2227 passa ao novo
+cadastro PRPP (sk 1490), com R$ 140,28, vencimento 28/10 e PIX, e ganha a 1ª foto, que estava no Storage
+sem vínculo. Os honorários 161, 166 e 182 não mudam: Rose e Bárbara confirmaram (2026-11-05). ⚠️ Sem JWT,
+`fn_stamp_account_authorship` mantém o último editor em `updated_by`; a trilha fiel é `audit_log`, com
+ator `servico`. ⚠️ O ensaio em ROLLBACK consome a identity de `supplier`: o sk final difere do ensaio.
+
 **A `147` trata o e-mail da Efí como PLATAFORMA e desfaz o fornecedor-lixo "Nome"** — aplicada
 via psql em 2026-09-25 (ensaio em ROLLBACK + mutante da sonda antes; reexecução = UPDATE 0).
 `_is_platform_email` passa a reconhecer `sejaefimail.com.br` (endereço de todo emissor que cobra

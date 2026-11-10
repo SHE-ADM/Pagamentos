@@ -1,5 +1,74 @@
 # Histórico de deploys
 
+## 2026-11-10 — Extração: chave PIX confirmada pelo cadastro e NF curta do corpo
+
+**O que foi ao ar:**
+- A chave PIX com nome rotulado volta a identificar o fornecedor só quando o cadastro confirma que o
+  CPF já é dele (`_confirmed_pix_key_cpf`; conta 1677, advogado pago na própria chave). O CPF de um
+  terceiro nunca chega à RPC.
+- A marca PIX passa a valer também depois do número.
+- Todos os CPFs do corpo são avaliados.
+- Seguiu junto, porque a cópia de 11-09 não cobria: o nº curto de nota no corpo ("NF 57") e a
+  consulta da família exata em `unique_invoice_number`.
+
+Detalhe em [docs/knowledge/pipeline-extracao.md](../knowledge/pipeline-extracao.md).
+
+**Arquivos:** `read_emails.py`, `deploy-manifest.json`. Migrations 152 e 153 já aplicadas na base
+compartilhada. Sem `.env` ou dependência nova.
+
+**Verificação:**
+- No DEV: `pytest` 2110 passed e 5 de 5 mutantes mortos.
+- Regressão nos 2.011 corpos reais: 0 mudanças de identidade.
+- Review max: [docs/review/2026-11-10-Features-max.md](../review/2026-11-10-Features-max.md).
+- Em produção: cópia feita pelo usuário; `check_deploy_parity.py` → **32/32**, 0 faltando, 0
+  divergentes, 0 extras; SHA-256 do `read_emails.py` em produção igual ao do repositório
+  (`C0E6BC53…3235B1ED7`).
+
+**Lição:** o manifesto foi regravado às 17:12 de 11-09, depois da cópia registrada naquele dia, e
+nenhum documento dizia que havia deploy pendente. Mudança no reader que chega depois da cópia entra
+como pendência no `progress.md` no mesmo ciclo.
+
+## 2026-11-09 — Extração: CPF de chave PIX não identifica o fornecedor
+
+**O que foi ao ar:** no corpo do e-mail, "Pix CPF" com nome rotulado ou CNPJ deixa de ser a identidade do
+fornecedor (`_is_pix_key_cpf`). Origem: e-mails 3390-3392, em que o CPF do mecânico juntou RDR, TURBO DRIVE e
+ELG num cadastro só e a TURBO DRIVE virou `duplicidade`. Detalhe em
+[docs/knowledge/pipeline-extracao.md](../knowledge/pipeline-extracao.md).
+
+**Arquivos:** `read_emails.py`, `deploy-manifest.json`. Migration 151 já aplicada na base compartilhada; a conta
+da TURBO DRIVE (2396) nasceu do reprocesso do e-mail 3391, rodado do DEV. Sem `.env` ou dependência nova.
+
+**Verificação:** no DEV, `pytest` 2081 passed, mutante morto (5 vermelhos). Em produção, cópia feita pelo
+usuário (recopiada uma vez): SHA-256 do manifesto igual ao do repositório, `check_deploy_parity.py` → **32/32**,
+exit 0, e o teste funcional devolveu `('X', None, None)` para "Fornecedor: X / Pix CPF: …". Depois da cópia,
+nenhuma conta do corpo com "Pix CPF" além das já corrigidas (2374, 2396).
+
+**Lição:** o CPF é o passo da RPC que roda **depois do CNPJ não casado e antes do nome** — um identificador
+de terceiro gravado num cadastro passa a capturar contas de fornecedores novos, e a dedup por valor + vencimento
+transforma a captura em perda silenciosa.
+
+## 2026-11-05 — Pipeline: cobrança, pedido interno, reembolso e citação de honorários
+
+**O que foi ao ar:** resposta à nossa cobrança não vira conta; pedido interno com anexo que só comprova
+gera a conta pelo corpo; a cadeia do Dr. Ricardo grava no cadastro dele com vencimento no dia do recebimento;
+e-mail que cita honorários ou vem do Dr. Ricardo sempre gera conta, senão vira `falha` em `/erros`
+(`_forces_account`). Detalhe em [docs/knowledge/pipeline-extracao.md](../knowledge/pipeline-extracao.md).
+
+**Arquivos:** `read_emails.py`, `deploy-manifest.json`. Migrations 148 e 149 já aplicadas na base
+compartilhada. Sem `.env` ou dependência nova. Os ajustes em `scripts/` não vão para produção.
+
+**Verificação:** no DEV, `pytest` 2072 passed, 38 mutantes mortos. Review max:
+[docs/review/2026-11-05-Features-max.md](../review/2026-11-05-Features-max.md). Em produção, cópia feita pelo
+usuário: `check_deploy_parity.py` → **32/32**; SHA-256 do `read_emails.py` igual ao do repositório; tarefa
+com `LastTaskResult` 0 às 11:20. Nenhum erro em `email_processing_errors` nas 3 horas anteriores à conferência.
+A conferência achou a conta 2343 (R$ 2.987,25), gravada às 10:42 pela versão ANTERIOR a partir de "RES: COBRANÇA
+OTIMOTEX TECIDO": era o valor de um título a receber. A versão nova ignora o mesmo corpo. Cancelada pela migration 150.
+
+**Lição:** produção não tem Flask, e a instrução de reiniciá-lo estava errada: a tarefa lê o arquivo a cada
+run. E paridade 32/32 só prova que arquivos e manifesto concordam entre si: uma cópia antiga dos dois também
+passa, por isso a versão se confere pelo hash contra o repositório. Depois do deploy, olhe o que a versão
+anterior gravou entre o último commit e a cópia: foi assim que a 2343 apareceu.
+
 ## 2026-10-17 — Extração: guia de tributo sem código entra no tier 2b
 
 **O que foi ao ar:** a guia do FGTS Digital (conta 2034) é uma IMAGEM na pág. 1; as demais páginas

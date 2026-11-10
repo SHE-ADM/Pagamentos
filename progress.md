@@ -7,7 +7,7 @@
 > 🔴 **Contador que o comando responde melhor NÃO se escreve aqui.** Antes de anotar um número,
 > pergunte se existe comando que o produz — se existir, anote o comando, não o número.
 >
-> **Atualizado em:** 2026-10-17
+> **Atualizado em:** 2026-11-10
 
 ---
 
@@ -51,8 +51,8 @@ Procedimento completo na skill **`deploy-producao`**. Histórico de cada deploy:
 
 | Item | Estado |
 |---|---|
-| Último deploy | **2026-10-17** — extração: guia de TRIBUTO sem código nenhum e sem data no texto entra no tier 2b (FGTS Digital, conta 2034): a guia é imagem na pág. 1 e o texto é o relatório de detalhe, então o vencimento caía na data da extração. Arquivos: `extract_pdf.py` + `deploy-manifest.json`; sem migration, `.env` ou dependência nova. Deploy feito pelo usuário e paridade confirmada (PR #266). Anterior: **2026-10-06** — extração: guia de arrecadação impressa pelo navegador como imagem (conta 1863, DAMSP/ISS): moldura do navegador fora da medição de texto, tier 2b por vencimento, descarte + releitura do código de arrecadação refutado nas 3 fontes visuais e retirada da marca "Vencimento ausente" quando a data é lida. Deploy feito pelo usuário (`extract_pdf.py` + `deploy-manifest.json`). Sem migration, `.env` ou dependência nova. PR #264. Anterior: **2026-10-03** — cobrança: query com as colunas renomeadas das views (`CLI_*`, `TITULO`, `VCT_DATA`, `FIN_STATUS_NO`), sem o prefixo `FIN_`. Query testada e deploy feito pelo usuário. PR #262, merge `c2e14d2`. Sem migration. |
-| Paridade verificada | ✅ **em produção** (2026-10-17) — `check_deploy_parity.py`: **32/32 conferem, 0 faltando, 0 divergentes, 0 extras**; validação funcional `tributo: True` |
+| Último deploy | **2026-11-10** — extração: chave PIX confirmada pelo cadastro (conta 1677, migration 153) + NF curta do corpo e filtro de família do `unique_invoice_number` (migration 152). Arquivos: `read_emails.py` + `deploy-manifest.json`. Anterior: **2026-11-09** — CPF de chave PIX de terceiro (migration 151). Detalhe em [docs/deploy/historico-deploys.md](docs/deploy/historico-deploys.md) |
+| Paridade verificada | ✅ **em produção** (2026-11-10) — `check_deploy_parity.py`: **32/32 conferem, 0 faltando, 0 divergentes, 0 extras**, "Produção em paridade com o repositório"; SHA-256 do `read_emails.py` em produção = `C0E6BC53…3235B1ED7`, **igual ao do repositório** |
 | Tarefas agendadas | 5 ativas — Email Reader (5 min) · Cobrança (10:00) · Backup (02:00) · Baixa (08:00) · Gatilhos Roadmap (dia 1, 07:00) |
 
 ⏳ **Não exercitado em produção ainda:** a captura **automática** de conteúdo de CT-e a partir
@@ -77,6 +77,8 @@ próxima fatura agregada (são semanais). Conferir com
 |---|---|---|
 | Guia impressa pelo navegador como imagem: vencimento = data da extração (DAMSP, conta 1863 — 2026-10-06) | ✅ **corrigido** · ✅ **em produção (2026-10-06)**, paridade 32/32 · PR #264 · conta 1863: correção **manual** do usuário pelo app (13/10/2026) | Moldura do navegador fora da medição de texto, tier 2b por vencimento em guia de arrecadação e descarte + releitura do código de arrecadação refutado no Vision. Detalhe em [docs/knowledge/pipeline-extracao.md](docs/knowledge/pipeline-extracao.md). Residual: 6 contas `docx_vision` com vencimento presumido (1076, 1077, 1078, 1204, 1401, 1843), todas pagas/canceladas |
 | Guia de TRIBUTO sem código e sem data no texto: vencimento = data da extração (FGTS Digital, conta 2034 — 2026-10-17) | ✅ **corrigido** · ✅ **em produção (2026-10-17)**, paridade 32/32 · PR #266 | Tier 2b passa a valer também para `document_type == 'tributo'` sem barcode (só tributo, para não virar Vision em massa). Validado nos PDFs reais do cache: o de 2026-10-16 (sem data no texto) dispara; o de 2026-07-16 (data no texto) não. Falta a resposta real do Vision, que custa API: conferir com `reprocess_message.py --dry-run` no e-mail da conta 2034. Detalhe em [docs/knowledge/pipeline-extracao.md](docs/knowledge/pipeline-extracao.md) |
+| Respostas à cobrança, pedido interno com anexo, reembolso Dr. Ricardo e citação de honorários (2247, 2215, 2227, e-mail 1720 — 2026-11-05) | ✅ **corrigido no código** · ✅ **migrations 148, 149 e 150 aplicadas**, reexecução = 0 linhas · ✅ **em produção (2026-11-05)**, paridade 32/32 e hash conferido | Regras novas ainda sem caso real observado em produção. E-mail 1720 lançado pela 149 (conta 2346, vence 05/11/2026, em aberto até a baixa no app). Conta falsa 2343, gravada pela versão anterior ao deploy, cancelada pela 150 |
+| CPF de chave PIX: terceiro × próprio fornecedor; NF curta do corpo (e-mails 3390-3392, conta 1677 — 2026-11-06 a 11-10) | ✅ **corrigido no código** · ✅ **migrations 151, 152 e 153 aplicadas**, reexecução = 0 linhas · ✅ **em produção (2026-11-10)**, cópia feita pelo usuário, paridade 32/32 e hash do reader igual ao do repositório | Chave PIX com nome rotulado só identifica quando o cadastro confirma o CPF (`_confirmed_pix_key_cpf`). Regressão medida nos 2.011 corpos: 0 mudanças de identidade; resgate 1677 = CPF próprio, ELG e JACACAR = descartado. Review: [docs/review/2026-11-10-Features-max.md](docs/review/2026-11-10-Features-max.md) |
 | Onda 5 — itens de NF-e (5.1/5.2) | **SUSPENSO** | acervo de DANFEs crescer (eram 15, com 6 detectáveis) |
 | CT-e via DACTE individual (5.3-b, com LLM) | **não implementado** | layout por transportadora inviabiliza regex |
 | Handler SIEG (boleto por link) | **ADIADO** | entrar uma fatura SIEG **em aberto** para validar o download |

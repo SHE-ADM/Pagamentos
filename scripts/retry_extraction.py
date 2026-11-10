@@ -78,7 +78,7 @@ def fetch_pending(ctrl: SupabaseControl) -> list:
             # sender_email/received_at NAO sao para o log: vao no email_ctx e acabam em
             # fiscal_document (Onda 3). Sem eles a linha nasce sem remetente (invisivel a
             # grupo restrito) e sem data (fora de QUALQUER consulta com recorte temporal).
-            "&select=id,message_id,subject,sender_email,received_at,attachment_names",
+            "&select=id,message_id,subject,sender_email,received_at,attachment_names,body_full",
             headers=ctrl.headers,
         )
         with urllib.request.urlopen(req, timeout=10) as r:
@@ -123,12 +123,12 @@ def fetch_errors(ctrl: SupabaseControl) -> list:
 
 
 def fetch_email_control_row(ctrl: SupabaseControl, message_id: str) -> dict | None:
-    """email_control (id, attachment_names, subject) por message_id."""
+    """email_control (id, attachment_names, subject, body_full) por message_id."""
     try:
         q = urllib.parse.quote(message_id, safe="")
         req = urllib.request.Request(
             f"{ctrl.base}/rest/v1/email_control"
-            f"?message_id=eq.{q}&select=id,attachment_names,subject&limit=1",
+            f"?message_id=eq.{q}&select=id,attachment_names,subject,body_full&limit=1",
             headers=ctrl.headers,
         )
         with urllib.request.urlopen(req, timeout=10) as r:
@@ -205,7 +205,7 @@ def _reprocess_one(ctrl: SupabaseControl, mid: str, g: dict, dry_run: bool) -> s
     }
     try:
         csvs_ok, accounts_saved, _nonpayable, _att_account = extract_and_store_accounts(
-            pdfs, mid, ctrl, email_rec=email_ctx
+            pdfs, mid, ctrl, email_rec=email_ctx, body_text=(ec or {}).get("body_full") or ""
         )
         if ec and csvs_ok:
             _patch_email_control(ctrl, ec["id"], pdf_extracted=True,
@@ -305,7 +305,7 @@ def main():
             "received_at":  rec.get("received_at"),
         }
         csvs_ok, accounts_saved, _nonpayable, _att_account = extract_and_store_accounts(
-            pdfs, msg_id, ctrl, email_rec=email_ctx
+            pdfs, msg_id, ctrl, email_rec=email_ctx, body_text=rec.get("body_full") or ""
         )
 
         if csvs_ok:

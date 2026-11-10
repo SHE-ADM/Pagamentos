@@ -678,13 +678,15 @@ Detalhe e medições: [docs/knowledge/pipeline-extracao.md](docs/knowledge/pipel
 
 🔴 **`run_reader()` (`skills/email-reader/scripts/read_emails.py`) é a única fonte de verdade da
 leitura** — o CLI e o Flask chamam a mesma função. Nunca duplicar lógica no Flask.
-⚠️ O Flask **não tem auto-reload**: reiniciar após mexer no pipeline.
+⚠️ O Flask **não tem auto-reload**: reiniciar após mexer no pipeline (só no DEV; produção não tem Flask).
 
 **Precedência:** anexo PDF → anexo imagem → anexo `.docx` → PDF por link → imagem inline → corpo.
 
 🔴 **O corpo é fallback SÓ quando o anexo não respondeu por nenhum pagável.** O gate é
 `attachment_account` (True também para boleto **deduplicado**); usar `accounts_saved == 0` fazia o
-corpo criar conta espúria.
+corpo criar conta espúria. 🔴 **Exceção: PEDIDO INTERNO com anexo que só comprova ⇒ o corpo gera UMA
+conta e todos os arquivos viram anexo** (`_body_wins_over_attachments`, 2215/2227). Frase e valor só
+acima da cadeia encaminhada; barcode, código descartado, boleto ou guia seguem no anexo.
 
 🔴 **`extract_and_store_accounts` roda em DOIS PASSOS** — não regredir para o loop anexo-a-anexo,
 que era cego ao resto do e-mail. Isso torna as regras **independentes da ordem** dos anexos.
@@ -845,7 +847,9 @@ invariante exaustivo (2^8) com anti-vacuidade dupla.
 🔴 **`run_reader` registra TODOS os e-mails** — a keyword decide **o que extrair**, não o que
 registrar. `match_keyword` casa acrônimo de tributo por **palavra inteira** (substring pegaria
 "ca**das**tro"). A forma **negada** inverte o sentido: "**não** recebemos o seu pagamento" é
-cobrança.
+cobrança. 🔴 **Conversa da NOSSA cobrança não vira conta** (`own_collection_ignore_reason`): cliente é
+ignorado antes do download. O título exige prefixo de resposta. 🔴 **Citar honorários no assunto ou no
+corpo, ou vir do Dr. Ricardo, SEMPRE GERA CONTA** (`_forces_account`); sem conta nem duplicata ⇒ `falha`.
 
 🔴 **Resolução de fornecedor:** CNPJ → CPF → nome → e-mail → auto-insert. **Identificador forte que
 não casou ⇒ fornecedor NOVO** (o e-mail de uma **plataforma** atribuía a conta ao primeiro que
@@ -854,10 +858,10 @@ SOCIAL dela** (`_is_own_company_name`, só razão social e igualdade exata norma
 Têxtil…Otimotex Ltda" no corpo da Leadster casava o sk 4 e impunha ICMS-ST (136). 🔴 **Só o sk 1
 pode ter a razão social de uma pagadora** (137): o fallback 6 a envia à RPC de propósito, e um 2º
 cadastro assim deixa o passo por nome não-determinístico. Tipo de documento nunca vira fornecedor.
-🔴 **FALHA da RPC NÃO cai no pagador** (`SupplierResolutionError`): `None` só vem da recusa "nenhum
-identificador valido" ou do Supabase indisponível. Tudo virar `None` lançou o boleto do SINDMESTRES
-(nome > 60 caracteres, 22001 no auto-insert — 138) sob a OTIMOTEX. E a sondagem do pagador vai
-**sem** `sender_email`, senão a RPC anexa e-mail de terceiro ao cadastro da pagadora (139).
+🔴 **FALHA da RPC NÃO cai no pagador** (`SupplierResolutionError`, 138), e a sondagem do pagador vai
+**sem** `sender_email` (139). 🔴 **CPF de CHAVE PIX com nome rotulado só vai à RPC se o CADASTRO o
+confirmar** (`_confirmed_pix_key_cpf`): é de TERCEIRO (151) ou do próprio PF (1677), e o passo por
+nome **grava** o CPF recebido. Cadastro só guarda CPF da própria identidade (153). Detalhe na skill.
 🔴 **Em GUIA DE TRIBUTO, CNPJ de uma pagadora sai SEMPRE; o nome sai só se for o CONTRIBUINTE**
 (`_is_contribuinte_name` — a guia imprime grafia que a guarda exata não pega, 140). Nome de
 **favorecido real** lido junto do CNPJ do contribuinte **VENCE**.
@@ -874,9 +878,9 @@ que faz `return True` incondicional e tornaria o bloco inalcançável para guia 
 de tributo** o 1b vence (o assunto nunca foi fonte ali, a regra de imposto o curto-circuita); em
 **qualquer outro** documento ele só entra se o assunto **não tiver âncora de sigla**, preservando a
 lição da conta 401 (um intermediário cadastrado venceria "FATURAMENTO -- MOVVI LOGISTICA LTDA").
-⚠️ O corpo chega por **parâmetro `body_text`** — `email_body_excerpt` NUNCA é povoado no caminho de
-anexo, e é por isso que o **fallback 3 (por NOME) está morto ali** (não revivido de propósito: ele
-desemboca no auto-insert).
+🔴 **Cadeia de reembolso (`_FIXED_CHAIN_SENDERS`, Dr. Ricardo) vence até o fornecedor do PDF**, com
+vencimento = dia do recebimento; `DUE_DATE_FIXED_KEY` desliga o fator e a impressão 4 (valor +
+vencimento), e a reemissão só move a data com barcode NOVO.
 
 🔴 **Fornecedor vindo de SINAL FRACO não faz WRITE-BACK no cadastro** (`_supplier_signal` +
 `SUPPLIER_SIGNAL_WEAK`). A guia é do **Fisco**, não de quem a encaminhou: gravar a classificação
@@ -921,10 +925,6 @@ não dá acesso a serviço interno nenhum.
 
 🔴 **`_PinnedHTTPSHandler` não pode referenciar `self._check_hostname`** — atributo removido no
 Python 3.12+; sob o 3.14 (produção) quebrava **todo** download HTTPS, e o e-mail caía em `falha`.
-
-**SSW (transportadoras):** preferir o link de **FATURA** (`F`, que traz o boleto) e **descartar os
-DACTE** (`D`/`E`/`X`) — o 1º byte do `id` em hex→ASCII indica o tipo. Sem isso, baixava o DACTE
-(sem linha digitável) e a conta caía em `ignorado` pela regra de transporte.
 
 🔴 **Erro de código não se disfarça de "link inacessível"** — separar falha de **rede esperada** de
 erro **inesperado** (`log.exception` com traceback). Um `except Exception` mudo escondeu um bug de

@@ -865,8 +865,12 @@ class SupabaseControl:
             # abaixo, entao qualquer chave efemera ('_'-prefixada) que sobrasse viraria
             # coluna inexistente e o PostgREST recusaria o INSERT com PGRST204 — a conta
             # deixaria de ser gravada. Aqui, em ponto unico, e nao em cada call site.
+            # 🔴 A flag e lida ANTES do strip, que a remove: depois dele a rede do barcode
+            # reverteria em silencio o vencimento fixado por _apply_fixed_chain_override.
+            due_date_fixed = bool(payload.get(DUE_DATE_FIXED_KEY))
             payload = strip_transient_fields(payload)
-            _apply_barcode_due_date(payload)  # rede de seguranca: vencimento pelo fator do barcode
+            if not due_date_fixed:
+                _apply_barcode_due_date(payload)  # rede de seguranca: vencimento pelo fator do barcode
             _apply_status_id(payload)
             # Empresa pagadora (regra LEBIANCO) — rede de seguranca UNIVERSAL: os caminhos que
             # veem o corpo/anexo ja gravaram sk_company (e este no-op respeita), mas qualquer
@@ -915,10 +919,13 @@ class SupabaseControl:
         if not self._available:
             return base
         try:
-            pattern = urllib.parse.quote(base + '%', safe='')
+            # 🔴 Consulta a FAMILIA exata (`base` e `base(N)`), nunca o PREFIXO `base%`: com o
+            # prefixo + limit, uma base curta ("11") devolvia 50 notas quaisquer iniciadas por
+            # "11" sem o "11" exato, e o numero ocupado voltava como livre — sem erro.
+            family = urllib.parse.quote(_invoice_family_filter(base), safe='')
             req = urllib.request.Request(
                 f"{self.base}/rest/v1/financial_account_control"
-                f"?select=invoice_number&invoice_number=like.{pattern}&limit=50",
+                f"?select=invoice_number&or={family}&limit={_INVOICE_FAMILY_LIMIT}",
                 headers=self.headers
             )
             with urllib.request.urlopen(req, timeout=5) as r:
@@ -926,14 +933,7 @@ class SupabaseControl:
         except Exception as e:
             log.warning(f"Nao foi possivel verificar invoice_number no banco: {e}")
             return base
-
-        if base not in existing:
-            return base
-
-        n = 2
-        while f"{base}({n})" in existing:
-            n += 1
-        return f"{base}({n})"
+        return _next_free_invoice_number(base, existing)
 
     def upload_attachment(self, pdf_path) -> bool:
         """Publica o PDF no bucket de Storage (service_role, ignora RLS).
@@ -1289,6 +1289,14 @@ class SupabaseControl:
             if m:
                 return m
 
+        # 🔴 Vencimento FIXADO (dia do recebimento) e fornecedor unico (Dr. Ricardo): valor +
+        # vencimento deixa de provar "mesma divida". Processos distintos de mesmo valor chegados no
+        # mesmo dia se fundiriam e a 2a conta SUMIRIA (2031/2032, R$ 153,23). Reenvio sem barcode
+        # duplica de forma VISIVEL, o que e melhor que uma perda silenciosa. Vale tambem para
+        # honorarios sem credor: sob a OTIMOTEX, servicos distintos de mesmo valor colidiriam.
+        if payload.get(DUE_DATE_FIXED_KEY) or payload.get(SUPPLIER_UNIDENTIFIED_KEY):
+            return None
+
         # 3. fornecedor + valor + vencimento — MESMA divida, INDEPENDENTE do tipo.
         # Regra de negocio: se fornecedor + valor + vencimento coincidem, e a mesma
         # conta a pagar (o tipo varia entre os documentos que a descrevem — 'boleto'
@@ -1421,6 +1429,71 @@ class SupabaseControl:
                 return json.loads(r.read()) or None  # RPC escalar → o proprio bigint
         except Exception as e:
             log.warning(f"Falha ao consultar fornecedor por e-mail encaminhado (RPC): {e}")
+            return None
+
+    def find_supplier_by_cpf(self, cpf: str | None) -> "list[dict] | None":
+        """Cadastros cujo `cpf` e `cpf` (ativos OU removidos), com nome e `deleted_at`.
+
+        🔴 CONSULTA PURA, como find_supplier_by_email: nunca cria nem enriquece fornecedor. Traz
+        tambem os removidos porque o passo de CPF da RPC NAO filtra deleted_at: o chamador
+        precisa ver o mesmo conjunto que a RPC ve. Devolve None (nunca lista vazia) em falha de
+        rede depois de uma nova tentativa — o chamador trata None como "nao confirmado"."""
+        digits = re.sub(r"\D", "", str(cpf or ""))
+        if not self._available or len(digits) != 11:
+            return None
+        url = (f"{self.base}/rest/v1/supplier?select=sk_supplier,legal_name,trade_name,deleted_at"
+               f"&cpf=eq.{digits}&limit=3")
+        for attempt in (1, 2):
+            try:
+                req = urllib.request.Request(url, headers=self.headers)
+                with urllib.request.urlopen(req, timeout=10) as r:
+                    return json.loads(r.read())
+            except (urllib.error.URLError, TimeoutError, ConnectionError) as e:
+                log.warning(f"Falha ao consultar fornecedor por CPF (tentativa {attempt}/2): {e}")
+                if attempt == 1:
+                    time.sleep(1)
+            except Exception:
+                log.exception("Erro inesperado ao consultar fornecedor por CPF")
+                return None
+        return None
+
+    def find_honorarios_supplier_by_name(self, name: str | None) -> int | None:
+        """Fornecedor ATIVO de razao social ou nome fantasia iniciados por `name`.
+
+        Com varios candidatos, decide o UNICO que ja tem conta de honorarios: "Wesley" casa o
+        consultor (sk 1188, 22 contas de honorarios) e um funcionario (sk 1352, nenhuma).
+
+        🔴 CONSULTA PURA, como find_supplier_by_email: nunca cria fornecedor. Empate, teto de
+        candidatos ou falha de rede devolvem None: em duvida nao atribui. So letras, digitos,
+        espaco, ponto e hifen chegam ao filtro: virgula e parenteses mudariam a expressao."""
+        if not self._available or not name or not _SAFE_SUPPLIER_PREFIX_RE.fullmatch(name):
+            return None
+        prefix = urllib.parse.quote(f"{name}*", safe="*")
+        try:
+            req = urllib.request.Request(
+                f"{self.base}/rest/v1/supplier?select=sk_supplier&deleted_at=is.null"
+                f"&or=(legal_name.ilike.{prefix},trade_name.ilike.{prefix})"
+                f"&limit={_HONORARIOS_MAX_CANDIDATES + 1}",
+                headers=self.headers,
+            )
+            with urllib.request.urlopen(req, timeout=10) as r:
+                candidates = [row["sk_supplier"] for row in json.loads(r.read())]
+            if len(candidates) <= 1:
+                return candidates[0] if candidates else None
+            if len(candidates) > _HONORARIOS_MAX_CANDIDATES:
+                return None
+            sks = ",".join(str(sk) for sk in candidates)
+            doc_type = urllib.parse.quote(HONORARIOS_KEYWORD)
+            req = urllib.request.Request(
+                f"{self.base}/rest/v1/financial_account_control?select=sk_supplier"
+                f"&document_type=eq.{doc_type}&sk_supplier=in.({sks})",
+                headers=self.headers,
+            )
+            with urllib.request.urlopen(req, timeout=10) as r:
+                with_history = {row["sk_supplier"] for row in json.loads(r.read())}
+            return with_history.pop() if len(with_history) == 1 else None
+        except Exception as e:
+            log.warning(f"Falha ao consultar fornecedor de honorarios por nome: {e}")
             return None
 
     def resolve_user(self, sender_email: str | None) -> str | None:
@@ -1748,6 +1821,16 @@ def decode_str(value: str) -> str:
     return " ".join(result).strip()
 
 
+def _decode_body_part(part) -> str:
+    """Decodifica uma parte do corpo. Charset ausente ou que nao bate cai no cp1252, o usual aqui:
+    com errors="replace", "honorários" em latin-1 virava "honor?rios" e nenhuma regra por texto casava."""
+    raw = part.get_payload(decode=True)
+    try:
+        return raw.decode(part.get_content_charset() or "utf-8")
+    except (UnicodeDecodeError, LookupError):
+        return raw.decode("cp1252", errors="replace")
+
+
 def get_body_text(msg) -> str:
     body = ""
     if msg.is_multipart():
@@ -1755,16 +1838,14 @@ def get_body_text(msg) -> str:
             ct = part.get_content_type()
             cd = str(part.get("Content-Disposition", ""))
             if ct == "text/plain" and "attachment" not in cd:
-                charset = part.get_content_charset() or "utf-8"
                 try:
-                    body += part.get_payload(decode=True).decode(charset, errors="replace")
+                    body += _decode_body_part(part)
                 except Exception:
                     pass
     else:
         if msg.get_content_type() == "text/plain":
-            charset = msg.get_content_charset() or "utf-8"
             try:
-                body = msg.get_payload(decode=True).decode(charset, errors="replace")
+                body = _decode_body_part(msg)
             except Exception:
                 pass
     return body.strip()
@@ -1778,16 +1859,14 @@ def get_body_html(msg) -> str:
             ct = part.get_content_type()
             cd = str(part.get("Content-Disposition", ""))
             if ct == "text/html" and "attachment" not in cd:
-                charset = part.get_content_charset() or "utf-8"
                 try:
-                    html += part.get_payload(decode=True).decode(charset, errors="replace")
+                    html += _decode_body_part(part)
                 except Exception:
                     pass
     else:
         if msg.get_content_type() == "text/html":
-            charset = msg.get_content_charset() or "utf-8"
             try:
-                html = msg.get_payload(decode=True).decode(charset, errors="replace")
+                html = _decode_body_part(msg)
             except Exception:
                 pass
     return html
@@ -2192,9 +2271,35 @@ TAX_CLASSIFICATION_EXCLUDED_SK_SUPPLIERS = frozenset({1262})
 # ponto unico — nunca espalhada pelos call sites, que era o modo de falha a evitar.
 SUPPLIER_SIGNAL_KEY = "_supplier_signal"
 SUPPLIER_SIGNAL_FORWARDED_EMAIL = "forwarded_email"   # 1b: e-mail do remetente encaminhado
+SUPPLIER_SIGNAL_FIXED_CHAIN = "fixed_chain"           # cadeia de reembolso (_FIXED_CHAIN_SENDERS)
 # Sinais considerados FRACOS para efeito de write-back. Conjunto (e nao um booleano) porque
 # a proxima procedencia fraca entra aqui, e nao num `if` novo em apply_forced_classification.
 SUPPLIER_SIGNAL_WEAK = frozenset({SUPPLIER_SIGNAL_FORWARDED_EMAIL})
+
+# Remetentes cujos documentos sao REEMBOLSADOS a eles: o credor e quem encaminha, nao o orgao
+# impresso no boleto, e paga-se no dia em que o e-mail chega. Caso real (decisao do usuario,
+# 2026-11-04): das 165 contas encaminhadas pelo Dr. Ricardo (sk 1262), 125 foram corrigidas a
+# mao de "Tribunal de Justica" para ele. Constante, e nao coluna: e um caso so. O sk continua
+# vindo do cadastro por find_supplier_by_email, que so CONSULTA e nunca cria fornecedor.
+_FIXED_CHAIN_SENDERS = frozenset({"ricardo.advogado@yahoo.com.br"})
+# Efemeras: vencimento fixado pela regra acima e a data de chegada que o fixa.
+DUE_DATE_FIXED_KEY = "_due_date_fixed"
+RECEIVED_AT_KEY = "_received_at"
+FIXED_CHAIN_DUE_NOTE = "Vencimento = dia do recebimento (reembolso ao remetente original)"
+# Prefixo de extract_pdf.DUE_DATE_ABSENT_NOTE (o import la e pesado); paridade travada por teste.
+_DUE_DATE_ABSENT_PREFIX = "Vencimento ausente"
+
+# Citacao de honorarios: regra do usuario (2026-11-05): citar no assunto ou no corpo gera conta.
+HONORARIOS_KEYWORD = "honorários"
+REEMBOLSO_KEYWORD = "reembolso"
+SUPPLIER_UNIDENTIFIED_KEY = "_supplier_unidentified"
+HONORARIOS_SUPPLIER_NOTE = "Honorários sem fornecedor identificado — revisar o fornecedor"
+_HONORARIOS_MAX_CANDIDATES = 5
+_SAFE_SUPPLIER_PREFIX_RE = re.compile(r"[^\W_][\w .\-]{2,59}")
+# "pix p/ fornecedor Wesley": o nome termina em pontuacao, fim de linha ou 2+ espacos.
+_REQUEST_SUPPLIER_HINT_RE = re.compile(
+    r"(?im)\b(?:p/|para)[ \t]+(?:o[ \t]+)?fornecedor[ \t]+"
+    r"([^\r\n,.;:()]{3,60}?)[ \t]*(?:[\r\n,.;:()]|[ \t]{2,}|$)")
 
 # Chave EFEMERA com o motivo de uma FALHA da RPC de fornecedor (SupplierResolutionError). O
 # chamador de _finalize_supplier a copia para a mensagem de /erros; a conta nao e gravada.
@@ -2572,6 +2677,12 @@ def _supplier_from_forwarded_sender(body_text: str | None) -> "str | None":
 
 # Endereco de e-mail dentro de uma linha "De:" — o ENDERECO, nao o nome de exibicao.
 _EMAIL_IN_LINE_RE = re.compile(r"[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}")
+# Bloco "De:" incluindo a linha seguinte que comeca em "<": clientes de e-mail quebram a linha
+# entre o nome de exibicao e o endereco.
+_FORWARDED_FROM_BLOCK_RE = re.compile(
+    r"^[ \t>]*(?:de|from)[ \t]*:[ \t]*([^\r\n]*(?:\r?\n[ \t>]*<[^\r\n]*)?)",
+    re.IGNORECASE | re.MULTILINE,
+)
 
 
 def _forwarded_sender_email(body_text: "str | None") -> "str | None":
@@ -2787,6 +2898,8 @@ def build_financial_payload(row: dict, gmail_message_id: str,
     fallback de invoice_number para o tipo entrar no numero sintetico.
     """
     payload = {f: _none_if_blank(row.get(f)) for f in FINANCIAL_FIELDS}
+    if received_at:
+        payload[RECEIVED_AT_KEY] = received_at
 
     # CNPJ: CHAR(14) — exatamente 14 digitos
     cnpj = re.sub(r"\D", "", payload.get("supplier_cnpj") or "")
@@ -2904,6 +3017,72 @@ def _resolve_supplier_by_payer(ctrl: "SupabaseControl", payload: dict) -> int | 
     return sk
 
 
+def _fixed_chain_sender(sender_email: "str | None", body_text: "str | None") -> "str | None":
+    """Endereco de _FIXED_CHAIN_SENDERS que e o remetente imediato ou aparece em QUALQUER linha
+    'De:'/'From:' da cadeia encaminhada; None se nenhum. Nao usa _forwarded_sender_email: ela so
+    devolve o elo MAIS PROFUNDO, e o Dr. Ricardo pode ter repassado um e-mail do proprio tribunal."""
+    sender = (sender_email or "").strip().lower()
+    if sender in _FIXED_CHAIN_SENDERS:
+        return sender
+    for line in _FORWARDED_FROM_BLOCK_RE.findall(body_text or ""):
+        for addr in _EMAIL_IN_LINE_RE.findall(line):
+            if addr.lower() in _FIXED_CHAIN_SENDERS:
+                return addr.lower()
+    return None
+
+
+def _apply_fixed_chain_override(ctrl, payload: dict, body_text: str = "") -> bool:
+    """Regra do reembolso: conta do documento vindo de _FIXED_CHAIN_SENDERS fica no cadastro
+    desse remetente, com vencimento = dia do recebimento em Brasilia. True quando aplicou.
+
+    Remetente nao cadastrado degrada para a resolucao normal: esta regra nunca cria fornecedor.
+    Sem data de chegada valida muda so o fornecedor, sem a flag que desliga as redes de vencimento."""
+    addr = _fixed_chain_sender(payload.get("sender_email"),
+                               body_text or payload.get("email_body_excerpt"))
+    if not addr:
+        return False
+    lookup = getattr(ctrl, "find_supplier_by_email", None)
+    sk_supplier = lookup(addr) if lookup else None
+    if not sk_supplier:
+        log.warning(f"    [FORNECEDOR-REEMBOLSO] {addr!r} sem cadastro ativo — regra nao aplicada")
+        return False
+    for col in ("supplier_name", "supplier_cnpj", "supplier_cpf"):
+        payload.pop(col, None)
+    payload["sk_supplier"] = sk_supplier
+    payload[SUPPLIER_SIGNAL_KEY] = SUPPLIER_SIGNAL_FIXED_CHAIN
+    cost_center_id, chart_account_id = ctrl.supplier_defaults(sk_supplier)
+    if cost_center_id:
+        payload["cost_center_id"] = cost_center_id
+    if chart_account_id:
+        payload["chart_account_id"] = chart_account_id
+    received = _received_date_brt(payload.get(RECEIVED_AT_KEY))
+    if received:
+        payload["due_date"] = received.isoformat()
+        payload[DUE_DATE_FIXED_KEY] = True
+        kept = _strip_due_date_notes(_without_due_date_markers(payload.get("processing_notes")))
+        segments = [seg for seg in _notes_segments(kept)
+                    if not seg.startswith(_DUE_DATE_ABSENT_PREFIX)]
+        payload["processing_notes"] = _NOTES_SEPARATOR.join([*segments, FIXED_CHAIN_DUE_NOTE])
+    log.info(f"    [FORNECEDOR-REEMBOLSO] cadeia de {addr!r} — sk={sk_supplier}, "
+             f"vencimento {payload.get('due_date')}")
+    return True
+
+
+def _honorarios_supplier_from_hint(ctrl, body_text: "str | None",
+                                   extracted_name: "str | None" = None) -> "int | None":
+    """Cadastro nomeado em "p/ fornecedor X" no texto do proprio remetente, ou pelo nome ja
+    extraido. So CONSULTA: criar "Wesley" pelo auto-insert duplicaria "Wesley S. Paixão" (sk 1188)."""
+    lookup = getattr(ctrl, "find_honorarios_supplier_by_name", None)
+    if not lookup:
+        return None
+    match = _REQUEST_SUPPLIER_HINT_RE.search(_text_above_forward_chain(body_text))
+    for name in (match.group(1) if match else None, extracted_name):
+        sk_supplier = lookup(name.strip()) if name else None
+        if sk_supplier:
+            return sk_supplier
+    return None
+
+
 def _finalize_supplier(ctrl: "SupabaseControl", payload: dict, body_text: str = "") -> bool:
     """Resolve o fornecedor (RPC), grava payload['sk_supplier'] e REMOVE as colunas
     denormalizadas supplier_name/supplier_cnpj/supplier_cpf — o fornecedor passa a
@@ -2943,6 +3122,10 @@ def _finalize_supplier(ctrl: "SupabaseControl", payload: dict, body_text: str = 
       6. ULTIMO RECURSO: o PAGADOR (payer_name/payer_cnpj, ex.: OTIMOTEX) — so
          quando TODAS as formas acima falham e o pagador esta claro; garante que a
          conta a pagar nunca se perca e fique rastreavel pelo pagador."""
+    # 🔴 Cadeia de reembolso vence ate o fornecedor lido do documento — por isso roda antes de
+    # tudo. Sem ela o Tribunal impresso no boleto ganhava em has_real_supplier e o 1b nem rodava.
+    if _apply_fixed_chain_override(ctrl, payload, body_text):
+        return True
     # robustez: um TIPO de documento/pagamento extraido como "fornecedor" e descartado.
     if _is_non_supplier_term(payload.get("supplier_name")):
         payload.pop("supplier_name", None)
@@ -3029,8 +3212,38 @@ def _finalize_supplier(ctrl: "SupabaseControl", payload: dict, body_text: str = 
         log.info(f"    [FORNECEDOR-BENEFICIARIO-PAGADORA] beneficiario {extracted_name!r} com o CNPJ "
                  f"da pagadora e pagador terceiro — gravando OTIMOTEX (sk={OTIMOTEX_SK_SUPPLIER})")
         return True
+    # 🔴 Chave PIX do PROPRIO fornecedor pessoa fisica: o corpo a descartou por haver nome (pode
+    # ser de terceiro); ela volta so se o cadastro confirmar que o CPF ja e deste fornecedor.
+    # Sem isto a conta 1677 ia a RPC so pelo nome, e uma grafia nova criaria cadastro duplicado.
+    # Fora de guia de tributo: ali o CPF/CNPJ do documento e do contribuinte.
+    if (str(payload.get("supplier_name") or "").strip()
+            and not payload.get("supplier_cnpj") and not payload.get("supplier_cpf")
+            and not _is_tax_document(payload.get("document_type"))):
+        own_pix_cpf = _confirmed_pix_key_cpf(ctrl, payload.get("supplier_name"),
+                                             body_text or payload.get("email_body_excerpt"))
+        if own_pix_cpf:
+            payload["supplier_cpf"] = own_pix_cpf
+            log.info("    [FORNECEDOR-PIX] chave PIX do corpo confirmada no cadastro de "
+                     f"{payload.get('supplier_name')!r} — CPF volta a identificar")
     has_real_supplier = any(str(payload.get(k) or "").strip()
                             for k in ("supplier_name", "supplier_cnpj", "supplier_cpf"))
+    # 🔴 Honorarios sem CNPJ/CPF: o cadastro nomeado vence ANTES de qualquer caminho da RPC, cujo
+    # auto-insert criaria "Wesley" ao lado de "Wesley S. Paixão". Nome sem cadastro segue adiante.
+    cites_honorarios = _cites_honorarios(payload.get("subject"),
+                                         body_text or payload.get("email_body_excerpt"))
+    if cites_honorarios and not (payload.get("supplier_cnpj") or payload.get("supplier_cpf")):
+        sk_named = _honorarios_supplier_from_hint(ctrl, body_text, payload.get("supplier_name"))
+        if sk_named:
+            for col in ("supplier_name", "supplier_cnpj", "supplier_cpf"):
+                payload.pop(col, None)
+            payload["sk_supplier"] = sk_named
+            log.info(f"    [FORNECEDOR-HONORARIOS] cadastro nomeado no e-mail: sk={sk_named}")
+            cost_center_id, chart_account_id = ctrl.supplier_defaults(sk_named)
+            if cost_center_id:
+                payload["cost_center_id"] = cost_center_id
+            if chart_account_id:
+                payload["chart_account_id"] = chart_account_id
+            return True
     # ── fallback 1b: E-MAIL do remetente ORIGINAL do bloco ENCAMINHADO ──────────────
     # Caso real (conta 1101): o despachante manda a guia da Junta Comercial para a
     # funcionaria, que a encaminha. O PDF de guia NAO traz favorecido e o remetente
@@ -3135,8 +3348,9 @@ def _finalize_supplier(ctrl: "SupabaseControl", payload: dict, body_text: str = 
             log.info(f"    [FORNECEDOR-ENCAMINHADO] nome do remetente original "
                      f"(corpo encaminhado): {guessed!r}")
     # fallback 4: nome do assunto SEM ancora (heuristica generica, tambem filtra tipo
-    # de documento/pagamento) — fallback 2 ja tentou a ancora e esgotou.
-    if not has_real_supplier:
+    # de documento/pagamento) — fallback 2 ja tentou a ancora e esgotou. 🔴 Fora da citacao de
+    # honorarios: ali o assunto e livre ("Reuniao de sexta") e o auto-insert o tornaria fornecedor.
+    if not has_real_supplier and not cites_honorarios:
         guessed = _supplier_name_from_subject(payload.get("subject"))
         if guessed and not _is_own_company_name(guessed, own_names):
             payload["supplier_name"] = guessed
@@ -3157,6 +3371,18 @@ def _finalize_supplier(ctrl: "SupabaseControl", payload: dict, body_text: str = 
         sk_supplier = None
     for col in ("supplier_name", "supplier_cnpj", "supplier_cpf"):
         payload.pop(col, None)
+    # 🔴 Honorarios geram conta mesmo sem identificador (e-mail 1720, R$ 450,00, perdido em
+    # silencio). So com a RECUSA da RPC: a FALHA dela segue para /erros, como acima. Sem cadastro
+    # unico fica sob a OTIMOTEX, sem o default dela (migration 141) e com nota para curadoria.
+    if not sk_supplier and SUPPLIER_ERROR_KEY not in payload and cites_honorarios:
+        payload["sk_supplier"] = OTIMOTEX_SK_SUPPLIER
+        payload[SUPPLIER_UNIDENTIFIED_KEY] = True
+        prev = payload.get("processing_notes")
+        payload["processing_notes"] = (f"{prev}{_NOTES_SEPARATOR}{HONORARIOS_SUPPLIER_NOTE}"
+                                       if prev else HONORARIOS_SUPPLIER_NOTE)
+        log.warning("    [FORNECEDOR-HONORARIOS] sem fornecedor identificado — OTIMOTEX, "
+                    "com nota para revisao")
+        return True
     if not sk_supplier:
         return False
     payload["sk_supplier"] = sk_supplier
@@ -3313,7 +3539,22 @@ _BODY_DUE_RE     = re.compile(r"(?i)venc(?:imento|to)?\D{0,15}?(\d{2}/\d{2}/\d{2
 _BODY_PAYDATE_RE = re.compile(
     r"(?i)data\s+(?:para|de|do)?\s*pagamento\D{0,10}?(\d{2}/\d{2}/\d{2,4})")
 _BODY_ISSUE_RE   = re.compile(r"(?i)emiss[aã]o\D{0,10}?(\d{2}/\d{2}/\d{2,4})")
-_BODY_INVOICE_RE = re.compile(r"(?i)\b(?:nf(?:[- ]?e)?|nota\s+fiscal|fatura\s+n[º°.]?)\s*[n°.:]?\s*(\d{3,})")
+_BODY_INVOICE_LABEL = r"(?i)\b(?:nf(?:[- ]?e)?|nota\s+fiscal|fatura\s+n[º°.]?)\s*[n°.:]?\s*"
+_BODY_INVOICE_RE = re.compile(_BODY_INVOICE_LABEL + r"(\d{3,})")
+# Numero CURTO (1-2 digitos) tambem e numero de nota: as notas internas de pagamento da LE
+# BIANCO citam "NF 57", "NF 11" — so com `\d{3,}` as 9 contas desse formato nasceram com o
+# no SINTETICO 'pix_R$ ...' (varredura de 1.992 corpos, 2026-11-09).
+# 🔴 E o ULTIMO recurso (_short_body_invoice_number), nunca uma alternativa dentro do regex
+# acima: os avisos de NF-e autorizada imprimem "Serie da Nota Fiscal: 1" ANTES de "Numero da
+# Nota Fiscal: 1792" (e-mails 161/1592), e o curto, chegando primeiro, roubava o numero.
+# 🔴 O curto NAO pode vir colado a "-"/"/"/"."/"," + digito NA MESMA LINHA: ai ele e a SERIE
+# de um par serie-numero ("NFe 1 - 000137869", "NF-e: 1-00002512"), fracao ou decimal. `[ \t]`,
+# nunca `\s`: "NF 11.\n06/11/2026" e a nota 11 fechando a frase, com a data embaixo.
+_BODY_INVOICE_SHORT_RE = re.compile(
+    _BODY_INVOICE_LABEL + r"(\d{1,2})(?!\d|[ \t]*[-/.,][ \t]*\d)")
+# "Serie da Nota Fiscal: 1" / "Serie NF 1" — o rotulo de SERIE logo antes, na mesma linha.
+_BODY_SERIES_PREFIX_RE = re.compile(r"(?i)\bs[ée]rie\b[^\n\d]{0,10}\Z")
+_BODY_SERIES_LOOKBEHIND = 20
 # Nº de documento rotulado EXPLICITAMENTE como "Número do documento" — valor
 # ALFANUMÉRICO (ex.: boleto Sabesp "SOR202659903949", CATAGUASES "014696-001").
 # Usado como fallback quando _BODY_INVOICE_RE (NF/fatura + dígitos) não casa.
@@ -3348,6 +3589,16 @@ _BODY_SIEG_BILL_RE = re.compile(r"app\.sieg\.com/faturas\?bill=(\d+)", re.IGNORE
 _BODY_CNPJ_RE    = re.compile(r"\b\d{2}\.?\d{3}\.?\d{3}/\d{4}-?\d{2}\b")
 # CPF: so quando rotulado, para nao casar outros numeros de 11 digitos.
 _BODY_CPF_RE     = re.compile(r"(?i)cpf\D{0,5}(\d{3}\.?\d{3}\.?\d{3}-?\d{2})")
+# "Pix CPF:", "chave Pix CPF", "PIX (CPF):" — o rotulo CPF e o TIPO DA CHAVE PIX, nao a
+# identidade do fornecedor. Testado no trecho imediatamente ANTERIOR ao rotulo, na mesma linha.
+# 🔴 `\Z`, nunca `$`: o `$` do Python casa ANTES de um "\n" final, e "via pix.\nCPF:" contaria.
+_BODY_PIX_KEY_PREFIX_RE = re.compile(r"(?i)\bpix\b[^\n\d]{0,15}\Z")
+_BODY_PIX_KEY_LOOKBEHIND = 25
+# A mesma marca DEPOIS do numero: "CPF 021.797.821-52 (PIX)", "CPF: ... - chave pix". 🔴 Nunca
+# "PIX:" com dois-pontos: ali comeca o rotulo de OUTRA chave na mesma linha ("CPF: X  PIX: e-mail"),
+# e o CPF continua sendo a identidade.
+_BODY_PIX_KEY_SUFFIX_RE = re.compile(r"(?i)\A[ \t]*[(\-–]?[ \t]*(?:chave[ \t]+)?pix\b(?![ \t]*:)")
+_BODY_PIX_KEY_LOOKAHEAD = 20
 # Linha digitavel / codigo de barras de boleto (47) ou guia de arrecadacao (48).
 _BODY_BARCODE_RE = re.compile(
     r"(?i)(?:linha\s+digit[aá]vel|c[oó]digo\s+de\s+barras)\D{0,10}([\d.\s]{47,60})"
@@ -3403,6 +3654,13 @@ _BODY_RECEIPT_RE = re.compile(
 _BODY_PAYMENT_REQUEST_RE = re.compile(
     r"(?i)fazer\s+o\s+pagamento|favor\s+pagar|por\s+gentileza|efetuar\s+o\s+pagamento"
 )
+# Pedido de pagamento interno: "VALOR: R$ 140,28" e "REPRESENTANTE: <nome>". O primeiro difere de
+# _BODY_LABELED_AMT_RE, que nao aceita "R$" entre o rotulo e o numero.
+_REQUEST_LABELED_AMOUNT_RE = re.compile(
+    r"(?i)\bvalor(?:\s+total)?\b[ \t]*[:\-]?[ \t]*(?:R\$[ \t]*[:\-]?[ \t]*)?\d")
+_REQUEST_REPRESENTATIVE_RE = re.compile(
+    r"(?im)^[ \t]*representante\b[ \t]*[:\-][ \t]*([^\r\n]+?)[ \t\r]*$")
+_TRAILING_PARENTHETICAL_RE = re.compile(r"\s*\([^()]*\)\s*$")
 
 # Tabela de keywords por tipo de documento — verificada contra o corpo do e-mail.
 # Ordem importa: termos mais específicos antes dos fallbacks genéricos.
@@ -4360,6 +4618,10 @@ def apply_forced_classification(ctrl, payload: dict, extra_text: str | None = No
     escaneados: assunto + descricao do documento (extraida) + `extra_text` (o corpo do e-mail
     no caminho de corpo). O remetente (`sender_email`) tambem e um sinal: GNRE de @lebianco
     vira ICMS-ST. Write-back nunca ocorre para a OTIMOTEX (sk_supplier=1)."""
+    # Cadeia de reembolso: a conta fica na classificacao do cadastro, juridica, inclusive quando
+    # o assunto ou o tipo citam transporte ou tributo.
+    if payload.get(SUPPLIER_SIGNAL_KEY) == SUPPLIER_SIGNAL_FIXED_CHAIN:
+        return
     override = resolve_forced_classification(
         ctrl, payload.get("document_type"),
         payload.get("subject"), payload.get("description"), extra_text,
@@ -4398,6 +4660,9 @@ def apply_contact_writeback(ctrl, payload: dict, extra_text: str | None = None) 
     + descricao + corpo (email_body_excerpt/extra_text)."""
     sk_supplier = payload.get("sk_supplier")
     if not sk_supplier or sk_supplier == OTIMOTEX_SK_SUPPLIER:
+        return
+    # O texto descreve o orgao ou o cliente do processo, nao o remetente reembolsado.
+    if payload.get(SUPPLIER_SIGNAL_KEY) == SUPPLIER_SIGNAL_FIXED_CHAIN:
         return
     try:
         parts = [payload.get("subject"), payload.get("description"),
@@ -4708,6 +4973,35 @@ def _is_synthetic_invoice_number(invoice: str | None) -> bool:
     return bool(_SYNTHETIC_INVOICE_RE.search(s))
 
 
+# Teto da consulta da familia `base`/`base(N)` em unique_invoice_number. Folgado: a maior
+# familia real hoje tem 3 membros ('pix_R$ 217,00', '(2)', '(3)').
+_INVOICE_FAMILY_LIMIT = 1000
+
+
+def _pgrst_quote(value: str) -> str:
+    """Valor entre aspas para filtro logico do PostgREST (`or=(...)`): sem as aspas, a
+    virgula e o ponto de 'pix_R$ 1.590,00' seriam lidos como separadores da sintaxe."""
+    return '"' + value.replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+
+def _invoice_family_filter(base: str) -> str:
+    """Filtro `or` que traz `base` e as variantes `base(N)` — e nada mais relevante. O `_`
+    de 'pix_' e curinga do LIKE, mas a superconjunto e inofensiva: a decisao e por igualdade
+    exata em _next_free_invoice_number."""
+    return (f"(invoice_number.eq.{_pgrst_quote(base)},"
+            f"invoice_number.like.{_pgrst_quote(base + '(*')})")
+
+
+def _next_free_invoice_number(base: str, existing: "set[str]") -> str:
+    """`base` se livre; senao o primeiro `base(N)` livre, N >= 2."""
+    if base not in existing:
+        return base
+    n = 2
+    while f"{base}({n})" in existing:
+        n += 1
+    return f"{base}({n})"
+
+
 def _same_title(novo_invoice, cand_invoice) -> bool:
     """Os dois documentos sao o MESMO TITULO, do ponto de vista do Nº DE DOCUMENTO?
 
@@ -4778,12 +5072,100 @@ def _is_real_nosso_numero(nn: str | None) -> bool:
 # isoladamente; a funcao principal so orquestra. Comportamento inalterado — a ordem de
 # precedencia de cada cadeia e exatamente a que estava inline.
 
-def _resolve_body_supplier_identity(body_text: str) -> "tuple[str | None, str | None, str | None]":
+def _is_pix_key_cpf(body_text: str, cpf_match: "re.Match[str]") -> bool:
+    """O CPF casado e o tipo de uma CHAVE PIX ("Pix CPF: ...", "CPF ... (PIX)")? Funcao PURA."""
+    start  = cpf_match.start()
+    prefix = body_text[max(0, start - _BODY_PIX_KEY_LOOKBEHIND):start]
+    suffix = body_text[cpf_match.end():cpf_match.end() + _BODY_PIX_KEY_LOOKAHEAD]
+    return bool(_BODY_PIX_KEY_PREFIX_RE.search(prefix)
+                or _BODY_PIX_KEY_SUFFIX_RE.search(suffix))
+
+
+def _body_pix_key_cpf(body_text: "str | None") -> "str | None":
+    """Primeiro CPF de 11 digitos do corpo que e CHAVE PIX; None se nenhum. Funcao PURA."""
+    text = body_text or ""
+    for cpf_match in _BODY_CPF_RE.finditer(text):
+        digits = re.sub(r"\D", "", cpf_match.group(1))
+        if len(digits) == 11 and _is_pix_key_cpf(text, cpf_match):
+            return digits
+    return None
+
+
+# Palavras que nao distinguem um fornecedor de outro: forma juridica, titulo, preposicao.
+_SUPPLIER_NAME_STOPWORDS = frozenset({
+    "ltda", "me", "epp", "eireli", "sa", "cia", "dr", "dra", "de", "da", "do", "das", "dos",
+    "e", "the", "and", "mei", "ss",
+})
+
+
+def _supplier_name_tokens(name: "str | None") -> "frozenset[str]":
+    """Palavras significativas de um nome (sem acento, minusculas, >= 3 caracteres)."""
+    words = re.findall(r"[a-z0-9]+", _strip_accents_lower(name or ""))
+    return frozenset(w for w in words if len(w) >= 3 and w not in _SUPPLIER_NAME_STOPWORDS)
+
+
+def _supplier_names_match(a: "str | None", b: "str | None") -> bool:
+    """Os dois nomes descrevem o MESMO fornecedor? Tolera pontuacao, acento, titulo e um
+    parentese a mais ("DR. FLAVIO PRADO" x "DR.FLAVIO PRADO (ADVOGADO)").
+
+    As palavras do nome MENOR precisam estar todas no maior, e o menor precisa ter 2+ palavras
+    (ou os dois serem iguais): uma palavra so ("JACACAR", "MECANICA") nao prova nada."""
+    ta, tb = _supplier_name_tokens(a), _supplier_name_tokens(b)
+    if not ta or not tb:
+        return False
+    if ta == tb:
+        return True
+    menor, maior = (ta, tb) if len(ta) <= len(tb) else (tb, ta)
+    return len(menor) >= 2 and menor <= maior
+
+
+def _confirmed_pix_key_cpf(ctrl, supplier_name: "str | None",
+                           body_text: "str | None") -> "str | None":
+    """CPF da chave PIX do corpo, SO quando ele ja pertence ao cadastro do fornecedor nomeado.
+
+    🔴 A chave PIX pode ser de um TERCEIRO (o mecanico dos e-mails 3390-3392) ou do proprio
+    fornecedor pessoa fisica (conta 1677, advogado). So o cadastro distingue: o CPF volta a
+    identificar quando esta em UM unico cadastro ATIVO cujo nome bate com o rotulado. CPF sem
+    cadastro, de outro cadastro, em cadastro removido ou falha de consulta ⇒ None — a RPC so
+    ve o nome. Nunca o contrario: o passo por nome da RPC chama _enrich_supplier, e um CPF de
+    terceiro enviado ali seria GRAVADO no cadastro e passaria a sequestrar contas (sk 1497)."""
+    lookup = getattr(ctrl, "find_supplier_by_cpf", None)
+    cpf = _body_pix_key_cpf(body_text)
+    if not (lookup and cpf and supplier_name):
+        return None
+    rows = lookup(cpf)
+    if not rows or len(rows) != 1 or rows[0].get("deleted_at"):
+        return None
+    row = rows[0]
+    if (_supplier_names_match(supplier_name, row.get("legal_name"))
+            or _supplier_names_match(supplier_name, row.get("trade_name"))):
+        return cpf
+    return None
+
+
+def _resolve_body_supplier_identity(body_text: str,
+                                    labeled_name: "str | None" = None,
+                                    ) -> "tuple[str | None, str | None, str | None]":
     """(nome, CNPJ, CPF) do fornecedor extraidos do corpo por ROTULO.
 
     Nome: rotulo na MESMA linha (_BODY_NAME_RE) e, sem ele, o bloco "Dados do emissor"
     com o valor na linha seguinte (_BODY_ISSUER_RE) — o rotulo na mesma linha mantem a
-    precedencia. CNPJ/CPF so valem com a quantidade exata de digitos."""
+    precedencia. CNPJ/CPF so valem com a quantidade exata de digitos.
+
+    🔴 CPF de CHAVE PIX nao identifica o fornecedor quando ja ha CNPJ ou nome rotulado
+    (`labeled_name` e o nome achado FORA do trecho, no caso da janela do caminho do anexo).
+    O PIX pode ir a um TERCEIRO: e-mails 3390-3392 (06/11/2026) pediam pagamento a RDR
+    DISTRIBUIDORA, TURBO DRIVE e ELG com "Pix CPF" do MECANICO que comprou as pecas. O CPF
+    foi gravado no cadastro criado para a RDR (sk 1497), o passo de CPF da RPC (que roda
+    ANTES do nome e depois do CNPJ nao casado) puxou as outras duas para ele, e a TURBO DRIVE
+    — mesmo valor e vencimento — virou `duplicidade` da RDR. Sem nome nem CNPJ, a chave PIX
+    segue sendo a unica identidade e vale (e-mails da Liftec: "PIX (CPF): ..." sem rotulo).
+
+    Com nome rotulado, a chave pode ser do PROPRIO fornecedor pessoa fisica (conta 1677,
+    "NOME: DR.FLAVIO PRADO (ADVOGADO) / PIX CPF ..."): esta funcao PURA nao tem como saber e a
+    descarta; quem a devolve, conferindo o cadastro, e _confirmed_pix_key_cpf em
+    _finalize_supplier. Todos os CPFs rotulados sao avaliados: um CPF de identidade ("CPF:")
+    depois de uma chave PIX descartada continua valendo."""
     label_match = (_BODY_NAME_RE.search(body_text)
                    or _BODY_ISSUER_RE.search(body_text))
     supplier_name = label_match.group(1).strip() if label_match else None
@@ -4793,10 +5175,17 @@ def _resolve_body_supplier_identity(body_text: str) -> "tuple[str | None, str | 
     if supplier_cnpj and len(supplier_cnpj) != 14:
         supplier_cnpj = None
 
-    cpf_match     = _BODY_CPF_RE.search(body_text)
-    supplier_cpf  = re.sub(r"\D", "", cpf_match.group(1)) if cpf_match else None
-    if supplier_cpf and len(supplier_cpf) != 11:
-        supplier_cpf = None
+    has_identity = bool(supplier_cnpj or supplier_name or labeled_name)
+    supplier_cpf = None
+    for cpf_match in _BODY_CPF_RE.finditer(body_text):
+        digits = re.sub(r"\D", "", cpf_match.group(1))
+        if len(digits) != 11:
+            continue
+        if not _is_pix_key_cpf(body_text, cpf_match):
+            supplier_cpf = digits          # CPF de identidade vence qualquer chave PIX
+            break
+        if supplier_cpf is None and not has_identity:
+            supplier_cpf = digits          # chave PIX como unica identidade; segue procurando
 
     return supplier_name, supplier_cnpj, supplier_cpf
 
@@ -4835,8 +5224,8 @@ _BODY_INVOICE_SOURCES = (
 
 def _resolve_body_invoice_number(body_text: str, table_row: "dict | None") -> "str | None":
     """Nº do documento do corpo, na ordem de _BODY_INVOICE_SOURCES; sem nenhuma fonte
-    rotulada, cai na linha da tabela de faturas. None quando nada identifica o titulo —
-    ai o chamador gera o nº SINTETICO."""
+    rotulada, cai na linha da tabela de faturas e, por ultimo, no nº CURTO de nota ("NF 57").
+    None quando nada identifica o titulo — ai o chamador gera o nº SINTETICO."""
     for regex, template in _BODY_INVOICE_SOURCES:
         m = regex.search(body_text)
         if not m:
@@ -4844,7 +5233,16 @@ def _resolve_body_invoice_number(body_text: str, table_row: "dict | None") -> "s
         value = m.group(1).strip()
         if value:
             return template.format(value) if template else value
-    return _row_field(table_row, "doc")
+    return _row_field(table_row, "doc") or _short_body_invoice_number(body_text)
+
+
+def _short_body_invoice_number(body_text: str) -> "str | None":
+    """Primeiro nº de nota de 1-2 digitos que NAO seja a serie ("Serie da Nota Fiscal: 1")."""
+    for m in _BODY_INVOICE_SHORT_RE.finditer(body_text):
+        prefix = body_text[max(0, m.start() - _BODY_SERIES_LOOKBEHIND):m.start()]
+        if not _BODY_SERIES_PREFIX_RE.search(prefix):
+            return m.group(1)
+    return None
 
 
 def _first_body_date(regex: "re.Pattern", body_text: str) -> "str | None":
@@ -4930,6 +5328,27 @@ def _resolve_body_doc_and_payment(body_text: str, subject: "str | None",
     return document_type, payment_method
 
 
+def _text_above_forward_chain(body_text: "str | None") -> str:
+    """Texto ESCRITO pelo remetente: o que vem antes do primeiro 'De:'/'From:' da cadeia."""
+    first_link = _FORWARDED_FROM_LINE_RE.search(body_text or "")
+    return (body_text or "")[:first_link.start()] if first_link else (body_text or "")
+
+
+def _internal_request_representative(body_text: str, sender_email: "str | None") -> "str | None":
+    """Nome do rotulo 'REPRESENTANTE:' de um PEDIDO DE PAGAMENTO interno, sem o parentese final
+    ("PRPP Comercial e Servs Ltda (PAULO PAZ)", conta 2227). 🔴 Fica fora de _BODY_NAME_RE de
+    proposito: em e-mail externo "Representante: Fulano" e o vendedor, nunca o credor. Vale so o
+    texto acima da cadeia: la embaixo o rotulo e de terceiro e criaria fornecedor pelo auto-insert."""
+    own_text = _text_above_forward_chain(body_text)
+    if not (_is_internal_sender(sender_email) and _BODY_PAYMENT_REQUEST_RE.search(own_text)):
+        return None
+    match = _REQUEST_REPRESENTATIVE_RE.search(own_text)
+    if not match:
+        return None
+    name = _TRAILING_PARENTHETICAL_RE.sub("", match.group(1)).strip()
+    return None if not name or _is_non_supplier_term(name) else name
+
+
 def extract_from_email_body(body_text: str, received_at: str, message_id: str,
                             sender_email: str | None = None,
                             subject: str | None = None) -> dict | None:
@@ -4970,10 +5389,13 @@ def extract_from_email_body(body_text: str, received_at: str, message_id: str,
     # pagamento — nao e conta a pagar (afasta phishing tipo "Comprovante de Pix
     # Recebido"). Skip silencioso.
     if (_BODY_RECEIPT_RE.search(body_text)
-            and not _BODY_PAYMENT_REQUEST_RE.search(body_text)):
+            and not _BODY_PAYMENT_REQUEST_RE.search(body_text)
+            and not _forces_account(subject, sender_email, body_text)):
         return None
 
     supplier_name, supplier_cnpj, supplier_cpf = _resolve_body_supplier_identity(body_text)
+    if not (supplier_name or supplier_cnpj or supplier_cpf):
+        supplier_name = _internal_request_representative(body_text, sender_email)
     barcode = _resolve_body_barcode(body_text)
     amount  = _extract_body_amount(body_text)
 
@@ -5051,6 +5473,8 @@ def extract_from_email_body(body_text: str, received_at: str, message_id: str,
     payload["amount_charged"]     = amount or 0
     payload["gmail_message_id"]   = message_id
     payload["email_body_excerpt"] = body_text.strip()
+    if received_at:
+        payload[RECEIVED_AT_KEY] = received_at
     return payload
 
 
@@ -5510,7 +5934,7 @@ def _body_supplier_identity(body_text: "str | None",
 
     # guarda 2: so o identificador que esta JUNTO do nome rotulado.
     window = body_text[label_match.end():label_match.end() + _BODY_SUPPLIER_ID_WINDOW]
-    _, cnpj, cpf = _resolve_body_supplier_identity(window)
+    _, cnpj, cpf = _resolve_body_supplier_identity(window, labeled_name=name)
 
     # guarda 3: o CNPJ do proprio pagador nunca e o fornecedor.
     own = re.sub(r"\D", "", str(own_cnpj or ""))
@@ -6192,21 +6616,145 @@ def _is_statement_document(row: dict) -> bool:
 
 # Baixa/cancelamento de RECEBIVEL proprio — e-mail sobre titulos que a EMPRESA
 # EMITIU (relatorio de baixa/cancelamento), nao um documento que ela deve pagar.
-# Sinais: assunto de cobranca propria ("COBRANCA OTIMOTEX") ou o proprio relatorio
+# Sinais: conversa da cobranca propria (_is_own_collection_subject) ou o proprio relatorio
 # de baixa na descricao. NAO e conta a pagar → ignorado (nao 'sem_fornecedor').
-_RECEIVABLE_SUBJECT_TERMS = ("cobranca otimotex", "cobrancas nao enviadas")
 _RECEIVABLE_DESC_RE = re.compile(
     r"cancelamento \(baixa\)|titulos? baixad|boletos? baixad"
 )
+
+# Assuntos que a rotina de cobranca ENVIA (cobranca-vencidos: db_firebird.EMAIL_SUBJECT e
+# failure_notify.build_subject; paridade travada por teste). O aviso interno e inconfundivel; o
+# titulo exige prefixo de resposta, porque um fornecedor pode mesmo cobrar com "COBRANCA OTIMOTEX".
+_OWN_COLLECTION_NOTICE_RE = re.compile(r"cobrancas nao enviadas\b")
+_OWN_COLLECTION_TITLE_RE = re.compile(r"cobranca (?:lebianco|otimotex tecido)\b")
+# Frase do modelo da cobranca, citada no corpo quando o assunto da resposta foi reescrito.
+_OWN_COLLECTION_BODY_RE = re.compile(r"consta\(m\) em aberto em nosso sistema")
+_HONORARIOS_TERM = "honorari"
+_OWN_THREAD_CLEARED_KEY = "_own_thread_cleared"
+
+
+def _is_own_collection_subject(subject: str | None) -> bool:
+    """O assunto e de uma conversa iniciada pela nossa rotina de cobranca? Sem acento.
+
+    🔴 Colapsa espacos: decode_str devolve "RES:  COBRANCA  OTIMOTEX" quando so a palavra acentuada
+    vem codificada, que e o formato real do cabecalho, e a regra nao casaria nunca."""
+    subj = re.sub(r"\s+", " ", _strip_accents_lower(subject or "")).strip()
+    had_prefix = False
+    while True:
+        stripped = _SUBJECT_FWD_PREFIX_RE.sub("", subj, count=1)
+        if stripped == subj:
+            break
+        subj, had_prefix = stripped, True
+    if _OWN_COLLECTION_NOTICE_RE.match(subj):
+        return True
+    return had_prefix and bool(_OWN_COLLECTION_TITLE_RE.match(subj))
+
+
+def _is_internal_sender(sender_email: str | None) -> bool:
+    """Remetente de dominio interno, por IGUALDADE: substring aceitaria "x@naootimotex.com.br"."""
+    domain = (sender_email or "").rpartition("@")[2].strip().lower()
+    return domain in _INTERNAL_EMAIL_DOMAINS
+
+
+def _body_quotes_own_collection(body_text: str | None) -> bool:
+    """O corpo cita o modelo da cobranca? Normaliza '>' e quebras, que o cliente de e-mail insere."""
+    flat = re.sub(r"[\s>]+", " ", _strip_accents_lower(body_text or ""))
+    return bool(_OWN_COLLECTION_BODY_RE.search(flat))
+
+
+def _cites_honorarios(*texts: "str | None") -> bool:
+    """Algum texto cita honorarios? 🔴 Fonte unica da regra: citar no assunto ou no corpo gera
+    conta, inclusive na cadeia encaminhada (decisao do usuario, 2026-11-05)."""
+    return any(_HONORARIOS_TERM in _strip_accents_lower(text or "") for text in texts)
+
+
+def _forces_account(subject: "str | None", sender_email: "str | None",
+                    body_text: "str | None") -> bool:
+    """E-mail que SEMPRE gera conta: cita honorarios, ou vem da cadeia de reembolso (decisoes do
+    usuario, 2026-11-05). 🔴 Fonte unica: os filtros de "nao e pagavel" nao se aplicam a ele, e sem
+    conta nem duplicata ele vira 'falha' em /erros, nunca 'ignorado'."""
+    return (_cites_honorarios(subject, body_text)
+            or _fixed_chain_sender(sender_email, body_text) is not None)
+
+
+def own_collection_ignore_reason(subject: str | None, sender_email: str | None,
+                                 body_text: str | None, attachments=()) -> str | None:
+    """Motivo para IGNORAR um e-mail da conversa da nossa cobranca; None se ele deve seguir.
+
+    O que chega ali trata de um titulo que a empresa RECEBE: a resposta cita o valor e virava
+    conta a pagar falsa (17 contas, canceladas a mao). 🔴 Excecao decidida pelo usuario: citar
+    honorarios no assunto ou no corpo gera conta, de qualquer remetente; no TEXTO do anexo, so em
+    resposta interna (sem API: anexo-imagem conta como ausente). As contas 161, 166 e 182 sao
+    honorarios confirmados, mas seus e-mails NAO citam: um reprocesso os ignoraria."""
+    if not (_is_own_collection_subject(subject) or _body_quotes_own_collection(body_text)):
+        return None
+    if _forces_account(subject, sender_email, body_text):
+        return None
+    if not _is_internal_sender(sender_email):
+        return "Resposta de cliente à cobrança — não é conta a pagar"
+    if any(_cites_honorarios(_attachment_text(path)) for path in attachments):
+        return None
+    return "Conversa interna sobre a cobrança, sem honorários — não é conta a pagar"
 
 
 def _is_receivable_notice(subject: str | None, description: str | None) -> bool:
     """True se o e-mail e um AVISO/relatorio de baixa de RECEBIVEL proprio (titulo
     que a empresa emitiu), nunca conta a pagar. Comparacao sem acento."""
-    subj = _strip_accents_lower(subject or "")
-    if any(t in subj for t in _RECEIVABLE_SUBJECT_TERMS):
+    if _is_own_collection_subject(subject):
         return True
     return bool(_RECEIVABLE_DESC_RE.search(_strip_accents_lower(description or "")))
+
+
+# Pedido de pagamento interno em que o anexo so comprova: o corpo responde pela conta.
+_BODY_ROUTE_ATTACHMENTS_KEY = "_body_route_attachments"
+_BODY_ROUTE_LEBIANCO_KEY = "_body_route_lebianco"
+_BODY_ROUTE_LE_BLANC_KEY = "_body_route_le_blanc"
+_BODY_ACCOUNT_IDS_KEY = "_body_account_ids"
+# Tipos que um comprovante pode receber do extrator. Allowlist: tipo novo fica no caminho do anexo.
+_NO_INSTRUMENT_DOC_TYPES = frozenset({"outro", "recibo", "nfe", "nfse"})
+
+
+def _row_has_payment_instrument(row: dict, pix_instruction_files) -> bool:
+    """A linha extraida traz meio proprio de pagamento? 🔴 `nosso_numero` nao entra: na conta 2227
+    o extrator gravou ali o rastreio dos Correios."""
+    return bool(str(row.get("barcode") or "").strip()
+                or _barcode_was_discarded(row.get("processing_notes"))
+                or str(row.get("payment_method") or "").strip().lower() == "boleto"
+                or _is_tax_document(row.get("document_type"))
+                or str(row.get("document_type") or "").strip().lower() not in _NO_INSTRUMENT_DOC_TYPES
+                or row.get("source_file") in pix_instruction_files)
+
+
+def _body_wins_over_attachments(rows: list, body_text: str | None, email_ctx: dict,
+                                pix_instruction_files) -> bool:
+    """PEDIDO DE PAGAMENTO interno com anexo que so comprova: o corpo vence e gera UMA conta.
+
+    Casos 2215 e 2227: o anexo era pedido de compra ou recibo, o vencimento caia na data da
+    extracao e o fornecedor era quem aparecia na pagina, enquanto o corpo trazia tudo certo. O
+    mesmo modelo SEM anexo acerta ha meses. 🔴 Frase e valor valem so no texto ESCRITO pelo
+    remetente, ACIMA da cadeia encaminhada: a conta 1242 traz o pedido da Estela sobre a conversa
+    com o fornecedor, enquanto "por gentileza" citado la embaixo nao e pedido nenhum."""
+    sender = email_ctx.get("sender_email")
+    own_text = _text_above_forward_chain(body_text)
+    if not (_is_internal_sender(sender)
+            and _BODY_PAYMENT_REQUEST_RE.search(own_text)
+            and _REQUEST_LABELED_AMOUNT_RE.search(own_text)
+            and _extract_body_amount(own_text)):
+        return False
+    if any(_row_has_payment_instrument(row, pix_instruction_files) for row in rows):
+        return False
+    # O corpo precisa responder de fato: sem isto o desvio trocaria uma conta do anexo por nada.
+    if (body_forwards_payment_confirmation(body_text)
+            and not _forces_account(email_ctx.get("subject"), sender, body_text)):
+        return False
+    body = extract_from_email_body(body_text, email_ctx.get("received_at"), "", sender,
+                                   subject=email_ctx.get("subject"))
+    subject = email_ctx.get("subject")
+    return bool(body and body.get("amount")
+                and (body.get("document_type") or "").strip().lower() not in SKIP_ACCOUNT_TYPES
+                and not _is_insurance_context(subject)
+                and not _is_transport_context(subject, body.get("supplier_name"),
+                                              body.get("document_type")))
 
 
 # 'Documento' visual que NAO e conta a pagar: imagem de assinatura/logo de e-mail
@@ -6280,8 +6828,13 @@ def _is_nonpayable_visual(row: dict) -> bool:
 def extract_and_store_accounts(saved_pdfs: list, message_id: str,
                                ctrl: "SupabaseControl",
                                email_rec: dict = None,
-                               body_text: str = "") -> tuple:
+                               body_text: str = "",
+                               route_body_when_no_instrument: bool = False) -> tuple:
     """Extrai cada PDF e grava as contas resultantes em financial_account_control.
+
+    `route_body_when_no_instrument` (so process_message liga): em pedido interno cujo anexo so
+    comprova, nao grava nada e deixa a conta para o caminho do corpo (_body_wins_over_attachments).
+    🔴 Opt-in: os scripts de reprocesso nao tem fallback de corpo e perderiam a conta.
 
     Liga cada conta ao e-mail por gmail_message_id; multiplos PDFs no mesmo
     e-mail recebem sufixo (#1, #2, ...) para nao colidir na chave unica.
@@ -6437,6 +6990,18 @@ def extract_and_store_accounts(saved_pdfs: list, message_id: str,
     # Seguradora (assunto com seguro/seguradora/apolice): so o boleto com linha digitavel
     # valida vira conta. Calculado uma vez — o assunto e o mesmo para todas as linhas.
     insurance_ctx = _is_insurance_context(email_rec.get("subject") if email_rec else None)
+    # 🔴 E-mail que sempre gera conta: as regras de "documento nao pagavel" nao descartam a linha.
+    forced_account = _forces_account(err_ctx.get("subject"), err_ctx.get("sender_email"), body_text)
+
+    if (route_body_when_no_instrument and email_rec is not None
+            and attachment_sizes
+            and _body_wins_over_attachments(pending, body_text, email_rec, pix_instruction_files)):
+        log.info("    [PEDIDO-INTERNO] anexo sem meio de pagamento — a conta sai do corpo")
+        # Do Passo 1 para o caminho do corpo. Chaves efemeras: register() so grava colunas nomeadas.
+        email_rec[_BODY_ROUTE_ATTACHMENTS_KEY] = dict(attachment_sizes)
+        email_rec[_BODY_ROUTE_LEBIANCO_KEY] = pdf_lebianco
+        email_rec[_BODY_ROUTE_LE_BLANC_KEY] = le_blanc_ref
+        return csvs_ok, 0, False, False
 
     # ------------------------------------------------------------------
     # Passo 2 — grava as contas
@@ -6466,6 +7031,9 @@ def extract_and_store_accounts(saved_pdfs: list, message_id: str,
                 log.info("    NFS-e com instrucao de pagamento PIX e sem boleto no e-mail — "
                          f"gera conta ({row.get('source_file')})")
                 _mark_nfse_own_charge(row)
+            elif forced_account:
+                log.info(f"    {dtype.upper()} em e-mail que sempre gera conta — mantido "
+                         f"({row.get('source_file')})")
             else:
                 log.info(f"    {dtype.upper()} ignorado — nao gera conta a pagar")
                 skipped_nonpayable += 1
@@ -6474,7 +7042,7 @@ def extract_and_store_accounts(saved_pdfs: list, message_id: str,
         gmid    = message_id if acc_index == 0 else f"{message_id}#{acc_index}"
         payload = build_financial_payload(row, gmid, received_at=err_ctx.get("received_at"),
                                           subject=err_ctx.get("subject"))
-        # Remetente do e-mail → o trigger alinha supplier.email (migration 023).
+        # Remetente do e-mail: a RPC de fornecedor o usa e anexa ao cadastro que resolveu.
         payload["sender_email"] = err_ctx.get("sender_email")
         payload["subject"]      = err_ctx.get("subject")  # exibido/buscado em /consulta (migration 025)
         ctx     = {**err_ctx, "source_file": row.get("source_file")}
@@ -6524,8 +7092,9 @@ def extract_and_store_accounts(saved_pdfs: list, message_id: str,
         # existe no payload aqui (removido so em _finalize_supplier). Um boleto de
         # transporte ja foi rotulado 'cte' em build_financial_payload e TEM barcode
         # de boleto — logo NAO cai aqui.
-        if (_is_transport_context(err_ctx.get("subject"), payload.get("supplier_name"),
-                                  payload.get("document_type"))
+        if (not forced_account
+                and _is_transport_context(err_ctx.get("subject"), payload.get("supplier_name"),
+                                          payload.get("document_type"))
                 and not _is_boleto_barcode(payload.get("barcode"))):
             log.info("    CT-e/transporte sem boleto ignorado — nao gera conta a pagar")
             skipped_nonpayable += 1
@@ -6587,7 +7156,7 @@ def extract_and_store_accounts(saved_pdfs: list, message_id: str,
         #     fica 0 → nonpayable_only=True → status 'ignorado' (nao 'falha').
         # Fica ACIMA de payable_attempts += 1 justamente para nao contar como tentativa
         # de pagavel (e o que diferencia 'ignorado' de 'falha' em status_for_result).
-        if insurance_ctx and not _is_boleto_barcode(payload.get("barcode")):
+        if insurance_ctx and not forced_account and not _is_boleto_barcode(payload.get("barcode")):
             log.info(
                 f"    Documento de seguradora sem boleto valido ignorado "
                 f"({row.get('source_file')})"
@@ -6598,10 +7167,15 @@ def extract_and_store_accounts(saved_pdfs: list, message_id: str,
             continue
 
         # Baixa/cancelamento de RECEBIVEL proprio (relatorio de titulos que a empresa
-        # EMITIU, ex.: "COBRANCA OTIMOTEX") NAO e conta a pagar → ignorado, sem logar
+        # EMITIU, ex.: "RES: COBRANCA OTIMOTEX TECIDO") NAO e conta a pagar → ignorado, sem logar
         # 'sem_fornecedor'. Roda antes das validacoes (o documento nao tem fornecedor
         # justamente por nao ser uma conta a pagar).
-        if _is_receivable_notice(err_ctx.get("subject"), row.get("description")):
+        # 🔴 Com a marca, process_message ja liberou a conversa (honorarios): o assunto nao pode
+        # descartar aqui a linha que ela liberou. A descricao continua valendo.
+        thread_cleared = bool(email_rec and email_rec.get(_OWN_THREAD_CLEARED_KEY))
+        if _is_receivable_notice(None if (thread_cleared or forced_account)
+                                 else err_ctx.get("subject"),
+                                 row.get("description")):
             log.info("    Baixa/cobranca de recebivel proprio ignorada — nao gera conta a pagar")
             skipped_nonpayable += 1
             continue
@@ -6724,8 +7298,13 @@ def extract_and_store_accounts(saved_pdfs: list, message_id: str,
             dup_notes = dup.get("processing_notes")
             unpresumed = ({"processing_notes": _without_due_date_markers(dup_notes)}
                           if _has_presumed_due_marker(dup_notes) else {})
+            # 🔴 Vencimento fixado e o dia em que o e-mail chegou, nao uma data do documento:
+            # reencaminhar o mesmo boleto nao e reemissao e reescreveria ate conta paga.
+            same_fixed_doc = (payload.get(DUE_DATE_FIXED_KEY)
+                              and (not new_barcode
+                                   or new_barcode == (dup.get("barcode") or "").strip()))
             # ISO 'YYYY-MM-DD' compara corretamente como string.
-            if new_due and (not old_due or str(new_due) > str(old_due)):
+            if new_due and not same_fixed_doc and (not old_due or str(new_due) > str(old_due)):
                 ctrl.update_financial(dup["id"], {
                     "due_date":       new_due,
                     "barcode":        new_barcode,
@@ -6852,11 +7431,23 @@ def try_extract_from_body(email_rec: dict, body_text: str, received_at: str,
     # anexado a uma confirmacao encaminhada nunca chega aqui e segue sendo pago.
     # NAO bloqueia 'lembrete' encaminhado (ver docstring de body_forwards_payment_
     # confirmation) — segue para a extracao normal + dedup de conteudo abaixo.
+    # 🔴 E-mail que sempre gera conta: as guardas de "nao e pagavel" deste caminho nao se aplicam.
+    forced_account = _forces_account(email_rec.get("subject"), sender_email, body_text)
     fwd_reason = body_forwards_payment_confirmation(body_text)
-    if fwd_reason:
+    if fwd_reason and not forced_account:
         log.info(f"    Confirmacao de pagamento encaminhada no corpo — ignorado ({fwd_reason})")
         email_rec["notes"] = fwd_reason
         return BODY_IGNORED
+
+    # Conversa da nossa cobranca. process_message ja decidiu vendo os anexos, e a marca evita
+    # refazer a decisao sem eles: honorarios citados so no PDF seriam ignorados aqui. O guard
+    # continua para quem entra direto nesta funcao (scripts/reprocess_body_emails.py).
+    if not email_rec.get(_OWN_THREAD_CLEARED_KEY):
+        own_reason = own_collection_ignore_reason(email_rec.get("subject"), sender_email, body_text)
+        if own_reason:
+            log.info(f"    Conversa da cobranca propria — ignorado ({own_reason})")
+            email_rec["notes"] = own_reason
+            return BODY_IGNORED
 
     # SEGURADORA: so boleto com linha digitavel valida vira conta (regra de negocio).
     # Detectado so pelo ASSUNTO — ver o bloco de _INSURANCE_TERMS: casar pelo remetente
@@ -6878,15 +7469,24 @@ def try_extract_from_body(email_rec: dict, body_text: str, received_at: str,
         email_rec["notes"] = "Corpo sem sinal financeiro (sem valor nem documento)"
         return BODY_NONE
 
-    # Remetente do e-mail → o trigger alinha supplier.email (migration 023).
+    # Remetente do e-mail: a RPC de fornecedor o usa e anexa ao cadastro que resolveu.
     payload["sender_email"] = sender_email
     payload["subject"]      = email_rec.get("subject")  # exibido/buscado em /consulta (migration 025)
+    routed_files = email_rec.get(_BODY_ROUTE_ATTACHMENTS_KEY)
+    if routed_files:
+        payload["source_file"] = next(iter(routed_files))
+    # 🔴 O desvio foi autorizado pelo valor do texto proprio: um "Valor total" da cadeia
+    # encaminhada nao pode ser o valor gravado.
+    if routed_files is not None:
+        own_amount = _extract_body_amount(_text_above_forward_chain(body_text))
+        if own_amount:
+            payload["amount"] = payload["amount_charged"] = own_amount
 
     # Mesma trava do caminho de PDF: NF-e/NFS-e nao geram conta a pagar.
     # Sem isso, notificacoes de nota fiscal (ex.: NFe da Editora Globo) vazavam
     # para financial_account_control como document_type='outro'.
     dtype = (payload.get("document_type") or "").strip().lower()
-    if dtype in SKIP_ACCOUNT_TYPES:
+    if dtype in SKIP_ACCOUNT_TYPES and not forced_account:
         log.info(f"    {dtype.upper()} (corpo do e-mail) ignorado — nao gera conta a pagar")
         email_rec["notes"] = f"{dtype.upper()} (corpo do e-mail) — nao gera conta a pagar"
         return BODY_NONE
@@ -6894,8 +7494,9 @@ def try_extract_from_body(email_rec: dict, body_text: str, received_at: str,
     # CT-e / transporte SEM boleto (corpo) NAO gera conta a pagar (regra 1). O corpo
     # raramente traz linha digitavel; um boleto de transporte ja teria sido rotulado
     # 'cte' com barcode valido em extract_from_email_body → nao cai aqui.
-    if (_is_transport_context(email_rec.get("subject"), payload.get("supplier_name"),
-                              payload.get("document_type"))
+    if (not forced_account
+            and _is_transport_context(email_rec.get("subject"), payload.get("supplier_name"),
+                                      payload.get("document_type"))
             and not _is_boleto_barcode(payload.get("barcode"))):
         log.info("    CT-e/transporte sem boleto (corpo) ignorado — nao gera conta a pagar")
         email_rec["notes"] = "CT-e/transporte sem boleto (corpo) — nao gera conta a pagar"
@@ -6906,7 +7507,7 @@ def try_extract_from_body(email_rec: dict, body_text: str, received_at: str,
     # DEPOIS do payload, e nao no topo da funcao, para nao descartar o caso legitimo em
     # que a propria seguradora escreve a linha digitavel no corpo — ai ha boleto valido
     # e a conta e criada normalmente.
-    if insurance_ctx and not _is_boleto_barcode(payload.get("barcode")):
+    if insurance_ctx and not forced_account and not _is_boleto_barcode(payload.get("barcode")):
         log.info("    Seguradora sem boleto valido (corpo) ignorado — nao gera conta a pagar")
         email_rec["notes"] = "E-mail de seguradora sem boleto valido em anexo/link"
         return BODY_IGNORED
@@ -6936,9 +7537,11 @@ def try_extract_from_body(email_rec: dict, body_text: str, received_at: str,
 
     # Empresa pagadora (LE BLANC -> ester -> LEBIANCO -> OTIMOTEX) pelo assunto/corpo/
     # remetente + fornecedor LE BLANC capturado acima. No payload BASE, antes do bloco de
-    # parcelas — os clones herdam sk_company via dict(payload). Sem pdf_lebianco: este e o
-    # caminho do CORPO (nao ha anexo pagavel).
-    apply_sk_company(payload, body_text=body_text, le_blanc=body_le_blanc)
+    # parcelas — os clones herdam sk_company via dict(payload). As flags do anexo so existem
+    # no pedido interno desviado: sem elas, a mencao que so o anexo faz mudaria a empresa.
+    apply_sk_company(payload, body_text=body_text,
+                     pdf_lebianco=bool(email_rec.get(_BODY_ROUTE_LEBIANCO_KEY)),
+                     le_blanc=body_le_blanc or bool(email_rec.get(_BODY_ROUTE_LE_BLANC_KEY)))
 
     # Write-back de contato (chave PIX / telefone / WhatsApp) do corpo do e-mail para
     # o cadastro do fornecedor. Best-effort, nao toca no payload. Roda no payload base,
@@ -6962,8 +7565,8 @@ def try_extract_from_body(email_rec: dict, body_text: str, received_at: str,
             num = f"{inst['doc']}/{inst['parcela']}" if inst.get("parcela") else inst["doc"]
             row["invoice_number"] = num
             row["amount"]   = inst["amount"]
-            row["due_date"] = inst["due_date"] or row.get("due_date")
-            if inst["due_date"]:
+            if inst["due_date"] and not row.get(DUE_DATE_FIXED_KEY):
+                row["due_date"] = inst["due_date"]
                 # A linha declara o proprio vencimento: deixa de ser presumido.
                 row["processing_notes"] = _without_due_date_markers(row.get("processing_notes"))
             if inst.get("issue_date"):
@@ -6978,8 +7581,10 @@ def try_extract_from_body(email_rec: dict, body_text: str, received_at: str,
                 dups += 1
                 continue
             row["invoice_number"] = ctrl.unique_invoice_number(num)
-            if ctrl.register_financial(row):
+            new_id = ctrl.register_financial(row)
+            if new_id:
                 created += 1
+                email_rec.setdefault(_BODY_ACCOUNT_IDS_KEY, []).append(new_id)
         if created:
             email_rec["notes"] = f"{created} conta(s) (parcelas) extraída(s) do corpo do e-mail"
             return BODY_CREATED
@@ -7002,12 +7607,26 @@ def try_extract_from_body(email_rec: dict, body_text: str, received_at: str,
     if payload.get("invoice_number"):
         payload["invoice_number"] = ctrl.unique_invoice_number(payload["invoice_number"])
 
-    if ctrl.register_financial(payload):
+    new_id = ctrl.register_financial(payload)
+    if new_id:
+        email_rec.setdefault(_BODY_ACCOUNT_IDS_KEY, []).append(new_id)
         log.info("    Conta extraída do corpo do e-mail e gravada em financial_account_control")
         return BODY_CREATED
 
     email_rec["notes"] = "Falha ao gravar conta extraida do corpo do e-mail"
     return BODY_NONE
+
+
+def _link_routed_attachments(ctrl, rec: dict, sender_email: "str | None") -> None:
+    """Vincula TODOS os arquivos do pedido interno desviado a conta criada (ou a que ele
+    duplicou). 🔴 Parte dos arquivos, nao das linhas: na 2227 uma das duas fotos nao gerou linha e
+    ficou no Storage sem vinculo. Nao-fatal como os demais vinculos: a conta ja esta gravada."""
+    account_ids = rec.get(_BODY_ACCOUNT_IDS_KEY) or (
+        [rec["duplicate_of"]] if rec.get("duplicate_of") else [])
+    for account_id in account_ids:
+        for file_name, size_bytes in rec[_BODY_ROUTE_ATTACHMENTS_KEY].items():
+            ctrl.register_attachment(account_id, file_name, size_bytes=size_bytes,
+                                     uploaded_by=ctrl.resolve_user(sender_email))
 
 
 # ---------------------------------------------------------------------------
@@ -7447,6 +8066,39 @@ def _rfc822_from_fetch(data: list) -> "tuple[bytes | None, bytes]":
     raise ValueError("FETCH nao retornou conteudo RFC822")
 
 
+def _effective_body_text(msg) -> str:
+    """Texto do corpo, com o HTML no lugar de corpo vazio ou de placeholder.
+
+    E-mail SO-HTML (ex.: Correios): sem texto plano, extrai do HTML para que o fallback de
+    corpo (try_extract_from_body) encontre valor/fatura/etc.
+
+    O 2o caso — texto plano de PLACEHOLDER — foi descoberto em 2026-08-03: a plataforma SSW
+    manda um text/plain de 55 chars dizendo que o conteudo esta em HTML. Como ele NAO e vazio, o
+    fallback antigo (`if not body_text`) nunca disparava: 29 e-mails gravaram esse aviso como se
+    fosse o corpo, a guarda do cedente (_ssw_cedente_from_body) nunca teve texto para ler e o
+    `body_full` da Onda 2 ficou inutil para a busca do chat de IA.
+
+    So substitui quando o HTML rende algo — senao um HTML vazio/ilegivel apagaria ate o pouco
+    que havia."""
+    body_text = get_body_text(msg)
+    if not body_text or _plain_body_is_placeholder(body_text):
+        html_text = _html_to_text(get_body_html(msg))
+        if html_text:
+            body_text = html_text
+    return body_text
+
+
+def _message_forces_account(mail, uid: bytes, subject: "str | None",
+                            sender_email: "str | None") -> bool:
+    """O e-mail sempre gera conta? Baixa o corpo com PEEK so se assunto e remetente nao bastarem,
+    para nao marcar como lido um e-mail que pode acabar ignorado. Falha de IMAP SOBE ao chamador."""
+    if _forces_account(subject, sender_email, None):
+        return True
+    _, data = mail.uid("fetch", uid, "(BODY.PEEK[])")
+    _, raw = _rfc822_from_fetch(data)
+    return _forces_account(subject, sender_email, _effective_body_text(email.message_from_bytes(raw)))
+
+
 def process_message(mail, uid: bytes, keywords: list,
                     dry_run: bool, mark_seen: bool,
                     ctrl: SupabaseControl) -> dict | None:
@@ -7470,24 +8122,12 @@ def process_message(mail, uid: bytes, keywords: list,
         # received_at canonico (INTERNALDATE -> header Date -> agora; nunca futuro).
         received_at = _received_at_from(meta, date_header)
 
-        body_text    = get_body_text(msg)
-        # E-mail SO-HTML (ex.: Correios): sem texto plano, extrai do HTML para que
-        # o fallback de corpo (try_extract_from_body) encontre valor/fatura/etc.
-        #
-        # O 2o caso — texto plano de PLACEHOLDER — foi descoberto em 2026-08-03: a
-        # plataforma SSW manda um text/plain de 55 chars dizendo que o conteudo esta em
-        # HTML. Como ele NAO e vazio, o fallback antigo (`if not body_text`) nunca
-        # disparava: 29 e-mails gravaram esse aviso como se fosse o corpo, a guarda do
-        # cedente (_ssw_cedente_from_body) nunca teve texto para ler e o `body_full` da
-        # Onda 2 ficou inutil para a busca do chat de IA.
-        #
-        # So substitui quando o HTML rende algo — senao um HTML vazio/ilegivel apagaria
-        # ate o pouco que havia.
-        if not body_text or _plain_body_is_placeholder(body_text):
-            html_text = _html_to_text(get_body_html(msg))
-            if html_text:
-                body_text = html_text
+        body_text    = _effective_body_text(msg)
+        forced_account = _forces_account(subject, sender_email, body_text)
         keyword_hit  = match_keyword(subject, keywords)
+        if forced_account and not keyword_hit:
+            keyword_hit = (HONORARIOS_KEYWORD if _cites_honorarios(subject, body_text)
+                           else REEMBOLSO_KEYWORD)
 
         rec.update({
             "message_id":     message_id,
@@ -7509,6 +8149,24 @@ def process_message(mail, uid: bytes, keywords: list,
 
         # Baixar PDFs e acionar extração
         saved_pdfs = save_attachments(msg, sender_email, subject, received_at)
+
+        # Conversa da nossa cobranca: decide ANTES de upload e extracao, sem gastar API.
+        own_reason = own_collection_ignore_reason(subject, sender_email, body_text, saved_pdfs)
+        if own_reason:
+            log.info(f"    Conversa da cobranca propria — ignorado ({own_reason})")
+            rec.update({
+                "status":           "ignorado",
+                "notes":            own_reason,
+                "has_attachment":   bool(saved_pdfs),
+                "attachment_names": " | ".join(p.name for p in saved_pdfs) or None,
+            })
+            if mark_seen:
+                mail.uid("store", uid, "+FLAGS", "\\Seen")
+            ctrl.register(rec)
+            ctrl.delete_errors(message_id, API_ERROR_TYPE)
+            append_log_csv(rec)
+            return rec
+        rec[_OWN_THREAD_CLEARED_KEY] = True
 
         # Sem anexo direto: tentar baixar PDF de links no corpo do e-mail.
         # `pdf_links` PRECISA nascer aqui, fora do `if`: ele é lido incondicionalmente
@@ -7557,7 +8215,8 @@ def process_message(mail, uid: bytes, keywords: list,
             rec["notes"] = "Imagem inline do corpo lida via Vision"
 
         csvs_ok, accounts_saved, nonpayable_only, attachment_account = extract_and_store_accounts(
-            saved_pdfs, message_id, ctrl, email_rec=rec, body_text=body_text)
+            saved_pdfs, message_id, ctrl, email_rec=rec, body_text=body_text,
+            route_body_when_no_instrument=True)
 
         csv_generated = len(csvs_ok) > 0
         rec["pdf_extracted"]  = csv_generated
@@ -7584,6 +8243,23 @@ def process_message(mail, uid: bytes, keywords: list,
                 rec["notes"]         = "Conta extraída do corpo do e-mail"
         body_created = body_outcome == BODY_CREATED
 
+        # Pedido interno desviado para o corpo. 🔴 Se o corpo nao respondeu, o CSV do anexo nao
+        # gerou conta nenhuma: sem isto o status seria 'extraído', sem conta e sem erro.
+        if rec.get(_BODY_ROUTE_ATTACHMENTS_KEY) is not None:
+            _link_routed_attachments(ctrl, rec, sender_email)
+            if body_outcome == BODY_NONE:
+                csv_generated = False
+                rec["pdf_extracted"] = False
+                # Com conta obrigatoria, o dead-man switch abaixo registra este mesmo desfecho.
+                if not forced_account:
+                    ctrl.register_error(
+                        rec, "falha_processamento",
+                        "Pedido de pagamento com anexo: conta não gerada pelo corpo — "
+                        + (rec.get("notes") or "motivo não informado"),
+                        raw_payload={"subject": rec.get("subject"),
+                                     "attachment_names": rec.get("attachment_names")},
+                    )
+
         # LEMBRETE DE VENCIMENTO: e-mail que NAO gerou conta (nem casou uma por dedup) pode
         # anunciar a data de uma conta ja registrada com vencimento PRESUMIDO. Nao-fatal; nunca
         # cria conta nem fornecedor. Aplicado, o e-mail cumpriu seu papel e nao vai a /erros.
@@ -7609,6 +8285,14 @@ def process_message(mail, uid: bytes, keywords: list,
             duplicate=(body_outcome == BODY_DUPLICATE
                        or _pdf_only_deduplicated(attachment_account, accounts_saved)),
             nonpayable=(nonpayable_only or body_outcome == BODY_IGNORED))
+
+        # 🔴 DEAD-MAN SWITCH: conta obrigatoria e nao ha conta nem duplicata ⇒ 'falha', com linha em
+        # /erros. Nenhum sinal de 'ignorado' pode esconder esse desfecho (e-mail 1720).
+        if forced_account and not (accounts_saved or body_created or attachment_account
+                                   or body_outcome == BODY_DUPLICATE):
+            rec["status"] = "falha"
+            rec["notes"] = ("Honorários ou reembolso sem conta gerada — "
+                            + (rec.get("notes") or "motivo não informado"))
 
         # Regra: TODA falha gera log em email_processing_errors para revisão —
         # inclusive o corpo sem sinal financeiro, que antes saía silencioso.
@@ -7867,9 +8551,24 @@ def run_reader(days: int = 0, all_: bool = False,
                 skipped_kw += 1
                 continue
 
+            # 🔴 Honorarios e reembolso sempre geram conta, e os filtros abaixo decidem sem
+            # baixar o corpo. So o e-mail que eles ignorariam paga esse download, uma vez. Falha
+            # de IMAP nao registra nada: gravar 'ignorado' o tiraria para sempre da fila.
+            own_client_reply = (_is_own_collection_subject(subject)
+                                and not _is_internal_sender(sender_email))
+            try:
+                forced_account = (
+                    (subject_is_payment_confirmation(subject) or subject_is_reminder(subject)
+                     or own_client_reply or not match_keyword(subject, keywords))
+                    and _message_forces_account(mail, uid, subject, sender_email))
+            except Exception:
+                log.exception(f"  [SKIP] UID {uid} — corpo ilegivel; volta no proximo run")
+                skipped_kw += 1
+                continue
+
             # Confirmacao/comprovante de PAGAMENTO (pagamento ja realizado) → 'ignorado'
             # sem baixar/extrair, MESMO com keyword no assunto: nao e conta a pagar.
-            if subject_is_payment_confirmation(subject):
+            if not forced_account and subject_is_payment_confirmation(subject):
                 if not dry_run:
                     _register_ignored(ctrl, msg_id, subject, sender_name, sender_email,
                                       received_at, "Confirmação de pagamento — pagamento já realizado (não é conta a pagar)")
@@ -7879,7 +8578,7 @@ def run_reader(days: int = 0, all_: bool = False,
 
             # Assunto com "lembrete" → 'ignorado' sem baixar/extrair, MESMO com keyword/anexo:
             # e so um lembrete/aviso, nao a conta a pagar (decisao do usuario).
-            if subject_is_reminder(subject):
+            if not forced_account and subject_is_reminder(subject):
                 if not dry_run:
                     _register_ignored(ctrl, msg_id, subject, sender_name, sender_email,
                                       received_at, "Lembrete/aviso — não é conta a pagar")
@@ -7887,9 +8586,19 @@ def run_reader(days: int = 0, all_: bool = False,
                 skipped_kw += 1
                 continue
 
+            # Resposta de CLIENTE a nossa cobranca → 'ignorado' sem baixar/extrair. A resposta
+            # INTERNA segue para process_message, que precisa do anexo para procurar honorarios.
+            if not forced_account and own_client_reply:
+                if not dry_run:
+                    _register_ignored(ctrl, msg_id, subject, sender_name, sender_email,
+                                      received_at, "Resposta de cliente à cobrança — não é conta a pagar")
+                log.info(f"  [IGN resposta cobrança] {subject[:55]}")
+                skipped_kw += 1
+                continue
+
             # Fora do filtro de assunto → registra como 'ignorado' (sem baixar/extrair),
             # para que /emails reflita a caixa inteira (o app substitui abrir o webmail).
-            if not match_keyword(subject, keywords):
+            if not forced_account and not match_keyword(subject, keywords):
                 if not dry_run:
                     _register_ignored(ctrl, msg_id, subject, sender_name, sender_email,
                                       received_at, "Fora do filtro de assunto (não-financeiro)")
