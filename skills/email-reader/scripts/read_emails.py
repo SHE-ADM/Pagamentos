@@ -2598,10 +2598,43 @@ def subject_is_payment_confirmation(subject: str) -> bool:
 # acento) — pega o plural "lembretes"; "lembrete" nao e substring de outra palavra comum.
 
 
+#
+# AVISO COMBINADO — "aviso" SOZINHO nao entra, e a ausencia e deliberada: medido em 2026-11-17,
+# "Aviso de vencimento" (PEGAMIL 3/181/261, CATAGUASES 5/18, ESPRO 176), "Aviso de fatura a
+# vencer" (HB 93) e ate "Aviso de Atraso Titulo" (HB 1792) foram a UNICA fonte de contas PAGAS —
+# e assim que esses fornecedores mandam o boleto. "aviso" so descarta quando o QUALIFICADOR prova
+# que nao ha divida NOVA no e-mail:
+#   1. REITERACAO ordinal de cobranca ja emitida ("Primeiro aviso de vencimento", "2o aviso",
+#      "Ultimo aviso", "Aviso final"). Caso real: conta 2499 (Smart Web, 16/11/2026) — o aviso
+#      reemitiu a fatura 18689 da conta 2278 com juros (R$ 4.690,86 -> R$ 4.784,68) e o Nº em outro
+#      formato ("WHMCS-INVOICE-J1-18689"), entao nenhuma impressao da dedup a casou.
+#   2. Aviso POS-pagamento: recebimento, baixa, liquidacao, quitacao, credito, compensacao — o
+#      titulo ja foi pago (ou e credito A NOSSO favor).
+# 🔴 Fora de proposito: "aviso de pagamento" (pode ser o envio do boleto), "aviso de debito" (nota
+# de debito e pagavel) e "aviso de atraso"/"vencido" (conta 1792). Ampliar exige medir de novo.
+# Ordinal NUMERICO exige o marcador COLADO ao numero ("1o", "2a", "1.o", "2a."): com espaco
+# ("Pedido 5 o aviso") o "o"/"a" e artigo, nao ordinal.
+_REMINDER_AVISO_RE = re.compile(
+    r"\b(?:primeiro|segundo|terceiro|quarto|quinto|sexto|setimo|oitavo|nono|decimo|ultimo)"
+    r"\s+aviso\b"
+    r"|\b\d{1,2}\.?[oa]\.?\s*aviso\b"
+    r"|\baviso\s+final\b"
+    r"|\baviso\s+(?:de|do|da)\s+"
+    r"(?:recebimento|baixa|liquidacao|quitacao|credito|compensacao)\b"
+)
+_ORDINAL_INDICATORS = str.maketrans({"º": "o", "ª": "a", "°": "o"})
+
+
 def subject_is_reminder(subject: str) -> bool:
-    """True se o assunto contem a palavra 'lembrete' — e um lembrete/aviso, nao conta a pagar;
-    ignorado SEMPRE (decisao do usuario)."""
-    return "lembrete" in _strip_accents_lower(subject)
+    """True se o assunto e um LEMBRETE ('lembrete') ou um AVISO COMBINADO com qualificador que
+    prova que nao ha divida nova (reiteracao ordinal ou aviso pos-pagamento) — ignorado SEMPRE,
+    antes de baixar/extrair (decisao do usuario). 'aviso' sozinho NAO casa (ver _REMINDER_AVISO_RE).
+    Espacos colapsados: decode_str devolve espaco duplo quando so a palavra acentuada vem codificada."""
+    # Indicador ordinal (º/ª/°) nao tem decomposicao NFD e sumiria no strip: "1º aviso" -> "1 aviso".
+    ordinal = (subject or "").translate(_ORDINAL_INDICATORS)
+    # Colapsar ANTES do strip: o strip descarta o NBSP (nao-ASCII) e colaria "ultimo\xa0aviso".
+    s = _strip_accents_lower(re.sub(r"\s+", " ", ordinal))
+    return "lembrete" in s or _REMINDER_AVISO_RE.search(s) is not None
 
 
 
@@ -8576,13 +8609,13 @@ def run_reader(days: int = 0, all_: bool = False,
                 skipped_kw += 1
                 continue
 
-            # Assunto com "lembrete" → 'ignorado' sem baixar/extrair, MESMO com keyword/anexo:
-            # e so um lembrete/aviso, nao a conta a pagar (decisao do usuario).
+            # Assunto com "lembrete" ou AVISO COMBINADO (reiteracao ordinal / pos-pagamento) →
+            # 'ignorado' sem extrair, MESMO com keyword/anexo: nao e divida nova (decisao do usuario).
             if not forced_account and subject_is_reminder(subject):
                 if not dry_run:
                     _register_ignored(ctrl, msg_id, subject, sender_name, sender_email,
                                       received_at, "Lembrete/aviso — não é conta a pagar")
-                log.info(f"  [IGN lembrete] {subject[:55]}")
+                log.info(f"  [IGN lembrete/aviso] {subject[:55]}")
                 skipped_kw += 1
                 continue
 

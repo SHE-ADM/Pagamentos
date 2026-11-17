@@ -1,5 +1,51 @@
 # Histórico de deploys
 
+## 2026-11-17 (2º) — Extração: ajustes do aviso COMBINADO (code review max)
+
+**O que foi ao ar:**
+- Espaços (inclusive NBSP) são colapsados ANTES do strip de acento: "Último aviso" deixava de
+  casar porque o strip descartava o NBSP e colava as palavras.
+- Ordinal numérico exige o marcador COLADO ao número (`1º`, `2ª`, `1.º`, `2a.`, `1ºaviso`): "Pedido 5
+  o aviso" (artigo) deixa de casar. Ordinais por extenso vão até "décimo".
+- Tag de log `[IGN lembrete]` → `[IGN lembrete/aviso]`.
+- Mantido por decisão do usuário: a reiteração segue `ignorado` mesmo sem conta da 1ª emissão (0
+  casos no histórico; recuperável por `reprocess_message.py`).
+
+**Arquivos:** `read_emails.py`, `deploy-manifest.json`. Sem migration, `.env` ou dependência nova.
+
+**Verificação:**
+- No DEV: `pytest` 2118 passed; 4 mutantes (um por ajuste) mortos; sobre os 3.585 assuntos reais o
+  regex novo casa os MESMOS 3 e-mails do anterior (3628, 3164, 2262).
+- Em produção (2026-11-17, cópia feita pelo usuário): `check_deploy_parity.py` → **32/32**, 0
+  faltando, 0 divergentes, 0 extras, "Produção em paridade com o repositório"; SHA-256 do
+  `read_emails.py` igual ao do repositório (`94D7A615…03708006`).
+
+## 2026-11-17 — Extração: aviso COMBINADO ignorado antes do download
+
+**O que foi ao ar:**
+- `subject_is_reminder` passa a casar, além de "lembrete", "aviso" + qualificador que prova que não
+  há dívida nova: reiteração ordinal ("Primeiro/Último aviso", "1º aviso", "Aviso final") e aviso
+  pós-pagamento ("aviso de recebimento/baixa/liquidação/quitação/crédito/compensação").
+- "aviso" sozinho segue fora — "Aviso de vencimento" e "Aviso de Atraso" já foram a única fonte de
+  contas pagas (PEGAMIL, CATAGUASES, HB 1792).
+- Caso de origem: conta 2499 (Smart Web), reemissão com juros da fatura 18689 (conta 2278). A conta
+  foi removida e o e-mail 3628 reclassificado para `ignorado`.
+
+Detalhe em [docs/knowledge/pipeline-extracao.md](../knowledge/pipeline-extracao.md).
+
+**Arquivos:** `read_emails.py`, `deploy-manifest.json`. Sem migration, `.env` ou dependência nova.
+
+**Verificação:**
+- No DEV: `pytest` 2118 passed; mutante (ramo do aviso removido) morto por 3 testes.
+- Regressão nos 3.579 assuntos reais: o filtro pega só 3 e-mails (a 2499 e dois phishing já
+  ignorados); nenhuma conta legítima afetada.
+- Em produção (2026-11-17, cópia feita pelo usuário): `check_deploy_parity.py` → **32/32**, 0
+  faltando, 0 divergentes, 0 extras; SHA-256 do `read_emails.py` igual ao do repositório
+  (`171A5E64…C8A2F4F`); smoke test de `subject_is_reminder` no Python de produção → 9/9 (5 avisos
+  descartados, 4 avisos legítimos preservados); tarefa disparada à mão às 09:16 → `LastTaskResult`
+  0, sem Traceback no log; no banco, processamento seguindo após o deploy (09:55) e 0 conta de
+  aviso criada no dia.
+
 ## 2026-11-10 — Extração: chave PIX confirmada pelo cadastro e NF curta do corpo
 
 **O que foi ao ar:**

@@ -1767,7 +1767,7 @@ vencimento da conta já existente do mesmo fornecedor.
 - **Status do e-mail:** lembrete aplicado (atualização **ou** confirmação) entra como
   `notification` ⇒ `ignorado`, não `/erros`.
 
-⚠️ **Limites conhecidos:** assunto com `lembrete` continua ignorado **antes** do download e não
+⚠️ **Limites conhecidos:** assunto com `lembrete` (ou aviso COMBINADO) continua ignorado **antes** do download e não
 passa pelo hook; entre a fatura e o 1º lembrete a conta tem vencimento = emissão e o batch diário a
 marca `vencido`; a forma de pagamento da fatura sem dado segue `outro`.
 
@@ -2047,7 +2047,8 @@ reusa a mesma função. Limpeza retroativa (2026-07-28): **hard delete da conta 
 → `ignorado`. Auditoria: era o **único** caso na base — todos os demais e-mails que casam a
 regra já estavam `ignorado`.
 
-**Assunto com "lembrete" → `ignorado` (não é conta a pagar — não regredir):** e-mail cujo ASSUNTO
+**Assunto com "lembrete" (ou AVISO COMBINADO, ver abaixo) → `ignorado` (não é conta a pagar — não
+regredir):** e-mail cujo ASSUNTO
 contém a palavra **`lembrete`** (substring, sem acento — `subject_is_reminder`) vira `ignorado`
 **sem baixar nem extrair**, no mesmo ponto do loop de `run_reader` (logo após
 `subject_is_payment_confirmation`), então vale **mesmo com keyword/anexo** (ex.: "Lembrete de
@@ -2056,7 +2057,26 @@ Pagamento: vencimento 10/06/2026", de `boleto@smartwebservices.com.br`). Decisã
 basta (pode ser um boleto real, ex.: "Boleto vencimento 10/07"). Distinto de
 `NOTIFICATION_PHRASE_TERMS` (nível FRACO — só `ignorado` sem anexo/conta) e de
 `subject_is_payment_confirmation` (pagamento JÁ feito). Substring pega o plural `lembretes`. Teste:
-`tests/test_match_keyword.py` (`ReminderSubjectTest`). Limpeza retroativa (2026-07-07): **hard
+`tests/test_match_keyword.py` (`ReminderSubjectTest`).
+
+**AVISO COMBINADO (2026-11-17) — mesma função, mesmo ponto do loop.** `subject_is_reminder` também
+casa "aviso" + **qualificador que prova que não há dívida nova** (`_REMINDER_AVISO_RE`):
+**reiteração ordinal** ("Primeiro/Segundo/…/Último aviso", "1º/2ª/2o aviso", "Aviso final") e
+**aviso pós-pagamento** ("aviso de recebimento/baixa/liquidação/quitação/crédito/compensação").
+Caso de origem: conta **2499** (Smart Web, "Primeiro aviso de vencimento — WHMCS-INVOICE-J1-18689")
+reemitiu a fatura 18689 da conta **2278** com juros (R$ 4.690,86 → R$ 4.784,68) e o Nº em outro
+formato, e **nenhuma impressão da dedup casou** — valor, barcode e Nº diferiam. A conta foi removida
+(hard delete, pedido do usuário) e o e-mail 3628 reclassificado para `ignorado`.
+🔴 **"aviso" SOZINHO nunca descarta.** Medido sobre os 3.579 e-mails: "Aviso de vencimento"
+(PEGAMIL 3/181/261, CATAGUASES 5/18, ESPRO 176), "Aviso de fatura a vencer" (HB 93) e **"Aviso de
+Atraso Título"** (HB 1792, paga) foram a **única fonte** de contas pagas. Por isso ficam fora, de
+propósito: "aviso de pagamento" (pode ser o envio do boleto), "aviso de débito" (nota de débito é
+pagável) e "atraso/vencida". O ordinal por extenso vai de "primeiro" a "décimo" + "último"; o
+numérico **exige marcador COLADO** ao número (`1º`, `2ª`, `1.º`, `2a.`, normalizados antes do NFD):
+"dia 15 aviso" e "Pedido 5 o aviso" (artigo, não ordinal) não casam. Espaços — inclusive NBSP — são
+colapsados ANTES do strip de acento, que descartaria o NBSP e colaria "último aviso". Aplicado ao histórico inteiro, o filtro pega só 3 e-mails: a 2499
+e dois phishing já ignorados. Ampliar exige medir de novo. Teste: `tests/test_aviso_reminder.py`
+(inclui execução do `run_reader`). Limpeza retroativa (2026-07-07): **hard
 delete de 5 contas** com "lembrete" no assunto (4 "Lembrete de Pagamento: vencimento" de
 `boleto@smartwebservices` + 1 "ENC: Lembrete Sua Fatura") + os `email_control` correspondentes → `ignorado`.
 
@@ -2167,11 +2187,12 @@ atua quando há PDF extraído; aqui não há anexo, então cai neste nível. Com
 **último** critério de `status_for_result`, um boleto de transporte real gera conta ANTES e não é
 escondido. **`fatura a vencer`/`aviso de fatura`** cobrem o aviso da transitobrasil ("Aviso de
 fatura a vencer"). Testes: `tests/test_nonpayable_rules.py` + `tests/test_match_keyword.py`.
-**Nota:** qualquer assunto com a palavra `lembrete` já é ignorado **antes** deste ponto, no
+**Nota:** qualquer assunto com a palavra `lembrete` — ou com AVISO COMBINADO ("Primeiro/Último
+aviso", "Aviso final", "aviso de recebimento/baixa/…") — já é ignorado **antes** deste ponto, no
 nível FORTE (`subject_is_reminder`, sem baixar/extrair — ver "Assunto com 'lembrete'"), então o
 termo `lembrete de vencimento` aqui é redundante; os demais termos de vencimento (`aviso de
-vencimento`/`título a vencer`/`títulos próximos do vencimento`, sem "lembrete") seguem valendo só
-neste nível FRACO (só `ignorado` na ausência de anexo/conta).
+vencimento`/`título a vencer`/`títulos próximos do vencimento`, sem "lembrete" nem qualificador de
+reiteração) seguem valendo só neste nível FRACO (só `ignorado` na ausência de anexo/conta).
 Avisos sem termo generalizável (oferta de frete, "nova área do cliente", "taxa de
 agendamento") são marcados por **Message-ID** em `EXPLICIT_IGNORE_IDS`
 (`scripts/reprocess_ignored_emails.py`). **Não** há exclusão por boleto/fatura aqui — o
