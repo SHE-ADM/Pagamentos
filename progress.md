@@ -7,7 +7,7 @@
 > 🔴 **Contador que o comando responde melhor NÃO se escreve aqui.** Antes de anotar um número,
 > pergunte se existe comando que o produz — se existir, anote o comando, não o número.
 >
-> **Atualizado em:** 2026-11-10
+> **Atualizado em:** 2026-11-17
 
 ---
 
@@ -51,8 +51,8 @@ Procedimento completo na skill **`deploy-producao`**. Histórico de cada deploy:
 
 | Item | Estado |
 |---|---|
-| Último deploy | **2026-11-10** — extração: chave PIX confirmada pelo cadastro (conta 1677, migration 153) + NF curta do corpo e filtro de família do `unique_invoice_number` (migration 152). Arquivos: `read_emails.py` + `deploy-manifest.json`. Anterior: **2026-11-09** — CPF de chave PIX de terceiro (migration 151). Detalhe em [docs/deploy/historico-deploys.md](docs/deploy/historico-deploys.md) |
-| Paridade verificada | ✅ **em produção** (2026-11-10) — `check_deploy_parity.py`: **32/32 conferem, 0 faltando, 0 divergentes, 0 extras**, "Produção em paridade com o repositório"; SHA-256 do `read_emails.py` em produção = `C0E6BC53…3235B1ED7`, **igual ao do repositório** |
+| Último deploy | **2026-11-17 (2º)** — extração: ajustes do aviso COMBINADO vindos do code review max (NBSP, ordinal colado, ordinais até "décimo"). Arquivos: `read_emails.py` + `deploy-manifest.json`. Anterior: **2026-11-17 (1º)** — aviso COMBINADO ignorado antes do download (conta 2499). Detalhe em [docs/deploy/historico-deploys.md](docs/deploy/historico-deploys.md) |
+| Paridade verificada | ✅ **em produção** (2026-11-17, 2º deploy) — `check_deploy_parity.py`: **32/32 conferem, 0 faltando, 0 divergentes, 0 extras**, "Produção em paridade com o repositório"; SHA-256 do `read_emails.py` em produção = `94D7A615…03708006`, **igual ao do repositório** |
 | Tarefas agendadas | 5 ativas — Email Reader (5 min) · Cobrança (10:00) · Backup (02:00) · Baixa (08:00) · Gatilhos Roadmap (dia 1, 07:00) |
 
 ⏳ **Não exercitado em produção ainda:** a captura **automática** de conteúdo de CT-e a partir

@@ -198,7 +198,8 @@ corrige o vencimento — decisão do usuário em 2026-09-14 (caso Leadster).
   lembrete nunca é movida** — só reconhece o lembrete repetido; senão o lembrete da fatura
   seguinte (ainda sem conta) moveria a anterior em aberto. O PATCH é condicionado ao
   `due_date` lido, com `return=representation`; lista acima do teto ⇒ não decide.
-- ⚠️ Assunto com `lembrete` é ignorado **antes** do download (decisão anterior) e não passa aqui.
+- ⚠️ Assunto com `lembrete` ou aviso COMBINADO é ignorado **antes** do download (decisão anterior)
+  e não passa aqui.
 - ⚠️ Entre a fatura e o 1º lembrete a conta tem vencimento = emissão, e o batch diário a marca
   `vencido` nesse intervalo.
 
@@ -461,7 +462,12 @@ propósito, porque ele desemboca no auto-insert.
 - 🔴 **`match_keyword` casa acrônimo de tributo por PALAVRA INTEIRA** (`das`, `iss`, `gru`, `dae`)
   — substring pegaria "ca**das**tro", "em**iss**ão", "**gru**po".
 - **Filtros FORTES** (antes do match): remetente de sistema, **confirmação de pagamento**
-  (particípio no passado) e `lembrete`. 🔴 A forma NEGADA inverte: "**não** recebemos o seu
+  (particípio no passado), `lembrete` e **aviso COMBINADO** (`subject_is_reminder`: reiteração
+  ordinal "Primeiro/Último aviso", "Aviso final", ou "aviso de recebimento/baixa/liquidação/…").
+  🔴 **"aviso" SOZINHO nunca descarta** — "Aviso de vencimento" e "Aviso de Atraso" já foram a
+  ÚNICA fonte de contas pagas (PEGAMIL, CATAGUASES, HB 1792). Ordinal numérico só com marcador
+  COLADO (`1º`, `2a.`): "Pedido 5 o aviso" é artigo. Ampliar o regex exige medir o histórico.
+  🔴 A forma NEGADA inverte: "**não** recebemos o seu
   pagamento" é COBRANÇA.
 - **Filtro FRACO** (`notification`) só produz `ignorado` quando não houve anexo/CSV/conta. 🔴
   `email_sem_conteudo_extraivel` exige **AUSÊNCIA de link** — com link, o download fracassou e
