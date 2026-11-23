@@ -24,8 +24,12 @@ preciso reiniciar nada**.
 
 **Copiar** — `skills\email-reader\scripts\read_emails.py`,
 `skills\pdf-contas-pagar\scripts\extract_pdf.py`, `skills\pdf-contas-pagar\scripts\febraban.py`,
-`skills\pdf-contas-pagar\scripts\fiscal_key.py`, `skills\pdf-contas-pagar\scripts\cte_content.py`
-(os que tiverem mudado) **+ `scheduler\deploy-manifest.json`**.
+`skills\pdf-contas-pagar\scripts\fiscal_key.py`, `skills\pdf-contas-pagar\scripts\cte_content.py`,
+`skills\pdf-contas-pagar\scripts\alura_fiscal.py` (os que tiverem mudado) **+ `scheduler\deploy-manifest.json`**.
+
+⚠️ **`alura_fiscal.py` é ARQUIVO NOVO (regra ALURA, 2026-11-23)** — importado **lazy** (degrada com aviso
+`modulo 'alura_fiscal' indisponivel`: o e-mail mensal da Alura volta a `ignorado`) e **depende de
+`fiscal_key.py`** (copie os dois). Detalhe: `docs/knowledge/pipeline-extracao.md`.
 
 🔴 **Interdependentes.** `read_emails.py` chama `extract_pdf.extract_to_csv()` **in-process**; e
 `extract_pdf.py` importa `febraban` e `fiscal_key` **no topo** — módulo ausente ⇒ `ImportError` ⇒

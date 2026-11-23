@@ -2207,3 +2207,49 @@ pelo corpo** (fornecedor SIEG, valor, vencimento). O `bill=NNN` do link SIEG
 ("Vencimento Próximo" + "Hoje") da mesma fatura **deduplicarem** (antes geravam 2 contas/mês
 porque o nº saía de data relativa e divergia). Isso **revoga** a regra anterior de manter
 faturas SIEG em `ignorado`; o handler A1 (baixar o boleto real) segue como melhoria futura.
+
+### Regra ALURA — e-mail mensal com NF de produto + NF de serviço (2026-11-23)
+
+**Caso de origem:** e-mails 3791/3792 (`ENC: Fatura Alura`, o MESMO e-mail enviado 2× em 2 s por
+`ricardo@sheild.com.br`), ambos `ignorado`. O corpo traz dois **links**, `NF de serviço: <n>`
+(prefeitura de SP) e `NF de produto: <n>` (DANFE via NetSuite). O pipeline descarta NF-e/NFS-e pura
+(`SKIP_ACCOUNT_TYPES`), então nenhuma conta nascia. Resultado: contas 2610 (NF-e 000.844.902,
+R$ 279,00) e 2611 (NFS-e 00991049, R$ 31,00), ambas pagas, fornecedor ALURA, classificação 8/496.
+
+**Desenho — é um FALLBACK, isolado.** `try_extract_alura_fiscal` (`read_emails.py`) roda em
+`process_message` **depois** do corpo e **só se** nenhuma regra anterior gerou conta nem duplicata
+(`not (attachment_account or accounts_saved)` e corpo ≠ `BODY_CREATED/DUPLICATE`). Não toca em
+`_forces_account`, `SKIP_ACCOUNT_TYPES`, na cadeia fixa nem na dedup genérica. Parsing puro em
+`skills/pdf-contas-pagar/scripts/alura_fiscal.py` (carregado sob demanda por `_alura_fiscal()`).
+
+- 🔴 **Nada é inventado: cada valor é conferido contra uma 2ª fonte do próprio documento.** DANFE:
+  chave de acesso válida (5 camadas de `fiscal_key`), modelo 55, **emitente = CNPJ da Alura**, emissão
+  no mês (AAMM) da chave, número impresso = número do e-mail. NFS-e: prestador = CNPJ da Alura, número
+  = o do e-mail, valor > 0. Divergiu ou faltou ⇒ aquela conta **não nasce** e o motivo vai a `/erros`.
+- 🔴 **A NFS-e não vem anexada.** A página do link (`notaprint.aspx`) carrega o documento por
+  JavaScript num iframe; o PDF real é `notaprintpdf.aspx` com os mesmos 3 parâmetros. A URL é
+  **reconstruída** dos parâmetros validados (`nfse_pdf_url`) — nunca ecoada — e só o host
+  `nfe.prefeitura.sp.gov.br` é aceito, via `_fetch_url` (anti-SSRF, limite de tamanho), com retry.
+  O PDF é gravado como `alura_nfse_<nº>.pdf` (nome determinístico: reprocessar não acumula cópias).
+- 🔴 **O corpo é forjável, então o remetente imediato também é conferido** (`sender_is_authorized`):
+  domínio `alura.com.br` ou um e-mail do cadastro do fornecedor (`email`..`email4`). Sem isso, qualquer
+  um colaria `De: x@alura.com.br` e geraria contas **pagas**.
+- **Fornecedor por CNPJ** (`find_supplier_by_cnpj`, consulta pura, nunca cria) — sem `sk` fixo no
+  código. Cadastro ausente ou ambíguo ⇒ `falha` visível. Classificação = `supplier_defaults`.
+- **Pago:** `status='pago'` (→ `status_id` 8) e `payment_date = due_date =` **emissão do documento**.
+  A trigger 096 preserva a data enviada.
+- 🔴 **Dedup por chave PRÓPRIA** (`find_account_by_document`: fornecedor + tipo + nº da nota), **não**
+  pela genérica: valor + vencimento poderia fundir a NF e a NFS-e de um mês em que os dois valores
+  coincidissem. **Fail-closed:** consulta que falha após as tentativas **levanta** — "não sei se
+  existe" não pode virar "não existe", justamente porque o e-mail chega em duplicata. Conta
+  cancelada conta como existente (recriá-la desfaria a decisão do operador).
+- `gmail_message_id`: NF de produto = `message_id`; NFS-e = `message_id#1` — posição **fixa por
+  tipo**, não por ordem de criação, para o reprocesso ser idempotente mesmo quando só uma saiu.
+- **Status do e-mail:** conta gravada ⇒ `extraído`; só duplicatas ⇒ `duplicidade`; regra aplicável e
+  nada gravado ⇒ `falha`. `nonpayable`/`pure_nfe` são anulados quando a regra tratou o e-mail — senão
+  venceriam `duplicate` e esconderiam a conta (mesma classe do invariante de `status_for_result`).
+- NFS-e indisponível ⇒ só a NF de produto é gravada e a pendência vai a `/erros` (a falta é visível).
+
+**Testes:** `tests/test_alura_fiscal.py` (executam `process_message` e o `find_account_by_document` REAL); mutantes validados, incl. o fail-closed da dedup e a guarda `pure_nfe`/`alura_handled` (reenvio com assunto "NF-e" ⇒ `duplicidade`). Review max: [docs/review/2026-11-23-Features-max.md](../review/2026-11-23-Features-max.md).
+**Deploy:** `alura_fiscal.py` é arquivo NOVO e depende de `fiscal_key.py`; sem ele a regra some
+**com aviso** (`modulo 'alura_fiscal' indisponivel`) e o e-mail volta a `ignorado`.

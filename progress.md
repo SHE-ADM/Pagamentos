@@ -7,7 +7,7 @@
 > 🔴 **Contador que o comando responde melhor NÃO se escreve aqui.** Antes de anotar um número,
 > pergunte se existe comando que o produz — se existir, anote o comando, não o número.
 >
-> **Atualizado em:** 2026-11-17
+> **Atualizado em:** 2026-11-23
 
 ---
 
@@ -79,6 +79,7 @@ próxima fatura agregada (são semanais). Conferir com
 | Guia de TRIBUTO sem código e sem data no texto: vencimento = data da extração (FGTS Digital, conta 2034 — 2026-10-17) | ✅ **corrigido** · ✅ **em produção (2026-10-17)**, paridade 32/32 · PR #266 | Tier 2b passa a valer também para `document_type == 'tributo'` sem barcode (só tributo, para não virar Vision em massa). Validado nos PDFs reais do cache: o de 2026-10-16 (sem data no texto) dispara; o de 2026-07-16 (data no texto) não. Falta a resposta real do Vision, que custa API: conferir com `reprocess_message.py --dry-run` no e-mail da conta 2034. Detalhe em [docs/knowledge/pipeline-extracao.md](docs/knowledge/pipeline-extracao.md) |
 | Respostas à cobrança, pedido interno com anexo, reembolso Dr. Ricardo e citação de honorários (2247, 2215, 2227, e-mail 1720 — 2026-11-05) | ✅ **corrigido no código** · ✅ **migrations 148, 149 e 150 aplicadas**, reexecução = 0 linhas · ✅ **em produção (2026-11-05)**, paridade 32/32 e hash conferido | Regras novas ainda sem caso real observado em produção. E-mail 1720 lançado pela 149 (conta 2346, vence 05/11/2026, em aberto até a baixa no app). Conta falsa 2343, gravada pela versão anterior ao deploy, cancelada pela 150 |
 | CPF de chave PIX: terceiro × próprio fornecedor; NF curta do corpo (e-mails 3390-3392, conta 1677 — 2026-11-06 a 11-10) | ✅ **corrigido no código** · ✅ **migrations 151, 152 e 153 aplicadas**, reexecução = 0 linhas · ✅ **em produção (2026-11-10)**, cópia feita pelo usuário, paridade 32/32 e hash do reader igual ao do repositório | Chave PIX com nome rotulado só identifica quando o cadastro confirma o CPF (`_confirmed_pix_key_cpf`). Regressão medida nos 2.011 corpos: 0 mudanças de identidade; resgate 1677 = CPF próprio, ELG e JACACAR = descartado. Review: [docs/review/2026-11-10-Features-max.md](docs/review/2026-11-10-Features-max.md) |
+| Regra ALURA — e-mail mensal com NF de produto + NF de serviço (e-mails 3791/3792, contas 2610/2611 — 2026-11-23) | ✅ **corrigido no código** (fallback isolado, `alura_fiscal.py` novo) · ⏳ **NÃO está em produção** — cópia manual pelo usuário pendente: `alura_fiscal.py` (arquivo NOVO, depende de `fiscal_key.py`) + `read_emails.py` + `deploy-manifest.json` · não commitado | Cada valor conferido contra 2ª fonte; dedup própria fail-closed. Review max: [docs/review/2026-11-23-Features-max.md](docs/review/2026-11-23-Features-max.md) |
 | Onda 5 — itens de NF-e (5.1/5.2) | **SUSPENSO** | acervo de DANFEs crescer (eram 15, com 6 detectáveis) |
 | CT-e via DACTE individual (5.3-b, com LLM) | **não implementado** | layout por transportadora inviabiliza regex |
 | Handler SIEG (boleto por link) | **ADIADO** | entrar uma fatura SIEG **em aberto** para validar o download |
