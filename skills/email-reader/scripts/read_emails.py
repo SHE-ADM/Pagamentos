@@ -120,6 +120,12 @@ _CTE_CONTENT_WARNED = False
 _DOCX_CONTENT = None
 _DOCX_CONTENT_WARNED = False
 
+# Idem para a regra ALURA (NF de produto + NF de servico do e-mail mensal). Mesmo mecanismo, mesmo
+# motivo: `alura_fiscal` e arquivo NOVO — num deploy parcial a regra some e o e-mail volta a ser
+# 'ignorado', e sem o aviso ninguem saberia por que.
+_ALURA_FISCAL = None
+_ALURA_FISCAL_WARNED = False
+
 
 def _febraban():
     """Modulo `febraban` (codigo de barras / linha digitavel) — fonte UNICA das regras.
@@ -205,6 +211,28 @@ def _docx_content():
         log.warning("  [DOCX] modulo 'docx_content' indisponivel — texto de anexo .docx NAO sera "
                     "lido (regra LEBIANCO e chave fiscal ficam cegas). Deploy parcial?")
     return _DOCX_CONTENT or None
+
+
+def _alura_fiscal():
+    """Modulo `alura_fiscal` (regra ALURA), ou None AVISANDO UMA VEZ.
+
+    Sem fallback local: a regra so e segura porque cada valor e conferido contra uma 2a fonte do
+    proprio documento (chave de acesso, CNPJ do prestador, numero da nota do e-mail). Uma copia
+    "so casa e grava" criaria conta PAGA sem essas conferencias."""
+    global _ALURA_FISCAL, _ALURA_FISCAL_WARNED  # noqa: PLW0603 — cache/aviso por processo
+    if _ALURA_FISCAL is None:
+        try:
+            if str(EXTRACT_SCRIPT.parent) not in sys.path:
+                sys.path.insert(0, str(EXTRACT_SCRIPT.parent))
+            import alura_fiscal
+            _ALURA_FISCAL = alura_fiscal
+        except Exception:
+            _ALURA_FISCAL = False
+    if not _ALURA_FISCAL and not _ALURA_FISCAL_WARNED:
+        _ALURA_FISCAL_WARNED = True
+        log.warning("  [ALURA] modulo 'alura_fiscal' indisponivel — o e-mail mensal da Alura NAO "
+                    "gerara contas. Deploy parcial (falta alura_fiscal.py ou fiscal_key.py)?")
+    return _ALURA_FISCAL or None
 
 
 def _febraban_fn(name: str):
@@ -1456,6 +1484,69 @@ class SupabaseControl:
                 log.exception("Erro inesperado ao consultar fornecedor por CPF")
                 return None
         return None
+
+    def find_supplier_by_cnpj(self, cnpj: str | None) -> "dict | None":
+        """Fornecedor ATIVO de `cnpj` com seus e-mails cadastrados, ou None.
+
+        🔴 CONSULTA PURA, como find_supplier_by_email/cpf: nunca cria nem enriquece cadastro.
+        Devolve {'sk_supplier', 'emails': [...]}. None = nao cadastrado OU falha de rede apos uma
+        nova tentativa — o chamador trata os dois como "nao confirmado" e NAO grava conta."""
+        digits = re.sub(r"\D", "", str(cnpj or ""))
+        if not self._available or len(digits) != 14:
+            return None
+        url = (f"{self.base}/rest/v1/supplier?select=sk_supplier,email,email2,email3,email4"
+               f"&cnpj=eq.{digits}&deleted_at=is.null&limit=2")
+        for attempt in (1, 2):
+            try:
+                req = urllib.request.Request(url, headers=self.headers)
+                with urllib.request.urlopen(req, timeout=10) as r:
+                    rows = json.loads(r.read())
+                break
+            except (urllib.error.URLError, TimeoutError, ConnectionError) as e:
+                log.warning(f"Falha ao consultar fornecedor por CNPJ (tentativa {attempt}/2): {e}")
+                if attempt == 1:
+                    time.sleep(1)
+            except Exception:
+                log.exception("Erro inesperado ao consultar fornecedor por CNPJ")
+                return None
+        else:
+            return None
+        if len(rows) != 1:   # 0 = nao cadastrado; 2+ = ambiguo — em duvida, nao atribui
+            return None
+        row = rows[0]
+        return {"sk_supplier": row["sk_supplier"],
+                "emails": [row.get(k) for k in ("email", "email2", "email3", "email4") if row.get(k)]}
+
+    def find_account_by_document(self, sk_supplier: int, document_type: str,
+                                 invoice_numbers: "list[str]") -> "dict | None":
+        """Conta do fornecedor com o MESMO documento fiscal (tipo + numero), ou None.
+
+        Chave propria da regra ALURA, INDEPENDENTE do valor: a dedup generica (impressao 3:
+        fornecedor + valor + vencimento) poderia fundir a NF de produto com a NF de servico de
+        um mes em que os dois valores coincidissem. Cancelada (status 9) conta como existente —
+        o operador a cancelou de proposito, e recriar a conta desfaria essa decisao.
+
+        🔴 FAIL-CLOSED: esgotadas as tentativas, LEVANTA em vez de devolver None. Aqui "nao sei"
+        nao pode virar "nao existe" — o e-mail chega em duplicidade (2 envios em 2 s), e uma
+        falha de rede gravaria as duas contas outra vez."""
+        names = ",".join(urllib.parse.quote(f'"{n}"', safe='"') for n in dict.fromkeys(invoice_numbers) if n)
+        if not self._available or not names:
+            raise RuntimeError("consulta de duplicidade indisponivel")
+        url = (f"{self.base}/rest/v1/financial_account_control?select=id,status_id,invoice_number"
+               f"&sk_supplier=eq.{int(sk_supplier)}&document_type=eq.{urllib.parse.quote(document_type, safe='')}"
+               f"&invoice_number=in.({names})&limit=1")
+        last_err = None
+        for attempt in range(1, DUP_QUERY_ATTEMPTS + 1):
+            try:
+                req = urllib.request.Request(url, headers=self.headers)
+                with urllib.request.urlopen(req, timeout=5) as r:
+                    rows = json.loads(r.read())
+                return rows[0] if rows else None
+            except Exception as e:
+                last_err = e
+                if attempt < DUP_QUERY_ATTEMPTS:
+                    time.sleep(DUP_QUERY_BACKOFF * attempt)
+        raise RuntimeError(f"consulta de duplicidade falhou apos {DUP_QUERY_ATTEMPTS} tentativas: {last_err}")
 
     def find_honorarios_supplier_by_name(self, name: str | None) -> int | None:
         """Fornecedor ATIVO de razao social ou nome fantasia iniciados por `name`.
@@ -7663,6 +7754,204 @@ def _link_routed_attachments(ctrl, rec: dict, sender_email: "str | None") -> Non
 
 
 # ---------------------------------------------------------------------------
+# Regra ALURA — e-mail mensal com NF de produto (DANFE) + NF de servico (NFS-e)
+# ---------------------------------------------------------------------------
+# Caso real: e-mails 3791/3792 (o MESMO e-mail enviado 2x em 2 s). Cada nota vira UMA conta, ja
+# PAGA, no cadastro da Alura. O pipeline normal as descarta (SKIP_ACCOUNT_TYPES) e o e-mail ia a
+# 'ignorado'; por isso esta regra e um FALLBACK: so roda quando as regras normais NAO geraram conta
+# nem duplicata (ver o gate em process_message). Nao toca em `_forces_account`.
+#
+# 🔴 Nada e inventado: cada valor vem do TEXTO do documento e e conferido contra uma 2a fonte (ver
+# `alura_fiscal`). A NFS-e nao vem anexada — o e-mail so cita um link, e o PDF e buscado na
+# prefeitura. Sem ele a conta da NFS-e NAO nasce (a da NF de produto nasce) e o motivo vai a /erros.
+ALURA_NONE    = "none"      # a regra nao se aplica a este e-mail (nao e da Alura / remetente nao autorizado)
+ALURA_HANDLED = "handled"   # >= 1 conta gravada OU todas as notas lidas ja existiam
+ALURA_FAILED  = "failed"    # a regra se aplicava e nada foi gravado (motivo em /erros)
+ALURA_ERROR_TYPE = "falha_processamento"
+ALURA_FETCH_ATTEMPTS = 3
+ALURA_FETCH_BACKOFF  = 2.0   # segundos * tentativa
+ALURA_NFSE_ID_SUFFIX = 1     # NF de produto: message_id; NF de servico: message_id#1 (posicao FIXA por tipo)
+
+
+def _alura_ref_date(received_at: "str | None"):
+    """Dia do e-mail (date) ou None — usado so para recusar emissao futura."""
+    try:
+        return datetime.strptime((received_at or "")[:10], "%Y-%m-%d").date()
+    except ValueError:
+        return None
+
+
+def _alura_read_danfe(mod, saved_pdfs: list, info: dict, ref_date):
+    """(dados, pdf) do DANFE entre os anexos/links baixados; (None, None) se nenhum confere."""
+    for pdf_path in saved_pdfs:
+        parsed = mod.parse_danfe(_attachment_text(pdf_path), ref_date)
+        if parsed and mod.same_number(parsed["invoice_number"], info["nfe_number"]):
+            return parsed, pdf_path
+    return None, None
+
+
+def _alura_fetch_nfse(mod, info: dict, ref_date):
+    """(dados, pdf) da NFS-e buscada na prefeitura; (None, motivo) quando nao foi possivel.
+
+    Retry/backoff porque o portal da prefeitura oscila; `_fetch_url` ja barra SSRF, limita o
+    tamanho e loga a falha. O arquivo tem nome DETERMINISTICO (por numero da nota): reprocessar
+    o e-mail reaproveita o mesmo objeto no Storage em vez de acumular copias."""
+    pdf_url = mod.nfse_pdf_url(info.get("nfse_url"))
+    if not pdf_url:
+        return None, "link da NFS-e ausente ou fora do padrão da prefeitura de São Paulo"
+    data = None
+    for attempt in range(1, ALURA_FETCH_ATTEMPTS + 1):
+        result = _fetch_url(pdf_url, timeout=30)
+        if result and b"%PDF" in result[0][:32]:
+            data = result[0]
+            break
+        if attempt < ALURA_FETCH_ATTEMPTS:
+            time.sleep(ALURA_FETCH_BACKOFF * attempt)
+    if data is None:
+        return None, "a prefeitura não devolveu o PDF da NFS-e"
+    PDF_INBOX.mkdir(parents=True, exist_ok=True)
+    dest = PDF_INBOX / f"alura_nfse_{re.sub(r'[^0-9]', '', info['nfse_number'])}.pdf"
+    if not _is_within_inbox(dest):
+        return None, "caminho do PDF da NFS-e fora de PDF_INBOX"
+    dest.write_bytes(data)
+    parsed = mod.parse_nfse(_attachment_text(dest), info["nfse_number"], ref_date)
+    if not parsed:
+        return None, "o PDF da NFS-e não confere (prestador, número, valor ou emissão)"
+    return parsed, dest
+
+
+def _alura_account_payload(ctrl, sk_supplier: int, kind: dict, doc: dict, pdf_path,
+                           message_id: str, received_at, subject, sender_email) -> dict:
+    """Payload da conta de UMA nota: fornecedor fixo, classificacao padrao do cadastro, PAGA."""
+    row = {
+        "source_file": pdf_path.name, "document_type": kind["document_type"],
+        "extraction_source": "pdf_text", "invoice_number": doc["invoice_number"],
+        "issue_date": doc["issue_date"], "due_date": doc["issue_date"], "amount": doc["amount"],
+        "payer_cnpj": doc.get("payer_cnpj"), "description": doc.get("description"),
+        "processing_notes": _alura_fiscal().RULE_NOTE, "status": "pago",
+    }
+    gmid = message_id if kind["index"] == 0 else f"{message_id}#{kind['index']}"
+    payload = build_financial_payload(row, gmid, received_at=received_at, subject=subject)
+    # build_financial_payload reclassifica por assunto/fornecedor; aqui o tipo e o do DOCUMENTO.
+    payload["document_type"] = kind["document_type"]
+    for col in ("supplier_name", "supplier_cnpj", "supplier_cpf"):   # colunas denormalizadas
+        payload.pop(col, None)
+    payload.update({"sk_supplier": sk_supplier, "sender_email": sender_email, "subject": subject,
+                    "status": "pago", "payment_date": doc["issue_date"]})
+    cost_center_id, chart_account_id = ctrl.supplier_defaults(sk_supplier)
+    if cost_center_id:
+        payload["cost_center_id"] = cost_center_id
+    if chart_account_id:
+        payload["chart_account_id"] = chart_account_id
+    return payload
+
+
+def _alura_register_error(ctrl, rec: dict, message: str) -> None:
+    """Falha da regra visivel em /erros e nas notas do e-mail — nunca silenciosa."""
+    rec["notes"] = f"Regra ALURA: {message}"
+    ctrl.register_error(rec, ALURA_ERROR_TYPE, rec["notes"],
+                        raw_payload={"subject": rec.get("subject"), "regra": "alura"})
+
+
+ALURA_STORED    = "stored"      # conta nova gravada
+ALURA_DUPLICATE = "duplicate"   # a nota ja tinha conta
+
+
+def _alura_store_document(ctrl, rec: dict, sk_supplier: int, kind: dict, doc: dict, pdf_path,
+                          message_id: str, received_at, sender_email) -> str:
+    """Grava a conta de UMA nota (ou reconhece que ja existe). Devolve ALURA_STORED/ALURA_DUPLICATE;
+    levanta RuntimeError quando a gravacao falha (o chamador isola a nota)."""
+    printed = doc["invoice_number"]
+    digits = re.sub(r"\D", "", printed)
+    existing = ctrl.find_account_by_document(
+        sk_supplier, kind["document_type"], [printed, digits, digits.lstrip("0")])
+    if existing:
+        rec["duplicate_of"] = existing.get("id")
+        log.info(f"    [ALURA] {kind['label']} {printed} ja registrada (conta {existing.get('id')})")
+        return ALURA_DUPLICATE
+    payload = _alura_account_payload(ctrl, sk_supplier, kind, doc, pdf_path, message_id,
+                                     received_at, rec.get("subject"), sender_email)
+    if kind["document_type"] == "nfse":
+        ctrl.upload_attachment(pdf_path)   # a NFS-e nao passou pelo Passo 1 de anexos
+    new_id = ctrl.register_financial(payload)
+    if not new_id:
+        raise RuntimeError("falha ao gravar a conta")
+    ctrl.register_attachment(new_id, pdf_path.name, size_bytes=pdf_path.stat().st_size,
+                             uploaded_by=ctrl.resolve_user(sender_email))
+    rec.setdefault(_BODY_ACCOUNT_IDS_KEY, []).append(new_id)
+    log.info(f"    [ALURA] {kind['label']} {printed} gravada (conta {new_id}, paga)")
+    return ALURA_STORED
+
+
+def _alura_close(ctrl, rec: dict, created: int, duplicates: int, problems: "list[str]"):
+    """Notas do e-mail + /erros + desfecho. A pendencia vai a /erros mesmo com a outra nota gravada."""
+    summary = f"{created} conta(s) gerada(s)" + (f", {duplicates} já registrada(s)" if duplicates else "")
+    handled = bool(created or duplicates)
+    if problems:
+        detail = "; ".join(problems)
+        _alura_register_error(ctrl, rec, f"{summary}; pendente — {detail}" if handled else detail)
+    elif handled:
+        rec["notes"] = f"Regra ALURA: {summary}"
+    return (ALURA_HANDLED, created, duplicates) if handled else (ALURA_FAILED, 0, 0)
+
+
+def try_extract_alura_fiscal(rec: dict, body_text: str, sender_email: "str | None",
+                             received_at: "str | None", message_id: str, ctrl,
+                             saved_pdfs: list) -> "tuple[str, int, int]":
+    """Regra ALURA. Devolve (desfecho, contas_criadas, notas_ja_existentes).
+
+    NAO-FATAL para o e-mail: qualquer excecao e logada com traceback e vira ALURA_FAILED — o
+    pipeline segue e o e-mail aparece em /erros em vez de derrubar o run."""
+    mod = _alura_fiscal()
+    info = mod.parse_email(body_text) if mod else None
+    if not info:
+        return ALURA_NONE, 0, 0
+    try:
+        supplier = ctrl.find_supplier_by_cnpj(mod.ALURA_CNPJ)
+        if not supplier:
+            # None = não cadastrado OU consulta indisponível (o método não distingue): a mensagem
+            # declara as duas causas para o operador não procurar só um cadastro que existe.
+            _alura_register_error(
+                ctrl, rec, "fornecedor ALURA não confirmado no cadastro (por CNPJ): "
+                           "não cadastrado ou consulta indisponível")
+            return ALURA_FAILED, 0, 0
+        # Quem encaminha precisa ser da Alura ou um e-mail do cadastro — o texto do corpo e forjavel.
+        if not mod.sender_is_authorized(sender_email, supplier["emails"]):
+            log.info("    [ALURA] remetente fora do cadastro do fornecedor — regra nao aplicada")
+            return ALURA_NONE, 0, 0
+
+        ref_date = _alura_ref_date(received_at)
+        danfe, danfe_pdf = _alura_read_danfe(mod, saved_pdfs, info, ref_date)
+        nfse, nfse_pdf = _alura_fetch_nfse(mod, info, ref_date)
+        # (tipo, dados, arquivo, motivo-se-faltou). Em falha da NFS-e, `nfse_pdf` carrega o MOTIVO.
+        documents = (
+            ({"document_type": "nfe", "index": 0, "label": "NF de produto"}, danfe, danfe_pdf,
+             "o DANFE não foi encontrado nos anexos/links ou não confere"),
+            ({"document_type": "nfse", "index": ALURA_NFSE_ID_SUFFIX, "label": "NF de serviço"},
+             nfse, nfse_pdf, nfse_pdf),
+        )
+        counts = {ALURA_STORED: 0, ALURA_DUPLICATE: 0}
+        problems: list[str] = []
+        for kind, doc, pdf_path, why in documents:
+            if not doc:
+                problems.append(f"{kind['label']}: {why}")
+                continue
+            # Por nota: a falha de UMA nao pode descartar a conta que a OUTRA ja gravou.
+            try:
+                counts[_alura_store_document(ctrl, rec, supplier["sk_supplier"], kind, doc, pdf_path,
+                                             message_id, received_at, sender_email)] += 1
+            except Exception as e:  # noqa: BLE001 — isola a nota; traceback no log
+                log.exception(f"    [ALURA] erro inesperado em {kind['label']}")
+                problems.append(f"{kind['label']}: {e}" if isinstance(e, RuntimeError)
+                                else f"{kind['label']}: erro inesperado ({type(e).__name__})")
+    except Exception as e:  # noqa: BLE001 — fronteira da regra: o e-mail nunca deve cair por ela
+        log.exception("    [ALURA] erro inesperado na regra")
+        _alura_register_error(ctrl, rec, f"erro inesperado ({type(e).__name__})")
+        return ALURA_FAILED, 0, 0
+    return _alura_close(ctrl, rec, counts[ALURA_STORED], counts[ALURA_DUPLICATE], problems)
+
+
+# ---------------------------------------------------------------------------
 # Lembrete de vencimento — corrige o vencimento PRESUMIDO de uma conta existente
 # ---------------------------------------------------------------------------
 # Caso real (Leadster, contas 1020 e 1474): o e-mail da fatura NAO traz a data ("Confira a
@@ -8276,6 +8565,17 @@ def process_message(mail, uid: bytes, keywords: list,
                 rec["notes"]         = "Conta extraída do corpo do e-mail"
         body_created = body_outcome == BODY_CREATED
 
+        # REGRA ALURA (fallback): e-mail mensal com NF de produto + NF de servico. So roda quando
+        # NENHUMA regra anterior gerou conta nem casou duplicata — os documentos fiscais puros sao
+        # descartados la em cima e o e-mail ia a 'ignorado'. Nao-fatal; ver try_extract_alura_fiscal.
+        alura_outcome, alura_created, alura_dups = ALURA_NONE, 0, 0
+        if not (attachment_account or accounts_saved) \
+                and body_outcome not in (BODY_CREATED, BODY_DUPLICATE):
+            alura_outcome, alura_created, alura_dups = try_extract_alura_fiscal(
+                rec, body_text, sender_email, received_at, message_id, ctrl, saved_pdfs)
+            accounts_saved += alura_created
+        alura_handled = alura_outcome == ALURA_HANDLED
+
         # Pedido interno desviado para o corpo. 🔴 Se o corpo nao respondeu, o CSV do anexo nao
         # gerou conta nenhuma: sem isto o status seria 'extraído', sem conta e sem erro.
         if rec.get(_BODY_ROUTE_ATTACHMENTS_KEY) is not None:
@@ -8297,7 +8597,8 @@ def process_message(mail, uid: bytes, keywords: list,
         # anunciar a data de uma conta ja registrada com vencimento PRESUMIDO. Nao-fatal; nunca
         # cria conta nem fornecedor. Aplicado, o e-mail cumpriu seu papel e nao vai a /erros.
         reminder_applied = False
-        if not attachment_account and body_outcome not in (BODY_CREATED, BODY_DUPLICATE):
+        if (not attachment_account and not alura_handled
+                and body_outcome not in (BODY_CREATED, BODY_DUPLICATE)):
             reminder_applied = apply_due_date_reminder(
                 ctrl, rec, subject, body_text, sender_email, received_at) is not None
 
@@ -8307,7 +8608,8 @@ def process_message(mail, uid: bytes, keywords: list,
         # por outro e-mail) vira 'ignorado' em vez de 'falha'.
         rec["status"] = status_for_result(
             has_att, csv_generated, body_created,
-            pure_nfe=subject_is_pure_nfe(subject), accounts_saved=accounts_saved,
+            pure_nfe=subject_is_pure_nfe(subject) and not alura_handled,
+            accounts_saved=accounts_saved,
             # 'notification' produz 'ignorado' quando nao houve anexo/CSV/conta. Alem do
             # assunto de aviso, entram aqui: remetente de subdominio descartavel
             # (phishing que IMITA cobranca) e e-mail sem nada de onde extrair.
@@ -8316,8 +8618,16 @@ def process_message(mail, uid: bytes, keywords: list,
                           or is_disposable_sender(sender_email)
                           or email_sem_conteudo_extraivel(has_att, pdf_links, body_text)),
             duplicate=(body_outcome == BODY_DUPLICATE
-                       or _pdf_only_deduplicated(attachment_account, accounts_saved)),
-            nonpayable=(nonpayable_only or body_outcome == BODY_IGNORED))
+                       or _pdf_only_deduplicated(attachment_account, accounts_saved)
+                       or (alura_handled and not alura_created)),
+            # 🔴 Regra ALURA tratada: as NFs puras que o Passo 2 pulou NAO descrevem mais o e-mail
+            # — ele tem conta (ou a duplica), e 'nonpayable' venceria 'duplicate' e esconderia isso.
+            nonpayable=(nonpayable_only or body_outcome == BODY_IGNORED) and not alura_handled)
+
+        # A regra se aplicava e nada foi gravado: 'falha' (o motivo ja foi a /erros pela propria
+        # regra) — nenhum sinal de 'ignorado' pode esconder uma conta PAGA que deveria existir.
+        if alura_outcome == ALURA_FAILED:
+            rec["status"] = "falha"
 
         # 🔴 DEAD-MAN SWITCH: conta obrigatoria e nao ha conta nem duplicata ⇒ 'falha', com linha em
         # /erros. Nenhum sinal de 'ignorado' pode esconder esse desfecho (e-mail 1720).
@@ -8331,7 +8641,7 @@ def process_message(mail, uid: bytes, keywords: list,
         # inclusive o corpo sem sinal financeiro, que antes saía silencioso.
         # try_extract_from_body anota o motivo em rec["notes"]. O caminho de
         # exceção tem seu próprio log abaixo (não passa por aqui).
-        if rec["status"] == "falha":
+        if rec["status"] == "falha" and alura_outcome != ALURA_FAILED:   # a regra ja registrou o seu
             ctrl.register_error(
                 rec, "falha_processamento",
                 rec.get("notes") or "E-mail casou keyword mas nenhuma conta foi gerada",
