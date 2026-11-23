@@ -1,5 +1,24 @@
 # Histórico de deploys
 
+## 2026-11-23 — Extração: regra ALURA (NF de produto + NF de serviço do e-mail mensal)
+
+**O que foi ao ar:** fallback `try_extract_alura_fiscal` em `process_message` + módulo novo
+`alura_fiscal.py`. O e-mail "Fatura Alura" passa a gerar duas contas pagas (DANFE e NFS-e), cada
+valor conferido contra uma 2ª fonte; dedup própria fail-closed. Detalhe em
+[docs/knowledge/pipeline-extracao.md](../knowledge/pipeline-extracao.md) (§ Regra ALURA).
+
+**Arquivos:** `alura_fiscal.py` (NOVO, depende de `fiscal_key.py`), `read_emails.py`,
+`deploy-manifest.json`. Sem migration, `.env` ou dependência nova.
+
+**Verificação:**
+- No DEV: `pytest` 2155 passed; review max com mutantes (fail-closed da dedup e guarda
+  `pure_nfe`/`alura_handled`) — [docs/review/2026-11-23-Features-max.md](../review/2026-11-23-Features-max.md).
+  PR #270, SonarCloud e cobertura verdes.
+- Em produção (2026-11-23, cópia feita pelo usuário): `check_deploy_parity.py` → **33/33**, 0
+  faltando, 0 divergentes, 0 extras, "Produção em paridade com o repositório"; `alura_fiscal.py`
+  listado como OK.
+- ⏳ Não exercitado com e-mail real em produção: a regra só dispara na próxima fatura Alura.
+
 ## 2026-11-17 (2º) — Extração: ajustes do aviso COMBINADO (code review max)
 
 **O que foi ao ar:**
