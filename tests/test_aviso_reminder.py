@@ -112,7 +112,9 @@ class RunReaderAvisoTest(unittest.TestCase):
         with mock.patch.object(R, "_connect_and_search", return_value=(Mail(), list(emails))), \
              mock.patch.object(R, "SupabaseControl", return_value=ctrl), \
              mock.patch.object(R, "process_message", process):
-            R.run_reader(days=1)
+            summary = R.run_reader(days=1)
+        # O laço isola exceção por e-mail: sem isto, um dublê mal montado viraria "ignorado".
+        self.assertEqual(summary["crashed"], 0)
         return ctrl, process
 
     def test_primeiro_aviso_e_ignorado_sem_extrair(self):

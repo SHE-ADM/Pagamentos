@@ -52,6 +52,35 @@ def _is_image_file(path) -> bool:
     return Path(path).suffix.lower() in _IMAGE_MEDIA_TYPES
 
 
+# Assinaturas (magic bytes) dos quatro formatos de imagem que a Anthropic API aceita.
+_PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
+_JPEG_SIGNATURE = b"\xff\xd8\xff"
+_GIF_SIGNATURES = (b"GIF87a", b"GIF89a")
+_WEBP_CONTAINER, _WEBP_FORMAT = b"RIFF", b"WEBP"   # RIFF <tamanho:4 bytes> WEBP
+
+
+def _sniff_image_media_type(data: bytes) -> str | None:
+    """media_type REAL da imagem, lido dos primeiros bytes; None se nao for um dos 4 aceitos.
+
+    🔴 O CONTEUDO e a unica fonte confiavel do tipo. A extensao vem do NOME do anexo, que o
+    remetente escolhe, e o Content-Type do MIME tambem mente: em 19/11/2026 a assinatura de
+    e-mail `a66c1adb.png` (nome .png, MIME image/png) era um WebP, e em 18/11 uma `image.png`
+    inline era um GIF. A Anthropic confere os bytes e respondeu 400 nas duas — e esse 400,
+    lido como "API fora do ar", parou a fila de e-mails financeiros por dois dias.
+    """
+    if not data:
+        return None
+    if data.startswith(_PNG_SIGNATURE):
+        return "image/png"
+    if data.startswith(_JPEG_SIGNATURE):
+        return "image/jpeg"
+    if data.startswith(_GIF_SIGNATURES):
+        return "image/gif"
+    if data[:4] == _WEBP_CONTAINER and data[8:12] == _WEBP_FORMAT:
+        return "image/webp"
+    return None
+
+
 # 🔴 FONTE UNICA das fontes cuja resposta e JSON (o modelo LEU o documento e devolveu campos),
 # em oposicao as de TEXTO cru, que ainda passam por Claude/regex em `_build_records_text`.
 #
@@ -112,36 +141,75 @@ class ApiUnavailableError(Exception):
     """API Anthropic indisponivel (credito/auth/rate-limit/servidor/sem chave)."""
 
 
-_API_ERROR_HINTS = (
-    "credit balance", "rate limit", "rate_limit", "authentication",
-    "api key", "api_key", "anthropic_api_key", "overloaded", "quota",
-    "permission", "billing", "insufficient",
-)
+# Status HTTP em que a recusa pode descrever O DOCUMENTO enviado, e nao a API.
+_HTTP_BAD_REQUEST = 400
+_HTTP_REQUEST_TOO_LARGE = 413
+
+# Forma da recusa de CONTEUDO: a API aponta o bloco que recebeu
+# ("messages.0.content.0.image.source.base64: The image was specified using the image/png
+# media type, but the image appears to be a image/webp image"). E a unica forma MEDIDA
+# (18 e 19/11/2026); frase nova so entra aqui depois de confirmada na documentacao de erros.
+_DOCUMENT_BLOCK_PATH_RE = re.compile(r"messages\.\d+\.content\.\d+\.(?:image|document)\b")
+
+# Recusa de CONTA que a Anthropic devolve com o MESMO status 400 da recusa de documento
+# ("Your credit balance is too low to access the Anthropic API"). Sem este corte, credito
+# esgotado seria lido como "documento ruim" e o pipeline gravaria falha em tudo.
+_ACCOUNT_ERROR_HINTS = ("credit balance", "billing", "quota")
+
+
+def _api_rejected_document(exc: Exception) -> bool:
+    """True SO quando a API recusou ESTE documento — nao a conta, nao o pedido em geral.
+
+    🔴 LISTA FECHADA, e o default e "indisponivel". Um 400 pode ser do documento (tipo de
+    imagem divergente), da CONTA (credito) ou do PEDIDO inteiro (parametro que o modelo deixou
+    de aceitar, modelo inexistente). So o primeiro e culpa do arquivo; os outros dois atingem
+    TODO documento, e classifica-los aqui faria o pipeline registrar falha em cada e-mail em
+    vez de adiar e avisar. Por isso so entra o que foi medido: 413 (corpo grande demais) e o
+    400 que aponta o bloco de conteudo enviado. Decide pelo `status_code`, nunca pela
+    subclasse — nem todo status tem classe propria exportada pelo SDK.
+    """
+    try:
+        import anthropic
+    except ImportError:
+        return False
+    if not isinstance(exc, anthropic.APIStatusError):
+        return False
+    status = getattr(exc, "status_code", None)
+    if status == _HTTP_REQUEST_TOO_LARGE:
+        return True
+    if status != _HTTP_BAD_REQUEST:
+        return False
+    msg = str(exc).lower()
+    if any(hint in msg for hint in _ACCOUNT_ERROR_HINTS):
+        return False
+    return bool(_DOCUMENT_BLOCK_PATH_RE.search(msg))
 
 
 def _is_api_unavailable(exc: Exception) -> bool:
-    """True quando a excecao indica a API inteira indisponivel (nao um PDF ruim).
+    """True quando a excecao indica a API inteira indisponivel (nao um documento ruim).
 
-    Cobre: ApiUnavailableError ja classificado, qualquer anthropic.APIError
-    (auth, credito, rate-limit, servidor) e heuristica por mensagem como rede
-    de seguranca quando o tipo concreto nao for reconhecido.
+    Decide pela CLASSE, nunca pelo texto: `ApiUnavailableError` ja classificado e todo
+    `anthropic.APIError` que NAO seja a recusa de um documento (`_api_rejected_document`).
+
+    🔴 NAO HA HEURISTICA POR SUBSTRING — havia, e era uma segunda porta para o mesmo defeito.
+    O nome do arquivo salvo carrega remetente e assunto do e-mail e viaja na mensagem de
+    qualquer `OSError`/`ValueError` local: um anexo de "billing@...", um
+    "Quota_Condominial.pdf" ou um `PermissionError` de arquivo bloqueado casavam os hints e
+    ligavam o circuit breaker, adiando TODOS os e-mails financeiros por causa de um arquivo.
+    Toda chamada a API passa pelo SDK (excecao tipada) e a chave ausente levanta
+    `ApiUnavailableError` — nao sobra excecao nao tipada que signifique "API fora".
     """
     if isinstance(exc, ApiUnavailableError):
         return True
-    # A truncagem carrega o NOME DO ARQUIVO na mensagem, e a heuristica abaixo casa por
-    # SUBSTRING: um PDF chamado "Quota_Condominial.pdf"/"Permissionaria.pdf"/"Billing.pdf"
-    # seria lido como API fora do ar, disparando o circuit breaker e culpando a Anthropic
-    # por um documento grande. A classe e a resposta exata — nunca o texto.
     if isinstance(exc, VisionTruncatedError):
         return False
     try:
         import anthropic
-        if isinstance(exc, anthropic.APIError):
-            return True
-    except Exception:
-        pass
-    msg = str(exc).lower()
-    return any(h in msg for h in _API_ERROR_HINTS)
+    except ImportError:
+        return False
+    if isinstance(exc, anthropic.APIError):
+        return not _api_rejected_document(exc)
+    return False
 
 
 def _api_error_record(pdf_path, message: str) -> dict:
@@ -161,6 +229,71 @@ def _api_error_record(pdf_path, message: str) -> dict:
         "extracted_at": datetime.now(timezone.utc).isoformat(),
         **{c: None for c in CSV_COLUMNS if c not in base},
     }
+
+
+# --- Sonda de saude da API ---
+# Timeout (segundos) da sonda. Curto: ela so precisa separar "a API responde" de "nao responde".
+API_PROBE_TIMEOUT_SECONDS = int(os.getenv("CLAUDE_API_PROBE_TIMEOUT", "20"))
+# Lado (pixels) da imagem da sonda. Minimo que ainda e uma imagem de verdade.
+_PROBE_IMAGE_SIDE = 8
+
+
+def _probe_png_bytes(side: int = _PROBE_IMAGE_SIDE) -> bytes:
+    """PNG valido minimo (cinza 8 bits, `side` x `side`, branco) — o conteudo da sonda.
+
+    Gerado em vez de embutido em base64: um literal opaco nao se revisa nem se testa.
+    """
+    import struct
+    import zlib
+
+    def chunk(tag: bytes, payload: bytes) -> bytes:
+        crc = zlib.crc32(tag + payload) & 0xFFFFFFFF
+        return struct.pack(">I", len(payload)) + tag + payload + struct.pack(">I", crc)
+
+    header = struct.pack(">IIBBBBB", side, side, 8, 0, 0, 0, 0)   # 8 bits, tipo 0 = cinza
+    scanlines = (b"\x00" + b"\xff" * side) * side                 # filtro 0 + pixels brancos
+    return (_PNG_SIGNATURE + chunk(b"IHDR", header)
+            + chunk(b"IDAT", zlib.compress(scanlines)) + chunk(b"IEND", b""))
+
+
+def api_health_probe() -> tuple[bool, str | None]:
+    """A API responde a uma requisicao MINIMA? Devolve `(True, None)` ou `(False, motivo)`.
+
+    🔴 POR QUE EXISTE. Quando a extracao de UM e-mail falha com erro "de indisponibilidade",
+    o pipeline precisa saber se a API caiu (adiar todos os financeiros e avisar) ou se so
+    AQUELE documento a derruba (timeout num scan pesado, 500 num PDF malformado, 400 que a
+    lista fechada de `_api_rejected_document` nao conhece). Sem esta pergunta, um unico e-mail
+    capturava a fila inteira a cada run — o incidente de 18 a 21/11/2026.
+
+    Espelha a requisicao REAL (mesmo modelo, mesma `temperature`, um bloco de imagem): um 400
+    sistemico — parametro que o modelo deixou de aceitar, modelo inexistente — falha aqui
+    tambem, e continua sendo tratado como indisponibilidade. `max_retries=0` e timeout curto:
+    a sonda nao pode custar mais que a falha que ela investiga.
+
+    NUNCA levanta: qualquer falha da sonda e a resposta "nao saudavel".
+    """
+    api_key = os.getenv("ANTHROPIC_API_KEY")
+    if not api_key:
+        return False, "ANTHROPIC_API_KEY não definida no .env"
+    try:
+        import anthropic
+        import base64
+        client = anthropic.Anthropic(api_key=api_key, timeout=API_PROBE_TIMEOUT_SECONDS,
+                                     max_retries=0)
+        client.messages.create(
+            model=CLAUDE_MODEL, max_tokens=1, temperature=0,
+            messages=[{"role": "user", "content": [
+                {"type": "image", "source": {
+                    "type": "base64", "media_type": "image/png",
+                    "data": base64.standard_b64encode(_probe_png_bytes()).decode()}},
+                {"type": "text", "text": "ok"},
+            ]}],
+        )
+        return True, None
+    except Exception as e:  # noqa: BLE001
+        # A sonda responde "saudavel ou nao": toda falha, esperada ou nao, e a resposta "nao".
+        log.warning(f"  Sonda da API Anthropic falhou: {e}")
+        return False, str(e)[:200]
 
 # Schema unico de extracao (texto e visao usam o mesmo).
 EXTRACTION_PROMPT = (
@@ -919,8 +1052,8 @@ def _try_barcode_vision(pdf_path: Path) -> str | None:
     Claude renderiza internamente e lê fontes OCR-B ilegíveis pelo pdfplumber.
     Retorna 47, 48 ou 44 dígitos, ou None se não encontrada.
 
-    🔴 SÓ ACEITA PDF OU IMAGEM — o bloco sai de `_vision_source_block`, que declara o
-    media_type pela extensão. O guard fica AQUI, e não no call site: quem chamasse com outro
+    🔴 SÓ ACEITA PDF OU IMAGEM — o bloco sai de `_vision_source_block`, que ROTEIA pela
+    extensão (imagem × PDF). O guard fica AQUI, e não no call site: quem chamasse com outro
     formato mandaria bytes declarados com o tipo errado (um .docx é um ZIP) e receberia 400 da
     Anthropic — requisição paga, erro remoto e longe da causa. Chegou a ser alcançável: o
     caminho `docx_text` passa por `_build_records_text`, que chama esta função quando
@@ -1314,13 +1447,27 @@ def _vision_source_block(path: Path):
     fosse .docx/.txt/.xml. O sintoma disso nao e um erro local legivel: e um **400 remoto** depois
     de montar e trafegar o base64 inteiro, com mensagem sobre o formato do documento — longe da
     causa, que e o roteamento daqui. Recusar torna a falha imediata e nomeavel.
+
+    🔴 O media_type DA IMAGEM SAI DOS BYTES, NAO DA EXTENSAO (`_sniff_image_media_type`). A
+    extensao so ROTEIA (imagem x PDF); o tipo declarado a API e o do conteudo. Conteudo que nao e
+    nenhum dos quatro formatos aceitos e recusado AQUI, pelo mesmo motivo do sufixo desconhecido:
+    a API recusaria de qualquer forma, e a recusa local e imediata, nomeavel e gratuita.
     """
     import base64
     suffix = path.suffix.lower()
     if suffix in _IMAGE_MEDIA_TYPES:
-        data = base64.standard_b64encode(path.read_bytes()).decode()
+        raw = path.read_bytes()
+        media_type = _sniff_image_media_type(raw)
+        if media_type is None:
+            raise ValueError(
+                f"conteudo de '{path.name}' nao e PNG, JPEG, GIF nem WebP "
+                f"(extensao '{suffix}', {len(raw)} bytes) — imagem nao enviada ao Vision")
+        if media_type != _IMAGE_MEDIA_TYPES[suffix]:
+            log.info(f"  → {path.name}: extensao '{suffix}' mas o conteudo e {media_type} "
+                     f"— enviando pelo conteudo")
+        data = base64.standard_b64encode(raw).decode()
         block = {"type": "image", "source": {"type": "base64",
-                 "media_type": _IMAGE_MEDIA_TYPES[suffix], "data": data}}
+                 "media_type": media_type, "data": data}}
         return block, "image_vision"
     if suffix != ".pdf":
         raise ValueError(
@@ -1343,7 +1490,8 @@ def extract_with_vision(pdf_path):
     import anthropic
     api_key = os.getenv("ANTHROPIC_API_KEY")
     if not api_key:
-        raise EnvironmentError("ANTHROPIC_API_KEY não definida no .env")
+        # Tipada: sem chave, NENHUM documento e extraido — e indisponibilidade, nao falha deste.
+        raise ApiUnavailableError("ANTHROPIC_API_KEY não definida no .env")
 
     block, src = _vision_source_block(Path(pdf_path))
     client = anthropic.Anthropic(api_key=api_key, timeout=CLAUDE_API_TIMEOUT_SECONDS)
@@ -1386,13 +1534,13 @@ def _response_text(resp, origem: str) -> str:
 def extract_fields_with_claude(text: str) -> dict:
     """Envia o texto do PDF ao Claude e retorna os campos como dict.
 
-    Lanca excecao se a chave nao estiver definida ou o retorno nao for JSON,
-    para que o chamador possa cair no fallback por regex.
+    Lanca excecao se o retorno nao for JSON, para que o chamador possa cair no fallback por
+    regex. Chave ausente levanta `ApiUnavailableError` (indisponibilidade — sem fallback).
     """
     import anthropic
     api_key = os.getenv("ANTHROPIC_API_KEY")
     if not api_key:
-        raise EnvironmentError("ANTHROPIC_API_KEY não definida no .env")
+        raise ApiUnavailableError("ANTHROPIC_API_KEY não definida no .env")
 
     client = anthropic.Anthropic(api_key=api_key, timeout=CLAUDE_API_TIMEOUT_SECONDS)
     resp = client.messages.create(
@@ -1861,6 +2009,12 @@ def _build_records_text(pdf_path, raw, source) -> list:
     except Exception as e:
         if _is_api_unavailable(e):
             raise ApiUnavailableError(str(e)) from e
+        if _api_rejected_document(e):
+            # A API recusou ESTE documento. O regex abaixo e fallback para resposta ilegivel do
+            # modelo, nao para documento que nem foi lido: cair nele gravaria uma conta de
+            # qualidade regex marcada como SUCESSO. Falha explicita, com o motivo da API.
+            log.warning(f"  API recusou o documento ({e}) — registro de falha")
+            return [_failure_record(pdf_path, f"Documento recusado pela API: {e}")]
         log.warning(f"  Extração via Claude (texto) falhou ({e}) — fallback regex")
         rec = build_record_regex(pdf_path, raw, source)
 

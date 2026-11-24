@@ -147,7 +147,8 @@ class VisionSourceBlockTest(_TmpMixin):
         self.assertEqual((bloco["type"], src), ("document", "pdf_vision"))
 
         png = self.tmp / "a.png"
-        png.write_bytes(b"\x89PNG")
+        # Assinatura PNG COMPLETA: o media_type sai dos bytes (`_sniff_image_media_type`).
+        png.write_bytes(b"\x89PNG\r\n\x1a\n")
         bloco, src = E._vision_source_block(png)
         self.assertEqual((bloco["type"], bloco["source"]["media_type"], src),
                          ("image", "image/png", "image_vision"))

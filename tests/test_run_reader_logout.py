@@ -1,10 +1,14 @@
 """
 Teste do fechamento do IMAP em caminho de erro — read_emails.run_reader.
 
-Sem o try/finally, uma exceção inesperada que escapasse do loop principal
-deixaria a conexão IMAP aberta (logout pulado). Este teste força uma exceção
-fora do try interno (is_ignored_sender) e prova que mail.logout() ainda roda e
-que a exceção original é propagada.
+O `try/finally` do laço garante `mail.logout()` mesmo quando algo escapa dele. Desde
+2026-11-24 uma exceção COMUM no tratamento de um e-mail não escapa mais: ela é isolada naquele
+e-mail (`_on_uid_crash`) e o run segue — antes ela propagava, o run morria naquele UID e todos
+os e-mails seguintes ficavam sem leitura, em todo run. Só `BaseException` (Ctrl+C, encerramento
+do processo) ainda propaga, e é com ela que a garantia original do logout continua provada.
+
+Os dois caminhos forçam a exceção fora do `try` do fetch do header (em `is_ignored_sender`).
+Os demais casos do isolamento por e-mail vivem em `tests/test_run_reader_uid_crash.py`.
 """
 
 import sys
@@ -29,10 +33,11 @@ _HEADER_FETCH = (
 
 
 class RunReaderLogoutOnErrorTest(unittest.TestCase):
-    def test_logout_chamado_mesmo_com_excecao_no_loop(self):
-        mail = mock.MagicMock()
-        mail.uid.return_value = _HEADER_FETCH
+    def setUp(self):
+        self.mail = mock.MagicMock()
+        self.mail.uid.return_value = _HEADER_FETCH
 
+    def _run(self, erro):
         ctrl = mock.MagicMock()
         ctrl._available = False
         # known_ids não-vazio e SEM o msg_id atual → não cai como duplicado,
@@ -40,14 +45,27 @@ class RunReaderLogoutOnErrorTest(unittest.TestCase):
         ctrl.load_known_ids.return_value = {"<outro-id>"}
 
         with mock.patch.object(read_emails, "_connect_and_search",
-                               return_value=(mail, [b"1"])), \
+                               return_value=(self.mail, [b"1"])), \
                 mock.patch.object(read_emails, "SupabaseControl", return_value=ctrl), \
-                mock.patch.object(read_emails, "is_ignored_sender",
-                                  side_effect=RuntimeError("falha inesperada")):
-            with self.assertRaises(RuntimeError):
-                read_emails.run_reader(all_=True, dry_run=True)
+                mock.patch.object(read_emails, "is_ignored_sender", side_effect=erro) as filtro:
+            try:
+                return read_emails.run_reader(all_=True, dry_run=True)
+            finally:
+                # Anti-vacuidade: o ponto de falha FOI alcançado — sem isto, um header que
+                # deixasse de casar faria os dois testes passarem sem exercitar nada.
+                filtro.assert_called_once()
 
-        mail.logout.assert_called_once()
+    def test_excecao_comum_nao_propaga_e_o_logout_roda(self):
+        summary = self._run(RuntimeError("falha inesperada"))
+        self.assertEqual(summary["crashed"], 1)
+        self.mail.logout.assert_called_once()
+
+    def test_interrupcao_propaga_e_o_logout_roda(self):
+        # A garantia original do `finally`: o que escapa do laço não deixa a conexão aberta.
+        interrupcao = KeyboardInterrupt()
+        with self.assertRaises(KeyboardInterrupt):
+            self._run(interrupcao)
+        self.mail.logout.assert_called_once()
 
 
 if __name__ == "__main__":
