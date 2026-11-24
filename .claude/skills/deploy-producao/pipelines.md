@@ -23,9 +23,26 @@ preciso reiniciar nada**.
 ## 1. Email Reader (leitura, a cada 5 min)
 
 **Copiar** — `skills\email-reader\scripts\read_emails.py`,
+`skills\email-reader\scripts\reader_alert.py`,
 `skills\pdf-contas-pagar\scripts\extract_pdf.py`, `skills\pdf-contas-pagar\scripts\febraban.py`,
 `skills\pdf-contas-pagar\scripts\fiscal_key.py`, `skills\pdf-contas-pagar\scripts\cte_content.py`,
 `skills\pdf-contas-pagar\scripts\alura_fiscal.py` (os que tiverem mudado) **+ `scheduler\deploy-manifest.json`**.
+
+⚠️ **`reader_alert.py` é ARQUIVO NOVO (alerta ativo, 2026-11-24)** — fica em
+`skills\email-reader\scripts\`, ao lado do `read_emails.py`, e é importado **lazy** (ausente ⇒ aviso
+`modulo 'reader_alert' indisponivel … Deploy parcial?`; o leitor segue lendo, só não avisa ninguém).
+🔴 **Depende de `skills\cobranca-vencidos\scripts\email_sender.py`**, que ele carrega por caminho —
+copie os **dois**. Com o `email_sender.py` antigo o aviso ainda sai, mas com a imagem de assinatura
+da cobrança e um aviso no log. 🔴 **E do `.env`:** `READER_ALERT_TO=<endereços separados por vírgula>`
+é o **interruptor** — sem a variável o alerta fica desligado e nada no log acusa. Não informe a
+própria caixa lida pelo leitor. O envio usa o bloco SMTP da cobrança (`SMTP_HOST`, `SMTP_USER`,
+`SMTP_PASSWORD`, `SMTP_FROM_ADDR`), que em produção já existe.
+**Testar o canal depois da cópia** (envia UM e-mail de teste aos destinatários, não toca o banco;
+exit 0 = aceito, 1 = não enviado):
+
+```powershell
+py -3 skills\email-reader\scripts\reader_alert.py --test
+```
 
 ⚠️ **`alura_fiscal.py` é ARQUIVO NOVO (regra ALURA, 2026-11-23)** — importado **lazy** (degrada com aviso
 `modulo 'alura_fiscal' indisponivel`: o e-mail mensal da Alura volta a `ignorado`) e **depende de
@@ -62,6 +79,10 @@ py -3 -c "import sys; sys.path.insert(0,'skills/email-reader/scripts'); import r
 `failure_notify`. Copiar só um dá `ImportError`. **Na dúvida, copie o conjunto:** `db_firebird.py`,
 `email_sender.py`, `failure_notify.py`, `resend.py`, `run.py`, `send_core.py`, `supabase_log.py`,
 `template.py`.
+
+⚠️ **`email_sender.py` também serve ao Email Reader** (alerta ativo, `reader_alert.py`): alterar
+`SmtpSession` ou a assinatura de `send` afeta os dois pipelines — rode `tests/test_reader_alert.py`
+junto dos testes da cobrança.
 
 **Pré-requisitos (diferentes do reader):** driver Firebird **`fdb`** instalado; `.env` com
 `FB_HOST`/`FB_PORT`/`FB_DATABASE`/`FB_USER`/`FB_PASSWORD`/`FB_CHARSET` **e** o bloco SMTP

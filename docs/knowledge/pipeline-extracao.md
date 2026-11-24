@@ -1207,6 +1207,133 @@ duplicidades. ⚠️ Resposta interna sem valor que apenas cite a cadeia dele vi
 "RES: COBRANÇA OTIMOTEX TECIDO" (e-mail 3364, R$ 2.987,25 do título 254697-A, a receber). A regra nova ignora
 esse corpo; a conta foi cancelada pela migration 150.
 
+### Um anexo de imagem com a extensão errada parou a fila por dois dias (2026-11-24)
+
+Relato do usuário: e-mails com anexo e com dados no corpo não geravam conta. Não era extração.
+
+**O gatilho.** Duas imagens cujo tipo declarado não batia com o conteúdo (bytes conferidos na caixa):
+
+| E-mail | Imagem | Declarada | Conteúdo |
+|---|---|---|---|
+| RTE, 18/11 18:40 (`RE: RECUSA CTE 643561`) | `image.png` inline, 134 KB | nome `.png`, MIME `image/gif` | GIF |
+| Sevenlog, 19/11 15:25 (`FATURA OTIMOTEX (14080)`) | `a66c1adb.png`, 13 KB, assinatura | nome `.png`, MIME `image/png` | WebP |
+
+O `media_type` saía da extensão e a extensão, do nome do anexo. A Anthropic confere os bytes e
+respondeu `400 invalid_request_error` ("…image/png media type, but the image appears to be a
+image/webp image"). No caso da Sevenlog nem o MIME estava certo: só os bytes dizem a verdade.
+
+**A cadeia.** (1) `_is_api_unavailable` tratava todo `anthropic.APIError` como "API fora". (2) O
+Passo 1 levantava no primeiro anexo com `erro_api` — na Sevenlog a imagem vinha antes da fatura e do
+boleto, que nem foram lidos. (3) O e-mail não era registrado e o breaker adiava todos os financeiros
+seguintes. (4) Sem registro, ele voltava a cada 5 min, era o primeiro na ordem de UID e religava o
+breaker. (5) A tarefa lê `--days 1`: quando o e-mail saiu da janela a fila andou, e os adiados que
+também tinham saído nunca mais foram lidos.
+
+**Medido.** Nenhum financeiro processado em 19/11; em 20/11 00:00 entraram 23 e-mails de uma vez
+(atraso de 9 a 23 h) e às 00:06 a Sevenlog capturou a fila até 21/11 00:00. **14 e-mails nunca
+registrados** (INBOX desde 01/10 × `email_control`, 401 mensagens; nenhum outro ausente): 2 boletos
+sem conta — Sevenlog R$ 18.926,80 (venc. 24/11) e FedEx R$ 1.037,78 (venc. 23/11) —, 8 CT-e sem
+registro fiscal, 2 duplicatas de contas já criadas por encaminhamento, o e-mail da RTE e 1 spam.
+**639 cópias órfãs** do mesmo anexo no bucket (351 + 288): cada run salvava e subia o arquivo de
+novo. Exit 3 e Event Log 1002 foram emitidos a cada 5 min por dois dias, e ninguém viu.
+O risco estava anotado desde o review de 2026-09-29 ("um documento-veneno adiaria todos os
+financeiros do run"), sem ocorrência até então.
+
+**Por que cada decisão.**
+
+- **Lista FECHADA de recusa de documento, default "indisponível".** Um 400 pode ser do documento, da
+  conta (crédito esgotado chega como 400) ou do pedido inteiro (parâmetro que o modelo deixou de
+  aceitar). Só o primeiro é culpa do arquivo. Entrou o que foi medido: 413 e o 400 que aponta o bloco
+  enviado (`messages.N.content.M.image|document`). O resto fica com a sonda.
+- **Sem heurística por substring.** O nome do arquivo salvo carrega remetente e assunto e viaja na
+  mensagem de qualquer erro local; `billing`, `quota` e `permission` ligavam o breaker.
+- **Sonda em vez de "outro e-mail concluiu neste run".** A 5 min de cadência quase todo run tem 0 ou 1
+  financeiro novo, o venenoso vem primeiro na ordem de UID, e concluir sem chamar a API não prova nada.
+- **Contador de falhas isoladas, e não "idade do erro".** Depois de uma parada real de horas, um único
+  soluço na volta mandaria o e-mail mais antigo para a quarentena. Só conta a falha confirmada por
+  sonda saudável.
+- **Marcador para TODO adiado.** Antes só o e-mail tentado ganhava linha. Numa recuperação
+  interrompida, a linha dele era apagada e o resto saía da janela — por isso a janela não podia
+  depender só dele.
+- **Piso de 15 dias e descarte além dele.** Há linhas `erro_api` órfãs de 16/07 no banco (anteriores à
+  limpeza ao concluir); limitar ao piso faria todo run varrer 15 dias para sempre.
+
+**Recuperação (24/11).** `read_emails.py --days 7` pelo DEV: 14 processados, contas 2643 (Sevenlog) e
+2644 (FedEx) criadas com o PDF vinculado, 16 documentos fiscais registrados, 4R e Braspress casados
+por dedup. `check_inbox_coverage.py --days 10`: 14 ausentes antes, 0 depois.
+
+**Limpeza do bucket (24/11).** `purge_orphan_attachments.py` removeu 1.091 órfãos (220 preservados),
+entre eles 637 das cópias repetidas dos dois anexos — 350 da imagem do e-mail da RTE e 287 da
+fatura da Sevenlog. Antes de rodar, a purga ganhou a guarda que faltava para conviver com o leitor
+de produção: **objeto escrito há menos de 24 h não é apagado**. O leitor sobe o anexo antes de
+gravar a conta, então o anexo de um run em andamento era indistinguível de um órfão. Conferido
+contra um retrato tirado antes: nenhum objeto referenciado sumiu.
+
+**As quatro ressalvas do relatório, resolvidas no mesmo dia (24/11).** Cada uma com teste que
+executa a função de topo e validação por mutante.
+
+1. **Alerta ativo (`reader_alert.py`).** Exit 3 e Event Log dependem de alguém abrir o Agendador.
+   Ao fim do run, se algum e-mail adiado **naquele run** está parado há 60 min ou mais (`logged_at`
+   da linha `erro_api`) e nenhum aviso saiu nas últimas 6 h, um e-mail vai para `READER_ALERT_TO`
+   (variável vazia = desligado; é o que impede o DEV de avisar alguém).
+   - *Só os adiados do run.* Linha antiga de e-mail que já saiu da janela (as órfãs de 16/07)
+     alertaria para sempre sobre algo que o leitor nem tenta mais. Adiado pela 1ª vez não avisa.
+   - *60 minutos.* A quarentena resolve o e-mail venenoso em ~30 min; o aviso é para quando os
+     mecanismos automáticos já tiveram a vez.
+   - *Carimbo em TODAS as linhas citadas.* A linha some quando o e-mail conclui; com o carimbo só
+     na mais antiga, bastava ela ser lida para as demais dispararem aviso novo dentro da carência.
+   - *Mesmo objeto JSON do contador.* `alerted_at` e `isolated_failures` moram no `raw_payload`, e
+     o PATCH do PostgREST substitui a coluna inteira: `_update_error_payload` é a única escrita ali.
+   - *Datas estranhas falham para o lado do aviso.* `alerted_at` no futuro é descartado (um carimbo
+     de 2126 deixaria "agora − carimbo" negativo, logo dentro da carência para sempre); `logged_at`
+     ilegível conta como parado.
+   - *Envio.* `SmtpSession` da cobrança, carregado por caminho — TLS 1.2, CRLF e From no domínio de
+     Return Path têm uma cópia só; `signature=False` tira a imagem da assinatura. Um envio por
+     destinatário; envio que falha não carimba, e o run seguinte tenta de novo.
+   - *O leitor ignora o próprio alerta.* O Reply-To do envio é o mailbox que o leitor lê, então a
+     resposta de quem recebeu o aviso volta para a caixa. Marcador `[ALERTA-LEITOR]` no assunto
+     **e** remetente próprio ou interno ⇒ `ignorado`, antes de ler o corpo — ele lista assuntos de
+     terceiros, e um "honorários" ali forçaria conta. Externo com o marcador segue o fluxo normal.
+2. **Exceção ao tratar um e-mail não derruba o run.** O corpo por-UID do laço virou `_read_one`;
+   o que levantar ali é isolado por `_on_uid_crash`: o e-mail vira `falha` com uma linha
+   `processamento_erro` (uma por e-mail, não por run) e o seguinte é lido. O parse do cabeçalho
+   saiu do `try` do fetch — cabeçalho que quebrava o parser era `[SKIP]` eterno, sem registro.
+   Falha de IMAP no fetch segue transitória; `BaseException` ainda propaga e o logout é garantido.
+   Prova de equivalência: versão anterior × nova sobre **403 e-mails** da caixa real, 0 diferenças.
+3. **Imagem sem dado financeiro não vira `sem_valor`** quando outro anexo do e-mail respondeu.
+   `_is_empty_image_row` exige tudo: fonte `image_vision`; sem valor, código, CNPJ/CPF e nosso
+   número; tipo vazio ou `outro`; vencimento não lido; nº de documento ausente ou sintético;
+   descrição vazia ou com sinal de contato e sem termo financeiro. Com conta nova ou dedup no mesmo
+   e-mail, vira nota em `/emails` ("Imagem sem dado financeiro ignorada"); sozinha, segue
+   `sem_valor`. O sufixo posicional `#N` não muda. Medido sobre as 19 linhas históricas de imagem
+   sem valor: 3 deixariam de existir (erros 317 e 431 da Alko, 460 da Sevenlog); as demais não
+   passam no critério e ficam — é o caso do banner que o modelo classifica como `boleto`, o mesmo
+   retrato de uma foto ilegível de boleto real.
+4. **`duplicidade`, e não `ignorado`, quando o anexo casou conta existente.** No call site de
+   `process_message`, `pure_nfe` e `nonpayable` só valem se o anexo **não** respondeu por pagável
+   (`and not attachment_account`). A ordem de `status_for_result` não mudou — reordenar moveria
+   também as duplicatas vindas do CORPO. O único e-mail nesse estado (3865) foi alinhado pela
+   migration 154.
+
+⚠️ **Resíduos.** (a) Run que morre no IMAP (exit 1) não alerta: o alerta depende de o run terminar.
+(b) E-mail **sem `Message-ID`** adiado não entra no alerta — não há chave que o ligue à linha.
+(c) Carimbo que falha depois do envio faz o aviso repetir no run seguinte: ruidoso de propósito, o
+oposto seria calar. (d) Banner que o modelo classifica como `boleto` segue em `/erros`. (e) E-mail
+movido do spam para a INBOX depois de dois dias fica fora da janela — sem ocorrência no inventário.
+(f) Duplicata vinda do CORPO com assunto de NF-e segue `ignorado` (regra de produto, não tocada).
+(g) Parada de **15 dias ou mais** sem nenhum e-mail registrado: a marca-d'água cai além do piso, é
+descartada e a janela volta ao `--days` pedido, sem log (14 dias ainda cobre tudo). Não é regressão
+— antes a janela era sempre fixa —, mas a frase "máquina parada não deixa buraco" só vale até aí.
+
+**Review max (24/11).** [docs/review/2026-11-24-Features-max.md](../review/2026-11-24-Features-max.md):
+117 mutantes sobre o código novo, 113 vermelhos; nenhum defeito no código de produção. Dois achados
+confirmados, ambos em teste e corrigidos: `test_poison_attachment.py` só passava com a
+`ANTHROPIC_API_KEY` do `.env` local (reprovaria o `pytest` do CI, que não tem `.env`), e o teste do
+call site da janela não observava a marca-d'água nem os ids conhecidos. Ficaram **abertos, por
+decisão pendente**: logar ou limitar ao piso o caso (g); três testes cujo nome promete mais do que a
+asserção observa (fuso na purga, carência do alerta, `EMAIL_KEYWORDS` do `.env`); e a frase "parada
+só do Vision passaria na sonda", que não foi conferida — a sonda envia um bloco de **imagem**.
+
 ### Auto-resolução de fornecedor
 
 > **Três regras de fornecedor moram na seção "Normalização de `document_type`"**, junto do caso de

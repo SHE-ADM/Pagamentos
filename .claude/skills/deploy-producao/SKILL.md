@@ -78,7 +78,7 @@ Verifique também, e diga explicitamente quando **não** se aplicar:
 
 | Item | Quando entra |
 |---|---|
-| **`.env`** | só quando a mudança lê variável nova (ex.: `EMAIL_KEYWORDS`). O `.env` **não é versionado** — é edição manual no arquivo de produção |
+| **`.env`** | só quando a mudança lê variável nova (ex.: `EMAIL_KEYWORDS`, `READER_ALERT_TO`). O `.env` **não é versionado** — é edição manual no arquivo de produção. 🔴 Fica **fora do manifesto**: a paridade não acusa variável esquecida (ver Passo 4) |
 | **Dependência Python** | módulo novo (`pypdf`) exige `py -3 -m pip install` na máquina do scheduler; copiar arquivo não basta |
 | **Migration** | a Supabase é **compartilhada dev+prod** — migration já aplicada **não** tem passo de banco em produção |
 | **`setup-*-task.ps1`** | 🔴 copiar arquivo **NÃO** move uma tarefa já registrada no Agendador. Horário/gatilho novo exige **re-executar** o `setup-*-task.ps1` como Administrador |
@@ -99,6 +99,21 @@ use `inspect.getsource` da função para provar que a alteração está lá:
 ```powershell
 py -3 -c "import sys, inspect; sys.path.insert(0,'skills/email-reader/scripts'); import read_emails as R; print('grava:', 'body_full' in inspect.getsource(R.process_message))"
 ```
+
+🔴 **Variável nova de `.env` ⇒ a validação IMPRIME o valor lido**, não só a presença do símbolo.
+Paridade prova que os arquivos chegaram; o `.env` não entra no manifesto. Em 2026-11-24 o alerta
+do leitor foi copiado com paridade 34/34 e ficou **desligado**, porque `READER_ALERT_TO` não tinha
+sido criada — quem acusou foi a lista vazia no fim do comando abaixo e o teste do canal. Como
+`read_emails` carrega o `.env` ao ser importado, basta ler `os.environ` depois do import:
+
+```powershell
+py -3 -c "import sys, os; sys.path.insert(0,'skills/email-reader/scripts'); import read_emails, reader_alert as A; print(A.parse_recipients(os.environ.get('READER_ALERT_TO')))"
+py -3 skills\email-reader\scripts\reader_alert.py --test
+```
+
+Lista vazia = alerta desligado. O `--test` envia um e-mail aos destinatários (exit 0 = aceito) e
+não toca o banco. Recurso com canal externo (SMTP, API) só está validado quando o canal foi
+exercitado de ponta a ponta.
 
 ⚠️ **O console de produção é PowerShell.** A quebra de linha dentro do comando vai como `\r\n`
 **literal** (a barra invertida não é escape do PowerShell), **nunca** como `` `r`n ``, que vira
