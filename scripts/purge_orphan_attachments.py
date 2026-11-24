@@ -31,8 +31,17 @@ PRESERVA TAMBEM, pelo CONTEUDO: o orfao cujo PDF contem uma chave de acesso fisc
   2026-08-03 — a lacuna CRESCE a cada CT-e reenviado. Como a decisao aqui e irreversivel, a purga
   abre cada candidato e so apaga o que comprovadamente nao carrega documento fiscal.
 
+PRESERVA TAMBEM o objeto RECEM-ESCRITO (menos de `MIN_AGE_HOURS`):
+  o reader publica o anexo no Passo 1, ANTES de gravar a conta, e roda a cada 5 minutos em
+  producao. O anexo de um run EM ANDAMENTO ainda nao tem linha nenhuma — para esta purga ele e
+  indistinguivel de um orfao, e apaga-lo deixaria a conta que nasce segundos depois SEM o PDF,
+  em silencio. Sem data legivel, tambem preserva. O que ficar de fora hoje cai na purga seguinte.
+
 IRREVERSIVEL. Use --dry-run primeiro (padrao do projeto). O backup diario (skill
 `backup-supabase`, 02:00) inclui o bucket, entao ha rede de seguranca.
+
+REGISTRO: antes de apagar, a execucao real grava a lista COMPLETA das chaves em
+`logs/purge_orphans_<data>_<hora>.txt`. Sem conseguir gravar o registro, nao apaga nada.
 
 Uso:
     py -3 scripts/purge_orphan_attachments.py --dry-run   # lista o que faria
@@ -47,6 +56,7 @@ import tempfile
 import urllib.error
 import urllib.parse
 import urllib.request
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -74,6 +84,15 @@ HEADERS = {"apikey": KEY, "Authorization": f"Bearer {KEY}", "Content-Type": "app
 KEEP_EMAIL_STATUSES = {"pendente", "falha"}
 DELETE_BATCH = 100   # a Storage API aceita varios prefixes por chamada
 
+# Objeto escrito ha menos tempo que isto NUNCA e apagado (ver "RECEM-ESCRITO" na docstring).
+# A janela real entre o upload e a linha e de minutos; 24 h e folga deliberada — esperar um dia
+# para remover um orfao nao custa nada, e apagar o anexo de um run em andamento nao tem volta.
+MIN_AGE_HOURS = 24
+MOTIVO_RECENTE = f"escrito ha menos de {MIN_AGE_HOURS} h (pode ser de um run em andamento)"
+
+# Onde a execucao real registra o que apagou (pasta ignorada pelo git).
+PURGE_LOG_DIR = ROOT / "logs"
+
 
 def _rest(path: str, order: str = "id"):
     """GET no PostgREST, PAGINADO — delega a `supabase_rest.rest_get` (fonte unica).
@@ -92,9 +111,39 @@ def _rest(path: str, order: str = "id"):
     return rest_get(BASE, HEADERS, path, order)
 
 
-def _storage_list() -> list[str]:
-    """Todos os objetos do bucket — delega ao modulo compartilhado."""
-    return storage_list(BASE, HEADERS, BUCKET)
+def _storage_list() -> dict:
+    """Todos os objetos do bucket, como `{nome: instante da ultima escrita}` — delega ao modulo
+    compartilhado. Iterar o resultado devolve os nomes."""
+    return storage_list(BASE, HEADERS, BUCKET, com_ultima_escrita=True)
+
+
+def _escrito_ha_pouco(instante, agora: datetime) -> bool:
+    """True se o objeto foi escrito ha menos de `MIN_AGE_HOURS` — OU se nao da para saber.
+
+    As tres duvidas resolvem para PRESERVAR, porque esta funcao decide uma remocao irreversivel:
+    data ausente, data ilegivel e data no futuro (relogio fora de sincronia) contam como recente.
+    """
+    try:
+        escrito = datetime.fromisoformat(str(instante or ""))
+    except ValueError:
+        return True
+    if escrito.tzinfo is None:
+        escrito = escrito.replace(tzinfo=timezone.utc)
+    return agora - escrito < timedelta(hours=MIN_AGE_HOURS)
+
+
+def _grava_registro(apagar: list[str], agora: datetime) -> Path:
+    """Grava a lista COMPLETA do que sera apagado e devolve o caminho. LEVANTA `OSError`.
+
+    Roda ANTES do primeiro DELETE: se a purga cair no meio, o registro ja diz o que estava na
+    fila. Em bytes, para o arquivo sair em LF mesmo no Windows.
+    """
+    PURGE_LOG_DIR.mkdir(parents=True, exist_ok=True)
+    caminho = PURGE_LOG_DIR / f"purge_orphans_{agora.astimezone():%Y%m%d_%H%M%S}.txt"
+    linhas = [f"# purga de orfaos do bucket {BUCKET} — {agora.isoformat()}",
+              f"# {len(apagar)} objeto(s) a remover", *apagar]
+    caminho.write_bytes(("\n".join(linhas) + "\n").encode("utf-8"))
+    return caminho
 
 
 def _erro_source_files(erros: list[dict]) -> set:
@@ -220,10 +269,13 @@ def main() -> int:
     orfaos = [n for n in objetos if n not in referenciados]
     protegidos_pref = _protected_prefixes(emails)
 
+    agora = datetime.now(timezone.utc)
     apagar, preservar = [], []
     for nome in orfaos:
         motivo = None
-        if any(nome.startswith(p) for p in protegidos_pref):
+        if _escrito_ha_pouco(objetos.get(nome), agora):
+            motivo = MOTIVO_RECENTE
+        elif any(nome.startswith(p) for p in protegidos_pref):
             motivo = "e-mail em pendente/falha (pode virar conta)"
         elif nome in erros_files:
             motivo = "citado em email_processing_errors (extracao falhou)"
@@ -258,6 +310,18 @@ def main() -> int:
             log.info(f"    ... e mais {len(apagar) - 10}")
         log.info("\n[dry-run] nada foi apagado.")
         return 0
+
+    if not apagar:
+        log.info("\nOK: nada a remover.")
+        return 0
+
+    # Sem rastro, nao apaga: a lista do que saiu e a unica memoria de uma remocao irreversivel.
+    try:
+        registro = _grava_registro(apagar, agora)
+    except OSError as e:
+        log.error(f"Nao foi possivel gravar o registro da purga — NADA foi apagado: {e}")
+        return 1
+    log.info(f"  registro do que sera removido: {registro}")
 
     removidos = 0
     for i in range(0, len(apagar), DELETE_BATCH):

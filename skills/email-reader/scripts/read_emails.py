@@ -12,6 +12,7 @@ from difflib import SequenceMatcher
 from html import unescape as html_unescape
 from email.header import decode_header
 from email.utils import parseaddr, parsedate_to_datetime
+from dataclasses import dataclass, field
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 
@@ -65,6 +66,75 @@ API_ERROR_TYPE = "erro_api"
 # crash) para o Agendador e o Event Log dizerem a causa: com exit 0, a falta de crédito de
 # 2026-09-29 deixou 7 h de e-mails parados com a tarefa marcada como sucesso.
 EXIT_API_UNAVAILABLE = 3
+
+# ---------------------------------------------------------------------------
+# Isolamento de e-mail "venenoso" (incidente de 18 a 21/11/2026)
+# ---------------------------------------------------------------------------
+# Um e-mail cuja extração falha SEMPRE com erro "de indisponibilidade" voltava a cada run,
+# era o primeiro na ordem de UID e religava o circuit breaker: a fila de financeiros ficou
+# parada por dois dias e 14 e-mails saíram da janela sem nunca serem registrados.
+#
+# Teto de e-mails ISOLADOS por run (API saudável, só aquele e-mail falhou). Acima disso o
+# breaker abre: vários e-mails falhando no mesmo run, com a sonda passando, é mais provável
+# API instável do que vários venenosos — e cada tentativa pode custar um timeout inteiro.
+MAX_ISOLATED_PER_RUN = 3
+# Falhas ISOLADAS (cada uma confirmada por sonda saudável) antes de o e-mail ser processado
+# em modo tolerante. 6 runs de 5 min ≈ 30 min: longe de um soluço, perto o bastante para o
+# boleto do mesmo e-mail não ficar esperando. Falha durante parada real NÃO conta.
+POISON_ISOLATED_FAILURES = 6
+# Chave do contador no raw_payload da linha erro_api do e-mail.
+ISOLATED_FAILURES_KEY = "isolated_failures"
+# Piso da janela de leitura quando ela é AMPLIADA por pendência (dias). Pendência mais antiga
+# que isto é descartada do cálculo — uma linha irrecuperável não pode prender a janela.
+MAX_LOOKBACK_DAYS = 15
+# Margem (dias) ao converter um instante em data do critério SINCE: o IMAP compara só a DATA
+# do INTERNALDATE, no fuso do servidor.
+SINCE_MARGIN_DAYS = 1
+# Paginação da consulta de pendências de API ("Max rows" do Supabase = 1000). O teto de páginas
+# existe para o caso patológico de o servidor ignorar o offset — laço infinito é pior que erro.
+_PENDING_API_PAGE_SIZE = 1000
+_PENDING_API_MAX_PAGES = 20
+# Meses do IMAP (RFC 3501) por extenso: `strftime("%b")` depende do locale do processo.
+_IMAP_MONTHS = ("Jan", "Feb", "Mar", "Apr", "May", "Jun",
+                "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")
+
+
+def _isolated_failures(raw_payload) -> int:
+    """Contador de falhas isoladas guardado no `raw_payload` de uma linha erro_api (>= 0).
+
+    O payload vem do banco e é DADO, não contrato: pode ser None, a linha crua do CSV (valores
+    em texto) ou algo que ninguém previu. Qualquer coisa que não seja um inteiro vale 0.
+    """
+    if not isinstance(raw_payload, dict):
+        return 0
+    try:
+        return max(0, int(raw_payload.get(ISOLATED_FAILURES_KEY) or 0))
+    except (TypeError, ValueError):
+        return 0
+
+
+# ---------------------------------------------------------------------------
+# Alerta ativo do leitor (skills/email-reader/scripts/reader_alert.py)
+# ---------------------------------------------------------------------------
+# Marcador FIXO no assunto do alerta. Vive AQUI, e não no módulo do alerta, porque é o leitor
+# que precisa reconhecê-lo — inclusive num deploy parcial em que `reader_alert.py` não chegou.
+# 🔴 Não pode conter keyword financeira ("pagamento", "fatura", "boleto"...): o alerta e as
+# respostas a ele chegam à MESMA caixa que o leitor lê (o Reply-To do envio é o mailbox).
+READER_ALERT_SUBJECT_MARKER = "[ALERTA-LEITOR]"
+# Chave do carimbo "alerta enviado em" no raw_payload da linha erro_api (instante ISO, UTC).
+ALERTED_AT_KEY = "alerted_at"
+
+
+def _alerted_at(raw_payload) -> str | None:
+    """Carimbo do último alerta guardado no `raw_payload` de uma linha erro_api, ou None.
+
+    Mesma cautela de `_isolated_failures`: o payload é dado. Só texto não-vazio conta; quem
+    consome ainda precisa interpretar a data (e tratar a ilegível como "nunca alertado").
+    """
+    if not isinstance(raw_payload, dict):
+        return None
+    value = raw_payload.get(ALERTED_AT_KEY)
+    return value if isinstance(value, str) and value.strip() else None
 
 
 # Console do Windows (cp1252) nao encoda os simbolos de log (✓/→/✗).
@@ -125,6 +195,12 @@ _DOCX_CONTENT_WARNED = False
 # 'ignorado', e sem o aviso ninguem saberia por que.
 _ALURA_FISCAL = None
 _ALURA_FISCAL_WARNED = False
+
+# Idem para o alerta ativo do leitor. Mesmo mecanismo, mesmo motivo: `reader_alert` e arquivo
+# NOVO — num deploy parcial o leitor continua lendo, mas volta a nao avisar ninguem quando ha
+# e-mail parado. Sem o aviso no log, a ausencia do alerta pareceria "nao houve nada a alertar".
+_READER_ALERT = None
+_READER_ALERT_WARNED = False
 
 
 def _febraban():
@@ -233,6 +309,29 @@ def _alura_fiscal():
         log.warning("  [ALURA] modulo 'alura_fiscal' indisponivel — o e-mail mensal da Alura NAO "
                     "gerara contas. Deploy parcial (falta alura_fiscal.py ou fiscal_key.py)?")
     return _ALURA_FISCAL or None
+
+
+def _reader_alert():
+    """Modulo `reader_alert` (alerta ativo por e-mail), ou None AVISANDO UMA VEZ.
+
+    Sem fallback local: o envio reusa a sessao SMTP da cobranca (TLS 1.2, CRLF, From no dominio
+    de Return Path), e uma segunda copia dessas regras aqui e o que diverge e vira furo. Sem o
+    modulo o leitor segue lendo — so nao avisa, e diz isso no log."""
+    global _READER_ALERT, _READER_ALERT_WARNED  # noqa: PLW0603 — cache/aviso por processo
+    if _READER_ALERT is None:
+        try:
+            own_dir = str(Path(__file__).resolve().parent)
+            if own_dir not in sys.path:
+                sys.path.insert(0, own_dir)
+            import reader_alert
+            _READER_ALERT = reader_alert
+        except Exception:
+            _READER_ALERT = False
+    if not _READER_ALERT and not _READER_ALERT_WARNED:
+        _READER_ALERT_WARNED = True
+        log.warning("  [ALERTA] modulo 'reader_alert' indisponivel — e-mail parado NAO gera aviso "
+                    "por e-mail. Deploy parcial (falta reader_alert.py)?")
+    return _READER_ALERT or None
 
 
 def _febraban_fn(name: str):
@@ -870,6 +969,176 @@ class SupabaseControl:
                 pass  # só o status importa; o `with` devolve a conexão
         except Exception as e:  # noqa: BLE001 — limpeza best-effort, ver docstring
             log.warning(f"Não foi possível limpar erros resolvidos ({error_type}): {e}")
+
+    def pending_api_errors(self) -> dict:
+        """E-mails com linha `erro_api` EM ABERTO:
+        `{message_id: {id, received_at, logged_at, isolated_failures, alerted_at}}`.
+
+        UMA consulta por run, que serve a quatro decisões do `run_reader`: a janela de leitura
+        (um e-mail pendente não pode sair do `SINCE`), o marcador de adiado (uma linha por
+        e-mail, não por run), a quarentena (contador de falhas isoladas) e o alerta ativo
+        (`logged_at` diz há quanto tempo o e-mail está parado; `alerted_at`, quando já se avisou).
+
+        A linha é apagada quando o e-mail conclui (`delete_errors`), então estar aqui significa
+        "ainda não lido" — salvo linha ÓRFÃ de antes de a limpeza existir (2026-09-29), que o
+        chamador neutraliza cruzando com os e-mails já registrados.
+
+        PAGINADA e ordenada (`order=id.asc`): o Supabase corta em 1000 linhas com HTTP 200, e
+        um mapa truncado faria os adiados que ficaram de fora ganharem marcador NOVO a cada run.
+
+        FAIL-OPEN (`{}`): sem a consulta o run segue com a janela padrão e sem quarentena — o
+        comportamento de antes desta função. Nunca levanta.
+        """
+        if not self._available:
+            return {}
+        rows: list = []
+        try:
+            for page in range(_PENDING_API_MAX_PAGES):
+                req = urllib.request.Request(
+                    f"{self.base}/rest/v1/email_processing_errors"
+                    f"?error_type=eq.{urllib.parse.quote(API_ERROR_TYPE)}"
+                    f"&select=id,gmail_message_id,received_at,logged_at,raw_payload&order=id.asc"
+                    f"&limit={_PENDING_API_PAGE_SIZE}&offset={page * _PENDING_API_PAGE_SIZE}",
+                    headers=self.headers,
+                )
+                with urllib.request.urlopen(req, timeout=10) as r:
+                    chunk = json.loads(r.read())
+                if not isinstance(chunk, list):
+                    break
+                rows.extend(chunk)
+                if len(chunk) < _PENDING_API_PAGE_SIZE:
+                    break
+        except Exception as e:  # noqa: BLE001
+            # Fail-open (ver docstring): janela padrão e nenhuma quarentena neste run.
+            log.warning(f"Não foi possível consultar as pendências de API: {e}")
+            return {}
+
+        pending: dict = {}
+        for row in rows:
+            message_id = row.get("gmail_message_id")
+            if not message_id:
+                continue
+            failures = _isolated_failures(row.get("raw_payload"))
+            alerted_at = _alerted_at(row.get("raw_payload"))
+            entry = pending.get(message_id)
+            if entry is None:      # ordenado por id: a linha mais ANTIGA dá id e datas
+                pending[message_id] = {"id": row.get("id"),
+                                       "received_at": row.get("received_at"),
+                                       "logged_at": row.get("logged_at"),
+                                       ISOLATED_FAILURES_KEY: failures,
+                                       ALERTED_AT_KEY: alerted_at}
+            else:
+                entry[ISOLATED_FAILURES_KEY] = max(entry[ISOLATED_FAILURES_KEY], failures)
+                # O carimbo é gravado por nós, sempre em UTC e no mesmo formato ISO: a ordem
+                # textual é a cronológica. Vale o MAIS RECENTE entre as linhas do e-mail.
+                entry[ALERTED_AT_KEY] = max(filter(None, (entry[ALERTED_AT_KEY], alerted_at)),
+                                            default=None)
+        return pending
+
+    def latest_received_at(self) -> str | None:
+        """`received_at` mais recente de `email_control` — a marca-d'água da leitura.
+
+        O reader processa em ordem de chegada, então tudo o que chegou ANTES desta data já foi
+        visto. Se ela está a dias de hoje (máquina parada, tarefa desabilitada), a janela
+        `--days 1` deixaria de fora o que chegou no intervalo. None em falha (fail-open).
+        """
+        if not self._available:
+            return None
+        try:
+            req = urllib.request.Request(
+                f"{self.base}/rest/v1/email_control"
+                f"?select=received_at&received_at=not.is.null&order=received_at.desc&limit=1",
+                headers=self.headers,
+            )
+            with urllib.request.urlopen(req, timeout=10) as r:
+                rows = json.loads(r.read())
+            return rows[0].get("received_at") if rows else None
+        except Exception as e:  # noqa: BLE001
+            # Fail-open (ver docstring): sem a marca-d'água vale a janela pedida.
+            log.warning(f"Não foi possível consultar a última leitura: {e}")
+            return None
+
+    def bump_isolated_failures(self, message_id: str | None) -> int | None:
+        """Soma 1 ao contador de falhas ISOLADAS do e-mail e devolve o novo valor.
+
+        O contador vive no `raw_payload` da linha `erro_api` do próprio e-mail: nasce com ela e
+        some com ela quando o e-mail conclui — sem tabela, sem arquivo de estado local. Só é
+        chamado quando a falha foi confirmada por sonda SAUDÁVEL; falha durante uma parada real
+        não passa por aqui, e é isso que impede uma parada longa de mandar e-mails legítimos
+        para a quarentena. None quando não gravou (best-effort: sem contador não há quarentena,
+        e o e-mail segue sendo tentado).
+        """
+        if not self._available or not message_id:
+            return None
+
+        def _bump(payload: dict) -> None:
+            payload[ISOLATED_FAILURES_KEY] = _isolated_failures(payload) + 1
+
+        try:
+            payload = self._update_error_payload(message_id, _bump)
+            return payload[ISOLATED_FAILURES_KEY] if payload is not None else None
+        except Exception as e:  # noqa: BLE001
+            # Best-effort (ver docstring): sem contador não há quarentena; o e-mail segue tentado.
+            log.warning(f"Não foi possível contar a falha isolada do e-mail: {e}")
+            return None
+
+    def stamp_alerted(self, message_id: str | None, when_iso: str) -> bool:
+        """Carimba "alerta enviado em `when_iso`" na linha `erro_api` do e-mail. True se gravou.
+
+        É o que impede o alerta de repetir a cada run de 5 min: o próximo run lê o carimbo na
+        consulta de pendências e respeita a carência. Vive na linha do PRÓPRIO e-mail pelo mesmo
+        motivo do contador de falhas — nasce e some com ela, sem tabela nem arquivo de estado.
+        Best-effort: carimbo que falha faz o alerta repetir no próximo run (ruidoso), nunca
+        calar (o defeito que o alerta existe para combater).
+        """
+        if not self._available or not message_id:
+            return False
+
+        def _stamp(payload: dict) -> None:
+            payload[ALERTED_AT_KEY] = when_iso
+
+        try:
+            return self._update_error_payload(message_id, _stamp) is not None
+        except Exception as e:  # noqa: BLE001
+            # Best-effort (ver docstring): sem carimbo o alerta repete, não some.
+            log.warning(f"Não foi possível carimbar o alerta enviado: {e}")
+            return False
+
+    def _update_error_payload(self, message_id: str, mutate) -> dict | None:
+        """Lê o `raw_payload` da linha `erro_api` MAIS ANTIGA do e-mail, aplica `mutate(payload)`
+        e grava. Devolve o payload gravado, ou None quando o e-mail não tem linha.
+
+        🔴 FONTE ÚNICA de escrita nesse payload: o contador de falhas isoladas e o carimbo do
+        alerta moram no MESMO objeto JSON, e o PATCH do PostgREST substitui a coluna inteira.
+        Duas cópias deste ler-modificar-gravar que divergissem fariam uma apagar a chave da outra
+        — o contador zerado desliga a quarentena, o carimbo perdido repete o alerta. Payload que
+        não é objeto (None, a linha crua em outro formato) vira `{}` antes do `mutate`.
+
+        LEVANTA em falha de rede/HTTP: quem chama decide o que a falha significa.
+        """
+        mid_enc = urllib.parse.quote(message_id, safe="")
+        req = urllib.request.Request(
+            f"{self.base}/rest/v1/email_processing_errors"
+            f"?gmail_message_id=eq.{mid_enc}&error_type=eq.{urllib.parse.quote(API_ERROR_TYPE)}"
+            f"&select=id,raw_payload&order=id.asc&limit=1",
+            headers=self.headers,
+        )
+        with urllib.request.urlopen(req, timeout=10) as r:
+            rows = json.loads(r.read())
+        if not rows:
+            return None
+        raw_payload = rows[0].get("raw_payload")
+        payload = dict(raw_payload) if isinstance(raw_payload, dict) else {}
+        mutate(payload)
+        patch = urllib.request.Request(
+            f"{self.base}/rest/v1/email_processing_errors?id=eq.{int(rows[0]['id'])}",
+            data=json.dumps({"raw_payload": payload}, default=str).encode(),
+            headers={**self.headers, "Prefer": _PREFER_MINIMAL},
+            method="PATCH",
+        )
+        with urllib.request.urlopen(patch, timeout=10):
+            pass  # só o status importa
+        return payload
 
     def register_financial(self, payload: dict):
         """UPSERT de uma conta extraida em financial_account_control (service_role).
@@ -1856,6 +2125,11 @@ class SupabaseControl:
 
         Substitui N chamadas individuais is_processed() por uma única consulta,
         eliminando a latência por e-mail no loop principal de deduplicação.
+
+        🔴 `order=id.asc` torna a paginação DETERMINÍSTICA. Sem ORDER BY o PostgREST não
+        garante a mesma ordem entre as páginas, e o offset puro pode PULAR linhas: um e-mail
+        já registrado some do conjunto, parece novo e é extraído de novo (as contas casam
+        por dedup e o status dele vira `duplicidade`). Mesma lição de `scripts/supabase_rest`.
         """
         if not self._available:
             return set()
@@ -1864,7 +2138,7 @@ class SupabaseControl:
             while True:
                 req = urllib.request.Request(
                     f"{self.base}/rest/v1/email_control"
-                    f"?select=message_id&limit={chunk}&offset={offset}",
+                    f"?select=message_id&order=id.asc&limit={chunk}&offset={offset}",
                     headers=self.headers,
                 )
                 with urllib.request.urlopen(req, timeout=15) as r:
@@ -6546,9 +6820,33 @@ def pdf_password_candidates(cnpj: "str | list[str] | tuple[str, ...] | None") ->
     return candidatas
 
 
-def _run_extraction_once(pdf_path: Path, pdf_passwords: list[str] | None = None) -> tuple[str | None, str | None, bool]:
-    """Uma tentativa de extração IN-PROCESS. Retorna (csv_path, motivo_falha, transitorio).
+# Teto do motivo de falha levado a /erros (a coluna error_message corta em 500).
+_EXTRACTION_FAILURE_DETAIL_MAX = 300
 
+
+def _extraction_failure_detail(output_dir) -> str | None:
+    """Motivo(s) de falha que o extract_pdf gravou no `*_errors.log` do diretório de saída.
+
+    🔴 Lido ANTES de o diretório temporário sumir. Sem isto, o motivo real morria com o
+    tempdir e `/erros` mostrava só "extração não gerou registros" — o texto é o mesmo para
+    PDF ilegível, resposta truncada do modelo e documento recusado pela API, e é a diferença
+    entre os três que diz o que fazer. Best-effort: falha de leitura devolve None e loga.
+    """
+    try:
+        parts = [p.read_text(encoding="utf-8", errors="replace").strip()
+                 for p in sorted(Path(output_dir).glob("*_errors.log"))]
+    except OSError as e:
+        log.warning(f"    não foi possível ler o motivo da falha de extração: {e}")
+        return None
+    detail = " || ".join(part for part in parts if part)
+    return detail[:_EXTRACTION_FAILURE_DETAIL_MAX] or None
+
+
+def _run_extraction_once(pdf_path: Path, pdf_passwords: list[str] | None = None) -> tuple[str | None, str | None, bool]:
+    """Uma tentativa de extração IN-PROCESS. Retorna (csv_path, motivo, transitorio).
+
+    `motivo` é o motivo da falha quando não há CSV e, quando HÁ CSV, o detalhe da falha
+    PARCIAL (parte do documento não foi extraída) — None se tudo foi extraído.
     `transitorio=True` indica que vale repetir (exceção de I/O/runtime); `False` é
     falha definitiva (extração não gerou registros — repetir não muda). Usa diretório
     de saída temporário exclusivo, evitando CSV obsoleto de run anterior.
@@ -6562,22 +6860,27 @@ def _run_extraction_once(pdf_path: Path, pdf_passwords: list[str] | None = None)
 
         with tempfile.TemporaryDirectory(dir=CSV_OUTPUT) as tmp_out:
             csv_path = extract_pdf.extract_to_csv(pdf_path, tmp_out, pdf_passwords=pdf_passwords)
+            failure_detail = _extraction_failure_detail(tmp_out)
             if not csv_path or not Path(csv_path).exists():
                 # Sem CSV = nenhum registro válido (PDF ilegível/sem dados). Definitivo.
-                return None, "extração não gerou registros (PDF ilegível ou sem dados)", False
+                reason = "extração não gerou registros (PDF ilegível ou sem dados)"
+                if failure_detail:
+                    reason = f"{reason}: {failure_detail}"
+                return None, reason, False
             # Move o CSV para o diretório definitivo antes que o tempdir seja removido
             final = CSV_OUTPUT / Path(csv_path).name
             Path(csv_path).replace(final)
-            return str(final), None, False
+            return str(final), failure_detail, False
     except Exception as e:
         return None, f"exceção na extração in-process: {e}", True
 
 
 def run_extraction(pdf_path: Path, pdf_passwords: list[str] | None = None) -> tuple[str | None, str | None]:
-    """Executa extract_pdf in-process e retorna (csv_path, motivo_falha).
+    """Executa extract_pdf in-process e retorna (csv_path, motivo).
 
-    Em sucesso: (caminho_do_csv, None). Em falha: (None, motivo). Repete falhas
-    transitórias com backoff — um blip de I/O/runtime não perde o PDF. O motivo
+    Em sucesso: (caminho_do_csv, None) — ou (caminho_do_csv, detalhe) quando a extração foi
+    PARCIAL (o CSV existe, mas parte do documento falhou). Em falha: (None, motivo). Repete
+    falhas transitórias com backoff — um blip de I/O/runtime não perde o PDF. O motivo
     final é gravado em email_processing_errors (observável em /erros), em vez de
     só no console do Flask.
     """
@@ -6590,7 +6893,7 @@ def run_extraction(pdf_path: Path, pdf_passwords: list[str] | None = None) -> tu
     for attempt in range(1, EXTRACTION_MAX_ATTEMPTS + 1):
         csv_path, reason, transient = _run_extraction_once(pdf_path, pdf_passwords)
         if csv_path:
-            return csv_path, None
+            return csv_path, reason
         if not transient or attempt == EXTRACTION_MAX_ATTEMPTS:
             break
         wait = EXTRACTION_RETRY_BACKOFF[min(attempt - 1, len(EXTRACTION_RETRY_BACKOFF) - 1)]
@@ -6780,6 +7083,36 @@ def _is_internal_sender(sender_email: str | None) -> bool:
     return domain in _INTERNAL_EMAIL_DOMAINS
 
 
+def _own_sender_addresses() -> frozenset:
+    """Endereços de onde o PRÓPRIO sistema envia: o mailbox lido e o From da cobrança/alerta.
+
+    `SMTP_FROM_ADDR` (`financeiro@envio…`) precisa estar aqui por extenso: o subdomínio de
+    Return Path NÃO é domínio interno para `_is_internal_sender`, que compara por igualdade.
+    Lido do ambiente a cada chamada — é barato, e um teste que troca o `.env` enxerga a troca.
+    """
+    return frozenset(
+        value.strip().lower()
+        for value in (os.getenv("IMAP_USER"), os.getenv("SMTP_FROM_ADDR"))
+        if value and value.strip())
+
+
+def _is_reader_alert_thread(subject: str | None, sender_email: str | None) -> bool:
+    """O e-mail é o alerta do leitor, ou uma resposta/encaminhamento dele?
+
+    DUAS condições, e as duas são necessárias:
+      - o marcador `READER_ALERT_SUBJECT_MARKER` em QUALQUER posição do assunto — "RES:", "ENC:"
+        e "Re:" ficam na frente dele;
+      - remetente PRÓPRIO (`_own_sender_addresses`) ou de domínio interno.
+    🔴 Sem a 2ª, qualquer remetente externo esconderia um e-mail do leitor só escrevendo o
+    marcador no assunto — um boleto de verdade viraria `ignorado` por texto que o remetente
+    controla. Externo com o marcador segue o fluxo normal.
+    """
+    if READER_ALERT_SUBJECT_MARKER.lower() not in (subject or "").lower():
+        return False
+    sender = (sender_email or "").strip().lower()
+    return bool(sender) and (sender in _own_sender_addresses() or _is_internal_sender(sender))
+
+
 def _body_quotes_own_collection(body_text: str | None) -> bool:
     """O corpo cita o modelo da cobranca? Normaliza '>' e quebras, que o cliente de e-mail insere."""
     flat = re.sub(r"[\s>]+", " ", _strip_accents_lower(body_text or ""))
@@ -6949,16 +7282,110 @@ def _is_nonpayable_visual(row: dict) -> bool:
     return _is_contact_block(row.get("description"))
 
 
+# --- Imagem DECORATIVA ao lado de um pagável (assinatura, banner) ---------------------------
+# Medido em 24/11/2026: 19 das 25 linhas `sem_valor` do banco eram imagens lidas pelo Vision
+# sem valor e sem código de barras. As recorrentes: o banner da ALKO (`banner_cat_dekorama-.gif`,
+# 1,9 MB, em TODO e-mail de boleto dela) e a assinatura da Sevenlog (13 KB, "Contato WhatsApp:
+# (11)94759-4855" — um sinal de contato só, e `_is_contact_block` exige dois). Nos dois casos
+# OUTRO anexo do mesmo e-mail respondeu pelo pagável, e a linha em /erros culpava a imagem por
+# um valor que ela nunca teve. Tamanho não separa decoração de documento (13 KB a 1,9 MB).
+#
+# Tipos que o modelo devolve quando NÃO reconhece documento financeiro na imagem.
+_UNCLASSIFIED_DOC_TYPES = frozenset({"", "outro"})
+# Campos do `row` cru cuja presença prova que o Vision leu ALGO de um documento.
+_IMAGE_IDENTITY_FIELDS = ("barcode", "supplier_cnpj", "supplier_cpf", "nosso_numero")
+# Nota deixada no e-mail (coluna "Observações" de /emails) quando a imagem é tratada como
+# decoração: a supressão do erro não pode ser silenciosa.
+DECORATIVE_IMAGE_NOTE = "Imagem sem dado financeiro ignorada"
+_DECORATIVE_IMAGE_NOTE_MAX_FILES = 3
+
+
+def _is_empty_image_row(row: dict) -> bool:
+    """A linha veio de uma IMAGEM e não traz NENHUM dado financeiro — candidata a decoração.
+
+    Testa o `row` CRU (o que o Vision devolveu), nunca o payload: este já vem enriquecido com
+    remetente, assunto e corpo do e-mail. TODAS as condições são exigidas:
+      - fonte `image_vision` (PDF sem valor é outro problema e segue em /erros);
+      - sem valor, código de barras, CNPJ/CPF e nosso número;
+      - tipo vazio ou `outro` — 'boleto' é também o retrato da foto ILEGÍVEL de um boleto real,
+        e essa tem de continuar visível (por isso o banner que o modelo chama de boleto segue
+        gerando `sem_valor`, de propósito);
+      - vencimento NÃO lido e nº de documento ausente ou sintético;
+      - descrição vazia, ou com sinal de contato e sem termo financeiro. Lista POSITIVA: "sem
+        termo financeiro" sozinho aceitaria "foto desfocada de um documento".
+    Resposta do Vision que nem virou JSON não tem a nota de vencimento ausente e fica de fora.
+    """
+    if str(row.get("extraction_source") or "").strip().lower() != "image_vision":
+        return False
+    if _nonpayable_visual_amount(row.get("amount")) > 0:
+        return False
+    if any(str(row.get(campo) or "").strip() for campo in _IMAGE_IDENTITY_FIELDS):
+        return False
+    if str(row.get("document_type") or "").strip().lower() not in _UNCLASSIFIED_DOC_TYPES:
+        return False
+    if _DUE_DATE_ABSENT_PREFIX not in str(row.get("processing_notes") or ""):
+        return False
+    invoice = str(row.get("invoice_number") or "").strip()
+    if invoice and not _is_synthetic_invoice_number(invoice):
+        return False
+    desc = _strip_accents_lower(str(row.get("description") or ""))
+    if not desc:
+        return True
+    if _FINANCIAL_TERM_RE.search(desc):
+        return False
+    return any(signal.search(desc) for signal in _CONTACT_SIGNAL_RES)
+
+
+def _settle_empty_images(ctrl, email_rec: dict, deferred: list, attachment_answered: bool) -> None:
+    """Decide, DEPOIS do laço do Passo 2, o destino das imagens vazias adiadas.
+
+    Só então se sabe se outro anexo do e-mail respondeu por um pagável (conta nova ou dedup):
+      - respondeu ⇒ a imagem era decoração: nenhum erro, e uma NOTA no e-mail (acrescentada,
+        nunca atribuída — `notes` pode já trazer "PDF baixado de link…");
+      - não respondeu ⇒ `sem_valor` idêntico ao de antes: a imagem pode ser o único documento
+        do e-mail, e é a linha em /erros que chama alguém para olhar.
+    """
+    if not deferred:
+        return
+    if not attachment_answered:
+        for ctx, row in deferred:
+            ctrl.register_error(
+                ctx, "sem_valor",
+                f"Valor ausente ou zero — {row.get('source_file')}",
+                raw_payload=row
+            )
+        return
+    names = [str(row.get("source_file") or "?") for _ctx, row in deferred]
+    shown = ", ".join(names[:_DECORATIVE_IMAGE_NOTE_MAX_FILES])
+    extra = len(names) - _DECORATIVE_IMAGE_NOTE_MAX_FILES
+    note = f"{DECORATIVE_IMAGE_NOTE}: {shown}" + (f" (+{extra})" if extra > 0 else "")
+    log.info(f"    {note} — outro anexo do e-mail respondeu pelo pagável")
+    email_rec["notes"] = _NOTES_SEPARATOR.join(n for n in (email_rec.get("notes"), note) if n)
+
+
 def extract_and_store_accounts(saved_pdfs: list, message_id: str,
                                ctrl: "SupabaseControl",
                                email_rec: dict = None,
                                body_text: str = "",
-                               route_body_when_no_instrument: bool = False) -> tuple:
+                               route_body_when_no_instrument: bool = False,
+                               *, tolerate_api_failure: bool = False,
+                               note_decorative_images: bool = False) -> tuple:
     """Extrai cada PDF e grava as contas resultantes em financial_account_control.
 
     `route_body_when_no_instrument` (so process_message liga): em pedido interno cujo anexo so
     comprova, nao grava nada e deixa a conta para o caminho do corpo (_body_wins_over_attachments).
     🔴 Opt-in: os scripts de reprocesso nao tem fallback de corpo e perderiam a conta.
+
+    `tolerate_api_failure` (so a QUARENTENA do run_reader liga): a falha de API de um anexo vira
+    erro DAQUELE anexo (`extracao_falhou`) em vez de `ApiUnavailableError` para o e-mail inteiro.
+    🔴 Opt-in e default False: fora da quarentena, erro de API tem de adiar o e-mail — tolerar
+    numa parada real registraria como falha todo documento que a API nao chegou a ler.
+
+    `note_decorative_images` (so process_message liga): imagem VAZIA de dado financeiro ao lado
+    de um anexo que respondeu pelo pagavel deixa de gerar `sem_valor` e vira uma nota em
+    `email_rec["notes"]` (ver `_is_empty_image_row` / `_settle_empty_images`).
+    🔴 Opt-in: so o process_message PERSISTE essa nota (`ctrl.register`). Num script de
+    reprocesso a supressao ficaria sem rastro nenhum — ali o `sem_valor` segue como sempre.
 
     Liga cada conta ao e-mail por gmail_message_id; multiplos PDFs no mesmo
     e-mail recebem sufixo (#1, #2, ...) para nao colidir na chave unica.
@@ -7011,6 +7438,9 @@ def extract_and_store_accounts(saved_pdfs: list, message_id: str,
     # passo 2, que precisa enxergar o e-mail INTEIRO (regra fatura+boleto).
     # ------------------------------------------------------------------
     pending = []  # linhas extraidas de todos os PDFs do e-mail, na ordem de chegada
+    # Imagens vazias de dado financeiro cuja decisao (decoracao x `sem_valor`) fica para
+    # depois do laco do Passo 2 — ver `_settle_empty_images`.
+    empty_images = []
     # Tamanho de cada anexo, colhido AQUI (no passo 2 o arquivo pode nao estar mais em
     # disco) — vai para financial_account_attachment.size_bytes.
     attachment_sizes = {}
@@ -7069,19 +7499,48 @@ def extract_and_store_accounts(saved_pdfs: list, message_id: str,
 
         csv_path, extract_err = run_extraction(pdf_path, pdf_passwords)
         if not csv_path:
+            # O MOTIVO vai na mensagem (é o que /erros mostra na linha), não só no payload:
+            # "não gerou CSV" é igual para PDF ilegível, resposta truncada e documento
+            # recusado pela API, e é o motivo que diz o que fazer.
             ctrl.register_error(
                 {**err_ctx, "source_file": pdf_path.name},
                 "extracao_falhou",
-                f"extract_pdf nao gerou CSV para {pdf_path.name}",
+                f"extract_pdf nao gerou CSV para {pdf_path.name}"
+                + (f" — {extract_err}" if extract_err else ""),
                 raw_payload={"source_file": pdf_path.name, "detalhe": extract_err},
             )
             continue
+        if extract_err:
+            # Extração PARCIAL: o CSV existe, mas parte do documento falhou (ex.: uma página
+            # do carnê). As contas lidas seguem; a parte perdida deixa de ser silenciosa.
+            ctrl.register_error(
+                {**err_ctx, "source_file": pdf_path.name},
+                "extracao_falhou",
+                f"Extração parcial de {pdf_path.name} — {extract_err}",
+                raw_payload={"source_file": pdf_path.name, "detalhe": extract_err,
+                             "parcial": True},
+            )
 
-        csvs_ok.append(csv_path)
-        for row in read_extracted_rows(csv_path):
+        rows = read_extracted_rows(csv_path)
+        tolerated = 0
+        for row in rows:
             # Falha de API na extracao: registra erro_api e interrompe o run com
             # seguranca (sem gravar conta, sem fallback regex silencioso).
             if (row.get("extraction_source") or "").strip().lower() == "erro_api":
+                if tolerate_api_failure:
+                    # QUARENTENA: este e-mail falhou repetidas vezes com a API SAUDÁVEL — a
+                    # falha é DESTE anexo. Vira erro do anexo e o laço segue para os demais,
+                    # em vez de o e-mail inteiro ficar preso (e o boleto ao lado, sem conta).
+                    ctrl.register_error(
+                        {**err_ctx, "source_file": row.get("source_file")},
+                        "extracao_falhou",
+                        f"API recusou {row.get('source_file') or pdf_path.name} repetidas vezes "
+                        f"com a API saudável — anexo não extraído. "
+                        f"{row.get('processing_notes') or ''}".strip(),
+                        raw_payload=row,
+                    )
+                    tolerated += 1
+                    continue
                 # Uma linha por e-mail, não uma por run: o mesmo e-mail volta a cada 5 min
                 # enquanto a API estiver fora (83 linhas idênticas em 2026-09-29).
                 if not ctrl.has_error(err_ctx.get("message_id"), API_ERROR_TYPE):
@@ -7096,6 +7555,10 @@ def extract_and_store_accounts(saved_pdfs: list, message_id: str,
                     row.get("processing_notes") or "API Anthropic indisponível"
                 )
             pending.append(row)
+        # 🔴 CSV que só trouxe falha de API tolerada NÃO conta como extraído: senão o e-mail
+        # sairia `extraído` com zero contas (`status_for_result` lê `csv_generated`).
+        if not (tolerated and tolerated == len(rows)):
+            csvs_ok.append(csv_path)
 
     # Regra FATURA + BOLETO (multi-anexo): quando ALGUM anexo do e-mail traz um
     # BOLETO REAL (linha digitavel valida), a fatura/relatorio do MESMO debito e
@@ -7316,11 +7779,19 @@ def extract_and_store_accounts(saved_pdfs: list, message_id: str,
 
         # Validacao 1: valor ausente ou zero
         if not payload.get("amount"):
-            ctrl.register_error(
-                ctx, "sem_valor",
-                f"Valor ausente ou zero — {row.get('source_file')}",
-                raw_payload=row
-            )
+            if note_decorative_images and email_rec is not None and _is_empty_image_row(row):
+                # Imagem vazia de dado financeiro: decoração (assinatura/banner) SE outro anexo
+                # responder pelo pagável — o que só se sabe depois do laço. Decisão adiada.
+                # 🔴 `payable_attempts` e `acc_index` seguem EXATAMENTE como antes: o sufixo
+                # `#N` do gmail_message_id é posicional, e pular este incremento deslocaria o
+                # id das contas seguintes do mesmo e-mail.
+                empty_images.append((ctx, row))
+            else:
+                ctrl.register_error(
+                    ctx, "sem_valor",
+                    f"Valor ausente ou zero — {row.get('source_file')}",
+                    raw_payload=row
+                )
             acc_index += 1
             continue
 
@@ -7517,6 +7988,7 @@ def extract_and_store_accounts(saved_pdfs: list, message_id: str,
     nonpayable_only = skipped_nonpayable > 0 and payable_attempts == 0
     # Anexo respondeu por um pagavel (conta nova OU dedup contra conta existente).
     attachment_account = accounts_saved > 0 or dup_matches > 0
+    _settle_empty_images(ctrl, email_rec, empty_images, attachment_account)
     return csvs_ok, accounts_saved, nonpayable_only, attachment_account
 
 
@@ -8299,7 +8771,9 @@ def status_for_result(has_attachment: bool, csv_generated: bool,
       - accounts_saved -> 'extraído'  (conta(s) a pagar gravada(s) do PDF)
       - body_created   -> 'recebido'  (conta extraida do corpo do e-mail)
       - pure_nfe       -> 'ignorado'  (assunto NF-e/NFS-e puro, sem pagavel e sem
-                                       conta: notificacao fiscal, nao e conta a pagar)
+                                       conta: notificacao fiscal, nao e conta a pagar.
+                                       O CHAMADOR so o informa quando o anexo nao respondeu
+                                       por pagavel — ver o call site em process_message)
       - nonpayable     -> 'ignorado'  (CT-e/transporte sem boleto — documento fiscal,
                                        nao e conta a pagar; vem ANTES de csv_generated
                                        porque o PDF do CT-e gera CSV sem conta)
@@ -8423,7 +8897,9 @@ def _message_forces_account(mail, uid: bytes, subject: "str | None",
 
 def process_message(mail, uid: bytes, keywords: list,
                     dry_run: bool, mark_seen: bool,
-                    ctrl: SupabaseControl) -> dict | None:
+                    ctrl: SupabaseControl, *,
+                    tolerate_api_failure: bool = False) -> dict | None:
+    # `tolerate_api_failure`: só a QUARENTENA do run_reader liga (ver extract_and_store_accounts).
     now = datetime.now(timezone.utc).isoformat()
     rec = {c: None for c in LOG_COLUMNS}
     rec["processed_at"] = now
@@ -8538,7 +9014,8 @@ def process_message(mail, uid: bytes, keywords: list,
 
         csvs_ok, accounts_saved, nonpayable_only, attachment_account = extract_and_store_accounts(
             saved_pdfs, message_id, ctrl, email_rec=rec, body_text=body_text,
-            route_body_when_no_instrument=True)
+            route_body_when_no_instrument=True, tolerate_api_failure=tolerate_api_failure,
+            note_decorative_images=True)
 
         csv_generated = len(csvs_ok) > 0
         rec["pdf_extracted"]  = csv_generated
@@ -8602,13 +9079,17 @@ def process_message(mail, uid: bytes, keywords: list,
             reminder_applied = apply_due_date_reminder(
                 ctrl, rec, subject, body_text, sender_email, received_at) is not None
 
-        # Status (CHECK migration 022): conta do PDF > conta do corpo > duplicata >
-        # anexo sem conta. A conta vinda do corpo (body_created) prevalece sobre o
-        # anexo que nao gerou CSV; uma duplicata do corpo (pagavel ja registrado
-        # por outro e-mail) vira 'ignorado' em vez de 'falha'.
+        # Status (CHECK migration 022) — a ordem e as razoes estao em `status_for_result`.
+        # 🔴 `pure_nfe` e `nonpayable` descrevem o e-mail SO enquanto o anexo nao respondeu por
+        # pagavel nenhum. O assunto dizer "nota fiscal" nao descreve um e-mail cujo ANEXO era um
+        # boleto que casou conta existente: avaliados antes de `duplicate`, os dois mandavam
+        # esse e-mail para 'ignorado' sem nota, em vez de 'duplicidade' (e-mail 3865, "ENVIO DE
+        # NOTA FISCAL (00021851/1)" da 4R Ambiental, boleto da conta 2594). Mesmo corte que a
+        # regra ALURA ja fazia com `alura_handled`.
         rec["status"] = status_for_result(
             has_att, csv_generated, body_created,
-            pure_nfe=subject_is_pure_nfe(subject) and not alura_handled,
+            pure_nfe=(subject_is_pure_nfe(subject) and not alura_handled
+                      and not attachment_account),
             accounts_saved=accounts_saved,
             # 'notification' produz 'ignorado' quando nao houve anexo/CSV/conta. Alem do
             # assunto de aviso, entram aqui: remetente de subdominio descartavel
@@ -8622,7 +9103,10 @@ def process_message(mail, uid: bytes, keywords: list,
                        or (alura_handled and not alura_created)),
             # 🔴 Regra ALURA tratada: as NFs puras que o Passo 2 pulou NAO descrevem mais o e-mail
             # — ele tem conta (ou a duplica), e 'nonpayable' venceria 'duplicate' e esconderia isso.
-            nonpayable=(nonpayable_only or body_outcome == BODY_IGNORED) and not alura_handled)
+            # `not attachment_account` fecha a mesma porta para o anexo comum: hoje os dois
+            # sinais nao coexistem, mas so por ORDEM de incremento em extract_and_store_accounts.
+            nonpayable=((nonpayable_only or body_outcome == BODY_IGNORED)
+                        and not alura_handled and not attachment_account))
 
         # A regra se aplicava e nada foi gravado: 'falha' (o motivo ja foi a /erros pela propria
         # regra) — nenhum sinal de 'ignorado' pode esconder uma conta PAGA que deveria existir.
@@ -8779,6 +9263,472 @@ def _register_ignored(ctrl, msg_id, subject, sender_name, sender_email,
     })
 
 
+def _api_is_healthy() -> tuple[bool, str | None]:
+    """Sonda a API Anthropic (`extract_pdf.api_health_probe`). Devolve `(ok, motivo)`.
+
+    É a pergunta que separa "a API caiu" de "só este e-mail falha": com ela saudável, o
+    e-mail que acabou de falhar é isolado e a fila segue; sem ela, um único e-mail capturava
+    todos os financeiros a cada run (18 a 21/11/2026).
+
+    NUNCA levanta, e toda impossibilidade de sondar — módulo ou função ausente (deploy
+    parcial), exceção inesperada — conta como NÃO saudável: é o comportamento de antes da
+    sonda (adia e sai com exit 3), o lado seguro.
+    """
+    try:
+        # Import lazy, como em `_run_extraction_once`: mantém o import do reader leve.
+        if str(EXTRACT_SCRIPT.parent) not in sys.path:
+            sys.path.insert(0, str(EXTRACT_SCRIPT.parent))
+        import extract_pdf  # noqa: E402
+        probe = getattr(extract_pdf, "api_health_probe", None)
+        if probe is None:
+            log.warning("  extract_pdf sem `api_health_probe` — Deploy parcial? "
+                        "Tratando a API como indisponível.")
+            return False, "sonda indisponível (extract_pdf desatualizado)"
+        ok, reason = probe()
+        return bool(ok), reason
+    except Exception as e:  # noqa: BLE001
+        # A sonda nunca derruba o run (ver docstring): falha inesperada = "não saudável".
+        log.exception(f"  Sonda da API falhou de forma inesperada: {e}")
+        return False, f"sonda falhou: {e}"
+
+
+def _imap_date(day) -> str:
+    """Data no formato do critério IMAP (`17-Nov-2026`), sem depender do locale."""
+    return f"{day.day:02d}-{_IMAP_MONTHS[day.month - 1]}-{day.year}"
+
+
+def _local_day(iso_value):
+    """Data LOCAL de um instante ISO; None se ausente ou ilegível.
+
+    Local, e não UTC: o `SINCE` compara a data do INTERNALDATE no fuso do servidor, e um
+    e-mail das 22:30 de ontem é "hoje" em UTC — usar a data UTC o deixaria fora da janela.
+    """
+    try:
+        parsed = datetime.fromisoformat(str(iso_value))
+    except (TypeError, ValueError):
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone().date()
+
+
+def _search_since(days: int, pending_api: dict, known_ids: set, watermark, today=None):
+    """Data inicial do critério `SINCE` — nunca MENOR do que o que ainda está pendente.
+
+    🔴 A janela fixa (`--days 1`) era o último elo do incidente de 18 a 21/11/2026: um e-mail
+    adiado que saía dela nunca mais era lido, e nada avisava. A janela agora é o MAIS ANTIGO de:
+      - `hoje − days` (a cadência normal);
+      - a pendência de API mais antiga cujo e-mail AINDA NÃO foi registrado (`known_ids`
+        neutraliza a linha órfã, de e-mail que já concluiu por outro caminho);
+      - a última leitura registrada (`watermark`): máquina parada por dias não deixa buraco.
+
+    Só AMPLIA, e até `MAX_LOOKBACK_DAYS`: candidato mais antigo que o piso é DESCARTADO, não
+    limitado ao piso — senão uma linha irrecuperável prenderia a janela larga para sempre. Um
+    `--days` maior que o piso, pedido à mão, é respeitado.
+    """
+    today = today or datetime.now().date()
+    base = today - timedelta(days=days)
+    floor = min(base, today - timedelta(days=MAX_LOOKBACK_DAYS))
+    margin = timedelta(days=SINCE_MARGIN_DAYS)
+
+    candidates = []
+    for message_id, entry in pending_api.items():
+        if message_id in known_ids or not isinstance(entry, dict):
+            continue
+        day = _local_day(entry.get("received_at"))
+        if day is not None:
+            candidates.append(day - margin)
+    watermark_day = _local_day(watermark)
+    if watermark_day is not None:
+        candidates.append(watermark_day - margin)
+
+    return min([base] + [day for day in candidates if day >= floor])
+
+
+def _mark_deferred(ctrl, pending_api: dict, email_ctx: dict, reason: str | None) -> None:
+    """Deixa UMA linha `erro_api` para o e-mail adiado (se ele ainda não tem).
+
+    🔴 Antes só o e-mail TENTADO ganhava linha; os adiados atrás dele não deixavam rastro
+    nenhum. Sem a linha, (a) `/erros` não mostrava o que estava parado e (b) a janela de
+    leitura não tinha como saber que precisava alcançá-los — numa recuperação interrompida, o
+    resto saía do `SINCE` em silêncio. A linha some sozinha quando o e-mail conclui.
+    """
+    message_id = email_ctx.get("message_id")
+    if not message_id or message_id in pending_api:
+        return
+    ctrl.register_error(
+        email_ctx, API_ERROR_TYPE,
+        f"Adiado — API indisponível: {reason or 'motivo não informado'}",
+        raw_payload={"adiado": True},
+    )
+    # `logged_at` de AGORA: a linha acabou de nascer. É o que faz o alerta ativo não tratar
+    # como "parado há tempos" um e-mail adiado pela 1ª vez neste run.
+    pending_api[message_id] = {"id": None, "received_at": email_ctx.get("received_at"),
+                               "logged_at": datetime.now(timezone.utc).isoformat(),
+                               ISOLATED_FAILURES_KEY: 0, ALERTED_AT_KEY: None}
+
+
+@dataclass
+class _ApiRunState:
+    """O que o run já sabe sobre a API Anthropic — decide se o próximo financeiro é tentado."""
+    aborted: bool = False        # a API caiu: os financeiros seguintes são adiados sem tentar
+    error: str | None = None     # motivo da 1ª recusa do run (crédito, auth, 529, 500...)
+    deferred: int = 0            # e-mails financeiros que ficaram sem registro neste run
+    isolated: int = 0            # adiados SOZINHOS (API saudável, só eles falharam)
+    quarantined: int = 0         # lidos em modo tolerante (no máximo 1 por run)
+    # QUAIS e-mails ficaram adiados neste run: `{message_id: {subject, sender_email,
+    # received_at}}`, do cabeçalho lido AGORA. É a base do alerta ativo — ele só avisa de e-mail
+    # que este run tentou e não conseguiu ler, nunca de linha antiga que já saiu da janela.
+    deferred_emails: dict = field(default_factory=dict)
+
+    def defer(self, message_id: str | None, *, subject: str | None = None,
+              sender_email: str | None = None, received_at: str | None = None) -> None:
+        """Conta um e-mail adiado e guarda quem ele é (sem Message-ID, só conta)."""
+        self.deferred += 1
+        if message_id:
+            self.deferred_emails[message_id] = {
+                "subject": subject, "sender_email": sender_email, "received_at": received_at}
+
+
+def _quarantine_due(state: _ApiRunState, pending_entry, subject: str) -> bool:
+    """O e-mail deve ser lido em modo TOLERANTE? Pode abrir o breaker (`state.aborted`).
+
+    Decidido ANTES de processar — reprocessar depois salvaria e subiria os anexos duas vezes.
+    Condições: o e-mail já falhou `POISON_ISOLATED_FAILURES` vezes com a API saudável, ainda
+    não houve quarentena neste run e a sonda confirma a saúde AGORA. Uma por run limita o
+    estrago de uma parada só do Vision, que passaria na sonda. Sonda falhou ⇒ a API caiu:
+    devolve False com `state.aborted` ligado, e o chamador adia.
+    """
+    failures = _isolated_failures(pending_entry)
+    if state.quarantined or failures < POISON_ISOLATED_FAILURES:
+        return False
+    healthy, probe_reason = _api_is_healthy()
+    if not healthy:
+        log.error(f"  API Anthropic indisponível (sonda): {probe_reason}")
+        state.aborted = True
+        state.error = (probe_reason or "sonda da API falhou")[:160]
+        return False
+    state.quarantined += 1
+    log.warning(f"  [QUARENTENA] {subject[:55]} — {failures} falhas com a API saudável; "
+                "lendo em modo tolerante")
+    return True
+
+
+def _on_api_failure(state: _ApiRunState, ctrl, message_id: str, subject: str,
+                    error: Exception, *, sender_email: str | None = None,
+                    received_at: str | None = None) -> None:
+    """Um e-mail falhou com erro de API: a API caiu, ou só ESTE e-mail falha?
+
+    Até `MAX_ISOLATED_PER_RUN` por run a sonda decide. Saudável ⇒ só este e-mail é adiado
+    (e a falha é CONTADA para a quarentena). Não saudável, ou teto atingido ⇒ o breaker abre e
+    os financeiros seguintes são adiados sem nova tentativa — o comportamento de 2026-09-29.
+    """
+    reason = str(error)[:160]
+    state.defer(message_id, subject=subject, sender_email=sender_email, received_at=received_at)
+    healthy = False
+    if state.isolated < MAX_ISOLATED_PER_RUN:
+        healthy, _probe_reason = _api_is_healthy()
+    if healthy:
+        state.isolated += 1
+        state.error = state.error or reason
+        failures = ctrl.bump_isolated_failures(message_id)
+        log.warning(f"  [ISOLADO] {subject[:55]} — a API está saudável; só este e-mail é "
+                    f"adiado (falha isolada nº {failures or '?'} de {POISON_ISOLATED_FAILURES}). "
+                    f"Motivo: {reason}")
+        return
+    log.error("=" * 58)
+    log.error("  API Anthropic indisponível — e-mails financeiros ADIADOS.")
+    log.error(f"  Motivo: {reason}", exc_info=error)
+    log.error("  Nenhuma conta gravada para eles; voltam no próximo run. Os "
+              "não-financeiros seguem sendo registrados.")
+    log.error("=" * 58)
+    state.aborted = True
+    state.error = reason
+
+
+@dataclass
+class _ReaderRun:
+    """Estado de UM run do leitor: o que `_read_one` consulta e o que ele conta."""
+    mail: object
+    ctrl: object
+    keywords: list
+    known_ids: set
+    pending_api: dict
+    dry_run: bool
+    mark_seen: bool
+    api: _ApiRunState = field(default_factory=_ApiRunState)
+    processed: int = 0
+    skipped_kw: int = 0
+    skipped_dup: int = 0
+    crashed: int = 0             # e-mails cujo tratamento levantou exceção inesperada
+    new_subjects: list = field(default_factory=list)
+
+
+def _header_ignore_reason(subject: str | None, sender_email: str | None) -> tuple[str, str] | None:
+    """`(rótulo do log, nota do registro)` quando o e-mail é ignorado SÓ pelo cabeçalho; senão None.
+
+    Duas regras, as únicas que valem mesmo com keyword financeira no assunto:
+      - remetente de SISTEMA (postmaster@ etc.): NDR/bounce/aviso não é conta a pagar;
+      - o alerta do PRÓPRIO leitor e as respostas a ele (`_is_reader_alert_thread`).
+    🔴 São decididas antes de qualquer leitura do corpo: o corpo do alerta LISTA assuntos de
+    terceiros, e um deles citar "honorários" faria `_message_forces_account` transformar o
+    aviso em conta a pagar.
+    """
+    if is_ignored_sender(sender_email):
+        return "remetente", f"Remetente de sistema ignorado ({sender_email})"
+    if _is_reader_alert_thread(subject, sender_email):
+        return ("alerta do leitor",
+                "Alerta do leitor de e-mails (ou resposta a ele) — não é conta a pagar")
+    return None
+
+
+def _read_one(run: _ReaderRun, uid, hdr_meta, hdr_raw, header: dict) -> None:
+    """Decide e trata UM e-mail: dedup → filtros de assunto → API → `process_message`.
+
+    É o corpo por-UID do laço de `run_reader`, extraído para que uma exceção inesperada em
+    QUALQUER passo daqui seja isolada naquele e-mail (`_on_uid_crash`) em vez de derrubar o
+    run — o que deixava todos os e-mails seguintes sem leitura, em todo run.
+
+    `header` é preenchido à medida que o cabeçalho é interpretado: se algo levantar no meio,
+    `_on_uid_crash` registra o e-mail com o que já se sabia dele, sem repetir o passo que quebrou.
+    """
+    mail, ctrl, keywords = run.mail, run.ctrl, run.keywords
+    known_ids, pending_api, api, dry_run = run.known_ids, run.pending_api, run.api, run.dry_run
+
+    # 🔴 O PARSE do cabeçalho fica AQUI, no trecho protegido — e não no `try` do fetch, que
+    # trata falha de IMAP como transitória e só pula. Um cabeçalho que quebrasse o parser era
+    # `[SKIP]` em todo run, para sempre e sem registro nenhum.
+    hdr_msg = email.message_from_bytes(hdr_raw)
+    header["raw_subject"] = hdr_msg.get("Subject", "")
+    header["raw_from"] = hdr_msg.get("From", "")
+    msg_id = hdr_msg.get("Message-ID", "").strip()
+    header["message_id"] = msg_id
+    subject = decode_str(hdr_msg.get("Subject", ""))
+    header["subject"] = subject
+
+    # Deduplicação PRIMEIRO: set em memória (O(1)); fallback para consulta
+    # individual se o lote não foi carregado (Supabase indisponível). Vem antes
+    # do filtro de keyword para não re-registrar e-mails já conhecidos.
+    is_dup = (msg_id in known_ids) if known_ids else (msg_id and ctrl.is_processed(msg_id))
+    if is_dup:
+        log.info(f"  [DUP] {subject[:65]}")
+        run.skipped_dup += 1
+        return
+
+    # Remetente e data (canonico = INTERNALDATE) — usados pelos filtros abaixo
+    # e pelo registro 'ignorado', mantendo /emails na MESMA ordem do webmail.
+    sender_name, sender_email = parseaddr(hdr_msg.get("From", ""))
+    header["sender_email"] = sender_email
+    received_at = _received_at_from(hdr_meta, hdr_msg.get("Date", ""))
+    header["received_at"] = received_at
+
+    # Ignorado SÓ pelo cabeçalho (remetente de sistema, alerta do próprio leitor) → 'ignorado'
+    # sem baixar/extrair, MESMO com keyword no assunto. 🔴 Fica ANTES de
+    # `_message_forces_account`, que baixa o corpo — ver `_header_ignore_reason`.
+    header_ignore = _header_ignore_reason(subject, sender_email)
+    if header_ignore:
+        tag, note = header_ignore
+        if not dry_run:
+            _register_ignored(ctrl, msg_id, subject, sender_name, sender_email,
+                              received_at, note)
+        log.info(f"  [IGN {tag}] {subject[:55]}")
+        run.skipped_kw += 1
+        return
+
+    # 🔴 Honorarios e reembolso sempre geram conta, e os filtros abaixo decidem sem
+    # baixar o corpo. So o e-mail que eles ignorariam paga esse download, uma vez. Falha
+    # de IMAP nao registra nada: gravar 'ignorado' o tiraria para sempre da fila.
+    own_client_reply = (_is_own_collection_subject(subject)
+                        and not _is_internal_sender(sender_email))
+    try:
+        forced_account = (
+            (subject_is_payment_confirmation(subject) or subject_is_reminder(subject)
+             or own_client_reply or not match_keyword(subject, keywords))
+            and _message_forces_account(mail, uid, subject, sender_email))
+    except Exception:
+        log.exception(f"  [SKIP] UID {uid} — corpo ilegivel; volta no proximo run")
+        run.skipped_kw += 1
+        return
+
+    # Confirmacao/comprovante de PAGAMENTO (pagamento ja realizado) → 'ignorado'
+    # sem baixar/extrair, MESMO com keyword no assunto: nao e conta a pagar.
+    if not forced_account and subject_is_payment_confirmation(subject):
+        if not dry_run:
+            _register_ignored(ctrl, msg_id, subject, sender_name, sender_email,
+                              received_at, "Confirmação de pagamento — pagamento já realizado (não é conta a pagar)")
+        log.info(f"  [IGN confirmação pgto] {subject[:55]}")
+        run.skipped_kw += 1
+        return
+
+    # Assunto com "lembrete" ou AVISO COMBINADO (reiteracao ordinal / pos-pagamento) →
+    # 'ignorado' sem extrair, MESMO com keyword/anexo: nao e divida nova (decisao do usuario).
+    if not forced_account and subject_is_reminder(subject):
+        if not dry_run:
+            _register_ignored(ctrl, msg_id, subject, sender_name, sender_email,
+                              received_at, "Lembrete/aviso — não é conta a pagar")
+        log.info(f"  [IGN lembrete/aviso] {subject[:55]}")
+        run.skipped_kw += 1
+        return
+
+    # Resposta de CLIENTE a nossa cobranca → 'ignorado' sem baixar/extrair. A resposta
+    # INTERNA segue para process_message, que precisa do anexo para procurar honorarios.
+    if not forced_account and own_client_reply:
+        if not dry_run:
+            _register_ignored(ctrl, msg_id, subject, sender_name, sender_email,
+                              received_at, "Resposta de cliente à cobrança — não é conta a pagar")
+        log.info(f"  [IGN resposta cobrança] {subject[:55]}")
+        run.skipped_kw += 1
+        return
+
+    # Fora do filtro de assunto → registra como 'ignorado' (sem baixar/extrair),
+    # para que /emails reflita a caixa inteira (o app substitui abrir o webmail).
+    if not forced_account and not match_keyword(subject, keywords):
+        if not dry_run:
+            _register_ignored(ctrl, msg_id, subject, sender_name, sender_email,
+                              received_at, "Fora do filtro de assunto (não-financeiro)")
+        log.info(f"  [IGN] {subject[:65]}")
+        run.skipped_kw += 1
+        return
+
+    # Daqui em diante o e-mail é FINANCEIRO e vai à extração. Com a API saudável neste
+    # run, três decisões antes de gastar a chamada (com ela fora, nenhuma consulta):
+    tolerate = False
+    if not api.aborted and not dry_run:
+        # 1. Outro processo (o reader de produção, uma recuperação pelo DEV) pode ter
+        #    registrado este e-mail DEPOIS do `load_known_ids` deste run. `is True` de
+        #    propósito: só a resposta afirmativa pula — falha de consulta segue o fluxo.
+        if msg_id and ctrl.is_processed(msg_id) is True:
+            log.info(f"  [DUP] {subject[:55]} — registrado por outro processo")
+            run.skipped_dup += 1
+            return
+        # 2. QUARENTENA: e-mail que já falhou N vezes com a API saudável é lido em modo
+        #    tolerante. A sonda desta decisão pode descobrir que a API caiu — por isso
+        #    vem ANTES do teste de `api.aborted` abaixo.
+        tolerate = _quarantine_due(api, pending_api.get(msg_id), subject)
+
+    # 3. API fora (detectada num e-mail anterior DESTE run, ou pela sonda acima): o
+    #    financeiro é ADIADO — fica sem registro e volta no próximo run. NÃO é `break`:
+    #    com ele, o 1º e-mail financeiro parava o lote e nem os não-financeiros
+    #    seguintes eram registrados (2026-09-29: 7 h sem nenhum e-mail em /emails). E
+    #    não se chama a API de novo para cada e-mail: uma recusa por run basta.
+    if api.aborted:
+        log.warning(f"  [ADIADO — API indisponível] {subject[:55]}")
+        if not dry_run:
+            # Uma linha erro_api por e-mail adiado: é ela que mantém o e-mail visível
+            # em /erros e DENTRO da janela de leitura até ele concluir.
+            _mark_deferred(ctrl, pending_api, {
+                "message_id": msg_id, "subject": subject,
+                "sender_name": decode_str(sender_name) or sender_email,
+                "sender_email": sender_email, "received_at": received_at,
+            }, api.error)
+        api.defer(msg_id, subject=subject, sender_email=sender_email, received_at=received_at)
+        return
+
+    log.info(f"  [NEW] {subject[:65]}")
+    try:
+        process_message(mail, uid, keywords, dry_run, run.mark_seen, ctrl,
+                        tolerate_api_failure=tolerate)
+    except ApiUnavailableError as e:
+        # A API caiu, ou só ESTE e-mail falha? `_on_api_failure` sonda e decide.
+        _on_api_failure(api, ctrl, msg_id, subject, e,
+                        sender_email=sender_email, received_at=received_at)
+        return
+    run.processed += 1
+    run.new_subjects.append(subject[:120])
+
+
+# Tamanhos máximos do que `_on_uid_crash` copia do cabeçalho CRU (não decodificado).
+_CRASH_SUBJECT_MAX = 300
+_CRASH_SENDER_MAX = 200
+_CRASH_ERROR_MAX = 200
+
+
+def _on_uid_crash(run: _ReaderRun, uid, header: dict, error: Exception) -> None:
+    """Exceção inesperada ao tratar UM e-mail: registra como `falha` e deixa o run seguir.
+
+    🔴 POR QUE EXISTE. Era a outra porta do incidente de 18–21/11/2026: uma exceção nos
+    filtros propagava, o run morria naquele UID e TODO e-mail depois dele — financeiro ou não —
+    ficava sem leitura, em todo run, até o e-mail sair da janela. Um crash de filtro é
+    determinístico por e-mail (são funções puras sobre o cabeçalho), então tentar de novo não
+    resolve: o e-mail é registrado como `falha`, com linha `processamento_erro` em `/erros` —
+    a mesma política do catch-all que `process_message` já tem. Não registrar recriaria o laço
+    invisível; mandar à extração "na dúvida" poderia gerar conta espúria.
+
+    Não chama `decode_str` nem nada que possa ter acabado de quebrar: usa o que `header` já
+    tinha, convertido por `str()`. E NUNCA levanta — o próprio registro fica num `try`.
+    """
+    run.crashed += 1
+    uid_str = uid.decode(errors="replace") if isinstance(uid, (bytes, bytearray)) else str(uid)
+    log.error(f"  [FALHA] UID {uid_str} — erro inesperado ao tratar o e-mail; "
+              "registrado como 'falha' e o run segue", exc_info=error)
+    if run.dry_run:
+        return
+    try:
+        message_id = header.get("message_id")
+        message_id = message_id.strip() if isinstance(message_id, str) else ""
+        # Mesma convenção de `process_message` para e-mail sem Message-ID.
+        message_id = message_id or f"no-id-{uid_str}"
+        now = datetime.now(timezone.utc).isoformat()
+        sender_email = str(header.get("sender_email") or "")[:_CRASH_SENDER_MAX]
+        rec = {
+            "message_id":      message_id,
+            "subject":         str(header.get("subject") or header.get("raw_subject")
+                                   or "(assunto ilegível)")[:_CRASH_SUBJECT_MAX],
+            "sender_name":     sender_email or str(header.get("raw_from") or "")[:_CRASH_SENDER_MAX],
+            "sender_email":    sender_email or None,
+            "received_at":     header.get("received_at") or now,
+            "keyword_matched": None,
+            "has_attachment":  None,
+            "status":          "falha",
+            "notes":           ("Erro inesperado ao tratar o e-mail: "
+                                f"{type(error).__name__}: {str(error)[:_CRASH_ERROR_MAX]}"),
+            "processed_at":    now,
+        }
+        # `register` usa ignore-duplicates: se `process_message` já gravou este e-mail antes
+        # de a exceção escapar, o status dele NÃO é sobrescrito.
+        run.ctrl.register(rec)
+        # Uma linha por e-mail, não uma por run (o e-mail sem Message-ID volta a cada run).
+        if not run.ctrl.has_error(message_id, "processamento_erro"):
+            run.ctrl.register_error(
+                rec, "processamento_erro", f"{type(error).__name__}: {error}",
+                raw_payload={"uid": uid_str, "etapa": "run_reader"})
+    except Exception:  # noqa: BLE001
+        # O tratamento de falha não pode virar a falha que derruba o run.
+        log.exception(f"  [FALHA] UID {uid_str} — não foi possível registrar a falha do e-mail")
+
+
+def _alert_stuck_emails(run: _ReaderRun) -> str | None:
+    """Fim do run: se há e-mail financeiro PARADO, avisa alguém por e-mail (`reader_alert`).
+
+    🔴 POR QUE EXISTE. De 18 a 21/11/2026 o leitor saiu com exit 3 e gravou Event Log a cada
+    5 minutos, por dois dias, e ninguém viu: sinal que depende de alguém abrir o Agendador não
+    é alerta. A decisão (quem está parado há tempo demais, carência entre avisos, destinatários)
+    é do módulo; aqui fica só a ponte — e ela NUNCA levanta: um alerta que falha não pode
+    transformar em crash um run que já terminou.
+
+    Devolve o desfecho para o resumo do run (`None` = nem foi avaliado: `dry_run`, nenhum
+    adiado, ou módulo ausente).
+    """
+    if run.dry_run or not run.api.deferred_emails:
+        return None
+    module = _reader_alert()
+    if module is None:
+        return None
+    try:
+        return module.notify_stuck(
+            deferred=run.api.deferred_emails,
+            pending=run.pending_api,
+            # Acesso tardio a `ctrl.stamp_alerted`: só é tocado se um alerta realmente saiu.
+            stamp=lambda message_id, when_iso: run.ctrl.stamp_alerted(message_id, when_iso),
+            subject_marker=READER_ALERT_SUBJECT_MARKER,
+            reason=run.api.error,
+        )
+    except Exception:  # noqa: BLE001
+        # A ponte nunca derruba o run (ver docstring); o traceback fica no log.
+        log.exception("  [ALERTA] falha inesperada ao avaliar/enviar o alerta de e-mail parado")
+        return "erro"
+
+
 def run_reader(days: int = 0, all_: bool = False,
                dry_run: bool = False, mark_seen: bool = False,
                on_progress=None) -> dict:
@@ -8806,6 +9756,12 @@ def run_reader(days: int = 0, all_: bool = False,
     # a latência por e-mail no loop de deduplicação.
     known_ids = ctrl.load_known_ids()
 
+    # Pendências de API em aberto, numa consulta só: base da janela de leitura, do marcador
+    # de adiado e da quarentena. O `isinstance` é contrato: o resto do run assume um dict.
+    pending_api = ctrl.pending_api_errors()
+    if not isinstance(pending_api, dict):
+        pending_api = {}
+
     log.info("=" * 58)
     log.info("  email-reader v2.0 — iniciando")
     log.info(f"  Conta    : {os.getenv('IMAP_USER')}")
@@ -8819,8 +9775,11 @@ def run_reader(days: int = 0, all_: bool = False,
     if all_:
         criteria = "ALL"
     elif days > 0:
-        since    = (datetime.now() - timedelta(days=days)).strftime("%d-%b-%Y")
-        criteria = f'SINCE "{since}"'
+        since_day = _search_since(days, pending_api, known_ids, ctrl.latest_received_at())
+        if since_day < datetime.now().date() - timedelta(days=days):
+            log.warning(f"  Janela AMPLIADA para {_imap_date(since_day)} (pedido: --days {days}) "
+                        "— há e-mail pendente de API ou leitura em atraso")
+        criteria = f'SINCE "{_imap_date(since_day)}"'
     else:
         criteria = "UNSEEN"
 
@@ -8828,10 +9787,9 @@ def run_reader(days: int = 0, all_: bool = False,
     mail, uids = _connect_and_search(criteria)
     log.info(f"E-mails no servidor ({criteria}): {len(uids)}")
 
-    processed = skipped_kw = skipped_dup = deferred = 0
-    new_subjects = []
-    api_aborted = False
-    api_error: str | None = None   # motivo da 1ª recusa do run (crédito, auth, 529, 500...)
+    run = _ReaderRun(mail=mail, ctrl=ctrl, keywords=keywords, known_ids=known_ids,
+                     pending_api=pending_api, dry_run=dry_run, mark_seen=mark_seen)
+    api = run.api
     total = len(uids)
 
     def _emit(phase: str, done: int) -> None:
@@ -8841,15 +9799,15 @@ def run_reader(days: int = 0, all_: bool = False,
         try:
             on_progress({
                 "phase": phase, "total": total, "done": done,
-                "processed": processed, "skipped_keyword": skipped_kw,
-                "skipped_dup": skipped_dup,
+                "processed": run.processed, "skipped_keyword": run.skipped_kw,
+                "skipped_dup": run.skipped_dup,
             })
         except Exception:  # noqa: BLE001 — progresso é informativo, não crítico
             pass
 
     _emit("lendo", 0)
-    # try/finally garante mail.logout() mesmo se uma exceção escapar do loop —
-    # sem isso, uma falha não-ApiUnavailableError deixaria a conexão IMAP aberta.
+    # try/finally garante mail.logout() mesmo se algo escapar do loop — só `BaseException`
+    # (Ctrl+C, encerramento) escapa: exceção comum de UM e-mail é isolada em `_on_uid_crash`.
     try:
         for idx, uid in enumerate(uids, 1):
             _emit("lendo", idx - 1)  # done = e-mails já concluídos antes deste
@@ -8859,122 +9817,22 @@ def run_reader(days: int = 0, all_: bool = False,
                 # INTERNALDATE incluido no fetch para registrar 'ignorado' com a data de
                 # CHEGADA na caixa (mesma fonte do process_message) — alinha /emails ao
                 # webmail. _rfc822_from_fetch tolera respostas IMAP intercaladas.
+                # 🔴 Este `try` cobre SÓ o IMAP: falha aqui é transitória e o e-mail volta no
+                # próximo run. O parse do cabeçalho vive em `_read_one`, no trecho protegido.
                 _, hdr = mail.uid("fetch", uid,
                                   "(INTERNALDATE BODY.PEEK[HEADER.FIELDS (SUBJECT MESSAGE-ID FROM DATE)])")
                 hdr_meta, hdr_raw = _rfc822_from_fetch(hdr)
-                hdr_msg = email.message_from_bytes(hdr_raw)
-                subject = decode_str(hdr_msg.get("Subject", ""))
-                msg_id  = hdr_msg.get("Message-ID", "").strip()
             except Exception as e:
                 log.warning(f"  [SKIP] UID {uid} — erro ao ler header: {e}")
-                skipped_kw += 1
+                run.skipped_kw += 1
                 continue
 
-            # Deduplicação PRIMEIRO: set em memória (O(1)); fallback para consulta
-            # individual se o lote não foi carregado (Supabase indisponível). Vem antes
-            # do filtro de keyword para não re-registrar e-mails já conhecidos.
-            is_dup = (msg_id in known_ids) if known_ids else (msg_id and ctrl.is_processed(msg_id))
-            if is_dup:
-                log.info(f"  [DUP] {subject[:65]}")
-                skipped_dup += 1
-                continue
-
-            # Remetente e data (canonico = INTERNALDATE) — usados pelos filtros abaixo
-            # e pelo registro 'ignorado', mantendo /emails na MESMA ordem do webmail.
-            sender_name, sender_email = parseaddr(hdr_msg.get("From", ""))
-            received_at = _received_at_from(hdr_meta, hdr_msg.get("Date", ""))
-
-            # Remetente de SISTEMA (postmaster@ etc.) → 'ignorado' sem baixar/extrair,
-            # MESMO com keyword no assunto (NDR/bounce/aviso nao e conta a pagar).
-            if is_ignored_sender(sender_email):
-                if not dry_run:
-                    _register_ignored(ctrl, msg_id, subject, sender_name, sender_email,
-                                      received_at, f"Remetente de sistema ignorado ({sender_email})")
-                log.info(f"  [IGN remetente] {subject[:55]}")
-                skipped_kw += 1
-                continue
-
-            # 🔴 Honorarios e reembolso sempre geram conta, e os filtros abaixo decidem sem
-            # baixar o corpo. So o e-mail que eles ignorariam paga esse download, uma vez. Falha
-            # de IMAP nao registra nada: gravar 'ignorado' o tiraria para sempre da fila.
-            own_client_reply = (_is_own_collection_subject(subject)
-                                and not _is_internal_sender(sender_email))
+            header: dict = {}   # o que já se sabe do e-mail, caso o tratamento dele quebre
             try:
-                forced_account = (
-                    (subject_is_payment_confirmation(subject) or subject_is_reminder(subject)
-                     or own_client_reply or not match_keyword(subject, keywords))
-                    and _message_forces_account(mail, uid, subject, sender_email))
-            except Exception:
-                log.exception(f"  [SKIP] UID {uid} — corpo ilegivel; volta no proximo run")
-                skipped_kw += 1
-                continue
-
-            # Confirmacao/comprovante de PAGAMENTO (pagamento ja realizado) → 'ignorado'
-            # sem baixar/extrair, MESMO com keyword no assunto: nao e conta a pagar.
-            if not forced_account and subject_is_payment_confirmation(subject):
-                if not dry_run:
-                    _register_ignored(ctrl, msg_id, subject, sender_name, sender_email,
-                                      received_at, "Confirmação de pagamento — pagamento já realizado (não é conta a pagar)")
-                log.info(f"  [IGN confirmação pgto] {subject[:55]}")
-                skipped_kw += 1
-                continue
-
-            # Assunto com "lembrete" ou AVISO COMBINADO (reiteracao ordinal / pos-pagamento) →
-            # 'ignorado' sem extrair, MESMO com keyword/anexo: nao e divida nova (decisao do usuario).
-            if not forced_account and subject_is_reminder(subject):
-                if not dry_run:
-                    _register_ignored(ctrl, msg_id, subject, sender_name, sender_email,
-                                      received_at, "Lembrete/aviso — não é conta a pagar")
-                log.info(f"  [IGN lembrete/aviso] {subject[:55]}")
-                skipped_kw += 1
-                continue
-
-            # Resposta de CLIENTE a nossa cobranca → 'ignorado' sem baixar/extrair. A resposta
-            # INTERNA segue para process_message, que precisa do anexo para procurar honorarios.
-            if not forced_account and own_client_reply:
-                if not dry_run:
-                    _register_ignored(ctrl, msg_id, subject, sender_name, sender_email,
-                                      received_at, "Resposta de cliente à cobrança — não é conta a pagar")
-                log.info(f"  [IGN resposta cobrança] {subject[:55]}")
-                skipped_kw += 1
-                continue
-
-            # Fora do filtro de assunto → registra como 'ignorado' (sem baixar/extrair),
-            # para que /emails reflita a caixa inteira (o app substitui abrir o webmail).
-            if not forced_account and not match_keyword(subject, keywords):
-                if not dry_run:
-                    _register_ignored(ctrl, msg_id, subject, sender_name, sender_email,
-                                      received_at, "Fora do filtro de assunto (não-financeiro)")
-                log.info(f"  [IGN] {subject[:65]}")
-                skipped_kw += 1
-                continue
-
-            # API fora (detectado num e-mail anterior DESTE run): o financeiro é ADIADO —
-            # fica sem registro e volta no próximo run. NÃO é `break`: com ele, o 1º e-mail
-            # financeiro parava o lote e nem os não-financeiros seguintes eram registrados
-            # (2026-09-29: 7 h sem nenhum e-mail em /emails). E não se chama a API de novo
-            # para cada e-mail: uma recusa por run basta como sonda.
-            if api_aborted:
-                log.warning(f"  [ADIADO — API indisponível] {subject[:55]}")
-                deferred += 1
-                continue
-
-            log.info(f"  [NEW] {subject[:65]}")
-            try:
-                process_message(mail, uid, keywords, dry_run, mark_seen, ctrl)
-            except ApiUnavailableError as e:
-                log.error("=" * 58)
-                log.error("  API Anthropic indisponível — e-mails financeiros ADIADOS.")
-                log.exception(f"  Motivo: {str(e)[:160]}")
-                log.error("  Nenhuma conta gravada para eles; voltam no próximo run. Os "
-                          "não-financeiros seguem sendo registrados.")
-                log.error("=" * 58)
-                api_aborted = True
-                api_error = str(e)[:160]
-                deferred += 1
-                continue
-            processed += 1
-            new_subjects.append(subject[:120])
+                _read_one(run, uid, hdr_meta, hdr_raw, header)
+            except Exception as e:  # noqa: BLE001
+                # Um e-mail não derruba o run: registra `falha` e segue para o próximo.
+                _on_uid_crash(run, uid, header, e)
 
         _emit("concluído", total)
     finally:
@@ -8984,12 +9842,23 @@ def run_reader(days: int = 0, all_: bool = False,
         except Exception:  # noqa: BLE001 — logout best-effort
             pass
 
+    # Depois do logout: o envio do alerta fala SMTP e não deve segurar a conexão IMAP aberta.
+    alert_outcome = _alert_stuck_emails(run)
+
     log.info("=" * 58)
-    log.info(f"  Novos processados : {processed}")
-    log.info(f"  Sem palavra-chave : {skipped_kw}")
-    log.info(f"  Duplicados (skip) : {skipped_dup}")
-    if api_aborted:
-        log.info(f"  Adiados (API)     : {deferred} — API Anthropic indisponível")
+    log.info(f"  Novos processados : {run.processed}")
+    log.info(f"  Sem palavra-chave : {run.skipped_kw}")
+    log.info(f"  Duplicados (skip) : {run.skipped_dup}")
+    if run.crashed:
+        log.error(f"  Com erro inesperado: {run.crashed} — registrado(s) como 'falha'; ver /erros")
+    if api.aborted:
+        log.info(f"  Adiados (API)     : {api.deferred} — API Anthropic indisponível")
+    elif api.deferred:
+        log.info(f"  Adiados (isolados): {api.deferred} — a API respondeu; só estes falharam")
+    if api.quarantined:
+        log.info(f"  Em quarentena     : {api.quarantined} — lido(s) em modo tolerante")
+    if alert_outcome:
+        log.info(f"  Alerta por e-mail : {alert_outcome}")
     log.info(f"  Log local         : {EMAILS_LOG}")
     log.info("=" * 58)
 
@@ -8998,14 +9867,18 @@ def run_reader(days: int = 0, all_: bool = False,
         "supabase_ok":     supabase_ok,
         "criteria":        criteria,
         "found":           len(uids),
-        "processed":       processed,
-        "skipped_keyword": skipped_kw,
-        "skipped_dup":     skipped_dup,
-        "new_subjects":    new_subjects,
+        "processed":       run.processed,
+        "skipped_keyword": run.skipped_kw,
+        "skipped_dup":     run.skipped_dup,
+        "crashed":         run.crashed,
+        "new_subjects":    run.new_subjects,
         "dry_run":         dry_run,
-        "api_aborted":     api_aborted,
-        "api_error":       api_error,
-        "deferred":        deferred,
+        "api_aborted":     api.aborted,
+        "api_error":       api.error,
+        "deferred":        api.deferred,
+        "isolated":        api.isolated,
+        "quarantined":     api.quarantined,
+        "alert":           alert_outcome,
     }
 
 
@@ -9048,11 +9921,18 @@ def exit_code_for(summary: dict) -> int:
     O motivo vai LITERAL na mensagem: a recusa tanto é crédito/autenticação (ação humana)
     quanto sobrecarga 529 / erro 500 (transitória, o próximo run tenta de novo). Uma frase
     fixa "verifique os créditos" mandava o operador conferir a fatura num soluço da API.
+
+    🔴 O critério é HAVER e-mail adiado, não o breaker ter aberto: um único e-mail isolado
+    (API saudável, só ele falhou) também é financeiro sem registro, e sair com 0 nesse caso
+    recriaria o "Agendador verde com e-mail parado" de 2026-09-29.
     """
-    if summary.get("api_aborted"):
+    deferred = summary.get("deferred", 0) or 0
+    if summary.get("api_aborted") or deferred > 0:
+        scope = ("API Anthropic recusou" if summary.get("api_aborted")
+                 else "a API respondeu, mas a extração destes falhou")
         log.error(
-            f"Saindo com exit {EXIT_API_UNAVAILABLE}: {summary.get('deferred', 0)} e-mail(s) "
-            "financeiro(s) adiado(s) — API Anthropic recusou: "
+            f"Saindo com exit {EXIT_API_UNAVAILABLE}: {deferred} e-mail(s) "
+            f"financeiro(s) adiado(s) — {scope}: "
             f"{summary.get('api_error') or 'motivo não informado'}"
         )
         return EXIT_API_UNAVAILABLE

@@ -16,6 +16,17 @@
 
 ## Changelog (mais recente primeiro)
 
+**A `154` alinha o status do e-mail 3865 de `ignorado` para `duplicidade`** — aplicada via psql em
+2026-11-24 (reexecução = UPDATE 0 e sondas verdes; conferida por SELECT). Sem DDL, uma linha em
+`email_control`, nenhuma conta tocada. O e-mail "ENVIO DE NOTA FISCAL (00021851/1)" da 4R Ambiental
+trazia o boleto que casou por dedup a conta 2594, criada dias antes pelo encaminhamento do mesmo
+documento; como o assunto é de NF-e pura, o status saía `ignorado` sem nota — o card que significa
+"não-financeiro, nada a fazer". Passa a `duplicidade` com a nota "Boleto do anexo já registrado na
+conta 2594 (casou por dedup)". O UPDATE é condicionado ao estado antigo e a sonda compara contra um
+baseline capturado **antes** dele (não reavalia o predicado que o próprio UPDATE altera). Causa no
+reader: `pure_nfe`/`nonpayable` eram avaliados sem olhar `attachment_account` (corrigido no call
+site de `process_message`). Medido antes: era o único e-mail do histórico nesse estado.
+
 **A `153` tira dos cadastros o CPF que não é identidade deles** — aplicada via psql em 2026-11-10
 (ensaio em ROLLBACK + mutante da sonda antes; a 1ª versão foi barrada no ensaio por
 `chk_supplier_has_identifier`, sem gravar nada; reexecução = UPDATE 0). Sem DDL. O sk 1326

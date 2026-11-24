@@ -93,8 +93,10 @@ def rest_write(base: str, headers: dict, path: str, payload: dict,
         return False, f"falha de rede ({e})"
 
 
-def storage_list(base: str, headers: dict, bucket: str, com_metadata: bool = False):
-    """Objetos do bucket, paginados. Devolve lista de nomes, ou `{nome: metadata}`.
+def storage_list(base: str, headers: dict, bucket: str, com_metadata: bool = False,
+                 com_ultima_escrita: bool = False):
+    """Objetos do bucket, paginados. Devolve lista de nomes, `{nome: metadata}` ou
+    `{nome: instante da ultima escrita}`.
 
     `id` nulo = PLACEHOLDER DE PASTA (ex.: a entrada "manual" dos anexos da migration 079), nao
     um objeto: baixa-lo devolve HTTP 400. Os PDFs do pipeline sao flat na raiz, entao pular as
@@ -104,9 +106,22 @@ def storage_list(base: str, headers: dict, bucket: str, com_metadata: bool = Fal
     de so o nome. Serve a quem precisa decidir se o objeto ja no bucket e o MESMO arquivo que
     esta prestes a subir: o nome coincidir NAO prova identidade de conteudo, e o HTTP 409 do
     upload tampouco (ele diz apenas "ja existe um objeto com essa chave").
+
+    `com_ultima_escrita=True` devolve o instante ISO da ultima escrita de cada objeto
+    (`updated_at`, ou `created_at` na falta dele; None se a API nao informar nenhum). Serve a
+    quem vai APAGAR: objeto recem-escrito pode pertencer a um run em andamento, que ainda nao
+    gravou a linha que o referencia. `updated_at` e nao `created_at`: um upload que SOBRESCREVE
+    a chave muda so o primeiro.
     """
     names: list = []
     meta: dict = {}
+    escrita: dict = {}
+
+    def _resultado():
+        if com_ultima_escrita:
+            return escrita
+        return meta if com_metadata else names
+
     for pagina in range(MAX_PAGES):
         body = json.dumps({"prefix": "", "limit": PAGE_SIZE,
                            "offset": pagina * PAGE_SIZE}).encode()
@@ -121,14 +136,15 @@ def storage_list(base: str, headers: dict, bucket: str, com_metadata: bool = Fal
         except NETWORK_ERRORS as e:
             raise RestError(f"storage/list: falha de rede ({e})") from e
         if not page:
-            return meta if com_metadata else names
+            return _resultado()
         for o in page:
             if not (o.get("name") and o.get("id")):
                 continue
             names.append(o["name"])
             meta[o["name"]] = o.get("metadata") or {}
+            escrita[o["name"]] = o.get("updated_at") or o.get("created_at")
         if len(page) < PAGE_SIZE:
-            return meta if com_metadata else names
+            return _resultado()
     raise RestError(f"storage/list: mais de {MAX_PAGES} paginas — offset ignorado?")
 
 

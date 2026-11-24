@@ -1,5 +1,78 @@
 # Histórico de deploys
 
+## 2026-11-24 (2º) — Email Reader: alerta ativo, exceção isolada, imagem decorativa e `duplicidade`
+
+**O que foi ao ar** (as quatro ressalvas do relatório do incidente de 18 a 21/11):
+- **Alerta ativo por e-mail** (`reader_alert.py`, arquivo novo): e-mail adiado no run e parado há
+  60 min ou mais avisa os destinatários de `READER_ALERT_TO`, no máximo um aviso a cada 6 h. O
+  leitor ignora o próprio alerta e as respostas a ele.
+- **Exceção ao tratar um e-mail** vira `falha` + `processamento_erro` daquele e-mail
+  (`_on_uid_crash`); o run segue para o próximo.
+- **Imagem sem dado financeiro** não gera `sem_valor` quando outro anexo do e-mail respondeu.
+- **Assunto de NF-e + anexo que casou conta por dedup** sai `duplicidade`, não `ignorado`
+  (migration 154 já aplicada para o e-mail 3865).
+
+**Arquivos:** `email_sender.py` (cobrança, compartilhado), `reader_alert.py` (novo), `read_emails.py`,
+`deploy-manifest.json`, nesta ordem. Sem dependência nova nem `setup-task.ps1`. **Com `.env`:**
+`READER_ALERT_TO` é o interruptor do alerta.
+
+**Verificação:**
+- No DEV: `pytest` 2304 passed; 94 mutantes mortos; refactor do laço provado por A/B sobre 403
+  e-mails reais (0 diferenças); `--dry-run` contra a caixa e o banco reais, sem avisos.
+- Review max, **depois** da cópia: [docs/review/2026-11-24-Features-max.md](../review/2026-11-24-Features-max.md)
+  — nenhum achado no código de produção; as duas correções foram só em teste, então nenhum
+  arquivo de deploy mudou e a paridade 34/34 segue valendo (`pytest` 2321 passed).
+- Em produção (2026-11-24, cópia feita pelo usuário): `check_deploy_parity.py` → **34/34**, 0
+  faltando, 0 divergentes, 0 extras, "Produção em paridade com o repositório". A validação
+  funcional imprimiu `[ALERTA-LEITOR] True True True []`.
+- 🔴 **O alerta ficou DESLIGADO nesta cópia:** a lista vazia no fim da validação e a mensagem do
+  `reader_alert.py --test` ("READER_ALERT_TO vazio ou ausente no .env — o alerta está DESLIGADO")
+  mostram que a variável não foi definida no `.env` de produção. As outras três correções valem
+  desde já; o alerta, só depois da variável e de um `--test` com exit 0.
+
+**Lição:** paridade 34/34 prova que os ARQUIVOS chegaram, não que o recurso está ligado — o
+interruptor mora no `.env`, que o manifesto não cobre. Quem acusou foi o comando de validação, que
+imprime o valor lido do ambiente, e o `--test`, que exercita o canal. Recurso que depende de
+variável nova precisa de uma validação que a LEIA, não só de hash de arquivo.
+
+## 2026-11-24 — Email Reader: um anexo de imagem não para mais a fila
+
+**O que foi ao ar:**
+- O `media_type` da imagem enviada ao Vision sai dos BYTES (`_sniff_image_media_type`), não da
+  extensão. Conteúdo que não é PNG/JPEG/GIF/WebP é recusado localmente, sem chamada à API.
+- Recusa de DOCUMENTO pela API (413, ou 400 que aponta o bloco enviado) vira falha daquele anexo;
+  os demais anexos do e-mail seguem. Todo outro erro da API continua sendo indisponibilidade. A
+  heurística por substring saiu: nome de arquivo com `billing`/`quota` ligava o breaker.
+- Sonda de saúde (`api_health_probe`): com a API respondendo, só o e-mail que falhou é adiado;
+  após 6 falhas confirmadas ele é lido em modo tolerante.
+- Todo e-mail adiado deixa uma linha `erro_api`, e a janela `SINCE` se estende até o pendente
+  mais antigo (piso de 15 dias). Exit 3 sempre que há adiado.
+- O motivo real da falha de extração passa a aparecer em `/erros`.
+
+Caso de origem (18 a 21/11): um `.png` que era WebP parou a fila de financeiros por dois dias e 14
+e-mails saíram da janela sem registro. Detalhe e medições em
+[docs/knowledge/pipeline-extracao.md](../knowledge/pipeline-extracao.md).
+
+**Arquivos:** `extract_pdf.py`, `read_emails.py`, `deploy-manifest.json` (nesta ordem). Sem
+migration, `.env`, dependência nova ou `setup-task.ps1`.
+
+**Verificação:**
+- No DEV: `pytest` 2227 passed (72 novos); 48 mutantes mortos; sonda exercitada contra a API real;
+  leitor alterado rodado em `--dry-run` contra a caixa e o banco reais, sem avisos.
+- Recuperação pelo DEV antes do deploy: `read_emails.py --days 7` processou os 14 e-mails (contas
+  2643 e 2644, 16 documentos fiscais); `check_inbox_coverage.py --days 10` foi de 14 ausentes a 0.
+- Em produção (2026-11-24, cópia feita pelo usuário): a validação funcional imprimiu
+  `image/gif True True True`; `check_deploy_parity.py` → **33/33**, 0 faltando, 0 divergentes, 0
+  extras, "Produção em paridade com o repositório".
+- ⏳ Não exercitado em produção: o isolamento e a quarentena só disparam na próxima falha de API
+  de um e-mail. A leitura pelo conteúdo dispara no próximo anexo de imagem com extensão errada
+  (a Sevenlog envia um por semana).
+
+**Lição:** e-mail que o pipeline não leu não deixa rastro no banco — `email_control` não tem linha
+para ele. A perda só apareceu comparando a caixa com o controle; essa comparação agora é um script
+(`scripts/check_inbox_coverage.py`). O risco estava anotado desde o review de 2026-09-29 como "fora
+do delta, sem ocorrência": risco conhecido de fila parada merece trava, não anotação.
+
 ## 2026-11-23 — Extração: regra ALURA (NF de produto + NF de serviço do e-mail mensal)
 
 **O que foi ao ar:** fallback `try_extract_alura_fiscal` em `process_message` + módulo novo

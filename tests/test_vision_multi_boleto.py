@@ -67,10 +67,10 @@ class RespostaTruncadaTest(unittest.TestCase):
         """Se fosse, dispararia o circuit breaker e abortaria o LOTE inteiro por causa
         de um único documento grande.
 
-        O nome do ARQUIVO viaja na mensagem da exceção e `_API_ERROR_HINTS` casa por
+        O nome do ARQUIVO viaja na mensagem da exceção, e a classificação já casou por
         SUBSTRING — logo asserir sobre uma mensagem literal ("carne.pdf") não prova nada
         sobre a classe. Os nomes hostis abaixo contêm `quota`/`permission`/`billing` e
-        eram classificados como API fora do ar antes da guarda por `isinstance`.
+        eram classificados como API fora do ar antes de a decisão passar a ser por classe.
         """
         for nome in ("carne.pdf", "Quota_Condominial.pdf",
                      "Permissionaria_ABC.pdf", "Billing_2026.pdf"):

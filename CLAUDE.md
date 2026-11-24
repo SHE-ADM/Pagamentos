@@ -584,6 +584,9 @@ npm run test:e2e
 **Scripts de manutenção** (reprocessar, backfill, purga, varredura): skill
 `.claude/skills/scripts-manutencao`. 🔴 Todos rodam no DEV e escrevem na Supabase compartilhada
 dev+prod; os destrutivos exigem `--dry-run` antes, sempre.
+🔴 **A purga do bucket nunca apaga objeto escrito há menos de 24 h** (`MIN_AGE_HOURS`): o leitor sobe
+o anexo ANTES de gravar a conta, e o de um run em andamento é indistinguível de um órfão. E a lista
+completa do que sai é gravada em `logs/` antes do primeiro DELETE — sem registro, não apaga.
 🔴 **O sufixo `#N` do `gmail_message_id` é POSICIONAL e o gravador faz UPSERT por ele** —
 reprocessar e-mail cuja leitura anterior gravou MENOS contas que anexos faz o mesmo id descrever
 OUTRO documento, e curadoria + anexo viajam presos ao id. `reprocess_message.py` confere e
@@ -1165,6 +1168,24 @@ O que cada um faz, o que copiar e como validar: skill `.claude/skills/deploy-pro
 > compara o SHA-256 dos arquivos de deploy com o manifesto e sai com **exit 1** em divergência.
 > 🔴 No DEV, após alterar qualquer script de deploy, **regrave o manifesto no mesmo commit**
 > (`--update`) — ele **viaja junto** com os `.py` na cópia.
+> 🔴 **Paridade prova que os ARQUIVOS chegaram, não que o recurso está LIGADO** — o `.env` fica fora
+> do manifesto. Mudança que lê variável nova leva validação que **imprime o valor lido**: o alerta
+> do leitor ficou desligado num deploy com paridade completa, e foi essa impressão que acusou.
+
+🔴 **Email Reader: um e-mail não para a fila, e adiado não some** (18–21/11/2026: um `.png` que
+era WebP fez a API responder 400, lido como "API fora"; a fila parou dois dias e 14 e-mails saíram
+da janela sem registro). Cinco travas, nenhuma dispensável: o `media_type` da imagem sai dos
+**BYTES**; recusa de documento é **lista fechada** (o default de erro da API é indisponibilidade);
+com a **sonda** saudável só o e-mail que falhou é adiado; **todo adiado deixa linha `erro_api`**,
+que mantém a janela `SINCE` aberta; e **exceção ao tratar um e-mail vira `falha` DELE**
+(`_on_uid_crash`), nunca o fim do run. Detalhe: skill `.claude/skills/pipeline-extracao`.
+🔴 **Alerta ativo (`reader_alert.py`): e-mail adiado NO RUN e parado há 60 min avisa
+`READER_ALERT_TO`** (vazio = desligado; um aviso a cada 6 h) — exit 3 e Event Log por dois dias, e
+ninguém viu. `alerted_at` e `isolated_failures` moram no MESMO `raw_payload`: só
+`_update_error_payload` escreve ali, porque o PATCH substitui a coluna. 🔴 **O leitor ignora o
+próprio alerta** (`READER_ALERT_SUBJECT_MARKER` **e** remetente próprio/interno) antes de ler o
+corpo: o Reply-To do envio é a caixa lida, e o corpo lista assuntos de terceiros. ⚠️
+`email_sender.py` passou a servir à cobrança **e** ao alerta — mudar `SmtpSession.send` afeta os dois.
 
 **Baixa automática — duas regras independentes** (falha numa não impede a outra; não é transação):
 

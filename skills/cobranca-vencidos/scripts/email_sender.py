@@ -132,8 +132,12 @@ def _safe_address(value: str | None) -> str | None:
 
 
 def _build_message(
-    smtp: dict, *, subject: str, html_body: str, actual_to: str, actual_cc: str | None
+    smtp: dict, *, subject: str, html_body: str, actual_to: str, actual_cc: str | None,
+    with_signature: bool = True,
 ) -> MIMEMultipart:
+    # `with_signature=False`: mensagem operacional (alerta do leitor de e-mails), que não é
+    # correspondência do Financeiro e não referencia a imagem — anexá-la só a faria aparecer
+    # como anexo solto. Default True: a cobrança não muda.
     msg = MIMEMultipart("related")
     msg["Subject"] = _strip_crlf(subject)
     # S4-4: from_name/from_addr vêm de env / company (Supabase) — sanitiza CR/LF para
@@ -145,7 +149,7 @@ def _build_message(
     if actual_cc:
         msg["Cc"] = actual_cc
     msg.attach(MIMEText(html_body, "html", "utf-8"))
-    if _SIGNATURE_BYTES is not None:
+    if with_signature and _SIGNATURE_BYTES is not None:
         img = MIMEImage(_SIGNATURE_BYTES)
         img.add_header("Content-ID", "<signature>")
         img.add_header("Content-Disposition", "inline", filename="signature.png")
@@ -178,6 +182,9 @@ class SmtpSession:
     Uso:
         with SmtpSession(company_row, dev_mode=..., dev_override=...) as session:
             session.send(to_email=..., cc_email=..., subject=..., html_body=...)
+
+    Compartilhada por DOIS pipelines: a cobrança (batch e reenvio) e o alerta do leitor de
+    e-mails. Mudar a assinatura de `send` afeta os dois.
     """
 
     def __init__(self, company_row: dict | None, *, dev_mode: bool = False, dev_override: str = "") -> None:
@@ -217,7 +224,11 @@ class SmtpSession:
                 pass
         self._conn = None
 
-    def send(self, *, to_email: str, cc_email: str | None, subject: str, html_body: str) -> None:
+    def send(self, *, to_email: str, cc_email: str | None, subject: str, html_body: str,
+             signature: bool = True) -> None:
+        """Envia UM e-mail. `signature=False` omite a imagem de assinatura da cobrança — usado
+        pelo alerta do leitor de e-mails (skills/email-reader/scripts/reader_alert.py), que
+        reaproveita esta sessão para não duplicar as regras de TLS, CRLF e From."""
         actual_to, actual_cc = _resolve_recipients(
             to_email, cc_email, dev_mode=self.dev_mode, dev_override=self.dev_override
         )
@@ -227,7 +238,7 @@ class SmtpSession:
         actual_cc = _safe_address(actual_cc)
         raw = _build_message(
             self._smtp, subject=subject, html_body=html_body,
-            actual_to=actual_to, actual_cc=actual_cc,
+            actual_to=actual_to, actual_cc=actual_cc, with_signature=signature,
         ).as_string()
         logger.info("Enviando email: to=%s via %s", to_email, self._smtp["host"])
         try:

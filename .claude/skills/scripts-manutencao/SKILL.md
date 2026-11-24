@@ -26,6 +26,7 @@ mesma coisa que a execução, está avisado abaixo.
 
 | Sintoma | Script |
 |---|---|
+| Suspeita de e-mail que **nunca foi lido** (não aparece em `/emails`) | `check_inbox_coverage.py --days N` — **somente leitura**; exit 1 lista o que está na caixa e não no controle |
 | E-mail novo não foi lido | `read_emails.py --days 7` (ou `--all --mark-seen`) |
 | `status=pendente` (anexo salvo, PDF não extraído) | `retry_extraction.py` |
 | `status=falha` e o boleto está **atrás de link** | `reprocess_link_emails.py` |
@@ -99,6 +100,18 @@ relatório prometeria apagar o que a execução preservaria.
 Preserva ainda: e-mail em `pendente`/`falha`, objeto citado em `email_processing_errors` e as três
 fontes de "referenciado" (`financial_account_attachment.storage_key`,
 `financial_account_control.source_file`, `fiscal_document.storage_key`).
+
+🔴 **Objeto escrito há menos de 24 h nunca é apagado** (`MIN_AGE_HOURS`, pelo `updated_at` do
+Storage). O reader publica o anexo no Passo 1, **antes** de gravar a conta, e roda a cada 5 min em
+produção: o anexo de um run em andamento ainda não tem linha e é indistinguível de um órfão —
+apagá-lo deixaria a conta que nasce segundos depois sem o PDF, em silêncio. Data ausente, ilegível
+ou no futuro também preserva. O que ficar de fora cai na purga seguinte.
+
+🔴 **A execução real grava a lista completa em `logs/purge_orphans_<data>_<hora>.txt` antes do
+primeiro DELETE** — e sem conseguir gravar, não apaga. É a única memória do que saiu.
+
+⚠️ **Demora:** a inspeção de conteúdo baixa cada candidato; com ~1.300 órfãos passa de 10 minutos,
+no `--dry-run` e na execução real. Rode em segundo plano, com a saída num arquivo.
 
 ### `reprocess_cte_accounts.py` — faz **hard delete** de contas
 

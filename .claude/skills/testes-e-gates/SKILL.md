@@ -83,6 +83,27 @@ checkpoint **real**: enquanto o script nunca tinha rodado, os 7 casos passavam *
 Nem o code review nem 15 mutantes pegaram, porque nenhum alterava o disco. Arquivo de estado se
 isola no `setUp` com `tempfile.TemporaryDirectory` + `mock.patch.object`.
 
+🔴 **O `.env` da raiz também é estado local — e o CI não tem um.** `read_emails` e `extract_pdf`
+carregam o `.env` ao serem importados, então um teste que chega à extração sem fixar
+`ANTHROPIC_API_KEY` passa na máquina de quem escreveu e falha no `pytest tests/` do SonarCloud
+(review max de 2026-11-24: `test_poison_attachment.py`, o único caso do arquivo sem
+`mock.patch.dict`; o registro saía `erro_api` por chave ausente e o teste nunca chegava ao ramo
+que o nome prometia). Fixe a variável no próprio teste e, antes de fechar, rode a suíte como o CI
+a vê — `load_dotenv` não sobrescreve variável já definida, mesmo vazia:
+
+```bash
+ANTHROPIC_API_KEY= py -3 -m pytest tests/ -q
+```
+
+⚠️ Mesma família, ainda aberta: os testes que executam `run_reader` com assunto "Boleto N" dependem
+de `EMAIL_KEYWORDS` conter "boleto". O CI passa (o default do código contém), mas um `.env` local
+sem a keyword derruba 46 casos — `test_honorarios_citation.py` é o modelo de como fixá-la.
+
+🔴 **Call site com VÁRIOS argumentos: um teste por argumento.** O teste da janela `SINCE` executava
+`run_reader`, mas o cenário só variava a pendência: trocar `ctrl.latest_received_at()` por `None`
+ou `known_ids` por `set()` na chamada deixava a suíte inteira verde. Dublê que fixa o argumento no
+valor neutro (`return_value = None`) não o observa.
+
 ## Configuração dos workspaces
 
 🔴 **`packages/shared` NÃO tem `vitest.config.ts`, e é deliberado** — os defaults já servem, e um

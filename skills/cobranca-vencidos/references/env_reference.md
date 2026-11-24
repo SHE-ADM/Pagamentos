@@ -79,6 +79,13 @@ SMTP_FROM_ADDR=financeiro@envio.otimotex.com.br   # OBRIGATÓRIO p/ preservar o 
 > é o bounce da Locaweb), então sem o Reply-To a resposta do cliente se perderia em silêncio.
 > Valor malformado em `SMTP_FROM_ADDR` falha o lote (`ValueError`) em vez de enviar errado.
 
+> ⚠️ **Este bloco SMTP também serve ao Email Reader** (desde 2026-11-24). O alerta ativo do leitor
+> (`skills/email-reader/scripts/reader_alert.py`) envia pelo mesmo `SmtpSession`, com o mesmo From
+> e o mesmo `Reply-To`, e respeita `DEV_MODE`/`DEV_OVERRIDE_EMAIL`. Trocar host, usuário, senha ou
+> `SMTP_FROM_ADDR` muda os dois. A única variável própria dele é **`READER_ALERT_TO`** (destinatários
+> separados por vírgula; vazia = alerta desligado) — documentada no `.env.example` da raiz. Depois
+> de mexer neste bloco: `py -3 skills\email-reader\scripts\reader_alert.py --test`.
+
 ### Fallback (sem `SMTP_*`) — credenciais do mailbox IMAP
 
 Se o bloco `SMTP_*` for removido, o envio cai no caminho legado, reaproveitando as

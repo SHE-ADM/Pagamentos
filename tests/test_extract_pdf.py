@@ -87,7 +87,8 @@ class ImageAttachmentVisionTest(unittest.TestCase):
         import tempfile
         with tempfile.TemporaryDirectory() as d:
             img = Path(d) / "recibo.png"
-            img.write_bytes(b"\x89PNG fake bytes")
+            # Assinatura PNG COMPLETA: o media_type sai dos bytes, não da extensão.
+            img.write_bytes(b"\x89PNG\r\n\x1a\n fake bytes")
             block, src = e._vision_source_block(img)
             self.assertEqual(src, "image_vision")
             self.assertEqual(block["type"], "image")

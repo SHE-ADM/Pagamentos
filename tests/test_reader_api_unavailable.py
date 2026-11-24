@@ -62,11 +62,17 @@ class RunReaderApiIndisponivelTest(unittest.TestCase):
         ctrl._available = True
         ctrl.load_known_ids.return_value = {"<ja-processado>"}
         process = mock.MagicMock(side_effect=process_side_effect)
+        # A sonda de saúde responde "API fora": é o cenário desta classe (parada REAL). Sem o
+        # patch, o teste faria uma chamada de verdade à Anthropic com a chave do .env local.
         with mock.patch.object(read_emails, "_connect_and_search",
                                return_value=(mail, [b"1", b"2", b"3"])), \
              mock.patch.object(read_emails, "SupabaseControl", return_value=ctrl), \
+             mock.patch.object(read_emails, "_api_is_healthy",
+                               return_value=(False, "sonda: API fora")), \
              mock.patch.object(read_emails, "process_message", process):
             summary = read_emails.run_reader(days=1)
+        # O laço isola exceção por e-mail: sem isto, um dublê mal montado passaria por "adiado".
+        self.assertEqual(summary["crashed"], 0)
         return summary, ctrl, process, mail
 
     def test_api_fora_adia_financeiros_e_registra_os_demais(self):

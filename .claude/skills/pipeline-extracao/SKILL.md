@@ -382,10 +382,78 @@ http(s), porta malformada e host que resolve para IP **interno**; `_SafeRedirect
 | **API fora ADIA, não PARA o lote** (`deferred`) | 29/09/2026, crédito esgotado: o `break` parou a fila no 1º financeiro e **7 h de e-mails** (inclusive os não-financeiros) sumiram de `/emails` |
 | **Exit `EXIT_API_UNAVAILABLE` (3)** + Event Log 1002 no `run_reader.ps1`, com o **motivo LITERAL** (`summary["api_error"]`) na linha "Saindo com exit 3" | com exit 0 o Agendador mostrava sucesso durante toda a parada; e a recusa nem sempre é crédito — 529/500 são transitórios |
 | **`erro_api` UMA vez por e-mail** (`has_error`) e **limpo ao concluir** (`delete_errors`) | 83 linhas idênticas em `/erros` num só dia, que sobreviveriam à recarga |
+| **`media_type` da imagem pelos BYTES** (`_sniff_image_media_type`); conteúdo que não é PNG/JPEG/GIF/WebP é recusado localmente, sem chamar a API | 19/11/2026: a assinatura `a66c1adb.png` (nome **e** MIME diziam PNG) era **WebP**, e a API respondeu 400 |
+| **Recusa de DOCUMENTO é lista fechada** (`_api_rejected_document`: 413, ou 400 que aponta o bloco enviado e não cita conta) — todo outro erro da API é indisponibilidade | o 400 da imagem era lido como "API fora"; o inverso também quebra: crédito esgotado chega como **400**, e tratá-lo como "documento ruim" gravaria falha em todo e-mail |
+| **Classificação por CLASSE, sem substring** | o nome do arquivo salvo carrega remetente e assunto: `billing`/`quota`/`permission` num erro local ligava o breaker |
+| **Sonda de saúde** (`api_health_probe`): com a API respondendo, só o e-mail que falhou é adiado — teto de 3 isolados por run | o e-mail venenoso voltava a cada 5 min, era o 1º na ordem de UID e adiava TODOS os financeiros: **dois dias de fila parada** |
+| **Quarentena** após 6 falhas confirmadas por sonda saudável: leitura em modo tolerante (`tolerate_api_failure`), no máximo 1 por run | o e-mail ficaria preso para sempre — e o boleto ao lado do anexo ruim, sem conta |
+| **Todo adiado deixa linha `erro_api`**, e a **janela `SINCE` nunca é menor que o pendente** (`_search_since`) | **14 e-mails** saíram do `--days 1` sem nunca serem registrados, e nada os mostrava |
+| **Exit 3 sempre que há adiado**, inclusive o isolado | Agendador verde com e-mail financeiro parado |
+| **Exceção ao tratar UM e-mail é isolada** (`_read_one` + `_on_uid_crash`): vira `falha` + `processamento_erro` e o laço segue | uma exceção num filtro matava o run naquele UID e **todo e-mail depois dele** ficava sem leitura, em todo run; cabeçalho que quebrava o parser era `[SKIP]` eterno |
+| **Alerta ativo por e-mail** (`reader_alert.py`, `READER_ALERT_TO`) | exit 3 e Event Log a cada 5 min por dois dias, e ninguém viu |
 
-🔴 **Com a API fora, o financeiro fica SEM registro de propósito** — é o que o faz voltar no
-próximo run. ⚠️ **A janela é `--days 1`:** um e-mail adiado por mais de ~1 dia sai do `SINCE` e
-não volta sozinho — após uma parada longa, rode `read_emails.py --days N` cobrindo o período.
+🔴 **Com a API fora, o financeiro fica SEM linha em `email_control` de propósito** — é o que o faz
+voltar no próximo run — **mas deixa uma linha `erro_api`** ("Adiado — …"), apagada quando ele
+conclui. É ela que o mantém em `/erros` e DENTRO da janela: a tarefa pede `--days 1` e
+`_search_since` amplia até a pendência mais antiga ainda não registrada (e até a última leitura,
+se a máquina ficou parada), com piso de `MAX_LOOKBACK_DAYS` (15). Pendência mais antiga que o piso
+é **descartada**, não limitada a ele — senão uma linha órfã prenderia a janela larga para sempre.
+⚠️ Além do piso, só à mão: `read_emails.py --days N`. **Vale também para a última leitura:** com 15
+dias ou mais sem nenhum e-mail registrado a marca-d'água é descartada, a janela volta ao `--days`
+pedido e **nada no log avisa** (medido: 14 dias cobre tudo, 15 volta a "ontem"). Depois de uma
+parada longa, confira com `check_inbox_coverage.py --days N`.
+
+🔴 **A sonda decide entre "a API caiu" e "só este e-mail falha".** Ela espelha a requisição real
+(mesmo modelo, mesma `temperature`, um bloco de imagem), sem retentativa. Saudável ⇒ o e-mail é
+isolado e a falha é **contada** (`isolated_failures`, no `raw_payload` da própria linha `erro_api`).
+Falha durante parada REAL não conta — é o que impede uma parada longa de mandar e-mail legítimo
+para a quarentena. Sonda ausente (deploy parcial) ou quebrada = API fora, o lado seguro.
+
+🔴 **A quarentena é decidida ANTES de processar** (`_quarantine_due`): reprocessar depois salvaria
+e subiria os anexos duas vezes. Em modo tolerante a falha vira `extracao_falhou` **do anexo**, e um
+CSV que só trouxe essa falha **não conta como extraído** — senão o e-mail sairia `extraído` com
+zero contas. ⚠️ Parada só do Vision acima de ~30 min passa na sonda e manda e-mails legítimos ao
+modo tolerante, um por run: ficam visíveis em `/erros` e voltam por `reprocess_message.py`.
+
+🔴 **Alerta ativo (`reader_alert.py`, chamado por `_alert_stuck_emails` depois do logout).** Avisa
+`READER_ALERT_TO` quando um e-mail adiado **neste run** está parado há ≥ 60 min (`logged_at` da
+linha `erro_api`) e não houve aviso nas últimas 6 h. Sem a variável = desligado (protege o DEV;
+`tests/conftest.py` a remove em todo teste). Adiado pela 1ª vez não avisa — `_mark_deferred` grava
+`logged_at` de agora. `logged_at` ilegível conta como parado e `alerted_at` no futuro é descartado:
+data estranha falha para o lado do aviso, nunca do silêncio.
+🔴 **`alerted_at` e `isolated_failures` moram no MESMO `raw_payload`** e o PATCH substitui a coluna:
+`_update_error_payload` é a única escrita ali (`bump_isolated_failures` e `stamp_alerted`). O
+carimbo vai em **todas** as linhas citadas, e só depois de um envio aceito.
+🔴 **O leitor ignora o próprio alerta** (`_header_ignore_reason`): marcador
+`READER_ALERT_SUBJECT_MARKER` no assunto **e** remetente próprio (`IMAP_USER`/`SMTP_FROM_ADDR`) ou
+interno, **antes** de `_message_forces_account` — o Reply-To do envio é a caixa lida e o corpo lista
+assuntos de terceiros. Só o marcador não basta: externo esconderia um boleto escrevendo-o.
+⚠️ O envio reusa `SmtpSession` da cobrança (`email_sender.py`, carregado por caminho, com
+`signature=False`): mudar `send` afeta os dois pipelines. Run que morre no IMAP não alerta.
+Provar que o canal funciona: `py -3 skills\email-reader\scripts\reader_alert.py --test` (um e-mail
+de teste aos destinatários; não lê nem grava no banco).
+
+🔴 **Uma exceção ao tratar um e-mail não derruba o run.** O parse do cabeçalho e os filtros vivem em
+`_read_one`; o `try` do laço cobre só o fetch IMAP (transitório ⇒ `[SKIP]`). `_on_uid_crash` não
+chama `decode_str` nem nada que possa ter acabado de quebrar, usa `no-id-<uid>` sem Message-ID e
+nunca levanta. `BaseException` propaga (Ctrl+C) e o logout roda.
+
+🔴 **Imagem sem dado financeiro** (`_is_empty_image_row`: `image_vision`, sem valor/código/CNPJ/CPF/
+nosso número, tipo vazio ou `outro`, vencimento não lido, descrição vazia ou só de contato) **não
+gera `sem_valor` quando outro anexo respondeu** — vira nota no e-mail. Sozinha, segue `sem_valor`.
+`acc_index` anda igual: o sufixo `#N` é posicional. Banner que o modelo chama de `boleto` fica em
+`/erros`, de propósito.
+
+🔴 **Assunto de NF-e + anexo que casou conta por dedup ⇒ `duplicidade`.** No call site de
+`process_message`, `pure_nfe` e `nonpayable` levam `and not attachment_account`. Não reordene
+`status_for_result` para obter o mesmo efeito: moveria as duplicatas vindas do CORPO.
+
+**Conferir se algum e-mail ficou para trás:** `py -3 scripts/check_inbox_coverage.py --days N`
+(somente leitura; exit 1 lista o que está na caixa e não no controle). E-mail não lido não deixa
+rastro no banco — só a comparação com a caixa o encontra. Testes: `test_poison_attachment.py`,
+`test_poison_email_isolation.py`, `test_check_inbox_coverage.py`, `test_reader_alert.py`,
+`test_run_reader_uid_crash.py`, `test_decorative_image.py`, `test_status_anexo_respondeu.py`.
+
 🔴 **`faulthandler` só no `__main__`** — importado (Flask, pytest, scripts), o `crash_*.log` era
 criado e nunca apagado (1.906 arquivos vazios escondendo o crash real).
 

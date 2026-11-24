@@ -7,7 +7,7 @@
 > 🔴 **Contador que o comando responde melhor NÃO se escreve aqui.** Antes de anotar um número,
 > pergunte se existe comando que o produz — se existir, anote o comando, não o número.
 >
-> **Atualizado em:** 2026-11-23
+> **Atualizado em:** 2026-11-24
 
 ---
 
@@ -17,7 +17,7 @@
 |---|---|
 | Qual a última migration aplicada? | `ls supabase/migrations \| tail -1` |
 | Qual o número da próxima? | a última + 1 — **nunca reserve número com antecedência** (lição da Onda 5: 109/110/111 foram reservados e consumidos por outro trabalho) |
-| Quantos arquivos no manifesto de deploy? | `node -e "console.log(require('./scheduler/deploy-manifest.json').length)"` |
+| Quantos arquivos no manifesto de deploy? | `py -3 -c "import json;print(len(json.load(open('scheduler/deploy-manifest.json'))['files']))"` (os arquivos ficam na chave `files`; o `.length` do JSON inteiro devolve `undefined`) |
 | Produção está em paridade? | `py -3 scheduler\check_deploy_parity.py` **na máquina de produção** (exit 1 em divergência) |
 | Qual o total da suíte? | `npm test` (Node) · `py -3 -m pytest tests/ -q` (Python) — medir com `--maxWorkers=1` no `frontend-vite` |
 
@@ -51,9 +51,40 @@ Procedimento completo na skill **`deploy-producao`**. Histórico de cada deploy:
 
 | Item | Estado |
 |---|---|
-| Último deploy | **2026-11-17 (2º)** — extração: ajustes do aviso COMBINADO vindos do code review max (NBSP, ordinal colado, ordinais até "décimo"). Arquivos: `read_emails.py` + `deploy-manifest.json`. Anterior: **2026-11-17 (1º)** — aviso COMBINADO ignorado antes do download (conta 2499). Detalhe em [docs/deploy/historico-deploys.md](docs/deploy/historico-deploys.md) |
-| Paridade verificada | ✅ **em produção** (2026-11-17, 2º deploy) — `check_deploy_parity.py`: **32/32 conferem, 0 faltando, 0 divergentes, 0 extras**, "Produção em paridade com o repositório"; SHA-256 do `read_emails.py` em produção = `94D7A615…03708006`, **igual ao do repositório** |
+| Último deploy | **2026-11-24 (2º)** — Email Reader: alerta ativo por e-mail (`reader_alert.py`, novo), exceção de um e-mail isolada, imagem decorativa sem `sem_valor` e `duplicidade` quando o anexo casou conta existente. Arquivos: `email_sender.py` + `reader_alert.py` + `read_emails.py` + `deploy-manifest.json`. Anterior, no mesmo dia: um anexo de imagem não para mais a fila. Detalhe em [docs/deploy/historico-deploys.md](docs/deploy/historico-deploys.md) |
+| Paridade verificada | ✅ **em produção** (2026-11-24) — `check_deploy_parity.py`: **34/34 conferem, 0 faltando, 0 divergentes, 0 extras**, "Produção em paridade com o repositório"; validação funcional `[ALERTA-LEITOR] True True True []` — 🔴 a lista vazia no fim é o alerta **desligado** (ver abaixo) |
 | Tarefas agendadas | 5 ativas — Email Reader (5 min) · Cobrança (10:00) · Backup (02:00) · Baixa (08:00) · Gatilhos Roadmap (dia 1, 07:00) |
+
+⏳ **Fila do Email Reader parada por um anexo (18–21/11) — corrigida e em produção desde
+2026-11-24.** Um `.png` que era WebP fez a API responder 400, lido como "API fora": dois dias sem
+e-mail financeiro processado e 14 e-mails fora da janela sem registro, todos **recuperados** pelo
+DEV (contas 2643 e 2644). Caso e medições:
+[docs/knowledge/pipeline-extracao.md](docs/knowledge/pipeline-extracao.md). Em aberto:
+- 🔴 **Alerta ativo DESLIGADO em produção — falta `READER_ALERT_TO` no `.env` de lá.** O 2º lote
+  (as quatro ressalvas do relatório) foi copiado em 2026-11-24 e a paridade é 34/34, mas a
+  validação imprimiu a lista de destinatários vazia e `reader_alert.py --test` respondeu "o alerta
+  está DESLIGADO". As outras três correções (exceção isolada, imagem decorativa, `duplicidade`)
+  valem desde já. Para ligar: acrescentar `READER_ALERT_TO=<endereços separados por vírgula>` em
+  `C:\Sheild\API\Pagamentos\.env` e rodar `py -3 skills\email-reader\scripts\reader_alert.py --test`
+  até sair com exit 0 e o e-mail chegar. Nada a recopiar: o leitor lê o `.env` a cada execução.
+- **Não exercitado em produção:** o isolamento e a quarentena só disparam na próxima falha de API
+  de um e-mail; o alerta, só quando um e-mail ficar parado por 60 min. Conferir com
+  `SELECT * FROM email_processing_errors WHERE error_type = 'erro_api'` — fora as 3 linhas órfãs
+  de 16/07, não deve haver linha parada por mais de ~30 min.
+- ✅ **Limpeza do bucket — feita em 2026-11-24** (autorizada pelo Ricardo): **1.091 objetos órfãos
+  removidos**, 220 preservados; o bucket foi de 3.442 para 2.353 objetos na raiz. Entre os removidos,
+  637 eram as cópias repetidas dos dois anexos do incidente. Conferência pós-purga: 0 objeto
+  referenciado perdido, e o que saiu é exatamente o que o registro lista
+  (`logs\purge_orphans_20261124_161517.txt`, na máquina de desenvolvimento). A purga ganhou duas
+  travas antes de rodar: objeto escrito há menos de 24 h não é apagado, e a lista completa é
+  gravada antes do primeiro DELETE — detalhe na skill `scripts-manutencao`.
+- **Conferência sob demanda:** `py -3 scripts/check_inbox_coverage.py --days N` (somente leitura).
+- **Review max de 2026-11-24** ([relatório](docs/review/2026-11-24-Features-max.md)): código de
+  produção sem achado; dois testes corrigidos (um dependia da `ANTHROPIC_API_KEY` do `.env` local e
+  reprovaria o CI). **Decisões pendentes:** (1) marca-d'água além do piso de 15 dias é descartada
+  sem log — só logar, ou limitá-la ao piso; (2) três testes que prometem mais do que observam (fuso
+  na purga, carência do alerta, `EMAIL_KEYWORDS`); (3) conferir a frase "parada só do Vision passa
+  na sonda". Nenhuma bloqueia o commit.
 
 ⏳ **Não exercitado em produção ainda:** a captura **automática** de conteúdo de CT-e a partir
 de um e-mail novo (Onda 5). O backfill cobriu o acervo e o fluxo tem teste; falta chegar a
@@ -75,6 +106,7 @@ próxima fatura agregada (são semanais). Conferir com
 
 | Item | Estado | Gatilho de reabertura |
 |---|---|---|
+| Fila do Email Reader parada por um anexo (18–21/11) + as quatro ressalvas do relatório (alerta ativo, exceção isolada, imagem decorativa, `duplicidade`) — 2026-11-24 | ✅ **corrigido no código** · ✅ migration 154 aplicada · ✅ **em produção (2026-11-24, dois lotes)**, paridade 34/34 · ✅ 14 e-mails recuperados (contas 2643 e 2644) · ✅ bucket purgado (1.091 órfãos) · 🔴 **alerta DESLIGADO em produção**: falta `READER_ALERT_TO` no `.env` de lá | Fecha quando `reader_alert.py --test` sair com exit 0 em produção e o e-mail de teste chegar. Nada commitado ainda: os dois lotes e o reforço da purga estão só no working tree. Sinais no dado: fora as 3 linhas órfãs de 16/07, nenhuma linha `erro_api` parada por mais de ~30 min; `/erros` sem `sem_valor` novo de assinatura quando o e-mail gerou conta. Detalhe em [docs/knowledge/pipeline-extracao.md](docs/knowledge/pipeline-extracao.md) e [docs/deploy/historico-deploys.md](docs/deploy/historico-deploys.md) |
 | Guia impressa pelo navegador como imagem: vencimento = data da extração (DAMSP, conta 1863 — 2026-10-06) | ✅ **corrigido** · ✅ **em produção (2026-10-06)**, paridade 32/32 · PR #264 · conta 1863: correção **manual** do usuário pelo app (13/10/2026) | Moldura do navegador fora da medição de texto, tier 2b por vencimento em guia de arrecadação e descarte + releitura do código de arrecadação refutado no Vision. Detalhe em [docs/knowledge/pipeline-extracao.md](docs/knowledge/pipeline-extracao.md). Residual: 6 contas `docx_vision` com vencimento presumido (1076, 1077, 1078, 1204, 1401, 1843), todas pagas/canceladas |
 | Guia de TRIBUTO sem código e sem data no texto: vencimento = data da extração (FGTS Digital, conta 2034 — 2026-10-17) | ✅ **corrigido** · ✅ **em produção (2026-10-17)**, paridade 32/32 · PR #266 | Tier 2b passa a valer também para `document_type == 'tributo'` sem barcode (só tributo, para não virar Vision em massa). Validado nos PDFs reais do cache: o de 2026-10-16 (sem data no texto) dispara; o de 2026-07-16 (data no texto) não. Falta a resposta real do Vision, que custa API: conferir com `reprocess_message.py --dry-run` no e-mail da conta 2034. Detalhe em [docs/knowledge/pipeline-extracao.md](docs/knowledge/pipeline-extracao.md) |
 | Respostas à cobrança, pedido interno com anexo, reembolso Dr. Ricardo e citação de honorários (2247, 2215, 2227, e-mail 1720 — 2026-11-05) | ✅ **corrigido no código** · ✅ **migrations 148, 149 e 150 aplicadas**, reexecução = 0 linhas · ✅ **em produção (2026-11-05)**, paridade 32/32 e hash conferido | Regras novas ainda sem caso real observado em produção. E-mail 1720 lançado pela 149 (conta 2346, vence 05/11/2026, em aberto até a baixa no app). Conta falsa 2343, gravada pela versão anterior ao deploy, cancelada pela 150 |
@@ -144,8 +176,9 @@ A supressão durável é o `sonar-project.properties` versionado.
 
 ## Snapshot da suíte (informativo — derive antes de citar)
 
-Medido em **2026-08-17**: Node **1.583** (frontend-vite 908 em 146 arquivos · api-backend 620 ·
-packages/shared 53 · portal-next 2) e Python **1.486**.
+Node, medido em **2026-08-17**: **1.583** (frontend-vite 908 em 146 arquivos · api-backend 620 ·
+packages/shared 53 · portal-next 2). Python, medido em **2026-11-24**: **2.321**
+(`py -3 -m pytest tests/ -q`; eram 1.486 em 2026-08-17).
 
 🔴 **Ao fechar uma onda, cite o INCREMENTO, não o total** — o incremento é propriedade da onda e
 não envelhece; o total muda a cada PR. Meça contra o commit anterior num `git worktree` isolado.
