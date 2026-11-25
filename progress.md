@@ -52,7 +52,7 @@ Procedimento completo na skill **`deploy-producao`**. Histórico de cada deploy:
 | Item | Estado |
 |---|---|
 | Último deploy | **2026-11-24 (2º)** — Email Reader: alerta ativo por e-mail (`reader_alert.py`, novo), exceção de um e-mail isolada, imagem decorativa sem `sem_valor` e `duplicidade` quando o anexo casou conta existente. Arquivos: `email_sender.py` + `reader_alert.py` + `read_emails.py` + `deploy-manifest.json`. Anterior, no mesmo dia: um anexo de imagem não para mais a fila. Detalhe em [docs/deploy/historico-deploys.md](docs/deploy/historico-deploys.md) |
-| Paridade verificada | ✅ **em produção** (2026-11-24) — `check_deploy_parity.py`: **34/34 conferem, 0 faltando, 0 divergentes, 0 extras**, "Produção em paridade com o repositório"; validação funcional `[ALERTA-LEITOR] True True True []` — 🔴 a lista vazia no fim é o alerta **desligado** (ver abaixo) |
+| Paridade verificada | ✅ **em produção** (2026-11-24) — `check_deploy_parity.py`: **34/34 conferem, 0 faltando, 0 divergentes, 0 extras**, "Produção em paridade com o repositório"; validação funcional `[ALERTA-LEITOR] True True True []` na cópia (lista vazia = alerta desligado); `READER_ALERT_TO` criada em seguida e `reader_alert.py --test` com exit 0 — alerta **ligado** (ver abaixo) |
 | Tarefas agendadas | 5 ativas — Email Reader (5 min) · Cobrança (10:00) · Backup (02:00) · Baixa (08:00) · Gatilhos Roadmap (dia 1, 07:00) |
 
 ⏳ **Fila do Email Reader parada por um anexo (18–21/11) — corrigida e em produção desde
@@ -60,13 +60,12 @@ Procedimento completo na skill **`deploy-producao`**. Histórico de cada deploy:
 e-mail financeiro processado e 14 e-mails fora da janela sem registro, todos **recuperados** pelo
 DEV (contas 2643 e 2644). Caso e medições:
 [docs/knowledge/pipeline-extracao.md](docs/knowledge/pipeline-extracao.md). Em aberto:
-- 🔴 **Alerta ativo DESLIGADO em produção — falta `READER_ALERT_TO` no `.env` de lá.** O 2º lote
-  (as quatro ressalvas do relatório) foi copiado em 2026-11-24 e a paridade é 34/34, mas a
-  validação imprimiu a lista de destinatários vazia e `reader_alert.py --test` respondeu "o alerta
-  está DESLIGADO". As outras três correções (exceção isolada, imagem decorativa, `duplicidade`)
-  valem desde já. Para ligar: acrescentar `READER_ALERT_TO=<endereços separados por vírgula>` em
-  `C:\Sheild\API\Pagamentos\.env` e rodar `py -3 skills\email-reader\scripts\reader_alert.py --test`
-  até sair com exit 0 e o e-mail chegar. Nada a recopiar: o leitor lê o `.env` a cada execução.
+- ✅ **Alerta ativo LIGADO em produção desde 2026-11-24.** Na cópia do 2º lote ele ficou desligado
+  (faltava `READER_ALERT_TO` no `.env` de lá — paridade 34/34 e lista de destinatários vazia); a
+  variável foi criada no mesmo dia e `reader_alert.py --test` saiu com **exit 0** ("teste enviado
+  a 1 de 1 destinatário(s)"), com o e-mail de teste **recebido** pelo destinatário. ⚠️ O
+  destinatário é de domínio externo ao leitor: resposta a um alerta volta para a caixa lida e
+  segue o fluxo normal — não responder ao aviso.
 - **Não exercitado em produção:** o isolamento e a quarentena só disparam na próxima falha de API
   de um e-mail; o alerta, só quando um e-mail ficar parado por 60 min. Conferir com
   `SELECT * FROM email_processing_errors WHERE error_type = 'erro_api'` — fora as 3 linhas órfãs
@@ -106,7 +105,7 @@ próxima fatura agregada (são semanais). Conferir com
 
 | Item | Estado | Gatilho de reabertura |
 |---|---|---|
-| Fila do Email Reader parada por um anexo (18–21/11) + as quatro ressalvas do relatório (alerta ativo, exceção isolada, imagem decorativa, `duplicidade`) — 2026-11-24 | ✅ **corrigido no código** · ✅ migration 154 aplicada · ✅ **em produção (2026-11-24, dois lotes)**, paridade 34/34 · ✅ 14 e-mails recuperados (contas 2643 e 2644) · ✅ bucket purgado (1.091 órfãos) · 🔴 **alerta DESLIGADO em produção**: falta `READER_ALERT_TO` no `.env` de lá | Fecha quando `reader_alert.py --test` sair com exit 0 em produção e o e-mail de teste chegar. Nada commitado ainda: os dois lotes e o reforço da purga estão só no working tree. Sinais no dado: fora as 3 linhas órfãs de 16/07, nenhuma linha `erro_api` parada por mais de ~30 min; `/erros` sem `sem_valor` novo de assinatura quando o e-mail gerou conta. Detalhe em [docs/knowledge/pipeline-extracao.md](docs/knowledge/pipeline-extracao.md) e [docs/deploy/historico-deploys.md](docs/deploy/historico-deploys.md) |
+| Fila do Email Reader parada por um anexo (18–21/11) + as quatro ressalvas do relatório (alerta ativo, exceção isolada, imagem decorativa, `duplicidade`) — 2026-11-24 | ✅ **corrigido no código** · ✅ migration 154 aplicada · ✅ **em produção (2026-11-24, dois lotes)**, paridade 34/34 · ✅ 14 e-mails recuperados (contas 2643 e 2644) · ✅ bucket purgado (1.091 órfãos) · ✅ **alerta ligado em produção** (`READER_ALERT_TO` definida, `--test` com exit 0 e e-mail recebido) · PR #272 | Reabre se um e-mail financeiro ficar parado por mais de 60 min sem aviso chegar. Sinais no dado: fora as 3 linhas órfãs de 16/07, nenhuma linha `erro_api` parada por mais de ~30 min; `/erros` sem `sem_valor` novo de assinatura quando o e-mail gerou conta. Detalhe em [docs/knowledge/pipeline-extracao.md](docs/knowledge/pipeline-extracao.md) e [docs/deploy/historico-deploys.md](docs/deploy/historico-deploys.md) |
 | Guia impressa pelo navegador como imagem: vencimento = data da extração (DAMSP, conta 1863 — 2026-10-06) | ✅ **corrigido** · ✅ **em produção (2026-10-06)**, paridade 32/32 · PR #264 · conta 1863: correção **manual** do usuário pelo app (13/10/2026) | Moldura do navegador fora da medição de texto, tier 2b por vencimento em guia de arrecadação e descarte + releitura do código de arrecadação refutado no Vision. Detalhe em [docs/knowledge/pipeline-extracao.md](docs/knowledge/pipeline-extracao.md). Residual: 6 contas `docx_vision` com vencimento presumido (1076, 1077, 1078, 1204, 1401, 1843), todas pagas/canceladas |
 | Guia de TRIBUTO sem código e sem data no texto: vencimento = data da extração (FGTS Digital, conta 2034 — 2026-10-17) | ✅ **corrigido** · ✅ **em produção (2026-10-17)**, paridade 32/32 · PR #266 | Tier 2b passa a valer também para `document_type == 'tributo'` sem barcode (só tributo, para não virar Vision em massa). Validado nos PDFs reais do cache: o de 2026-10-16 (sem data no texto) dispara; o de 2026-07-16 (data no texto) não. Falta a resposta real do Vision, que custa API: conferir com `reprocess_message.py --dry-run` no e-mail da conta 2034. Detalhe em [docs/knowledge/pipeline-extracao.md](docs/knowledge/pipeline-extracao.md) |
 | Respostas à cobrança, pedido interno com anexo, reembolso Dr. Ricardo e citação de honorários (2247, 2215, 2227, e-mail 1720 — 2026-11-05) | ✅ **corrigido no código** · ✅ **migrations 148, 149 e 150 aplicadas**, reexecução = 0 linhas · ✅ **em produção (2026-11-05)**, paridade 32/32 e hash conferido | Regras novas ainda sem caso real observado em produção. E-mail 1720 lançado pela 149 (conta 2346, vence 05/11/2026, em aberto até a baixa no app). Conta falsa 2343, gravada pela versão anterior ao deploy, cancelada pela 150 |
