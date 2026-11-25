@@ -29,6 +29,8 @@
   `reader_alert.py --test` ("READER_ALERT_TO vazio ou ausente no .env — o alerta está DESLIGADO")
   mostram que a variável não foi definida no `.env` de produção. As outras três correções valem
   desde já; o alerta, só depois da variável e de um `--test` com exit 0.
+- ✅ **Ligado no mesmo dia:** `READER_ALERT_TO` criada no `.env` de produção; `reader_alert.py --test`
+  → "teste enviado a 1 de 1 destinatário(s)", exit 0, e o e-mail de teste chegou ao destinatário.
 
 **Lição:** paridade 34/34 prova que os ARQUIVOS chegaram, não que o recurso está ligado — o
 interruptor mora no `.env`, que o manifesto não cobre. Quem acusou foi o comando de validação, que
